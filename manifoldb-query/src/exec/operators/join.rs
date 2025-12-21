@@ -1,5 +1,8 @@
 //! Join operators for combining data from multiple sources.
 
+// Allow unwrap - state invariants guarantee these are Some when accessed
+#![allow(clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

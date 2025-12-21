@@ -2,6 +2,8 @@
 //!
 //! Tests end-to-end SQL query and statement execution against storage.
 
+#![allow(dead_code, unused_variables)]
+
 use manifoldb::{Database, Value};
 
 /// Helper to get a value by column name from a query result.
@@ -12,7 +14,7 @@ fn get_by_name<'a>(
 ) -> Option<&'a Value> {
     result
         .column_index(col_name)
-        .and_then(|col_idx| result.rows().get(row_idx))
+        .and_then(|_col_idx| result.rows().get(row_idx))
         .and_then(|row| result.column_index(col_name).and_then(|idx| row.get(idx)))
 }
 

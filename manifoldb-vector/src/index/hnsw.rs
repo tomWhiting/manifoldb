@@ -3,6 +3,10 @@
 //! This is the main HNSW (Hierarchical Navigable Small World) index implementation.
 //! It provides approximate nearest neighbor search with O(log N) complexity.
 
+// Allow unwrap on RwLock guards - a poisoned lock is unrecoverable and should panic
+// Allow unwrap on try_into for fixed-size slice conversions which are guaranteed to succeed
+#![allow(clippy::unwrap_used)]
+
 use std::sync::RwLock;
 
 use manifoldb_core::EntityId;

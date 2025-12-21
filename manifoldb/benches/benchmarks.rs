@@ -6,6 +6,8 @@
 //! - Vector search operations
 //! - Query execution
 
+#![allow(missing_docs)]
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use manifoldb::{Database, EntityId};
 use manifoldb_core::EntityId as CoreEntityId;

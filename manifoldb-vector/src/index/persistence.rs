@@ -9,6 +9,9 @@
 //! - `0x21` - Node data (embedding, max_layer)
 //! - `0x22` - Node connections (per-layer neighbor lists)
 
+// Allow unwrap on try_into for fixed-size slice conversions which are guaranteed to succeed
+#![allow(clippy::unwrap_used)]
+
 use manifoldb_core::EntityId;
 use manifoldb_storage::{Cursor, StorageEngine, Transaction};
 

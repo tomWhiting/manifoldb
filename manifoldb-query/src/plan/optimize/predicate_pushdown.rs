@@ -5,6 +5,8 @@
 
 // Allow cognitive complexity for the main optimization function
 #![allow(clippy::cognitive_complexity)]
+// Allow expect - invariant guaranteed by the preceding filter
+#![allow(clippy::expect_used)]
 
 use crate::ast::BinaryOp;
 use crate::plan::logical::{

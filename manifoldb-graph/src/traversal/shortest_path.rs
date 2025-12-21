@@ -3,6 +3,9 @@
 //! This module provides BFS-based shortest path algorithms for finding
 //! the shortest path between two nodes in a graph.
 
+// Allow expect - the invariant is guaranteed by the data structure
+#![allow(clippy::expect_used)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use manifoldb_core::{EdgeId, EdgeType, EntityId};

@@ -2,6 +2,8 @@
 //!
 //! All generators support seeded random generation for reproducibility.
 
+#![allow(dead_code)]
+
 use manifoldb::{Database, EntityId};
 
 /// Simple pseudo-random number generator (Xorshift64)

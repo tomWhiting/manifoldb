@@ -4,6 +4,9 @@
 //! Patterns define sequences of edge types and optional node/edge filters
 //! that paths must match.
 
+// Allow expect - the invariant is guaranteed by the data structure
+#![allow(clippy::expect_used)]
+
 use std::collections::{HashSet, VecDeque};
 
 use manifoldb_core::{Edge, EdgeId, EdgeType, EntityId};

@@ -1,5 +1,7 @@
 //! Benchmarks for the Redb storage backend.
 
+#![allow(missing_docs)]
+
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 
 use manifoldb_storage::backends::RedbEngine;

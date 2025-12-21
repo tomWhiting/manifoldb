@@ -1,0 +1,15 @@
+# Clippy configuration for ManifoldDB
+# See https://doc.rust-lang.org/clippy/configuration.html
+
+# Allow these patterns in test code
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+
+# Set a reasonable threshold for cognitive complexity
+cognitive-complexity-threshold = 50
+
+# Don't warn on too-many-lines for test functions
+too-many-lines-threshold = 200
+
+# Allow similar names that are common in DB code
+allowed-duplicate-crates = []

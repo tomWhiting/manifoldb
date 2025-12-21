@@ -3,6 +3,9 @@
 //! Analyzes predicates and available indexes to choose optimal
 //! access methods for table scans.
 
+// Allow unwrap - partial_cmp on f64 values that are guaranteed to be valid
+#![allow(clippy::unwrap_used)]
+
 use crate::ast::BinaryOp;
 use crate::plan::logical::LogicalExpr;
 

@@ -3,6 +3,8 @@
 //! These tests verify the correctness of Expand, ExpandAll, ShortestPath,
 //! PathPattern, and TraversalIterator on various graph topologies.
 
+#![allow(unused_variables)]
+
 use manifoldb_core::{Edge, EdgeType, Entity, EntityId};
 use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};
 use manifoldb_graph::traversal::{
