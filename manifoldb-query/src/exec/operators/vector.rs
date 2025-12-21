@@ -43,18 +43,19 @@ fn compute_distance_with_metric(a: &[f32], b: &[f32], metric: &DistanceMetric) -
 
 /// HNSW-based vector search operator.
 ///
-/// Uses the HNSW index for approximate nearest neighbor search when available.
-/// Falls back to brute-force search if no index is provided in the execution context.
+/// Uses the HNSW index for approximate nearest neighbor search.
+/// Requires a vector index provider and valid index name to be configured.
 pub struct HnswSearchOp {
     /// Base operator state.
     base: OperatorBase,
-    /// Name of the HNSW index to use (optional).
+    /// Name of the HNSW index to use.
     index_name: Option<String>,
     /// Vector column name.
     vector_column: String,
     /// Query vector expression.
     query_vector: LogicalExpr,
-    /// Distance metric.
+    /// Distance metric (stored for potential future validation with index metric).
+    #[allow(dead_code)]
     metric: DistanceMetric,
     /// Number of results.
     k: usize,
@@ -175,20 +176,10 @@ impl HnswSearchOp {
         &self.vector_column
     }
 
-    /// Computes distance between two vectors.
-    fn compute_distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() {
-            return f32::MAX;
-        }
-
-        compute_distance_with_metric(a, b, &self.metric)
-    }
-
-    /// Performs the vector search.
+    /// Performs the vector search using the HNSW index.
     ///
-    /// If a vector index provider is available and an index name is configured,
-    /// uses the HNSW index for efficient approximate nearest neighbor search.
-    /// Otherwise, falls back to brute-force search over the input rows.
+    /// Requires a vector index provider and a valid index name to be configured.
+    /// Returns an error if no index is available.
     fn search(&mut self) -> OperatorResult<()> {
         // Get query vector (using a dummy row for evaluation)
         let dummy_schema = Arc::new(Schema::empty());
@@ -197,22 +188,36 @@ impl HnswSearchOp {
 
         let query = match query_value {
             Value::Vector(v) => v,
-            _ => return Ok(()), // No valid query vector
+            _ => {
+                return Err(crate::error::ParseError::InvalidVectorOp(
+                    "query expression did not evaluate to a vector".to_string(),
+                )
+                .into())
+            }
         };
 
-        // Try to use HNSW index if available
-        // Clone the values to avoid borrow issues
-        let index_name = self.index_name.clone();
-        let provider = self.vector_index_provider.clone();
+        // Require both index name and provider - clone to avoid borrow issues
+        let index_name = self.index_name.clone().ok_or_else(|| {
+            crate::error::ParseError::InvalidVectorOp(
+                "HnswSearchOp requires an index name".to_string(),
+            )
+        })?;
 
-        if let (Some(idx_name), Some(prov)) = (index_name, provider) {
-            if prov.has_index(&idx_name) {
-                return self.search_with_hnsw_index(&idx_name, &query, prov.as_ref());
-            }
+        let provider = self.vector_index_provider.clone().ok_or_else(|| {
+            crate::error::ParseError::InvalidVectorOp(
+                "no vector index provider configured".to_string(),
+            )
+        })?;
+
+        if !provider.has_index(&index_name) {
+            return Err(crate::error::ParseError::InvalidVectorOp(format!(
+                "vector index '{}' not found",
+                index_name
+            ))
+            .into());
         }
 
-        // Fall back to brute-force search
-        self.search_brute_force(&query)
+        self.search_with_hnsw_index(&index_name, &query, provider.as_ref())
     }
 
     /// Performs vector search using the HNSW index.
@@ -255,24 +260,6 @@ impl HnswSearchOp {
         }
 
         // Results from HNSW are already sorted by distance
-        self.searched = true;
-        Ok(())
-    }
-
-    /// Performs brute-force vector search.
-    fn search_brute_force(&mut self, query: &[f32]) -> OperatorResult<()> {
-        // Collect all rows with distances
-        while let Some(row) = self.input.next()? {
-            if let Some(Value::Vector(v)) = row.get_by_name(&self.vector_column) {
-                let distance = self.compute_distance(v, query);
-                self.candidates.push((row, distance));
-            }
-        }
-
-        // Sort by distance and keep top k
-        self.candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        self.candidates.truncate(self.k);
-
         self.searched = true;
         Ok(())
     }
@@ -586,7 +573,8 @@ mod tests {
     }
 
     #[test]
-    fn hnsw_search_basic() {
+    fn hnsw_search_requires_index_name() {
+        // Test that HnswSearchOp requires an index name
         let query = LogicalExpr::vector(vec![0.0, 0.0, 1.0]);
 
         let mut op = HnswSearchOp::new(
@@ -603,15 +591,66 @@ mod tests {
         let ctx = ExecutionContext::new();
         op.open(&ctx).unwrap();
 
-        let row1 = op.next().unwrap().unwrap();
-        // Closest is id=3
-        assert_eq!(row1.get_by_name("id"), Some(&Value::Int(3)));
-
-        let row2 = op.next().unwrap();
-        assert!(row2.is_some());
-
-        assert!(op.next().unwrap().is_none());
+        // Should error because no index name is configured
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("requires an index name"));
 
         op.close().unwrap();
+    }
+
+    #[test]
+    fn hnsw_search_requires_provider() {
+        // Test that HnswSearchOp requires a vector index provider
+        let query = LogicalExpr::vector(vec![0.0, 0.0, 1.0]);
+
+        let mut op = HnswSearchOp::with_index(
+            Some("test_index".to_string()),
+            "embedding".to_string(),
+            query,
+            DistanceMetric::Euclidean,
+            2,
+            100, // ef_search
+            true,
+            None,
+            make_vector_input(),
+        );
+
+        let ctx = ExecutionContext::new(); // No vector index provider
+        op.open(&ctx).unwrap();
+
+        // Should error because no vector index provider is configured
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("no vector index provider"));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hnsw_search_schema_construction() {
+        // Test that schema is correctly constructed even without a provider
+        let query = LogicalExpr::vector(vec![0.0, 0.0, 1.0]);
+
+        let op = HnswSearchOp::with_index(
+            Some("test_index".to_string()),
+            "embedding".to_string(),
+            query,
+            DistanceMetric::Euclidean,
+            2,
+            100,
+            true,
+            Some("dist".to_string()),
+            make_vector_input(),
+        );
+
+        // Should have id, embedding, and dist columns
+        assert_eq!(op.schema().columns().len(), 3);
+        assert_eq!(
+            op.schema().columns(),
+            &["id".to_string(), "embedding".to_string(), "dist".to_string()]
+        );
     }
 }

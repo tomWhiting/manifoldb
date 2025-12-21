@@ -17,6 +17,10 @@ pub enum ParseError {
     #[error("invalid vector operation: {0}")]
     InvalidVectorOp(String),
 
+    /// Invalid graph operation.
+    #[error("invalid graph operation: {0}")]
+    InvalidGraphOp(String),
+
     /// Unsupported SQL feature.
     #[error("unsupported feature: {0}")]
     Unsupported(String),

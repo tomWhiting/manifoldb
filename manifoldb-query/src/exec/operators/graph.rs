@@ -8,9 +8,10 @@ use std::sync::Arc;
 use manifoldb_core::{EdgeType, EntityId, Value};
 use manifoldb_graph::traversal::Direction;
 
+use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::graph_accessor::{
-    GraphAccessResult, GraphAccessor, PathFindConfig, PathStepConfig,
+    GraphAccessError, GraphAccessResult, GraphAccessor, PathFindConfig, PathStepConfig,
 };
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
@@ -92,11 +93,10 @@ impl GraphExpandOp {
     }
 
     /// Expands from a source node using actual graph storage.
-    fn expand_from_storage(
-        &self,
-        source_id: EntityId,
-        graph: &dyn GraphAccessor,
-    ) -> GraphAccessResult<Vec<ExpandedNode>> {
+    ///
+    /// Returns an error if no graph storage is configured.
+    fn expand_from(&self, source_id: EntityId) -> GraphAccessResult<Vec<ExpandedNode>> {
+        let graph = self.graph.as_ref().ok_or(GraphAccessError::NoStorage)?;
         let direction = Self::to_graph_direction(&self.node.direction);
         let edge_types = self.get_edge_types();
 
@@ -134,66 +134,6 @@ impl GraphExpandOp {
                     .map(|r| ExpandedNode { entity_id: r.node, edge_id: r.edge_id, depth: r.depth })
                     .collect())
             }
-        }
-    }
-
-    /// Fallback mock expansion for when no graph storage is available.
-    fn expand_from_mock(&self, source_id: EntityId) -> Vec<ExpandedNode> {
-        let mut results = Vec::new();
-        let base = source_id.as_u64();
-
-        match self.node.length {
-            ExpandLength::Single => {
-                // Single hop: return 2 mock neighbors
-                results.push(ExpandedNode {
-                    entity_id: EntityId::new(base * 10 + 1),
-                    edge_id: None,
-                    depth: 1,
-                });
-                results.push(ExpandedNode {
-                    entity_id: EntityId::new(base * 10 + 2),
-                    edge_id: None,
-                    depth: 1,
-                });
-            }
-            ExpandLength::Exact(n) => {
-                // Exact number of hops: return node at that depth
-                results.push(ExpandedNode {
-                    entity_id: EntityId::new(base * 10 + n as u64),
-                    edge_id: None,
-                    depth: n,
-                });
-            }
-            ExpandLength::Range { min, max } => {
-                // Variable length: return nodes at each depth
-                for depth in min..=max.unwrap_or(min + 2) {
-                    results.push(ExpandedNode {
-                        entity_id: EntityId::new(base * 10 + depth as u64),
-                        edge_id: None,
-                        depth,
-                    });
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Expands from a source node.
-    ///
-    /// Uses actual graph storage if available, otherwise falls back to mock data.
-    fn expand_from(&self, source_id: EntityId) -> Vec<ExpandedNode> {
-        if let Some(ref graph) = self.graph {
-            match self.expand_from_storage(source_id, graph.as_ref()) {
-                Ok(results) => results,
-                Err(_) => {
-                    // Fall back to mock on error
-                    self.expand_from_mock(source_id)
-                }
-            }
-        } else {
-            // No graph storage, use mock
-            self.expand_from_mock(source_id)
         }
     }
 
@@ -248,7 +188,9 @@ impl Operator for GraphExpandOp {
             match self.input.next()? {
                 Some(row) => {
                     if let Some(source_id) = self.get_source_id(&row) {
-                        self.expanded = self.expand_from(source_id);
+                        self.expanded = self.expand_from(source_id).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("graph expand failed: {e}"))
+                        })?;
                         self.current_input = Some(row);
                         self.position = 0;
                     } else {
@@ -408,11 +350,10 @@ impl GraphPathScanOp {
     }
 
     /// Finds paths from a start node using actual graph storage.
-    fn find_paths_from_storage(
-        &self,
-        start_id: EntityId,
-        graph: &dyn GraphAccessor,
-    ) -> GraphAccessResult<Vec<PathResult>> {
+    ///
+    /// Returns an error if no graph storage is configured.
+    fn find_paths(&self, start_id: EntityId) -> GraphAccessResult<Vec<PathResult>> {
+        let graph = self.graph.as_ref().ok_or(GraphAccessError::NoStorage)?;
         let config = self.build_path_config();
         let matches = graph.find_paths(start_id, &config)?;
 
@@ -423,37 +364,6 @@ impl GraphPathScanOp {
                 PathResult { nodes: pm.nodes, edges }
             })
             .collect())
-    }
-
-    /// Fallback mock implementation for when no graph storage is available.
-    fn find_paths_mock(&self, start_id: EntityId) -> Vec<PathResult> {
-        // Mock: simulate multi-hop traversal
-        let mut nodes = vec![start_id];
-        for (i, _step) in self.steps.iter().enumerate() {
-            let prev = nodes.last().copied().unwrap_or(start_id);
-            let next = EntityId::new(prev.as_u64() * 10 + (i as u64 + 1));
-            nodes.push(next);
-        }
-
-        vec![PathResult { nodes, edges: Vec::new() }]
-    }
-
-    /// Finds paths from a start node.
-    ///
-    /// Uses actual graph storage if available, otherwise falls back to mock data.
-    fn find_paths(&self, start_id: EntityId) -> Vec<PathResult> {
-        if let Some(ref graph) = self.graph {
-            match self.find_paths_from_storage(start_id, graph.as_ref()) {
-                Ok(results) => results,
-                Err(_) => {
-                    // Fall back to mock on error
-                    self.find_paths_mock(start_id)
-                }
-            }
-        } else {
-            // No graph storage, use mock
-            self.find_paths_mock(start_id)
-        }
     }
 
     /// Gets the start entity ID from the input row.
@@ -532,7 +442,9 @@ impl Operator for GraphPathScanOp {
             match self.input.next()? {
                 Some(row) => {
                     if let Some(start_id) = self.get_start_id(&row) {
-                        self.paths = self.find_paths(start_id);
+                        self.paths = self.find_paths(start_id).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("path find failed: {e}"))
+                        })?;
                         self.current_input = Some(row);
                         self.position = 0;
                     } else {
@@ -583,130 +495,84 @@ mod tests {
     }
 
     #[test]
-    fn graph_expand_single_hop() {
+    fn graph_expand_requires_graph_storage() {
+        // Tests that GraphExpandOp returns an error when no graph storage is configured
         let node = GraphExpandExecNode::new("n", "m", ExpandDirection::Outgoing)
             .with_length(ExpandLength::Single)
             .with_cost(Cost::default());
 
         let mut op = GraphExpandOp::new(node, make_input());
 
+        // ExecutionContext::new() creates context with NullGraphAccessor
         let ctx = ExecutionContext::new();
         op.open(&ctx).unwrap();
 
-        let mut count = 0;
-        while let Some(row) = op.next().unwrap() {
-            count += 1;
-            // Should have n and m columns
-            assert_eq!(row.schema().columns().len(), 2);
-            assert!(row.get_by_name("n").is_some());
-            assert!(row.get_by_name("m").is_some());
-        }
+        // Should return an error on first next() since NullGraphAccessor returns NoStorage
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("graph expand failed"));
 
-        // 2 input rows * 2 neighbors each = 4 results
-        assert_eq!(count, 4);
         op.close().unwrap();
     }
 
     #[test]
-    fn graph_expand_variable_length() {
-        let node = GraphExpandExecNode::new("n", "m", ExpandDirection::Outgoing)
-            .with_length(ExpandLength::Range { min: 1, max: Some(3) })
-            .with_cost(Cost::default());
-
-        let mut op = GraphExpandOp::new(node, make_input());
-
-        let ctx = ExecutionContext::new();
-        op.open(&ctx).unwrap();
-
-        let mut count = 0;
-        while op.next().unwrap().is_some() {
-            count += 1;
-        }
-
-        // 2 input rows * 3 depths each = 6 results
-        assert_eq!(count, 6);
-        op.close().unwrap();
-    }
-
-    #[test]
-    fn graph_path_scan_basic() {
+    fn graph_path_scan_requires_graph_storage() {
+        // Tests that GraphPathScanOp returns an error when no graph storage is configured
         let steps = vec![GraphExpandExecNode::new("a", "b", ExpandDirection::Outgoing)];
 
         let mut op = GraphPathScanOp::new(steps, false, false, make_input());
 
+        // ExecutionContext::new() creates context with NullGraphAccessor
         let ctx = ExecutionContext::new();
         op.open(&ctx).unwrap();
 
-        let mut count = 0;
-        while let Some(row) = op.next().unwrap() {
-            count += 1;
-            // Should have n, path_start, path_end columns
-            assert!(row.get_by_name("path_start").is_some());
-            assert!(row.get_by_name("path_end").is_some());
-        }
+        // Should return an error on first next() since NullGraphAccessor returns NoStorage
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("path find failed"));
 
-        // 2 input rows, 1 path each
-        assert_eq!(count, 2);
         op.close().unwrap();
     }
 
     #[test]
-    fn graph_path_scan_with_track_path() {
+    fn graph_expand_schema_construction() {
+        // Test that schema is correctly constructed even without graph storage
+        let node = GraphExpandExecNode::new("n", "m", ExpandDirection::Outgoing)
+            .with_length(ExpandLength::Single)
+            .with_edge_var("e")
+            .with_cost(Cost::default());
+
+        let op = GraphExpandOp::new(node, make_input());
+
+        // Should have n, m, and e columns
+        assert_eq!(op.schema().columns().len(), 3);
+        assert_eq!(op.schema().columns(), &["n".to_string(), "m".to_string(), "e".to_string()]);
+    }
+
+    #[test]
+    fn graph_path_scan_schema_construction() {
+        // Test that schema is correctly constructed even without graph storage
         let steps = vec![
             GraphExpandExecNode::new("n", "m", ExpandDirection::Outgoing),
             GraphExpandExecNode::new("m", "o", ExpandDirection::Outgoing),
         ];
 
         // Enable track_path
-        let mut op = GraphPathScanOp::new(steps, false, true, make_input());
+        let op = GraphPathScanOp::new(steps, false, true, make_input());
 
-        let ctx = ExecutionContext::new();
-        op.open(&ctx).unwrap();
-
-        let mut count = 0;
-        while let Some(row) = op.next().unwrap() {
-            count += 1;
-            // Should have n, path_start, path_end, path_nodes, path_edges columns
-            assert!(row.get_by_name("path_start").is_some());
-            assert!(row.get_by_name("path_end").is_some());
-            assert!(row.get_by_name("path_nodes").is_some());
-            assert!(row.get_by_name("path_edges").is_some());
-
-            // path_nodes should be an array with 3 elements (start -> middle -> end)
-            if let Some(Value::Array(nodes)) = row.get_by_name("path_nodes") {
-                assert_eq!(nodes.len(), 3); // Two hops = 3 nodes
-            }
-        }
-
-        // 2 input rows, 1 path each
-        assert_eq!(count, 2);
-        op.close().unwrap();
-    }
-
-    #[test]
-    fn graph_path_scan_multi_step() {
-        let steps = vec![
-            GraphExpandExecNode::new("n", "m", ExpandDirection::Outgoing)
-                .with_edge_types(vec!["FRIEND".to_string()]),
-            GraphExpandExecNode::new("m", "o", ExpandDirection::Outgoing)
-                .with_length(ExpandLength::Range { min: 1, max: Some(2) }),
-        ];
-
-        let mut op = GraphPathScanOp::new(steps, true, false, make_input());
-
-        let ctx = ExecutionContext::new();
-        op.open(&ctx).unwrap();
-
-        let mut count = 0;
-        while let Some(row) = op.next().unwrap() {
-            count += 1;
-            assert!(row.get_by_name("path_start").is_some());
-            assert!(row.get_by_name("path_end").is_some());
-        }
-
-        // With all_paths mode and mock data, should still get 1 path per input row
-        // (mock implementation doesn't generate multiple paths)
-        assert_eq!(count, 2);
-        op.close().unwrap();
+        // Should have n, path_start, path_end, path_nodes, path_edges columns
+        assert_eq!(op.schema().columns().len(), 5);
+        assert_eq!(
+            op.schema().columns(),
+            &[
+                "n".to_string(),
+                "path_start".to_string(),
+                "path_end".to_string(),
+                "path_nodes".to_string(),
+                "path_edges".to_string()
+            ]
+        );
     }
 }
