@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use manifoldb_core::Value;
+use manifoldb_vector::Embedding;
 
 use crate::ast::DistanceMetric;
-use crate::exec::context::ExecutionContext;
+use crate::exec::context::{ExecutionContext, VectorIndexProvider};
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
 use crate::exec::row::{Row, Schema};
@@ -42,10 +43,13 @@ fn compute_distance_with_metric(a: &[f32], b: &[f32], metric: &DistanceMetric) -
 
 /// HNSW-based vector search operator.
 ///
-/// Uses the HNSW index for approximate nearest neighbor search.
+/// Uses the HNSW index for approximate nearest neighbor search when available.
+/// Falls back to brute-force search if no index is provided in the execution context.
 pub struct HnswSearchOp {
     /// Base operator state.
     base: OperatorBase,
+    /// Name of the HNSW index to use (optional).
+    index_name: Option<String>,
     /// Vector column name.
     vector_column: String,
     /// Query vector expression.
@@ -68,12 +72,44 @@ pub struct HnswSearchOp {
     position: usize,
     /// Whether search is complete.
     searched: bool,
+    /// Cached reference to the vector index provider.
+    vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
 }
 
 impl HnswSearchOp {
     /// Creates a new HNSW search operator.
     #[must_use]
     pub fn new(
+        vector_column: String,
+        query_vector: LogicalExpr,
+        metric: DistanceMetric,
+        k: usize,
+        ef_search: usize,
+        include_distance: bool,
+        distance_alias: Option<String>,
+        input: BoxedOperator,
+    ) -> Self {
+        Self::with_index(
+            None,
+            vector_column,
+            query_vector,
+            metric,
+            k,
+            ef_search,
+            include_distance,
+            distance_alias,
+            input,
+        )
+    }
+
+    /// Creates a new HNSW search operator with a specified index name.
+    ///
+    /// When an index name is provided and a vector index provider is available
+    /// in the execution context, the operator will use the HNSW index for
+    /// efficient approximate nearest neighbor search.
+    #[must_use]
+    pub fn with_index(
+        index_name: Option<String>,
         vector_column: String,
         query_vector: LogicalExpr,
         metric: DistanceMetric,
@@ -93,6 +129,7 @@ impl HnswSearchOp {
 
         Self {
             base: OperatorBase::new(schema),
+            index_name,
             vector_column,
             query_vector,
             metric,
@@ -104,7 +141,14 @@ impl HnswSearchOp {
             candidates: Vec::new(),
             position: 0,
             searched: false,
+            vector_index_provider: None,
         }
+    }
+
+    /// Returns the index name if one is configured.
+    #[must_use]
+    pub fn index_name(&self) -> Option<&str> {
+        self.index_name.as_deref()
     }
 
     /// Returns the HNSW ef_search parameter.
@@ -141,10 +185,11 @@ impl HnswSearchOp {
     }
 
     /// Performs the vector search.
+    ///
+    /// If a vector index provider is available and an index name is configured,
+    /// uses the HNSW index for efficient approximate nearest neighbor search.
+    /// Otherwise, falls back to brute-force search over the input rows.
     fn search(&mut self) -> OperatorResult<()> {
-        // In a real implementation, this would use the HNSW index.
-        // For now, we do a brute-force search.
-
         // Get query vector (using a dummy row for evaluation)
         let dummy_schema = Arc::new(Schema::empty());
         let dummy_row = Row::new(dummy_schema, vec![]);
@@ -155,10 +200,71 @@ impl HnswSearchOp {
             _ => return Ok(()), // No valid query vector
         };
 
+        // Try to use HNSW index if available
+        // Clone the values to avoid borrow issues
+        let index_name = self.index_name.clone();
+        let provider = self.vector_index_provider.clone();
+
+        if let (Some(idx_name), Some(prov)) = (index_name, provider) {
+            if prov.has_index(&idx_name) {
+                return self.search_with_hnsw_index(&idx_name, &query, prov.as_ref());
+            }
+        }
+
+        // Fall back to brute-force search
+        self.search_brute_force(&query)
+    }
+
+    /// Performs vector search using the HNSW index.
+    fn search_with_hnsw_index(
+        &mut self,
+        index_name: &str,
+        query: &[f32],
+        provider: &dyn VectorIndexProvider,
+    ) -> OperatorResult<()> {
+        // Create embedding from query vector
+        let embedding = Embedding::new(query.to_vec()).map_err(|e| {
+            crate::error::ParseError::InvalidVectorOp(format!("Failed to create embedding: {e}"))
+        })?;
+
+        // Search the HNSW index
+        let results =
+            provider.search(index_name, &embedding, self.k, Some(self.ef_search)).map_err(|e| {
+                crate::error::ParseError::InvalidVectorOp(format!("HNSW search failed: {e}"))
+            })?;
+
+        // Build a map from entity IDs to input rows for efficient lookup
+        // First, collect all input rows
+        let mut rows_by_id: std::collections::HashMap<i64, Row> = std::collections::HashMap::new();
+        while let Some(row) = self.input.next()? {
+            // Try to extract an entity ID from the row
+            // We look for "id" or "_id" columns
+            if let Some(id) = row.get_by_name("id").or_else(|| row.get_by_name("_id")) {
+                if let Value::Int(id_val) = id {
+                    rows_by_id.insert(*id_val, row);
+                }
+            }
+        }
+
+        // Match search results to input rows
+        for result in results {
+            let entity_id = result.entity_id.as_u64() as i64;
+            if let Some(row) = rows_by_id.remove(&entity_id) {
+                self.candidates.push((row, result.distance));
+            }
+        }
+
+        // Results from HNSW are already sorted by distance
+        self.searched = true;
+        Ok(())
+    }
+
+    /// Performs brute-force vector search.
+    fn search_brute_force(&mut self, query: &[f32]) -> OperatorResult<()> {
         // Collect all rows with distances
         while let Some(row) = self.input.next()? {
             if let Some(Value::Vector(v)) = row.get_by_name(&self.vector_column) {
-                let distance = self.compute_distance(v, &query);
+                let distance = self.compute_distance(v, query);
                 self.candidates.push((row, distance));
             }
         }
@@ -178,6 +284,8 @@ impl Operator for HnswSearchOp {
         self.candidates.clear();
         self.position = 0;
         self.searched = false;
+        // Capture the vector index provider for use during search
+        self.vector_index_provider = ctx.vector_index_provider_arc();
         self.base.set_open();
         Ok(())
     }
@@ -209,6 +317,7 @@ impl Operator for HnswSearchOp {
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
         self.candidates.clear();
+        self.vector_index_provider = None;
         self.base.set_closed();
         Ok(())
     }

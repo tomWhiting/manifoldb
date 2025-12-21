@@ -9,6 +9,40 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use manifoldb_core::Value;
+use manifoldb_vector::{Embedding, SearchResult, VectorError};
+
+/// A trait for providing access to vector indexes.
+///
+/// This trait allows type-erased access to vector indexes for query execution.
+/// Implementations can wrap HNSW indexes or other vector index types.
+pub trait VectorIndexProvider: Send + Sync {
+    /// Search for nearest neighbors in the specified index.
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - The name of the vector index to search
+    /// * `query` - The query embedding
+    /// * `k` - Number of nearest neighbors to return
+    /// * `ef_search` - Optional HNSW ef_search parameter
+    ///
+    /// # Returns
+    ///
+    /// A vector of search results sorted by distance, or an error if the
+    /// index is not found or the search fails.
+    fn search(
+        &self,
+        index_name: &str,
+        query: &Embedding,
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> Result<Vec<SearchResult>, VectorError>;
+
+    /// Check if a vector index exists.
+    fn has_index(&self, index_name: &str) -> bool;
+
+    /// Get the dimension of vectors in the specified index.
+    fn dimension(&self, index_name: &str) -> Option<usize>;
+}
 
 /// Execution context for a query.
 ///
@@ -17,7 +51,7 @@ use manifoldb_core::Value;
 /// - Cancellation support
 /// - Execution statistics
 /// - Runtime configuration
-#[derive(Debug)]
+/// - Vector index access (optional)
 pub struct ExecutionContext {
     /// Query parameters (1-indexed).
     parameters: HashMap<u32, Value>,
@@ -27,6 +61,20 @@ pub struct ExecutionContext {
     stats: ExecutionStats,
     /// Configuration options.
     config: ExecutionConfig,
+    /// Optional vector index provider for HNSW searches.
+    vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
+}
+
+impl std::fmt::Debug for ExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionContext")
+            .field("parameters", &self.parameters)
+            .field("cancelled", &self.cancelled)
+            .field("stats", &self.stats)
+            .field("config", &self.config)
+            .field("vector_index_provider", &self.vector_index_provider.is_some())
+            .finish()
+    }
 }
 
 impl ExecutionContext {
@@ -38,6 +86,7 @@ impl ExecutionContext {
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
+            vector_index_provider: None,
         }
     }
 
@@ -49,7 +98,40 @@ impl ExecutionContext {
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
+            vector_index_provider: None,
         }
+    }
+
+    /// Creates a context with a vector index provider.
+    #[must_use]
+    pub fn with_vector_index_provider(provider: Arc<dyn VectorIndexProvider>) -> Self {
+        Self {
+            parameters: HashMap::new(),
+            cancelled: AtomicBool::new(false),
+            stats: ExecutionStats::new(),
+            config: ExecutionConfig::default(),
+            vector_index_provider: Some(provider),
+        }
+    }
+
+    /// Sets the vector index provider.
+    pub fn set_vector_index_provider(&mut self, provider: Arc<dyn VectorIndexProvider>) {
+        self.vector_index_provider = Some(provider);
+    }
+
+    /// Returns a reference to the vector index provider if one is set.
+    #[must_use]
+    pub fn vector_index_provider(&self) -> Option<&dyn VectorIndexProvider> {
+        self.vector_index_provider.as_deref()
+    }
+
+    /// Returns a clone of the vector index provider Arc if one is set.
+    ///
+    /// This is useful for operators that need to hold onto the provider
+    /// for the duration of their execution.
+    #[must_use]
+    pub fn vector_index_provider_arc(&self) -> Option<Arc<dyn VectorIndexProvider>> {
+        self.vector_index_provider.clone()
     }
 
     /// Adds a parameter value.

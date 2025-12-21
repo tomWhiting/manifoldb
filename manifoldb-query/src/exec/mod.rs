@@ -39,7 +39,7 @@ pub mod operators;
 pub mod row;
 
 // Re-exports
-pub use context::{CancellationToken, ExecutionContext};
+pub use context::{CancellationToken, ExecutionContext, VectorIndexProvider};
 pub use executor::{execute_plan, Executor};
 pub use operator::{Operator, OperatorBase, OperatorState};
 pub use result::{QueryResult, ResultSet, ResultSetBuilder};
