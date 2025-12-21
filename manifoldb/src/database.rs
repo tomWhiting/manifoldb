@@ -43,11 +43,11 @@
 
 use std::path::Path;
 
-use manifoldb_query::{parse_sql, ExecutionContext};
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
 
 use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
+use crate::execution::{execute_query, execute_statement};
 use crate::transaction::{DatabaseTransaction, TransactionManager};
 
 /// The main `ManifoldDB` database handle.
@@ -284,11 +284,7 @@ impl Database {
     /// println!("Inserted {} rows", affected);
     /// ```
     pub fn execute(&self, sql: &str) -> Result<u64> {
-        let _statements = parse_sql(sql)?;
-
-        // TODO: Implement DML execution through the query engine
-        // For now, return 0 as we need to integrate with the transaction manager
-        Ok(0)
+        self.execute_with_params(sql, &[])
     }
 
     /// Execute a SQL statement with bound parameters.
@@ -318,11 +314,16 @@ impl Database {
     /// )?;
     /// ```
     pub fn execute_with_params(&self, sql: &str, params: &[manifoldb_core::Value]) -> Result<u64> {
-        let _statements = parse_sql(sql)?;
-        let _params = params; // Will be used when we implement parameter binding
+        // Start a write transaction
+        let mut tx = self.begin()?;
 
-        // TODO: Implement parameterized DML execution
-        Ok(0)
+        // Execute the statement
+        let count = execute_statement(&mut tx, sql, params)?;
+
+        // Commit the transaction
+        tx.commit().map_err(Error::Transaction)?;
+
+        Ok(count)
     }
 
     /// Execute a SQL query and return results.
@@ -351,12 +352,7 @@ impl Database {
     /// }
     /// ```
     pub fn query(&self, sql: &str) -> Result<QueryResult> {
-        let _statements = parse_sql(sql)?;
-        let _ctx = ExecutionContext::new();
-
-        // TODO: Build and execute query plan
-        // For now, return an empty result
-        Ok(QueryResult::empty())
+        self.query_with_params(sql, &[])
     }
 
     /// Execute a SQL query with bound parameters.
@@ -390,11 +386,14 @@ impl Database {
         sql: &str,
         params: &[manifoldb_core::Value],
     ) -> Result<QueryResult> {
-        let _statements = parse_sql(sql)?;
-        let _params = params;
+        // Start a read transaction
+        let tx = self.begin_read()?;
 
-        // TODO: Implement parameterized query execution
-        Ok(QueryResult::empty())
+        // Execute the query
+        let result_set = execute_query(&tx, sql, params)?;
+
+        // Convert the ResultSet to our QueryResult
+        Ok(QueryResult::from_result_set(result_set))
     }
 
     /// Flush any buffered data to durable storage.

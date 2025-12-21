@@ -149,6 +149,7 @@ pub use manifoldb_storage::{StorageEngine, Transaction};
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod execution;
 pub mod transaction;
 
 // Public API re-exports

@@ -34,13 +34,13 @@ mod context;
 mod executor;
 mod operator;
 mod result;
-mod row;
 
 pub mod operators;
+pub mod row;
 
 // Re-exports
 pub use context::ExecutionContext;
 pub use executor::Executor;
 pub use operator::{Operator, OperatorState};
 pub use result::{QueryResult, ResultSet};
-pub use row::{Row, RowBatch};
+pub use row::{Row, RowBatch, Schema};

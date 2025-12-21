@@ -240,6 +240,58 @@ impl<T: Transaction> DatabaseTransaction<T> {
         Ok(())
     }
 
+    /// Iterate over all entities, optionally filtering by label.
+    ///
+    /// If `label` is `Some`, only entities with that label are returned.
+    /// If `label` is `None`, all entities are returned.
+    ///
+    /// Returns an empty vector if no entities exist (including if the table hasn't been created).
+    pub fn iter_entities(&self, label: Option<&str>) -> Result<Vec<Entity>, TransactionError> {
+        use manifoldb_storage::StorageError;
+        use std::ops::Bound;
+
+        let storage = self.storage()?;
+
+        // Create a cursor over all nodes
+        // If the table doesn't exist yet, just return empty
+        let cursor_result = storage.range(tables::NODES, Bound::Unbounded, Bound::Unbounded);
+
+        let mut cursor = match cursor_result {
+            Ok(c) => c,
+            Err(StorageError::TableNotFound(_)) => {
+                // Table doesn't exist, no entities yet
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(storage_error_to_tx_error(e)),
+        };
+
+        let mut entities = Vec::new();
+
+        // Iterate through all nodes
+        while let Some((_key, value)) = cursor.next().map_err(storage_error_to_tx_error)? {
+            let entity: Entity = bincode::deserialize(&value)
+                .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+
+            // Filter by label if specified
+            if let Some(label_filter) = label {
+                if entity.has_label(label_filter) {
+                    entities.push(entity);
+                }
+            } else {
+                entities.push(entity);
+            }
+        }
+
+        Ok(entities)
+    }
+
+    /// Count entities, optionally filtering by label.
+    pub fn count_entities(&self, label: Option<&str>) -> Result<usize, TransactionError> {
+        // For now, use iter_entities and count
+        // Could be optimized with a dedicated label index
+        Ok(self.iter_entities(label)?.len())
+    }
+
     /// Delete an edge by its ID.
     ///
     /// Returns `true` if the edge existed and was deleted, `false` if it didn't exist.

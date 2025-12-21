@@ -6,5 +6,6 @@
 pub mod combined;
 pub mod crud;
 pub mod graph;
+pub mod sql;
 pub mod transactions;
 pub mod vector;
