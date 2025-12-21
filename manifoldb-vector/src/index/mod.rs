@@ -57,5 +57,9 @@ mod persistence;
 mod traits;
 
 pub use config::HnswConfig;
+pub use graph::{
+    search_layer, select_neighbors_heuristic, select_neighbors_simple, Candidate, HnswGraph,
+    HnswNode,
+};
 pub use hnsw::HnswIndex;
 pub use traits::{SearchResult, VectorIndex};

@@ -39,8 +39,8 @@ pub mod operators;
 pub mod row;
 
 // Re-exports
-pub use context::ExecutionContext;
-pub use executor::Executor;
-pub use operator::{Operator, OperatorState};
-pub use result::{QueryResult, ResultSet};
+pub use context::{CancellationToken, ExecutionContext};
+pub use executor::{execute_plan, Executor};
+pub use operator::{Operator, OperatorBase, OperatorState};
+pub use result::{QueryResult, ResultSet, ResultSetBuilder};
 pub use row::{Row, RowBatch, Schema};

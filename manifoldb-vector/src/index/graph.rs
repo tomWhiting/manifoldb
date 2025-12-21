@@ -322,7 +322,8 @@ pub fn search_layer(
 /// Select the best neighbors for a node using a simple heuristic.
 ///
 /// This uses a simple approach: keep the M closest neighbors.
-#[allow(dead_code)] // May be useful as an alternative to heuristic selection
+/// This is an alternative to [`select_neighbors_heuristic`] that
+/// may be faster for small candidate sets.
 pub fn select_neighbors_simple(candidates: &[Candidate], m: usize) -> Vec<EntityId> {
     candidates.iter().take(m).map(|c| c.entity_id).collect()
 }

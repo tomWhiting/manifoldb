@@ -99,7 +99,6 @@ pub struct IndexScanOp {
     /// Base operator state.
     base: OperatorBase,
     /// The node configuration.
-    #[allow(dead_code)]
     node: IndexScanNode,
     /// Whether we've returned the result.
     returned: bool,
@@ -121,6 +120,24 @@ impl IndexScanOp {
     pub fn with_data(mut self, data: Vec<Vec<Value>>) -> Self {
         self.data = data;
         self
+    }
+
+    /// Returns the index name being scanned.
+    #[must_use]
+    pub fn index_name(&self) -> &str {
+        &self.node.index_name
+    }
+
+    /// Returns the table name being scanned.
+    #[must_use]
+    pub fn table_name(&self) -> &str {
+        &self.node.table_name
+    }
+
+    /// Returns the key columns for this index scan.
+    #[must_use]
+    pub fn key_columns(&self) -> &[String] {
+        &self.node.key_columns
     }
 }
 
@@ -172,7 +189,6 @@ pub struct IndexRangeScanOp {
     /// Base operator state.
     base: OperatorBase,
     /// The node configuration.
-    #[allow(dead_code)]
     node: IndexRangeScanNode,
     /// Current row index.
     current_row: usize,
@@ -194,6 +210,24 @@ impl IndexRangeScanOp {
     pub fn with_data(mut self, data: Vec<Vec<Value>>) -> Self {
         self.data = data;
         self
+    }
+
+    /// Returns the index name being scanned.
+    #[must_use]
+    pub fn index_name(&self) -> &str {
+        &self.node.index_name
+    }
+
+    /// Returns the table name being scanned.
+    #[must_use]
+    pub fn table_name(&self) -> &str {
+        &self.node.table_name
+    }
+
+    /// Returns the key column being scanned.
+    #[must_use]
+    pub fn key_column(&self) -> &str {
+        &self.node.key_column
     }
 }
 

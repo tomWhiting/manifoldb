@@ -42,7 +42,7 @@ mod filter;
 
 pub use ann_scan::AnnScan;
 pub use exact_knn::ExactKnn;
-pub use filter::VectorFilter;
+pub use filter::{FilterBuilder, VectorFilter};
 
 use manifoldb_core::EntityId;
 

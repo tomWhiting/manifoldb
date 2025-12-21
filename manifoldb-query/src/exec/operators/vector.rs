@@ -55,12 +55,10 @@ pub struct HnswSearchOp {
     /// Number of results.
     k: usize,
     /// HNSW ef_search parameter.
-    #[allow(dead_code)]
     ef_search: usize,
     /// Whether to include distance in output.
     include_distance: bool,
     /// Distance column alias.
-    #[allow(dead_code)]
     distance_alias: String,
     /// Input operator.
     input: BoxedOperator,
@@ -107,6 +105,30 @@ impl HnswSearchOp {
             position: 0,
             searched: false,
         }
+    }
+
+    /// Returns the HNSW ef_search parameter.
+    #[must_use]
+    pub fn ef_search(&self) -> usize {
+        self.ef_search
+    }
+
+    /// Returns the distance column alias.
+    #[must_use]
+    pub fn distance_alias(&self) -> &str {
+        &self.distance_alias
+    }
+
+    /// Returns the number of results to return.
+    #[must_use]
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Returns the vector column name.
+    #[must_use]
+    pub fn vector_column(&self) -> &str {
+        &self.vector_column
     }
 
     /// Computes distance between two vectors.
@@ -221,7 +243,6 @@ pub struct BruteForceSearchOp {
     /// Whether to include distance in output.
     include_distance: bool,
     /// Distance column alias.
-    #[allow(dead_code)]
     distance_alias: String,
     /// Input operator.
     input: BoxedOperator,
@@ -265,6 +286,24 @@ impl BruteForceSearchOp {
             position: 0,
             searched: false,
         }
+    }
+
+    /// Returns the distance column alias.
+    #[must_use]
+    pub fn distance_alias(&self) -> &str {
+        &self.distance_alias
+    }
+
+    /// Returns the number of results to return.
+    #[must_use]
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Returns the vector column name.
+    #[must_use]
+    pub fn vector_column(&self) -> &str {
+        &self.vector_column
     }
 
     fn compute_distance(&self, a: &[f32], b: &[f32]) -> f32 {

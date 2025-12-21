@@ -178,12 +178,13 @@ impl<'a> IntoIterator for &'a ResultSet {
 }
 
 /// Builder for constructing result sets incrementally.
+///
+/// Provides a convenient way to build a `ResultSet` row by row.
 pub struct ResultSetBuilder {
     schema: Arc<Schema>,
     rows: Vec<Row>,
 }
 
-#[allow(dead_code)]
 impl ResultSetBuilder {
     /// Creates a new builder with the given schema.
     #[must_use]

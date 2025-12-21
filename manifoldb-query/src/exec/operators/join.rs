@@ -87,9 +87,17 @@ impl NestedLoopJoinOp {
     }
 
     /// Creates a null row for the left side.
-    #[allow(dead_code)]
-    fn left_null_row(&self) -> Row {
+    ///
+    /// Used for RIGHT and FULL outer joins to output right rows
+    /// that have no matching left rows.
+    pub fn left_null_row(&self) -> Row {
         Row::empty(self.left.schema())
+    }
+
+    /// Returns the join type.
+    #[must_use]
+    pub fn join_type(&self) -> JoinType {
+        self.join_type
     }
 }
 
@@ -386,7 +394,6 @@ pub struct MergeJoinOp {
     /// Base operator state.
     base: OperatorBase,
     /// Join type.
-    #[allow(dead_code)]
     join_type: JoinType,
     /// Left side key expressions.
     left_keys: Vec<LogicalExpr>,
@@ -429,6 +436,12 @@ impl MergeJoinOp {
             right_buffer: Vec::new(),
             buffer_position: 0,
         }
+    }
+
+    /// Returns the join type.
+    #[must_use]
+    pub fn join_type(&self) -> JoinType {
+        self.join_type
     }
 
     /// Compares keys from two rows.

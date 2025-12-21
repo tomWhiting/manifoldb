@@ -334,7 +334,8 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
 }
 
 /// Convenience function to execute a plan and get results.
-#[allow(dead_code)]
+///
+/// Creates a default execution context and runs the plan to completion.
 pub fn execute_plan(plan: &PhysicalPlan) -> OperatorResult<ResultSet> {
     let ctx = ExecutionContext::new();
     let mut executor = Executor::new(plan, ctx)?;

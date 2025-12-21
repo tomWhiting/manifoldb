@@ -222,13 +222,14 @@ impl Default for ExecutionConfig {
 }
 
 /// A handle for cancelling query execution.
-#[allow(dead_code)]
+///
+/// Can be shared between threads to allow cancellation from outside
+/// the query execution thread.
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
 }
 
-#[allow(dead_code)]
 impl CancellationToken {
     /// Creates a new cancellation token.
     #[must_use]

@@ -147,7 +147,6 @@ impl OperatorBase {
 
     /// Returns the number of rows produced.
     #[must_use]
-    #[allow(dead_code)]
     pub const fn rows_produced(&self) -> u64 {
         self.rows_produced
     }

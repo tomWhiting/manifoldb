@@ -36,10 +36,10 @@ pub struct GraphExpandOp {
 struct ExpandedNode {
     /// The neighbor entity ID.
     entity_id: EntityId,
-    /// The edge ID (if tracking edges).
+    /// The edge ID (if tracking edges). Reserved for future use.
     #[allow(dead_code)]
     edge_id: Option<manifoldb_core::EdgeId>,
-    /// Depth for variable-length expansion.
+    /// Depth for variable-length expansion. Reserved for future use.
     #[allow(dead_code)]
     depth: usize,
 }
@@ -199,13 +199,10 @@ pub struct GraphPathScanOp {
     /// Base operator state.
     base: OperatorBase,
     /// Path steps.
-    #[allow(dead_code)]
     steps: Vec<GraphExpandExecNode>,
     /// Whether to return all paths.
-    #[allow(dead_code)]
     all_paths: bool,
     /// Whether to track the full path.
-    #[allow(dead_code)]
     track_path: bool,
     /// Input operator.
     input: BoxedOperator,
@@ -222,7 +219,7 @@ pub struct GraphPathScanOp {
 struct PathResult {
     /// Nodes in the path.
     nodes: Vec<EntityId>,
-    /// Edges in the path.
+    /// Edges in the path. Reserved for future use.
     #[allow(dead_code)]
     edges: Vec<manifoldb_core::EdgeId>,
 }
@@ -256,6 +253,24 @@ impl GraphPathScanOp {
             paths: Vec::new(),
             position: 0,
         }
+    }
+
+    /// Returns the path steps configuration.
+    #[must_use]
+    pub fn steps(&self) -> &[GraphExpandExecNode] {
+        &self.steps
+    }
+
+    /// Returns whether all paths are returned.
+    #[must_use]
+    pub fn all_paths(&self) -> bool {
+        self.all_paths
+    }
+
+    /// Returns whether the full path is tracked.
+    #[must_use]
+    pub fn track_path(&self) -> bool {
+        self.track_path
     }
 
     /// Simulates path finding (mock implementation).

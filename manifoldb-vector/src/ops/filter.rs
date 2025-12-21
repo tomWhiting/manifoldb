@@ -179,12 +179,10 @@ impl<O: VectorOperator> VectorOperator for VectorFilter<O> {
 /// Builder for composing multiple filters.
 ///
 /// Provides a fluent API for building complex filter chains.
-#[allow(dead_code)]
 pub struct FilterBuilder<O: VectorOperator> {
     filter: VectorFilter<O>,
 }
 
-#[allow(dead_code)]
 impl<O: VectorOperator> FilterBuilder<O> {
     /// Start building a filter from a source operator.
     pub fn new(source: O) -> Self {
