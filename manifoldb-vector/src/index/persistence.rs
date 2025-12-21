@@ -417,8 +417,8 @@ pub fn load_graph<E: StorageEngine>(
     let tx = engine.begin_read()?;
 
     // Scan for all node keys
-    let node_prefix = vec![PREFIX_HNSW_NODE];
-    let node_end = vec![PREFIX_HNSW_NODE + 1];
+    let node_prefix = [PREFIX_HNSW_NODE];
+    let node_end = [PREFIX_HNSW_NODE + 1];
 
     let mut cursor = tx.range(
         table,

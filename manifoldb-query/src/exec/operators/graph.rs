@@ -43,8 +43,7 @@ pub struct GraphExpandOp {
 struct ExpandedNode {
     /// The neighbor entity ID.
     entity_id: EntityId,
-    /// The edge ID (if tracking edges). Reserved for future use.
-    #[allow(dead_code)]
+    /// The edge ID (if tracking edges).
     edge_id: Option<manifoldb_core::EdgeId>,
     /// Depth for variable-length expansion. Reserved for future use.
     #[allow(dead_code)]
