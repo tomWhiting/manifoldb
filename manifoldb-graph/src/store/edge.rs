@@ -5,10 +5,7 @@
 use std::ops::Bound;
 
 use manifoldb_core::encoding::keys::{
-    decode_edge_by_source_edge_id, decode_edge_by_target_edge_id, decode_edge_key,
-    encode_edge_by_source_key, encode_edge_by_source_prefix, encode_edge_by_source_type_prefix,
-    encode_edge_by_target_key, encode_edge_by_target_prefix, encode_edge_by_target_type_prefix,
-    encode_edge_key, encode_edge_type_index_key, encode_edge_type_index_prefix, PREFIX_EDGE,
+    decode_edge_key, encode_edge_key, encode_edge_type_index_prefix, PREFIX_EDGE,
 };
 use manifoldb_core::encoding::{Decoder, Encoder};
 use manifoldb_core::{Edge, EdgeId, EdgeType, EntityId};
@@ -17,6 +14,7 @@ use manifoldb_storage::{Cursor, Transaction};
 use super::error::{GraphError, GraphResult};
 use super::node::NodeStore;
 use super::IdGenerator;
+use crate::index::{AdjacencyIndex, IndexMaintenance};
 
 /// Table name for edge data.
 pub const TABLE_EDGES: &str = "edges";
@@ -151,17 +149,8 @@ impl EdgeStore {
         let value = edge.encode()?;
         tx.put(TABLE_EDGES, &key, &value)?;
 
-        // Index by source
-        let source_key = encode_edge_by_source_key(edge.source, &edge.edge_type, edge.id);
-        tx.put(TABLE_EDGES_BY_SOURCE, &source_key, &[])?;
-
-        // Index by target
-        let target_key = encode_edge_by_target_key(edge.target, &edge.edge_type, edge.id);
-        tx.put(TABLE_EDGES_BY_TARGET, &target_key, &[])?;
-
-        // Index by type
-        let type_key = encode_edge_type_index_key(&edge.edge_type, edge.id);
-        tx.put(TABLE_EDGE_TYPES, &type_key, &[])?;
+        // Add all indexes using IndexMaintenance
+        IndexMaintenance::add_edge_indexes(tx, edge)?;
 
         Ok(())
     }
@@ -228,20 +217,12 @@ impl EdgeStore {
     pub fn update<T: Transaction>(tx: &mut T, edge: &Edge) -> GraphResult<()> {
         let key = encode_edge_key(edge.id);
 
-        // Get the old edge to verify it exists and check if type changed
+        // Get the old edge to verify it exists and check if structure changed
         let old_value = tx.get(TABLE_EDGES, &key)?.ok_or(GraphError::EdgeNotFound(edge.id))?;
         let old_edge = Edge::decode(&old_value)?;
 
-        // If edge type changed, update indexes
-        if old_edge.edge_type.as_str() != edge.edge_type.as_str()
-            || old_edge.source != edge.source
-            || old_edge.target != edge.target
-        {
-            // Remove old indexes
-            Self::remove_indexes(tx, &old_edge)?;
-            // Add new indexes
-            Self::add_indexes(tx, edge)?;
-        }
+        // Update indexes if edge structure changed
+        IndexMaintenance::update_edge_indexes(tx, &old_edge, edge)?;
 
         // Store updated edge
         let value = edge.encode()?;
@@ -269,40 +250,12 @@ impl EdgeStore {
         };
         let edge = Edge::decode(&value)?;
 
-        // Remove all indexes
-        Self::remove_indexes(tx, &edge)?;
+        // Remove all indexes using IndexMaintenance
+        IndexMaintenance::remove_edge_indexes(tx, &edge)?;
 
         // Delete the edge
         tx.delete(TABLE_EDGES, &key)?;
         Ok(true)
-    }
-
-    /// Helper to add all indexes for an edge.
-    fn add_indexes<T: Transaction>(tx: &mut T, edge: &Edge) -> GraphResult<()> {
-        let source_key = encode_edge_by_source_key(edge.source, &edge.edge_type, edge.id);
-        tx.put(TABLE_EDGES_BY_SOURCE, &source_key, &[])?;
-
-        let target_key = encode_edge_by_target_key(edge.target, &edge.edge_type, edge.id);
-        tx.put(TABLE_EDGES_BY_TARGET, &target_key, &[])?;
-
-        let type_key = encode_edge_type_index_key(&edge.edge_type, edge.id);
-        tx.put(TABLE_EDGE_TYPES, &type_key, &[])?;
-
-        Ok(())
-    }
-
-    /// Helper to remove all indexes for an edge.
-    fn remove_indexes<T: Transaction>(tx: &mut T, edge: &Edge) -> GraphResult<()> {
-        let source_key = encode_edge_by_source_key(edge.source, &edge.edge_type, edge.id);
-        tx.delete(TABLE_EDGES_BY_SOURCE, &source_key)?;
-
-        let target_key = encode_edge_by_target_key(edge.target, &edge.edge_type, edge.id);
-        tx.delete(TABLE_EDGES_BY_TARGET, &target_key)?;
-
-        let type_key = encode_edge_type_index_key(&edge.edge_type, edge.id);
-        tx.delete(TABLE_EDGE_TYPES, &type_key)?;
-
-        Ok(())
     }
 
     /// Get all outgoing edges from an entity.
@@ -312,7 +265,7 @@ impl EdgeStore {
     /// * `tx` - The transaction to use
     /// * `source` - The source entity ID
     pub fn get_outgoing<T: Transaction>(tx: &T, source: EntityId) -> GraphResult<Vec<Edge>> {
-        let edge_ids = Self::get_outgoing_ids(tx, source)?;
+        let edge_ids = AdjacencyIndex::get_outgoing_edge_ids(tx, source)?;
         Self::get_edges_by_ids(tx, &edge_ids)
     }
 
@@ -323,13 +276,7 @@ impl EdgeStore {
     /// * `tx` - The transaction to use
     /// * `source` - The source entity ID
     pub fn get_outgoing_ids<T: Transaction>(tx: &T, source: EntityId) -> GraphResult<Vec<EdgeId>> {
-        let prefix = encode_edge_by_source_prefix(source);
-        Self::scan_edge_ids_with_prefix(
-            tx,
-            TABLE_EDGES_BY_SOURCE,
-            &prefix,
-            decode_edge_by_source_edge_id,
-        )
+        AdjacencyIndex::get_outgoing_edge_ids(tx, source)
     }
 
     /// Get outgoing edges of a specific type from an entity.
@@ -344,13 +291,7 @@ impl EdgeStore {
         source: EntityId,
         edge_type: &EdgeType,
     ) -> GraphResult<Vec<Edge>> {
-        let prefix = encode_edge_by_source_type_prefix(source, edge_type);
-        let edge_ids = Self::scan_edge_ids_with_prefix(
-            tx,
-            TABLE_EDGES_BY_SOURCE,
-            &prefix,
-            decode_edge_by_source_edge_id,
-        )?;
+        let edge_ids = AdjacencyIndex::get_outgoing_by_type(tx, source, edge_type)?;
         Self::get_edges_by_ids(tx, &edge_ids)
     }
 
@@ -361,7 +302,7 @@ impl EdgeStore {
     /// * `tx` - The transaction to use
     /// * `target` - The target entity ID
     pub fn get_incoming<T: Transaction>(tx: &T, target: EntityId) -> GraphResult<Vec<Edge>> {
-        let edge_ids = Self::get_incoming_ids(tx, target)?;
+        let edge_ids = AdjacencyIndex::get_incoming_edge_ids(tx, target)?;
         Self::get_edges_by_ids(tx, &edge_ids)
     }
 
@@ -372,13 +313,7 @@ impl EdgeStore {
     /// * `tx` - The transaction to use
     /// * `target` - The target entity ID
     pub fn get_incoming_ids<T: Transaction>(tx: &T, target: EntityId) -> GraphResult<Vec<EdgeId>> {
-        let prefix = encode_edge_by_target_prefix(target);
-        Self::scan_edge_ids_with_prefix(
-            tx,
-            TABLE_EDGES_BY_TARGET,
-            &prefix,
-            decode_edge_by_target_edge_id,
-        )
+        AdjacencyIndex::get_incoming_edge_ids(tx, target)
     }
 
     /// Get incoming edges of a specific type to an entity.
@@ -393,13 +328,7 @@ impl EdgeStore {
         target: EntityId,
         edge_type: &EdgeType,
     ) -> GraphResult<Vec<Edge>> {
-        let prefix = encode_edge_by_target_type_prefix(target, edge_type);
-        let edge_ids = Self::scan_edge_ids_with_prefix(
-            tx,
-            TABLE_EDGES_BY_TARGET,
-            &prefix,
-            decode_edge_by_target_edge_id,
-        )?;
+        let edge_ids = AdjacencyIndex::get_incoming_by_type(tx, target, edge_type)?;
         Self::get_edges_by_ids(tx, &edge_ids)
     }
 
@@ -472,46 +401,6 @@ impl EdgeStore {
         }
 
         Ok(deleted)
-    }
-
-    /// Helper to scan edge IDs from an index table with a prefix.
-    fn scan_edge_ids_with_prefix<T: Transaction, F>(
-        tx: &T,
-        table: &str,
-        prefix: &[u8],
-        decoder: F,
-    ) -> GraphResult<Vec<EdgeId>>
-    where
-        F: Fn(&[u8]) -> Option<EdgeId>,
-    {
-        // Create end bound by incrementing the prefix
-        let mut end_prefix = prefix.to_vec();
-        // Increment the last byte, handling overflow
-        let mut i = end_prefix.len();
-        while i > 0 {
-            i -= 1;
-            if end_prefix[i] < 255 {
-                end_prefix[i] += 1;
-                break;
-            }
-            end_prefix[i] = 0;
-            if i == 0 {
-                // All bytes were 255, append a byte
-                end_prefix.push(0);
-            }
-        }
-
-        let mut cursor =
-            tx.range(table, Bound::Included(prefix), Bound::Excluded(end_prefix.as_slice()))?;
-
-        let mut ids = Vec::new();
-        while let Some((key, _)) = cursor.next()? {
-            if let Some(id) = decoder(&key) {
-                ids.push(id);
-            }
-        }
-
-        Ok(ids)
     }
 
     /// Helper to get full edges from a list of IDs.
