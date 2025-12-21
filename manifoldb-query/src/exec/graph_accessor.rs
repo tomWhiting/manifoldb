@@ -5,7 +5,7 @@
 //! is object-safe and can be stored in the execution context.
 
 use manifoldb_core::{EdgeId, EdgeType, EntityId};
-use manifoldb_graph::traversal::Direction;
+use manifoldb_graph::traversal::{Direction, PathPattern, PathStep, PatternMatch, StepFilter};
 
 /// Result of a neighbor expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,88 @@ impl TraversalResult {
     /// Create a new traversal result.
     pub const fn new(node: EntityId, edge_id: Option<EdgeId>, depth: usize) -> Self {
         Self { node, edge_id, depth }
+    }
+}
+
+/// Result of a path pattern match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathMatchResult {
+    /// The nodes traversed, in order.
+    pub nodes: Vec<EntityId>,
+    /// The edges used for each step.
+    /// Each inner vector contains edges for one step (may have multiple for variable-length steps).
+    pub step_edges: Vec<Vec<EdgeId>>,
+}
+
+impl PathMatchResult {
+    /// Create a new path match result.
+    pub fn new(nodes: Vec<EntityId>, step_edges: Vec<Vec<EdgeId>>) -> Self {
+        Self { nodes, step_edges }
+    }
+
+    /// Get the starting node.
+    pub fn source(&self) -> Option<EntityId> {
+        self.nodes.first().copied()
+    }
+
+    /// Get the ending node.
+    pub fn target(&self) -> Option<EntityId> {
+        self.nodes.last().copied()
+    }
+
+    /// Get all edges as a flat list.
+    pub fn all_edges(&self) -> Vec<EdgeId> {
+        self.step_edges.iter().flatten().copied().collect()
+    }
+
+    /// Get the total path length (number of edges).
+    pub fn length(&self) -> usize {
+        self.step_edges.iter().map(std::vec::Vec::len).sum()
+    }
+}
+
+impl From<PatternMatch> for PathMatchResult {
+    fn from(pm: PatternMatch) -> Self {
+        Self { nodes: pm.nodes, step_edges: pm.step_edges }
+    }
+}
+
+/// Configuration for path finding.
+#[derive(Debug, Clone)]
+pub struct PathFindConfig {
+    /// Path steps to match.
+    pub steps: Vec<PathStepConfig>,
+    /// Maximum number of results to return (None for unlimited).
+    pub limit: Option<usize>,
+    /// Whether to allow cycles in the path.
+    pub allow_cycles: bool,
+}
+
+/// Configuration for a single step in a path pattern.
+#[derive(Debug, Clone)]
+pub struct PathStepConfig {
+    /// Direction to traverse.
+    pub direction: Direction,
+    /// Edge type filters (empty means any).
+    pub edge_types: Vec<EdgeType>,
+    /// Minimum number of hops.
+    pub min_hops: usize,
+    /// Maximum number of hops (None for unlimited).
+    pub max_hops: Option<usize>,
+}
+
+impl PathStepConfig {
+    /// Convert to a `PathStep` for the traversal module.
+    pub fn to_path_step(&self) -> PathStep {
+        let filter = if self.edge_types.is_empty() {
+            StepFilter::Any
+        } else if self.edge_types.len() == 1 {
+            StepFilter::EdgeType(self.edge_types[0].clone())
+        } else {
+            StepFilter::EdgeTypes(self.edge_types.clone())
+        };
+
+        PathStep::new(self.direction, filter).with_hops(self.min_hops, self.max_hops)
     }
 }
 
@@ -99,6 +181,15 @@ pub trait GraphAccessor: Send + Sync {
         max_depth: Option<usize>,
         edge_types: Option<&[EdgeType]>,
     ) -> GraphAccessResult<Vec<TraversalResult>>;
+
+    /// Find paths matching a pattern from a starting node.
+    ///
+    /// Executes multi-hop path patterns with support for variable-length steps.
+    fn find_paths(
+        &self,
+        start: EntityId,
+        config: &PathFindConfig,
+    ) -> GraphAccessResult<Vec<PathMatchResult>>;
 }
 
 /// A null implementation of `GraphAccessor` that returns no results.
@@ -142,6 +233,14 @@ impl GraphAccessor for NullGraphAccessor {
         _max_depth: Option<usize>,
         _edge_types: Option<&[EdgeType]>,
     ) -> GraphAccessResult<Vec<TraversalResult>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn find_paths(
+        &self,
+        _start: EntityId,
+        _config: &PathFindConfig,
+    ) -> GraphAccessResult<Vec<PathMatchResult>> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -245,6 +344,35 @@ where
             })
             .map_err(|e| GraphAccessError::Internal(e.to_string()))
     }
+
+    fn find_paths(
+        &self,
+        start: EntityId,
+        config: &PathFindConfig,
+    ) -> GraphAccessResult<Vec<PathMatchResult>> {
+        // Build the path pattern from the configuration
+        let mut pattern = PathPattern::new();
+
+        for step in &config.steps {
+            pattern = pattern.add_step(step.to_path_step());
+        }
+
+        // Apply limit if configured
+        if let Some(limit) = config.limit {
+            pattern = pattern.with_limit(limit);
+        }
+
+        // Apply cycle policy
+        if config.allow_cycles {
+            pattern = pattern.allow_cycles();
+        }
+
+        // Execute the pattern match
+        pattern
+            .find_from(&self.tx, start)
+            .map(|matches| matches.into_iter().map(PathMatchResult::from).collect())
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +401,39 @@ mod tests {
         assert_eq!(result.node, EntityId::new(2));
         assert_eq!(result.edge_id, Some(EdgeId::new(20)));
         assert_eq!(result.depth, 3);
+    }
+
+    #[test]
+    fn path_match_result_creation() {
+        let result = PathMatchResult::new(
+            vec![EntityId::new(1), EntityId::new(2), EntityId::new(3)],
+            vec![vec![EdgeId::new(10)], vec![EdgeId::new(20)]],
+        );
+        assert_eq!(result.source(), Some(EntityId::new(1)));
+        assert_eq!(result.target(), Some(EntityId::new(3)));
+        assert_eq!(result.length(), 2);
+        assert_eq!(result.all_edges(), vec![EdgeId::new(10), EdgeId::new(20)]);
+    }
+
+    #[test]
+    fn path_step_config_to_path_step() {
+        let config = PathStepConfig {
+            direction: Direction::Outgoing,
+            edge_types: vec![EdgeType::new("FRIEND")],
+            min_hops: 1,
+            max_hops: Some(3),
+        };
+        let step = config.to_path_step();
+        assert_eq!(step.direction, Direction::Outgoing);
+        assert_eq!(step.min_hops, 1);
+        assert_eq!(step.max_hops, Some(3));
+    }
+
+    #[test]
+    fn null_accessor_find_paths_returns_no_storage() {
+        let accessor = NullGraphAccessor;
+        let config = PathFindConfig { steps: vec![], limit: None, allow_cycles: false };
+        let result = accessor.find_paths(EntityId::new(1), &config);
+        assert!(matches!(result, Err(GraphAccessError::NoStorage)));
     }
 }
