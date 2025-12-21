@@ -73,5 +73,6 @@ pub mod plan;
 
 // Re-export commonly used items at the crate root
 pub use error::{ParseError, ParseResult};
+pub use exec::{ExecutionContext, Executor, Operator, QueryResult, ResultSet, Row, RowBatch};
 pub use parser::{parse_single_statement, parse_sql, ExtendedParser};
 pub use plan::{LogicalExpr, LogicalPlan, PlanBuilder, PlanError, PlanResult};
