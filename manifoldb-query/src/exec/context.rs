@@ -10,6 +10,8 @@ use std::time::Instant;
 
 use manifoldb_core::Value;
 
+use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
+
 /// Execution context for a query.
 ///
 /// The context provides access to:
@@ -17,7 +19,7 @@ use manifoldb_core::Value;
 /// - Cancellation support
 /// - Execution statistics
 /// - Runtime configuration
-#[derive(Debug)]
+/// - Graph storage access (for graph traversal queries)
 pub struct ExecutionContext {
     /// Query parameters (1-indexed).
     parameters: HashMap<u32, Value>,
@@ -27,10 +29,14 @@ pub struct ExecutionContext {
     stats: ExecutionStats,
     /// Configuration options.
     config: ExecutionConfig,
+    /// Graph accessor for graph traversal operations.
+    graph: Arc<dyn GraphAccessor>,
 }
 
 impl ExecutionContext {
-    /// Creates a new execution context.
+    /// Creates a new execution context without graph storage.
+    ///
+    /// Use [`with_graph`](Self::with_graph) to add graph storage access.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -38,6 +44,7 @@ impl ExecutionContext {
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
+            graph: Arc::new(NullGraphAccessor),
         }
     }
 
@@ -49,7 +56,30 @@ impl ExecutionContext {
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
+            graph: Arc::new(NullGraphAccessor),
         }
+    }
+
+    /// Sets the graph accessor for graph traversal operations.
+    ///
+    /// This enables the query executor to perform actual graph traversals
+    /// using the underlying storage.
+    #[must_use]
+    pub fn with_graph(mut self, graph: Arc<dyn GraphAccessor>) -> Self {
+        self.graph = graph;
+        self
+    }
+
+    /// Returns a reference to the graph accessor.
+    #[must_use]
+    pub fn graph(&self) -> &dyn GraphAccessor {
+        self.graph.as_ref()
+    }
+
+    /// Returns the graph accessor as an Arc.
+    #[must_use]
+    pub fn graph_arc(&self) -> Arc<dyn GraphAccessor> {
+        Arc::clone(&self.graph)
     }
 
     /// Adds a parameter value.
@@ -116,6 +146,18 @@ impl ExecutionContext {
 impl Default for ExecutionContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for ExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionContext")
+            .field("parameters", &self.parameters)
+            .field("cancelled", &self.cancelled)
+            .field("stats", &self.stats)
+            .field("config", &self.config)
+            .field("graph", &"<GraphAccessor>")
+            .finish()
     }
 }
 

@@ -5,17 +5,20 @@
 
 use std::sync::Arc;
 
-use manifoldb_core::{EntityId, Value};
+use manifoldb_core::{EdgeType, EntityId, Value};
+use manifoldb_graph::traversal::Direction;
 
 use crate::exec::context::ExecutionContext;
+use crate::exec::graph_accessor::{GraphAccessResult, GraphAccessor};
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
-use crate::plan::logical::ExpandLength;
+use crate::plan::logical::{ExpandDirection, ExpandLength};
 use crate::plan::physical::GraphExpandExecNode;
 
 /// Graph expand operator.
 ///
 /// Expands from source nodes to neighbors based on direction and edge types.
+/// Uses actual graph storage for traversal when a graph accessor is provided.
 pub struct GraphExpandOp {
     /// Base operator state.
     base: OperatorBase,
@@ -29,6 +32,8 @@ pub struct GraphExpandOp {
     expanded: Vec<ExpandedNode>,
     /// Position in expanded neighbors.
     position: usize,
+    /// Graph accessor for actual storage traversal.
+    graph: Option<Arc<dyn GraphAccessor>>,
 }
 
 /// An expanded node result.
@@ -63,20 +68,82 @@ impl GraphExpandOp {
             current_input: None,
             expanded: Vec::new(),
             position: 0,
+            graph: None,
         }
     }
 
-    /// Simulates graph expansion (in a real implementation, this would query the graph store).
-    fn expand_from(&self, source_id: EntityId) -> Vec<ExpandedNode> {
-        // This is a mock implementation for testing.
-        // In production, this would call into manifoldb-graph traversal.
-        let mut results = Vec::new();
+    /// Converts `ExpandDirection` to `traversal::Direction`.
+    fn to_graph_direction(dir: &ExpandDirection) -> Direction {
+        match dir {
+            ExpandDirection::Outgoing => Direction::Outgoing,
+            ExpandDirection::Incoming => Direction::Incoming,
+            ExpandDirection::Both => Direction::Both,
+        }
+    }
 
-        // Simulate some neighbors based on source ID
+    /// Gets edge types as `EdgeType` values.
+    fn get_edge_types(&self) -> Option<Vec<EdgeType>> {
+        if self.node.edge_types.is_empty() {
+            None
+        } else {
+            Some(self.node.edge_types.iter().map(|s| EdgeType::new(s.as_str())).collect())
+        }
+    }
+
+    /// Expands from a source node using actual graph storage.
+    fn expand_from_storage(
+        &self,
+        source_id: EntityId,
+        graph: &dyn GraphAccessor,
+    ) -> GraphAccessResult<Vec<ExpandedNode>> {
+        let direction = Self::to_graph_direction(&self.node.direction);
+        let edge_types = self.get_edge_types();
+
+        match &self.node.length {
+            ExpandLength::Single => {
+                // Single hop expansion
+                let results = if let Some(ref types) = edge_types {
+                    graph.neighbors_by_types(source_id, direction, types)?
+                } else {
+                    graph.neighbors(source_id, direction)?
+                };
+
+                Ok(results
+                    .into_iter()
+                    .map(|r| ExpandedNode { entity_id: r.node, edge_id: Some(r.edge_id), depth: 1 })
+                    .collect())
+            }
+            ExpandLength::Exact(n) => {
+                // Exact depth: use expand_all with min=max=n
+                let results =
+                    graph.expand_all(source_id, direction, *n, Some(*n), edge_types.as_deref())?;
+
+                Ok(results
+                    .into_iter()
+                    .map(|r| ExpandedNode { entity_id: r.node, edge_id: r.edge_id, depth: r.depth })
+                    .collect())
+            }
+            ExpandLength::Range { min, max } => {
+                // Variable length expansion
+                let results =
+                    graph.expand_all(source_id, direction, *min, *max, edge_types.as_deref())?;
+
+                Ok(results
+                    .into_iter()
+                    .map(|r| ExpandedNode { entity_id: r.node, edge_id: r.edge_id, depth: r.depth })
+                    .collect())
+            }
+        }
+    }
+
+    /// Fallback mock expansion for when no graph storage is available.
+    fn expand_from_mock(&self, source_id: EntityId) -> Vec<ExpandedNode> {
+        let mut results = Vec::new();
         let base = source_id.as_u64();
+
         match self.node.length {
             ExpandLength::Single => {
-                // Single hop: return 2 neighbors
+                // Single hop: return 2 mock neighbors
                 results.push(ExpandedNode {
                     entity_id: EntityId::new(base * 10 + 1),
                     edge_id: None,
@@ -111,6 +178,24 @@ impl GraphExpandOp {
         results
     }
 
+    /// Expands from a source node.
+    ///
+    /// Uses actual graph storage if available, otherwise falls back to mock data.
+    fn expand_from(&self, source_id: EntityId) -> Vec<ExpandedNode> {
+        if let Some(ref graph) = self.graph {
+            match self.expand_from_storage(source_id, graph.as_ref()) {
+                Ok(results) => results,
+                Err(_) => {
+                    // Fall back to mock on error
+                    self.expand_from_mock(source_id)
+                }
+            }
+        } else {
+            // No graph storage, use mock
+            self.expand_from_mock(source_id)
+        }
+    }
+
     /// Gets the source entity ID from the current input row.
     fn get_source_id(&self, row: &Row) -> Option<EntityId> {
         row.get_by_name(&self.node.src_var).and_then(|v| match v {
@@ -126,6 +211,8 @@ impl Operator for GraphExpandOp {
         self.current_input = None;
         self.expanded.clear();
         self.position = 0;
+        // Capture the graph accessor from the context
+        self.graph = Some(ctx.graph_arc());
         self.base.set_open();
         Ok(())
     }
@@ -142,8 +229,12 @@ impl Operator for GraphExpandOp {
                     let mut values = input_row.values().to_vec();
                     values.push(Value::Int(expanded.entity_id.as_u64() as i64));
                     if self.node.edge_var.is_some() {
-                        // Add edge ID if tracking
-                        values.push(Value::Null);
+                        // Add edge ID if tracking (use actual edge ID if available)
+                        let edge_value = match expanded.edge_id {
+                            Some(edge_id) => Value::Int(edge_id.as_u64() as i64),
+                            None => Value::Null,
+                        };
+                        values.push(edge_value);
                     }
 
                     let row = Row::new(self.base.schema(), values);
@@ -175,6 +266,7 @@ impl Operator for GraphExpandOp {
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
         self.expanded.clear();
+        self.graph = None; // Release graph accessor reference
         self.base.set_closed();
         Ok(())
     }

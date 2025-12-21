@@ -32,6 +32,7 @@
 
 mod context;
 mod executor;
+pub mod graph_accessor;
 mod operator;
 mod result;
 
@@ -41,6 +42,10 @@ pub mod row;
 // Re-exports
 pub use context::{CancellationToken, ExecutionContext};
 pub use executor::{execute_plan, Executor};
+pub use graph_accessor::{
+    GraphAccessError, GraphAccessResult, GraphAccessor, NeighborResult, NullGraphAccessor,
+    TransactionGraphAccessor, TraversalResult,
+};
 pub use operator::{Operator, OperatorBase, OperatorState};
 pub use result::{QueryResult, ResultSet, ResultSetBuilder};
 pub use row::{Row, RowBatch, Schema};
