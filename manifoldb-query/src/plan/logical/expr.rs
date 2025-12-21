@@ -191,19 +191,13 @@ impl LogicalExpr {
     /// Creates a column reference.
     #[must_use]
     pub fn column(name: impl Into<String>) -> Self {
-        Self::Column {
-            qualifier: None,
-            name: name.into(),
-        }
+        Self::Column { qualifier: None, name: name.into() }
     }
 
     /// Creates a qualified column reference.
     #[must_use]
     pub fn qualified_column(qualifier: impl Into<String>, name: impl Into<String>) -> Self {
-        Self::Column {
-            qualifier: Some(qualifier.into()),
-            name: name.into(),
-        }
+        Self::Column { qualifier: Some(qualifier.into()), name: name.into() }
     }
 
     /// Creates a wildcard expression.
@@ -227,11 +221,7 @@ impl LogicalExpr {
     // ========== Binary Operations ==========
 
     fn binary(self, op: BinaryOp, other: Self) -> Self {
-        Self::BinaryOp {
-            left: Box::new(self),
-            op,
-            right: Box::new(other),
-        }
+        Self::BinaryOp { left: Box::new(self), op, right: Box::new(other) }
     }
 
     /// Creates an AND expression.
@@ -349,37 +339,25 @@ impl LogicalExpr {
     /// Creates a NOT expression.
     #[must_use]
     pub fn not(self) -> Self {
-        Self::UnaryOp {
-            op: UnaryOp::Not,
-            operand: Box::new(self),
-        }
+        Self::UnaryOp { op: UnaryOp::Not, operand: Box::new(self) }
     }
 
     /// Creates a negation expression.
     #[must_use]
     pub fn neg(self) -> Self {
-        Self::UnaryOp {
-            op: UnaryOp::Neg,
-            operand: Box::new(self),
-        }
+        Self::UnaryOp { op: UnaryOp::Neg, operand: Box::new(self) }
     }
 
     /// Creates an IS NULL expression.
     #[must_use]
     pub fn is_null(self) -> Self {
-        Self::UnaryOp {
-            op: UnaryOp::IsNull,
-            operand: Box::new(self),
-        }
+        Self::UnaryOp { op: UnaryOp::IsNull, operand: Box::new(self) }
     }
 
     /// Creates an IS NOT NULL expression.
     #[must_use]
     pub fn is_not_null(self) -> Self {
-        Self::UnaryOp {
-            op: UnaryOp::IsNotNull,
-            operand: Box::new(self),
-        }
+        Self::UnaryOp { op: UnaryOp::IsNotNull, operand: Box::new(self) }
     }
 
     // ========== Other Operations ==========
@@ -387,40 +365,25 @@ impl LogicalExpr {
     /// Creates an IN list expression.
     #[must_use]
     pub fn in_list(self, list: Vec<Self>, negated: bool) -> Self {
-        Self::InList {
-            expr: Box::new(self),
-            list,
-            negated,
-        }
+        Self::InList { expr: Box::new(self), list, negated }
     }
 
     /// Creates a BETWEEN expression.
     #[must_use]
     pub fn between(self, low: Self, high: Self, negated: bool) -> Self {
-        Self::Between {
-            expr: Box::new(self),
-            low: Box::new(low),
-            high: Box::new(high),
-            negated,
-        }
+        Self::Between { expr: Box::new(self), low: Box::new(low), high: Box::new(high), negated }
     }
 
     /// Creates a CAST expression.
     #[must_use]
     pub fn cast(self, data_type: DataType) -> Self {
-        Self::Cast {
-            expr: Box::new(self),
-            data_type,
-        }
+        Self::Cast { expr: Box::new(self), data_type }
     }
 
     /// Creates an aliased expression.
     #[must_use]
     pub fn alias(self, name: impl Into<String>) -> Self {
-        Self::Alias {
-            expr: Box::new(self),
-            alias: name.into(),
-        }
+        Self::Alias { expr: Box::new(self), alias: name.into() }
     }
 
     // ========== Aggregate Functions ==========
@@ -428,31 +391,19 @@ impl LogicalExpr {
     /// Creates a COUNT aggregate.
     #[must_use]
     pub fn count(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction {
-            func: AggregateFunction::Count,
-            arg: Box::new(expr),
-            distinct,
-        }
+        Self::AggregateFunction { func: AggregateFunction::Count, arg: Box::new(expr), distinct }
     }
 
     /// Creates a SUM aggregate.
     #[must_use]
     pub fn sum(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction {
-            func: AggregateFunction::Sum,
-            arg: Box::new(expr),
-            distinct,
-        }
+        Self::AggregateFunction { func: AggregateFunction::Sum, arg: Box::new(expr), distinct }
     }
 
     /// Creates an AVG aggregate.
     #[must_use]
     pub fn avg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction {
-            func: AggregateFunction::Avg,
-            arg: Box::new(expr),
-            distinct,
-        }
+        Self::AggregateFunction { func: AggregateFunction::Avg, arg: Box::new(expr), distinct }
     }
 
     /// Creates a MIN aggregate.
@@ -507,11 +458,7 @@ impl LogicalExpr {
             Self::UnaryOp { operand, .. } => operand.contains_aggregate(),
             Self::ScalarFunction { args, .. } => args.iter().any(Self::contains_aggregate),
             Self::Cast { expr, .. } | Self::Alias { expr, .. } => expr.contains_aggregate(),
-            Self::Case {
-                operand,
-                when_clauses,
-                else_result,
-            } => {
+            Self::Case { operand, when_clauses, else_result } => {
                 operand.as_ref().is_some_and(|e| e.contains_aggregate())
                     || when_clauses
                         .iter()
@@ -521,9 +468,9 @@ impl LogicalExpr {
             Self::InList { expr, list, .. } => {
                 expr.contains_aggregate() || list.iter().any(Self::contains_aggregate)
             }
-            Self::Between {
-                expr, low, high, ..
-            } => expr.contains_aggregate() || low.contains_aggregate() || high.contains_aggregate(),
+            Self::Between { expr, low, high, .. } => {
+                expr.contains_aggregate() || low.contains_aggregate() || high.contains_aggregate()
+            }
             _ => false,
         }
     }
@@ -576,11 +523,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::AggregateFunction {
-                func,
-                arg,
-                distinct,
-            } => {
+            Self::AggregateFunction { func, arg, distinct } => {
                 write!(f, "{func}(")?;
                 if *distinct {
                     write!(f, "DISTINCT ")?;
@@ -588,11 +531,7 @@ impl fmt::Display for LogicalExpr {
                 write!(f, "{arg})")
             }
             Self::Cast { expr, data_type } => write!(f, "CAST({expr} AS {data_type:?})"),
-            Self::Case {
-                operand,
-                when_clauses,
-                else_result,
-            } => {
+            Self::Case { operand, when_clauses, else_result } => {
                 write!(f, "CASE")?;
                 if let Some(op) = operand {
                     write!(f, " {op}")?;
@@ -605,11 +544,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, " END")
             }
-            Self::InList {
-                expr,
-                list,
-                negated,
-            } => {
+            Self::InList { expr, list, negated } => {
                 write!(f, "{expr}")?;
                 if *negated {
                     write!(f, " NOT")?;
@@ -623,12 +558,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::Between {
-                expr,
-                low,
-                high,
-                negated,
-            } => {
+            Self::Between { expr, low, high, negated } => {
                 write!(f, "{expr}")?;
                 if *negated {
                     write!(f, " NOT")?;
@@ -798,21 +728,13 @@ impl SortOrder {
     /// Creates an ascending sort order.
     #[must_use]
     pub fn asc(expr: LogicalExpr) -> Self {
-        Self {
-            expr,
-            ascending: true,
-            nulls_first: None,
-        }
+        Self { expr, ascending: true, nulls_first: None }
     }
 
     /// Creates a descending sort order.
     #[must_use]
     pub fn desc(expr: LogicalExpr) -> Self {
-        Self {
-            expr,
-            ascending: false,
-            nulls_first: None,
-        }
+        Self { expr, ascending: false, nulls_first: None }
     }
 
     /// Sets nulls first ordering.
@@ -891,8 +813,8 @@ mod tests {
         let agg = LogicalExpr::count(LogicalExpr::wildcard(), false);
         assert!(agg.contains_aggregate());
 
-        let nested = LogicalExpr::count(LogicalExpr::wildcard(), false)
-            .add(LogicalExpr::integer(1));
+        let nested =
+            LogicalExpr::count(LogicalExpr::wildcard(), false).add(LogicalExpr::integer(1));
         assert!(nested.contains_aggregate());
     }
 
@@ -915,17 +837,17 @@ mod tests {
     #[test]
     fn in_list_expression() {
         let expr = LogicalExpr::column("status")
-            .in_list(vec![
-                LogicalExpr::string("active"),
-                LogicalExpr::string("pending"),
-            ], false);
+            .in_list(vec![LogicalExpr::string("active"), LogicalExpr::string("pending")], false);
         assert_eq!(expr.to_string(), "status IN ('active', 'pending')");
     }
 
     #[test]
     fn between_expression() {
-        let expr = LogicalExpr::column("age")
-            .between(LogicalExpr::integer(18), LogicalExpr::integer(65), false);
+        let expr = LogicalExpr::column("age").between(
+            LogicalExpr::integer(18),
+            LogicalExpr::integer(65),
+            false,
+        );
         assert_eq!(expr.to_string(), "age BETWEEN 18 AND 65");
     }
 }

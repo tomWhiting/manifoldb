@@ -93,16 +93,17 @@ impl RedbEngine {
     /// # Errors
     ///
     /// Returns [`StorageError::Open`] if the database cannot be opened or created.
-    pub fn open_with_config(path: impl AsRef<Path>, config: RedbConfig) -> Result<Self, StorageError> {
+    pub fn open_with_config(
+        path: impl AsRef<Path>,
+        config: RedbConfig,
+    ) -> Result<Self, StorageError> {
         let mut builder = Database::builder();
 
         if let Some(cache_size) = config.cache_size {
             builder.set_cache_size(cache_size);
         }
 
-        let db = builder
-            .create(path.as_ref())
-            .map_err(|e| StorageError::Open(e.to_string()))?;
+        let db = builder.create(path.as_ref()).map_err(|e| StorageError::Open(e.to_string()))?;
 
         Ok(Self { db })
     }
@@ -134,18 +135,12 @@ impl StorageEngine for RedbEngine {
     type Transaction<'a> = RedbTransaction;
 
     fn begin_read(&self) -> Result<Self::Transaction<'_>, StorageError> {
-        let tx = self
-            .db
-            .begin_read()
-            .map_err(|e| StorageError::Transaction(e.to_string()))?;
+        let tx = self.db.begin_read().map_err(|e| StorageError::Transaction(e.to_string()))?;
         Ok(RedbTransaction::new_read(tx))
     }
 
     fn begin_write(&self) -> Result<Self::Transaction<'_>, StorageError> {
-        let tx = self
-            .db
-            .begin_write()
-            .map_err(|e| StorageError::Transaction(e.to_string()))?;
+        let tx = self.db.begin_write().map_err(|e| StorageError::Transaction(e.to_string()))?;
         Ok(RedbTransaction::new_write(tx))
     }
 
@@ -175,9 +170,7 @@ mod tests {
 
     #[test]
     fn test_config_builder() {
-        let config = RedbConfig::new()
-            .max_size(1024 * 1024 * 100)
-            .cache_size(1024 * 1024 * 10);
+        let config = RedbConfig::new().max_size(1024 * 1024 * 100).cache_size(1024 * 1024 * 10);
 
         assert_eq!(config.max_size, Some(100 * 1024 * 1024));
         assert_eq!(config.cache_size, Some(10 * 1024 * 1024));

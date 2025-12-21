@@ -76,9 +76,9 @@ impl PlanBuilder {
             Statement::CreateTable(_)
             | Statement::CreateIndex(_)
             | Statement::DropTable(_)
-            | Statement::DropIndex(_) => Err(PlanError::Unsupported(
-                "DDL statements don't produce query plans".to_string(),
-            )),
+            | Statement::DropIndex(_) => {
+                Err(PlanError::Unsupported("DDL statements don't produce query plans".to_string()))
+            }
         }
     }
 
@@ -95,10 +95,7 @@ impl PlanBuilder {
         // Add WHERE clause
         if let Some(where_clause) = &select.where_clause {
             let predicate = self.build_expr(where_clause)?;
-            plan = LogicalPlan::Filter {
-                node: FilterNode::new(predicate),
-                input: Box::new(plan),
-            };
+            plan = LogicalPlan::Filter { node: FilterNode::new(predicate), input: Box::new(plan) };
         }
 
         // Handle GROUP BY and aggregates
@@ -109,19 +106,14 @@ impl PlanBuilder {
             // Add HAVING clause
             if let Some(having) = &select.having {
                 let predicate = self.build_expr(having)?;
-                plan = LogicalPlan::Filter {
-                    node: FilterNode::new(predicate),
-                    input: Box::new(plan),
-                };
+                plan =
+                    LogicalPlan::Filter { node: FilterNode::new(predicate), input: Box::new(plan) };
             }
         }
 
         // Add projection
         let projection = self.build_projection(&select.projection)?;
-        plan = LogicalPlan::Project {
-            node: ProjectNode::new(projection),
-            input: Box::new(plan),
-        };
+        plan = LogicalPlan::Project { node: ProjectNode::new(projection), input: Box::new(plan) };
 
         // Handle DISTINCT
         if select.distinct {
@@ -131,10 +123,7 @@ impl PlanBuilder {
         // Add ORDER BY
         if !select.order_by.is_empty() {
             let order_by = self.build_order_by(&select.order_by)?;
-            plan = LogicalPlan::Sort {
-                node: SortNode::new(order_by),
-                input: Box::new(plan),
-            };
+            plan = LogicalPlan::Sort { node: SortNode::new(order_by), input: Box::new(plan) };
         }
 
         // Add LIMIT/OFFSET
@@ -171,7 +160,8 @@ impl PlanBuilder {
     fn build_table_ref(&mut self, table_ref: &TableRef) -> PlanResult<LogicalPlan> {
         match table_ref {
             TableRef::Table { name, alias } => {
-                let table_name = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                let table_name =
+                    name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
                 let mut scan = ScanNode::new(table_name);
                 if let Some(a) = alias {
@@ -190,7 +180,8 @@ impl PlanBuilder {
 
             TableRef::TableFunction { name, args, alias } => {
                 // Table functions are handled as scans with special names
-                let func_name = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                let func_name =
+                    name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                 let _ = args; // Arguments would be passed to the scan
 
                 let mut scan = ScanNode::new(format!("@function:{func_name}"));
@@ -219,19 +210,11 @@ impl PlanBuilder {
         let node = match &join.condition {
             JoinCondition::On(expr) => {
                 let condition = self.build_expr(expr)?;
-                JoinNode {
-                    join_type,
-                    condition: Some(condition),
-                    using_columns: vec![],
-                }
+                JoinNode { join_type, condition: Some(condition), using_columns: vec![] }
             }
             JoinCondition::Using(columns) => {
                 let cols = columns.iter().map(|c| c.name.clone()).collect();
-                JoinNode {
-                    join_type,
-                    condition: None,
-                    using_columns: cols,
-                }
+                JoinNode { join_type, condition: None, using_columns: cols }
             }
             JoinCondition::Natural => {
                 // Natural join - would need schema to resolve
@@ -241,18 +224,10 @@ impl PlanBuilder {
                     using_columns: vec![], // Would be filled by analyzer
                 }
             }
-            JoinCondition::None => JoinNode {
-                join_type,
-                condition: None,
-                using_columns: vec![],
-            },
+            JoinCondition::None => JoinNode { join_type, condition: None, using_columns: vec![] },
         };
 
-        Ok(LogicalPlan::Join {
-            node,
-            left: Box::new(left),
-            right: Box::new(right),
-        })
+        Ok(LogicalPlan::Join { node, left: Box::new(left), right: Box::new(right) })
     }
 
     /// Builds aggregate plan.
@@ -261,11 +236,8 @@ impl PlanBuilder {
         input: LogicalPlan,
         select: &SelectStatement,
     ) -> PlanResult<LogicalPlan> {
-        let group_by: Vec<LogicalExpr> = select
-            .group_by
-            .iter()
-            .map(|e| self.build_expr(e))
-            .collect::<PlanResult<_>>()?;
+        let group_by: Vec<LogicalExpr> =
+            select.group_by.iter().map(|e| self.build_expr(e)).collect::<PlanResult<_>>()?;
 
         // Extract aggregate expressions from projection
         let mut aggregates = Vec::new();
@@ -282,10 +254,15 @@ impl PlanBuilder {
     }
 
     /// Collects aggregate expressions from an expression tree.
-    fn collect_aggregates(&mut self, expr: &Expr, aggregates: &mut Vec<LogicalExpr>) -> PlanResult<()> {
+    fn collect_aggregates(
+        &mut self,
+        expr: &Expr,
+        aggregates: &mut Vec<LogicalExpr>,
+    ) -> PlanResult<()> {
         match expr {
             Expr::Function(func) => {
-                let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
+                let name =
+                    func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
                 if let Some(agg_func) = self.parse_aggregate_function(&name) {
                     let arg = if func.args.is_empty() {
@@ -361,7 +338,8 @@ impl PlanBuilder {
     fn expr_has_aggregate(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Function(func) => {
-                let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
+                let name =
+                    func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
                 self.parse_aggregate_function(&name).is_some()
                     || func.args.iter().any(|a| self.expr_has_aggregate(a))
             }
@@ -383,7 +361,8 @@ impl PlanBuilder {
                     exprs.push(LogicalExpr::Wildcard);
                 }
                 SelectItem::QualifiedWildcard(name) => {
-                    let qualifier = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                    let qualifier =
+                        name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                     exprs.push(LogicalExpr::QualifiedWildcard(qualifier));
                 }
                 SelectItem::Expr { expr, alias } => {
@@ -405,11 +384,7 @@ impl PlanBuilder {
             .iter()
             .map(|o| {
                 let expr = self.build_expr(&o.expr)?;
-                Ok(SortOrder {
-                    expr,
-                    ascending: o.asc,
-                    nulls_first: o.nulls_first,
-                })
+                Ok(SortOrder { expr, ascending: o.asc, nulls_first: o.nulls_first })
             })
             .collect()
     }
@@ -421,27 +396,16 @@ impl PlanBuilder {
         limit: &Option<Expr>,
         offset: &Option<Expr>,
     ) -> PlanResult<LogicalPlan> {
-        let limit_val = if let Some(l) = limit {
-            Some(self.expr_to_usize(l)?)
-        } else {
-            None
-        };
+        let limit_val = if let Some(l) = limit { Some(self.expr_to_usize(l)?) } else { None };
 
-        let offset_val = if let Some(o) = offset {
-            Some(self.expr_to_usize(o)?)
-        } else {
-            None
-        };
+        let offset_val = if let Some(o) = offset { Some(self.expr_to_usize(o)?) } else { None };
 
         if limit_val.is_none() && offset_val.is_none() {
             return Ok(plan);
         }
 
         Ok(LogicalPlan::Limit {
-            node: LimitNode {
-                limit: limit_val,
-                offset: offset_val,
-            },
+            node: LimitNode { limit: limit_val, offset: offset_val },
             input: Box::new(plan),
         })
     }
@@ -456,9 +420,7 @@ impl PlanBuilder {
                     Err(PlanError::InvalidLimit("negative value".to_string()))
                 }
             }
-            _ => Err(PlanError::InvalidLimit(
-                "expected integer literal".to_string(),
-            )),
+            _ => Err(PlanError::InvalidLimit("expected integer literal".to_string())),
         }
     }
 
@@ -537,9 +499,8 @@ impl PlanBuilder {
 
             // Add edge types
             if !edge.edge_types.is_empty() {
-                expand = expand.with_edge_types(
-                    edge.edge_types.iter().map(|t| t.name.clone()).collect(),
-                );
+                expand = expand
+                    .with_edge_types(edge.edge_types.iter().map(|t| t.name.clone()).collect());
             }
 
             // Add edge variable
@@ -552,15 +513,11 @@ impl PlanBuilder {
 
             // Add node labels
             if !node.labels.is_empty() {
-                expand = expand.with_node_labels(
-                    node.labels.iter().map(|l| l.name.clone()).collect(),
-                );
+                expand =
+                    expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
             }
 
-            plan = LogicalPlan::Expand {
-                node: expand,
-                input: Box::new(plan),
-            };
+            plan = LogicalPlan::Expand { node: expand, input: Box::new(plan) };
 
             current_var = dst_var;
         }
@@ -570,7 +527,8 @@ impl PlanBuilder {
 
     /// Builds an INSERT plan.
     fn build_insert(&mut self, insert: &InsertStatement) -> PlanResult<LogicalPlan> {
-        let table = insert.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+        let table =
+            insert.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
         let columns: Vec<String> = insert.columns.iter().map(|c| c.name.clone()).collect();
 
@@ -592,7 +550,8 @@ impl PlanBuilder {
             .map(|item| match item {
                 SelectItem::Wildcard => Ok(LogicalExpr::Wildcard),
                 SelectItem::QualifiedWildcard(name) => {
-                    let qualifier = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                    let qualifier =
+                        name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                     Ok(LogicalExpr::QualifiedWildcard(qualifier))
                 }
                 SelectItem::Expr { expr, alias } => {
@@ -605,17 +564,13 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Insert {
-            table,
-            columns,
-            input: Box::new(input),
-            returning,
-        })
+        Ok(LogicalPlan::Insert { table, columns, input: Box::new(input), returning })
     }
 
     /// Builds an UPDATE plan.
     fn build_update(&mut self, update: &UpdateStatement) -> PlanResult<LogicalPlan> {
-        let table = update.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+        let table =
+            update.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
         let assignments: Vec<(String, LogicalExpr)> = update
             .assignments
@@ -623,11 +578,8 @@ impl PlanBuilder {
             .map(|a| Ok((a.column.name.clone(), self.build_expr(&a.value)?)))
             .collect::<PlanResult<_>>()?;
 
-        let filter = if let Some(w) = &update.where_clause {
-            Some(self.build_expr(w)?)
-        } else {
-            None
-        };
+        let filter =
+            if let Some(w) = &update.where_clause { Some(self.build_expr(w)?) } else { None };
 
         let returning = update
             .returning
@@ -635,7 +587,8 @@ impl PlanBuilder {
             .map(|item| match item {
                 SelectItem::Wildcard => Ok(LogicalExpr::Wildcard),
                 SelectItem::QualifiedWildcard(name) => {
-                    let qualifier = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                    let qualifier =
+                        name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                     Ok(LogicalExpr::QualifiedWildcard(qualifier))
                 }
                 SelectItem::Expr { expr, alias } => {
@@ -648,23 +601,16 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Update {
-            table,
-            assignments,
-            filter,
-            returning,
-        })
+        Ok(LogicalPlan::Update { table, assignments, filter, returning })
     }
 
     /// Builds a DELETE plan.
     fn build_delete(&mut self, delete: &DeleteStatement) -> PlanResult<LogicalPlan> {
-        let table = delete.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+        let table =
+            delete.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
-        let filter = if let Some(w) = &delete.where_clause {
-            Some(self.build_expr(w)?)
-        } else {
-            None
-        };
+        let filter =
+            if let Some(w) = &delete.where_clause { Some(self.build_expr(w)?) } else { None };
 
         let returning = delete
             .returning
@@ -672,7 +618,8 @@ impl PlanBuilder {
             .map(|item| match item {
                 SelectItem::Wildcard => Ok(LogicalExpr::Wildcard),
                 SelectItem::QualifiedWildcard(name) => {
-                    let qualifier = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                    let qualifier =
+                        name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                     Ok(LogicalExpr::QualifiedWildcard(qualifier))
                 }
                 SelectItem::Expr { expr, alias } => {
@@ -685,11 +632,7 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Delete {
-            table,
-            filter,
-            returning,
-        })
+        Ok(LogicalPlan::Delete { table, filter, returning })
     }
 
     /// Builds a logical expression from an AST expression.
@@ -711,23 +654,17 @@ impl PlanBuilder {
             Expr::BinaryOp { left, op, right } => {
                 let l = self.build_expr(left)?;
                 let r = self.build_expr(right)?;
-                Ok(LogicalExpr::BinaryOp {
-                    left: Box::new(l),
-                    op: *op,
-                    right: Box::new(r),
-                })
+                Ok(LogicalExpr::BinaryOp { left: Box::new(l), op: *op, right: Box::new(r) })
             }
 
             Expr::UnaryOp { op, operand } => {
                 let operand = self.build_expr(operand)?;
-                Ok(LogicalExpr::UnaryOp {
-                    op: *op,
-                    operand: Box::new(operand),
-                })
+                Ok(LogicalExpr::UnaryOp { op: *op, operand: Box::new(operand) })
             }
 
             Expr::Function(func) => {
-                let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
+                let name =
+                    func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
                 // Check if it's an aggregate function
                 if let Some(agg_func) = self.parse_aggregate_function(&name) {
@@ -770,20 +707,14 @@ impl PlanBuilder {
                 };
 
                 if let Some(sf) = scalar_func {
-                    let args = func
-                        .args
-                        .iter()
-                        .map(|a| self.build_expr(a))
-                        .collect::<PlanResult<_>>()?;
+                    let args =
+                        func.args.iter().map(|a| self.build_expr(a)).collect::<PlanResult<_>>()?;
                     return Ok(LogicalExpr::ScalarFunction { func: sf, args });
                 }
 
                 // Unknown function - treat as custom
-                let args = func
-                    .args
-                    .iter()
-                    .map(|a| self.build_expr(a))
-                    .collect::<PlanResult<_>>()?;
+                let args =
+                    func.args.iter().map(|a| self.build_expr(a)).collect::<PlanResult<_>>()?;
                 Ok(LogicalExpr::ScalarFunction {
                     func: ScalarFunction::Custom(0), // Would need function registry
                     args,
@@ -794,10 +725,7 @@ impl PlanBuilder {
                 let e = self.build_expr(expr)?;
                 // Parse data type string to DataType enum
                 let dt = self.parse_data_type(data_type)?;
-                Ok(LogicalExpr::Cast {
-                    expr: Box::new(e),
-                    data_type: dt,
-                })
+                Ok(LogicalExpr::Cast { expr: Box::new(e), data_type: dt })
             }
 
             Expr::Case(case) => {
@@ -810,9 +738,7 @@ impl PlanBuilder {
                 let when_clauses = case
                     .when_clauses
                     .iter()
-                    .map(|(when, then)| {
-                        Ok((self.build_expr(when)?, self.build_expr(then)?))
-                    })
+                    .map(|(when, then)| Ok((self.build_expr(when)?, self.build_expr(then)?)))
                     .collect::<PlanResult<_>>()?;
 
                 let else_result = if let Some(e) = &case.else_result {
@@ -821,21 +747,13 @@ impl PlanBuilder {
                     None
                 };
 
-                Ok(LogicalExpr::Case {
-                    operand,
-                    when_clauses,
-                    else_result,
-                })
+                Ok(LogicalExpr::Case { operand, when_clauses, else_result })
             }
 
             Expr::InList { expr, list, negated } => {
                 let e = self.build_expr(expr)?;
                 let l = list.iter().map(|i| self.build_expr(i)).collect::<PlanResult<_>>()?;
-                Ok(LogicalExpr::InList {
-                    expr: Box::new(e),
-                    list: l,
-                    negated: *negated,
-                })
+                Ok(LogicalExpr::InList { expr: Box::new(e), list: l, negated: *negated })
             }
 
             Expr::Between { expr, low, high, negated } => {
@@ -857,10 +775,7 @@ impl PlanBuilder {
 
             Expr::Exists(subquery) => {
                 let plan = self.build_select(&subquery.query)?;
-                Ok(LogicalExpr::Exists {
-                    subquery: Box::new(plan),
-                    negated: false,
-                })
+                Ok(LogicalExpr::Exists { subquery: Box::new(plan), negated: false })
             }
 
             Expr::InSubquery { expr, subquery, negated } => {
@@ -876,7 +791,8 @@ impl PlanBuilder {
             Expr::Wildcard => Ok(LogicalExpr::Wildcard),
 
             Expr::QualifiedWildcard(name) => {
-                let qualifier = name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                let qualifier =
+                    name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
                 Ok(LogicalExpr::QualifiedWildcard(qualifier))
             }
 
@@ -965,10 +881,9 @@ mod tests {
 
     #[test]
     fn select_with_join() {
-        let plan = build_query(
-            "SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id",
-        )
-        .unwrap();
+        let plan =
+            build_query("SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id")
+                .unwrap();
 
         let output = format!("{}", plan.display_tree());
         assert!(output.contains("Join"));
@@ -977,10 +892,8 @@ mod tests {
 
     #[test]
     fn select_with_aggregate() {
-        let plan = build_query(
-            "SELECT category, COUNT(*) FROM products GROUP BY category",
-        )
-        .unwrap();
+        let plan =
+            build_query("SELECT category, COUNT(*) FROM products GROUP BY category").unwrap();
 
         let output = format!("{}", plan.display_tree());
         assert!(output.contains("Aggregate"));
@@ -988,10 +901,7 @@ mod tests {
 
     #[test]
     fn select_with_order_limit() {
-        let plan = build_query(
-            "SELECT * FROM users ORDER BY name LIMIT 10 OFFSET 5",
-        )
-        .unwrap();
+        let plan = build_query("SELECT * FROM users ORDER BY name LIMIT 10 OFFSET 5").unwrap();
 
         let output = format!("{}", plan.display_tree());
         assert!(output.contains("Sort"));
@@ -1000,20 +910,15 @@ mod tests {
 
     #[test]
     fn insert_values() {
-        let plan = build_query(
-            "INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25)",
-        )
-        .unwrap();
+        let plan =
+            build_query("INSERT INTO users (name, age) VALUES ('Alice', 30), ('Bob', 25)").unwrap();
 
         assert_eq!(plan.node_type(), "Insert");
     }
 
     #[test]
     fn update_statement() {
-        let plan = build_query(
-            "UPDATE users SET status = 'active' WHERE id = 1",
-        )
-        .unwrap();
+        let plan = build_query("UPDATE users SET status = 'active' WHERE id = 1").unwrap();
 
         assert_eq!(plan.node_type(), "Update");
     }
@@ -1038,10 +943,7 @@ mod tests {
 
     #[test]
     fn union() {
-        let plan = build_query(
-            "SELECT id FROM users UNION ALL SELECT id FROM admins",
-        )
-        .unwrap();
+        let plan = build_query("SELECT id FROM users UNION ALL SELECT id FROM admins").unwrap();
 
         assert_eq!(plan.node_type(), "SetOp");
     }

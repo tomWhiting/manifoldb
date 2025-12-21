@@ -84,11 +84,7 @@ impl AnnSearchNode {
 
     /// Creates a cosine distance search.
     #[must_use]
-    pub fn cosine(
-        vector_column: impl Into<String>,
-        query_vector: LogicalExpr,
-        k: usize,
-    ) -> Self {
+    pub fn cosine(vector_column: impl Into<String>, query_vector: LogicalExpr, k: usize) -> Self {
         Self::new(vector_column, query_vector, DistanceMetric::Cosine, k)
     }
 
@@ -172,12 +168,7 @@ impl AnnSearchParams {
     /// Creates default search parameters.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            ef_search: None,
-            n_probe: None,
-            distance_threshold: None,
-            exact: false,
-        }
+        Self { ef_search: None, n_probe: None, distance_threshold: None, exact: false }
     }
 
     /// Enables exact search.
@@ -232,12 +223,7 @@ impl VectorDistanceNode {
     /// Creates a new vector distance node.
     #[must_use]
     pub fn new(left: LogicalExpr, right: LogicalExpr, metric: DistanceMetric) -> Self {
-        Self {
-            left,
-            right,
-            metric,
-            alias: None,
-        }
+        Self { left, right, metric, alias: None }
     }
 
     /// Creates an Euclidean distance node.
@@ -278,11 +264,7 @@ mod tests {
 
     #[test]
     fn ann_search_basic() {
-        let search = AnnSearchNode::euclidean(
-            "embedding",
-            LogicalExpr::param(1),
-            10,
-        );
+        let search = AnnSearchNode::euclidean("embedding", LogicalExpr::param(1), 10);
 
         assert_eq!(search.vector_column, "embedding");
         assert_eq!(search.k, 10);
@@ -303,11 +285,9 @@ mod tests {
 
     #[test]
     fn vector_distance_basic() {
-        let dist = VectorDistanceNode::euclidean(
-            LogicalExpr::column("embedding"),
-            LogicalExpr::param(1),
-        )
-        .with_alias("distance");
+        let dist =
+            VectorDistanceNode::euclidean(LogicalExpr::column("embedding"), LogicalExpr::param(1))
+                .with_alias("distance");
 
         assert_eq!(dist.operator(), "<->");
         assert_eq!(dist.alias.as_deref(), Some("distance"));
@@ -315,10 +295,7 @@ mod tests {
 
     #[test]
     fn ann_search_params() {
-        let params = AnnSearchParams::new()
-            .exact()
-            .with_ef_search(200)
-            .with_n_probe(16);
+        let params = AnnSearchParams::new().exact().with_ef_search(200).with_n_probe(16);
 
         assert!(params.exact);
         assert_eq!(params.ef_search, Some(200));
@@ -327,22 +304,15 @@ mod tests {
 
     #[test]
     fn distance_metrics() {
-        let euclidean = VectorDistanceNode::euclidean(
-            LogicalExpr::column("a"),
-            LogicalExpr::column("b"),
-        );
+        let euclidean =
+            VectorDistanceNode::euclidean(LogicalExpr::column("a"), LogicalExpr::column("b"));
         assert_eq!(euclidean.metric, DistanceMetric::Euclidean);
 
-        let cosine = VectorDistanceNode::cosine(
-            LogicalExpr::column("a"),
-            LogicalExpr::column("b"),
-        );
+        let cosine = VectorDistanceNode::cosine(LogicalExpr::column("a"), LogicalExpr::column("b"));
         assert_eq!(cosine.metric, DistanceMetric::Cosine);
 
-        let inner = VectorDistanceNode::inner_product(
-            LogicalExpr::column("a"),
-            LogicalExpr::column("b"),
-        );
+        let inner =
+            VectorDistanceNode::inner_product(LogicalExpr::column("a"), LogicalExpr::column("b"));
         assert_eq!(inner.metric, DistanceMetric::InnerProduct);
     }
 }

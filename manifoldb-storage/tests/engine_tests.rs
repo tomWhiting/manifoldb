@@ -59,8 +59,7 @@ fn test_basic_operations<H: TestHarness>() {
     // Write a key-value pair
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test_table", b"key1", b"value1")
-            .expect("failed to put");
+        tx.put("test_table", b"key1", b"value1").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
@@ -74,8 +73,7 @@ fn test_basic_operations<H: TestHarness>() {
     // Update the value
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test_table", b"key1", b"value1_updated")
-            .expect("failed to put");
+        tx.put("test_table", b"key1", b"value1_updated").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
@@ -104,9 +102,7 @@ fn test_basic_operations<H: TestHarness>() {
     // Delete non-existent key should return false
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        let deleted = tx
-            .delete("test_table", b"nonexistent")
-            .expect("failed to delete");
+        let deleted = tx.delete("test_table", b"nonexistent").expect("failed to delete");
         assert!(!deleted);
         tx.rollback().expect("failed to rollback");
     }
@@ -121,8 +117,7 @@ fn test_transaction_isolation<H: TestHarness>() {
     // Write initial data
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test_table", b"key1", b"initial")
-            .expect("failed to put");
+        tx.put("test_table", b"key1", b"initial").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
@@ -137,9 +132,7 @@ fn test_transaction_isolation<H: TestHarness>() {
     // Write new data
     {
         let mut write_tx = engine.begin_write().expect("failed to begin write");
-        write_tx
-            .put("test_table", b"key1", b"updated")
-            .expect("failed to put");
+        write_tx.put("test_table", b"key1", b"updated").expect("failed to put");
         write_tx.commit().expect("failed to commit");
     }
 
@@ -234,11 +227,7 @@ fn test_range_scan<H: TestHarness>() {
     {
         let tx = engine.begin_read().expect("failed to begin read");
         let mut cursor = tx
-            .range(
-                "test_table",
-                Bound::Included(&[3u8] as &[u8]),
-                Bound::Excluded(&[7u8] as &[u8]),
-            )
+            .range("test_table", Bound::Included(&[3u8] as &[u8]), Bound::Excluded(&[7u8] as &[u8]))
             .expect("failed to create range cursor");
 
         let mut results = Vec::new();
@@ -253,11 +242,7 @@ fn test_range_scan<H: TestHarness>() {
     {
         let tx = engine.begin_read().expect("failed to begin read");
         let mut cursor = tx
-            .range(
-                "test_table",
-                Bound::Unbounded,
-                Bound::Excluded(&[3u8] as &[u8]),
-            )
+            .range("test_table", Bound::Unbounded, Bound::Excluded(&[3u8] as &[u8]))
             .expect("failed to create range cursor");
 
         let mut results = Vec::new();
@@ -348,10 +333,6 @@ fn test_error_context_display() {
     assert!(display.contains("key=abc123"));
     assert!(display.contains("additional info"));
 
-    let empty_ctx = ErrorContext {
-        table: None,
-        key: None,
-        message: None,
-    };
+    let empty_ctx = ErrorContext { table: None, key: None, message: None };
     assert_eq!(empty_ctx.to_string(), "");
 }

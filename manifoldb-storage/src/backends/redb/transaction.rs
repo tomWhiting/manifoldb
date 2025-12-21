@@ -85,9 +85,8 @@ impl Transaction for RedbTransaction {
             Self::Read(_) => Err(StorageError::ReadOnly),
             Self::Write(tx) => {
                 let encoded_key = encode_key(table, key);
-                let mut t = tx
-                    .open_table(DATA_TABLE)
-                    .map_err(|e| StorageError::Internal(e.to_string()))?;
+                let mut t =
+                    tx.open_table(DATA_TABLE).map_err(|e| StorageError::Internal(e.to_string()))?;
                 t.insert(encoded_key.as_slice(), value)
                     .map_err(|e| StorageError::Internal(e.to_string()))?;
                 Ok(())
@@ -140,9 +139,7 @@ impl Transaction for RedbTransaction {
                 // Read transactions don't need explicit commit
                 Ok(())
             }
-            Self::Write(tx) => tx
-                .commit()
-                .map_err(|e| StorageError::Transaction(e.to_string())),
+            Self::Write(tx) => tx.commit().map_err(|e| StorageError::Transaction(e.to_string())),
         }
     }
 
@@ -248,12 +245,7 @@ impl RedbCursor {
         start_bound: Option<Bound<Vec<u8>>>,
         end_bound: Option<Bound<Vec<u8>>>,
     ) -> Self {
-        Self {
-            entries,
-            position: None,
-            start_bound,
-            end_bound,
-        }
+        Self { entries, position: None, start_bound, end_bound }
     }
 
     /// Check if a key is within the cursor's bounds.
@@ -412,10 +404,7 @@ mod tests {
 
         let first = cursor.seek_first().unwrap();
         assert_eq!(first, Some((b"key".to_vec(), b"value".to_vec())));
-        assert_eq!(
-            cursor.current(),
-            Some((b"key".as_slice(), b"value".as_slice()))
-        );
+        assert_eq!(cursor.current(), Some((b"key".as_slice(), b"value".as_slice())));
 
         let next = cursor.next().unwrap();
         assert!(next.is_none());

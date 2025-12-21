@@ -153,11 +153,7 @@ impl Decoder for Entity {
             offset += consumed;
         }
 
-        Ok(Self {
-            id,
-            labels,
-            properties,
-        })
+        Ok(Self { id, labels, properties })
     }
 }
 
@@ -179,9 +175,7 @@ mod tests {
 
     #[test]
     fn encode_decode_entity_with_labels() {
-        let original = Entity::new(EntityId::new(1))
-            .with_label("Person")
-            .with_label("Employee");
+        let original = Entity::new(EntityId::new(1)).with_label("Person").with_label("Employee");
         let encoded = original.encode().unwrap();
         let decoded = Entity::decode(&encoded).unwrap();
         assert_eq!(decoded.id, original.id);
@@ -215,10 +209,7 @@ mod tests {
         assert_eq!(decoded.id, original.id);
         assert!(decoded.has_label("Person"));
         assert_eq!(decoded.get_property("name"), Some(&Value::String("Bob".to_owned())));
-        assert_eq!(
-            decoded.get_property("embedding"),
-            Some(&Value::Vector(vec![0.1, 0.2, 0.3]))
-        );
+        assert_eq!(decoded.get_property("embedding"), Some(&Value::Vector(vec![0.1, 0.2, 0.3])));
     }
 
     #[test]
