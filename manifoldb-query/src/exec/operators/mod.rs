@@ -11,6 +11,7 @@
 //! - **Aggregate operators**: [`aggregate`] - Aggregations
 //! - **Sort operators**: [`sort`] - Sorting
 //! - **Limit operators**: [`limit`] - Limit/offset
+//! - **Set operators**: [`set_ops`] - UNION, INTERSECT, EXCEPT
 //! - **Graph operators**: [`graph`] - Graph traversal
 //! - **Vector operators**: [`vector`] - Vector search
 
@@ -21,6 +22,7 @@ pub mod join;
 pub mod limit;
 pub mod project;
 pub mod scan;
+pub mod set_ops;
 pub mod sort;
 pub mod values;
 pub mod vector;
@@ -33,6 +35,7 @@ pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
 pub use limit::LimitOp;
 pub use project::ProjectOp;
 pub use scan::{FullScanOp, IndexRangeScanOp, IndexScanOp};
+pub use set_ops::{SetOpOp, UnionOp};
 pub use sort::SortOp;
 pub use values::{EmptyOp, ValuesOp};
 pub use vector::{BruteForceSearchOp, HnswSearchOp};

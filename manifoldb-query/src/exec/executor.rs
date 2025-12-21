@@ -17,6 +17,7 @@ use super::operators::{
     limit::LimitOp,
     project::ProjectOp,
     scan::{FullScanOp, IndexRangeScanOp, IndexScanOp},
+    set_ops::{SetOpOp, UnionOp},
     sort::SortOp,
     values::{EmptyOp, ValuesOp},
     vector::{BruteForceSearchOp, HnswSearchOp},
@@ -259,23 +260,21 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         }
 
         // Set operations
-        PhysicalPlan::SetOp { op_type: _, left, right, .. } => {
-            // For now, implement as a union
+        PhysicalPlan::SetOp { op_type, left, right, .. } => {
             let left_op = build_operator_tree(left)?;
-            let _right_op = build_operator_tree(right)?;
-            // TODO: Implement proper set operations
-            Ok(left_op)
+            let right_op = build_operator_tree(right)?;
+            Ok(Box::new(SetOpOp::new(*op_type, left_op, right_op)))
         }
 
-        PhysicalPlan::Union { inputs, .. } => {
+        PhysicalPlan::Union { all, inputs, .. } => {
             if inputs.is_empty() {
                 let schema = Arc::new(Schema::empty());
                 return Ok(Box::new(EmptyOp::new(schema)));
             }
 
-            // Build first input as base
-            // TODO: Implement proper union operator
-            build_operator_tree(&inputs[0])
+            let input_ops: Vec<BoxedOperator> =
+                inputs.iter().map(build_operator_tree).collect::<Result<_, _>>()?;
+            Ok(Box::new(UnionOp::new(input_ops, *all)))
         }
 
         // Vector operations
@@ -446,5 +445,89 @@ mod tests {
         executor.execute().unwrap();
 
         assert!(executor.context().stats().elapsed().as_nanos() > 0);
+    }
+
+    #[test]
+    fn executor_union() {
+        use crate::plan::physical::Cost;
+
+        // Union of two empty sources
+        let plan = PhysicalPlan::Union {
+            all: false,
+            cost: Cost::default(),
+            inputs: vec![
+                PhysicalPlan::Empty { columns: vec!["x".to_string()] },
+                PhysicalPlan::Empty { columns: vec!["x".to_string()] },
+            ],
+        };
+
+        let ctx = ExecutionContext::new();
+        let mut executor = Executor::new(&plan, ctx).unwrap();
+        assert_eq!(executor.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn executor_union_all() {
+        use crate::plan::physical::Cost;
+
+        // Union ALL of empty sources
+        let plan = PhysicalPlan::Union {
+            all: true,
+            cost: Cost::default(),
+            inputs: vec![
+                PhysicalPlan::Empty { columns: vec!["x".to_string()] },
+                PhysicalPlan::Empty { columns: vec!["x".to_string()] },
+            ],
+        };
+
+        let ctx = ExecutionContext::new();
+        let mut executor = Executor::new(&plan, ctx).unwrap();
+        assert_eq!(executor.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn executor_set_op_intersect() {
+        use crate::plan::logical::SetOpType;
+        use crate::plan::physical::Cost;
+
+        let plan = PhysicalPlan::SetOp {
+            op_type: SetOpType::Intersect,
+            cost: Cost::default(),
+            left: Box::new(PhysicalPlan::Empty { columns: vec!["x".to_string()] }),
+            right: Box::new(PhysicalPlan::Empty { columns: vec!["x".to_string()] }),
+        };
+
+        let ctx = ExecutionContext::new();
+        let mut executor = Executor::new(&plan, ctx).unwrap();
+        assert_eq!(executor.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn executor_set_op_except() {
+        use crate::plan::logical::SetOpType;
+        use crate::plan::physical::Cost;
+
+        let plan = PhysicalPlan::SetOp {
+            op_type: SetOpType::Except,
+            cost: Cost::default(),
+            left: Box::new(PhysicalPlan::Empty { columns: vec!["x".to_string()] }),
+            right: Box::new(PhysicalPlan::Empty { columns: vec!["x".to_string()] }),
+        };
+
+        let ctx = ExecutionContext::new();
+        let mut executor = Executor::new(&plan, ctx).unwrap();
+        assert_eq!(executor.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn executor_empty_union() {
+        use crate::plan::physical::Cost;
+
+        // Empty Union (no inputs)
+        let plan = PhysicalPlan::Union { all: false, cost: Cost::default(), inputs: vec![] };
+
+        let ctx = ExecutionContext::new();
+        let mut executor = Executor::new(&plan, ctx).unwrap();
+        assert_eq!(executor.count().unwrap(), 0);
     }
 }
