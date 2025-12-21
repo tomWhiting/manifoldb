@@ -44,7 +44,7 @@ pub use context::{CancellationToken, ExecutionContext, VectorIndexProvider};
 pub use executor::{execute_plan, Executor};
 pub use graph_accessor::{
     GraphAccessError, GraphAccessResult, GraphAccessor, NeighborResult, NullGraphAccessor,
-    TransactionGraphAccessor, TraversalResult,
+    PathFindConfig, PathMatchResult, PathStepConfig, TransactionGraphAccessor, TraversalResult,
 };
 pub use operator::{Operator, OperatorBase, OperatorState};
 pub use result::{QueryResult, ResultSet, ResultSetBuilder};
