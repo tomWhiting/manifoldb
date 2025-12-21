@@ -44,7 +44,7 @@
 //! - [`distance`] - Distance functions
 //! - [`encoding`] - Key encoding for storage
 //! - [`error`] - Error types
-//! - [`index`] - Vector indexes (HNSW) - future
+//! - [`index`] - Vector indexes (HNSW)
 //! - [`ops`] - Vector search operators - future
 
 pub mod distance;
@@ -58,5 +58,6 @@ pub mod types;
 // Re-export commonly used types
 pub use distance::DistanceMetric;
 pub use error::VectorError;
+pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
 pub use store::VectorStore;
 pub use types::{Embedding, EmbeddingName, EmbeddingSpace};
