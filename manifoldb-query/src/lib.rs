@@ -53,6 +53,17 @@
 //!             .eq(Expr::integer(1))
 //!     );
 //! ```
+//!
+//! Build a logical plan from a parsed query:
+//!
+//! ```
+//! use manifoldb_query::parser::parse_single_statement;
+//! use manifoldb_query::plan::logical::PlanBuilder;
+//!
+//! let stmt = parse_single_statement("SELECT * FROM users WHERE id = 1").unwrap();
+//! let plan = PlanBuilder::new().build_statement(&stmt).unwrap();
+//! println!("{}", plan.display_tree());
+//! ```
 
 pub mod ast;
 pub mod error;
@@ -63,3 +74,4 @@ pub mod plan;
 // Re-export commonly used items at the crate root
 pub use error::{ParseError, ParseResult};
 pub use parser::{parse_single_statement, parse_sql, ExtendedParser};
+pub use plan::{LogicalExpr, LogicalPlan, PlanBuilder, PlanError, PlanResult};

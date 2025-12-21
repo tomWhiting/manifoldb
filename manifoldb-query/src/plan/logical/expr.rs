@@ -1,0 +1,931 @@
+//! Logical plan expressions.
+//!
+//! This module defines the expression types used within logical plans.
+//! These are similar to AST expressions but designed for plan manipulation.
+
+// Allow arithmetic method names that match std traits - we intentionally
+// don't implement the traits because these return new expressions, not Self
+#![allow(clippy::should_implement_trait)]
+// Allow the long Display impl - it's a big match but simple
+#![allow(clippy::too_many_lines)]
+// Allow expect - we use it after checking conditions
+#![allow(clippy::expect_used)]
+// Allow missing_const_for_fn - const fn with Vec isn't stable
+#![allow(clippy::missing_const_for_fn)]
+
+use std::fmt;
+
+use crate::ast::{BinaryOp, DataType, Literal, QualifiedName, UnaryOp};
+
+/// An expression in a logical plan.
+///
+/// Unlike AST expressions, logical expressions are designed for
+/// query planning and optimization.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalExpr {
+    /// A literal value.
+    Literal(Literal),
+
+    /// A column reference with optional table qualifier.
+    Column {
+        /// Table/alias qualifier (e.g., "users" in "users.id").
+        qualifier: Option<String>,
+        /// Column name.
+        name: String,
+    },
+
+    /// A binary operation.
+    BinaryOp {
+        /// Left operand.
+        left: Box<LogicalExpr>,
+        /// The operator.
+        op: BinaryOp,
+        /// Right operand.
+        right: Box<LogicalExpr>,
+    },
+
+    /// A unary operation.
+    UnaryOp {
+        /// The operator.
+        op: UnaryOp,
+        /// The operand.
+        operand: Box<LogicalExpr>,
+    },
+
+    /// A scalar function call.
+    ScalarFunction {
+        /// Function name.
+        func: ScalarFunction,
+        /// Function arguments.
+        args: Vec<LogicalExpr>,
+    },
+
+    /// An aggregate function call.
+    AggregateFunction {
+        /// Aggregate function.
+        func: AggregateFunction,
+        /// Expression to aggregate.
+        arg: Box<LogicalExpr>,
+        /// Whether DISTINCT is specified.
+        distinct: bool,
+    },
+
+    /// A CAST expression.
+    Cast {
+        /// The expression to cast.
+        expr: Box<LogicalExpr>,
+        /// The target data type.
+        data_type: DataType,
+    },
+
+    /// A CASE expression.
+    Case {
+        /// The operand for simple CASE (None for searched CASE).
+        operand: Option<Box<LogicalExpr>>,
+        /// WHEN...THEN branches.
+        when_clauses: Vec<(LogicalExpr, LogicalExpr)>,
+        /// ELSE result.
+        else_result: Option<Box<LogicalExpr>>,
+    },
+
+    /// expr IN (val1, val2, ...).
+    InList {
+        /// The expression to check.
+        expr: Box<LogicalExpr>,
+        /// The list of values.
+        list: Vec<LogicalExpr>,
+        /// Whether NOT IN.
+        negated: bool,
+    },
+
+    /// expr BETWEEN low AND high.
+    Between {
+        /// The expression to check.
+        expr: Box<LogicalExpr>,
+        /// Lower bound.
+        low: Box<LogicalExpr>,
+        /// Upper bound.
+        high: Box<LogicalExpr>,
+        /// Whether NOT BETWEEN.
+        negated: bool,
+    },
+
+    /// A subquery expression.
+    Subquery(Box<super::LogicalPlan>),
+
+    /// EXISTS (subquery).
+    Exists {
+        /// The subquery.
+        subquery: Box<super::LogicalPlan>,
+        /// Whether NOT EXISTS.
+        negated: bool,
+    },
+
+    /// expr IN (subquery).
+    InSubquery {
+        /// The expression to check.
+        expr: Box<LogicalExpr>,
+        /// The subquery.
+        subquery: Box<super::LogicalPlan>,
+        /// Whether NOT IN.
+        negated: bool,
+    },
+
+    /// Wildcard (*) for SELECT *.
+    Wildcard,
+
+    /// Qualified wildcard (table.*).
+    QualifiedWildcard(String),
+
+    /// An aliased expression.
+    Alias {
+        /// The expression.
+        expr: Box<LogicalExpr>,
+        /// The alias name.
+        alias: String,
+    },
+
+    /// A parameter placeholder.
+    Parameter(u32),
+}
+
+impl LogicalExpr {
+    // ========== Constructors ==========
+
+    /// Creates a literal null expression.
+    #[must_use]
+    pub const fn null() -> Self {
+        Self::Literal(Literal::Null)
+    }
+
+    /// Creates a literal boolean expression.
+    #[must_use]
+    pub const fn boolean(value: bool) -> Self {
+        Self::Literal(Literal::Boolean(value))
+    }
+
+    /// Creates a literal integer expression.
+    #[must_use]
+    pub const fn integer(value: i64) -> Self {
+        Self::Literal(Literal::Integer(value))
+    }
+
+    /// Creates a literal float expression.
+    #[must_use]
+    pub const fn float(value: f64) -> Self {
+        Self::Literal(Literal::Float(value))
+    }
+
+    /// Creates a literal string expression.
+    #[must_use]
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::Literal(Literal::String(value.into()))
+    }
+
+    /// Creates a literal vector expression.
+    #[must_use]
+    pub fn vector(value: Vec<f32>) -> Self {
+        Self::Literal(Literal::Vector(value))
+    }
+
+    /// Creates a column reference.
+    #[must_use]
+    pub fn column(name: impl Into<String>) -> Self {
+        Self::Column {
+            qualifier: None,
+            name: name.into(),
+        }
+    }
+
+    /// Creates a qualified column reference.
+    #[must_use]
+    pub fn qualified_column(qualifier: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Column {
+            qualifier: Some(qualifier.into()),
+            name: name.into(),
+        }
+    }
+
+    /// Creates a wildcard expression.
+    #[must_use]
+    pub const fn wildcard() -> Self {
+        Self::Wildcard
+    }
+
+    /// Creates a qualified wildcard expression.
+    #[must_use]
+    pub fn qualified_wildcard(qualifier: impl Into<String>) -> Self {
+        Self::QualifiedWildcard(qualifier.into())
+    }
+
+    /// Creates a parameter placeholder.
+    #[must_use]
+    pub const fn param(index: u32) -> Self {
+        Self::Parameter(index)
+    }
+
+    // ========== Binary Operations ==========
+
+    fn binary(self, op: BinaryOp, other: Self) -> Self {
+        Self::BinaryOp {
+            left: Box::new(self),
+            op,
+            right: Box::new(other),
+        }
+    }
+
+    /// Creates an AND expression.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        self.binary(BinaryOp::And, other)
+    }
+
+    /// Creates an OR expression.
+    #[must_use]
+    pub fn or(self, other: Self) -> Self {
+        self.binary(BinaryOp::Or, other)
+    }
+
+    /// Creates an equality expression.
+    #[must_use]
+    pub fn eq(self, other: Self) -> Self {
+        self.binary(BinaryOp::Eq, other)
+    }
+
+    /// Creates a not-equal expression.
+    #[must_use]
+    pub fn not_eq(self, other: Self) -> Self {
+        self.binary(BinaryOp::NotEq, other)
+    }
+
+    /// Creates a less-than expression.
+    #[must_use]
+    pub fn lt(self, other: Self) -> Self {
+        self.binary(BinaryOp::Lt, other)
+    }
+
+    /// Creates a less-than-or-equal expression.
+    #[must_use]
+    pub fn lt_eq(self, other: Self) -> Self {
+        self.binary(BinaryOp::LtEq, other)
+    }
+
+    /// Creates a greater-than expression.
+    #[must_use]
+    pub fn gt(self, other: Self) -> Self {
+        self.binary(BinaryOp::Gt, other)
+    }
+
+    /// Creates a greater-than-or-equal expression.
+    #[must_use]
+    pub fn gt_eq(self, other: Self) -> Self {
+        self.binary(BinaryOp::GtEq, other)
+    }
+
+    /// Creates an addition expression.
+    #[must_use]
+    pub fn add(self, other: Self) -> Self {
+        self.binary(BinaryOp::Add, other)
+    }
+
+    /// Creates a subtraction expression.
+    #[must_use]
+    pub fn sub(self, other: Self) -> Self {
+        self.binary(BinaryOp::Sub, other)
+    }
+
+    /// Creates a multiplication expression.
+    #[must_use]
+    pub fn mul(self, other: Self) -> Self {
+        self.binary(BinaryOp::Mul, other)
+    }
+
+    /// Creates a division expression.
+    #[must_use]
+    pub fn div(self, other: Self) -> Self {
+        self.binary(BinaryOp::Div, other)
+    }
+
+    /// Creates a modulo expression.
+    #[must_use]
+    pub fn modulo(self, other: Self) -> Self {
+        self.binary(BinaryOp::Mod, other)
+    }
+
+    /// Creates a LIKE expression.
+    #[must_use]
+    pub fn like(self, pattern: Self) -> Self {
+        self.binary(BinaryOp::Like, pattern)
+    }
+
+    /// Creates an ILIKE expression.
+    #[must_use]
+    pub fn ilike(self, pattern: Self) -> Self {
+        self.binary(BinaryOp::ILike, pattern)
+    }
+
+    // ========== Vector Distance Operations ==========
+
+    /// Creates an Euclidean distance expression.
+    #[must_use]
+    pub fn euclidean_distance(self, other: Self) -> Self {
+        self.binary(BinaryOp::EuclideanDistance, other)
+    }
+
+    /// Creates a cosine distance expression.
+    #[must_use]
+    pub fn cosine_distance(self, other: Self) -> Self {
+        self.binary(BinaryOp::CosineDistance, other)
+    }
+
+    /// Creates an inner product expression.
+    #[must_use]
+    pub fn inner_product(self, other: Self) -> Self {
+        self.binary(BinaryOp::InnerProduct, other)
+    }
+
+    // ========== Unary Operations ==========
+
+    /// Creates a NOT expression.
+    #[must_use]
+    pub fn not(self) -> Self {
+        Self::UnaryOp {
+            op: UnaryOp::Not,
+            operand: Box::new(self),
+        }
+    }
+
+    /// Creates a negation expression.
+    #[must_use]
+    pub fn neg(self) -> Self {
+        Self::UnaryOp {
+            op: UnaryOp::Neg,
+            operand: Box::new(self),
+        }
+    }
+
+    /// Creates an IS NULL expression.
+    #[must_use]
+    pub fn is_null(self) -> Self {
+        Self::UnaryOp {
+            op: UnaryOp::IsNull,
+            operand: Box::new(self),
+        }
+    }
+
+    /// Creates an IS NOT NULL expression.
+    #[must_use]
+    pub fn is_not_null(self) -> Self {
+        Self::UnaryOp {
+            op: UnaryOp::IsNotNull,
+            operand: Box::new(self),
+        }
+    }
+
+    // ========== Other Operations ==========
+
+    /// Creates an IN list expression.
+    #[must_use]
+    pub fn in_list(self, list: Vec<Self>, negated: bool) -> Self {
+        Self::InList {
+            expr: Box::new(self),
+            list,
+            negated,
+        }
+    }
+
+    /// Creates a BETWEEN expression.
+    #[must_use]
+    pub fn between(self, low: Self, high: Self, negated: bool) -> Self {
+        Self::Between {
+            expr: Box::new(self),
+            low: Box::new(low),
+            high: Box::new(high),
+            negated,
+        }
+    }
+
+    /// Creates a CAST expression.
+    #[must_use]
+    pub fn cast(self, data_type: DataType) -> Self {
+        Self::Cast {
+            expr: Box::new(self),
+            data_type,
+        }
+    }
+
+    /// Creates an aliased expression.
+    #[must_use]
+    pub fn alias(self, name: impl Into<String>) -> Self {
+        Self::Alias {
+            expr: Box::new(self),
+            alias: name.into(),
+        }
+    }
+
+    // ========== Aggregate Functions ==========
+
+    /// Creates a COUNT aggregate.
+    #[must_use]
+    pub fn count(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::Count,
+            arg: Box::new(expr),
+            distinct,
+        }
+    }
+
+    /// Creates a SUM aggregate.
+    #[must_use]
+    pub fn sum(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::Sum,
+            arg: Box::new(expr),
+            distinct,
+        }
+    }
+
+    /// Creates an AVG aggregate.
+    #[must_use]
+    pub fn avg(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::Avg,
+            arg: Box::new(expr),
+            distinct,
+        }
+    }
+
+    /// Creates a MIN aggregate.
+    #[must_use]
+    pub fn min(expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::Min,
+            arg: Box::new(expr),
+            distinct: false,
+        }
+    }
+
+    /// Creates a MAX aggregate.
+    #[must_use]
+    pub fn max(expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::Max,
+            arg: Box::new(expr),
+            distinct: false,
+        }
+    }
+
+    // ========== Utility Methods ==========
+
+    /// Returns the alias if this is an aliased expression.
+    #[must_use]
+    pub fn get_alias(&self) -> Option<&str> {
+        match self {
+            Self::Alias { alias, .. } => Some(alias),
+            _ => None,
+        }
+    }
+
+    /// Returns the column name if this is a column reference.
+    #[must_use]
+    pub fn column_name(&self) -> Option<&str> {
+        match self {
+            Self::Column { name, .. } => Some(name),
+            Self::Alias { alias, .. } => Some(alias),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this expression contains an aggregate function.
+    #[must_use]
+    pub fn contains_aggregate(&self) -> bool {
+        match self {
+            Self::AggregateFunction { .. } => true,
+            Self::BinaryOp { left, right, .. } => {
+                left.contains_aggregate() || right.contains_aggregate()
+            }
+            Self::UnaryOp { operand, .. } => operand.contains_aggregate(),
+            Self::ScalarFunction { args, .. } => args.iter().any(Self::contains_aggregate),
+            Self::Cast { expr, .. } | Self::Alias { expr, .. } => expr.contains_aggregate(),
+            Self::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                operand.as_ref().is_some_and(|e| e.contains_aggregate())
+                    || when_clauses
+                        .iter()
+                        .any(|(w, t)| w.contains_aggregate() || t.contains_aggregate())
+                    || else_result.as_ref().is_some_and(|e| e.contains_aggregate())
+            }
+            Self::InList { expr, list, .. } => {
+                expr.contains_aggregate() || list.iter().any(Self::contains_aggregate)
+            }
+            Self::Between {
+                expr, low, high, ..
+            } => expr.contains_aggregate() || low.contains_aggregate() || high.contains_aggregate(),
+            _ => false,
+        }
+    }
+
+    /// Converts from an AST `QualifiedName` to a column expression.
+    #[must_use]
+    pub fn from_qualified_name(name: &QualifiedName) -> Self {
+        match name.parts.len() {
+            0 => Self::column(""),
+            1 => Self::column(&name.parts[0].name),
+            _ => {
+                let qualifier = name.parts[..name.parts.len() - 1]
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".");
+                // Safe: we already checked len() > 1 so last() is Some
+                let col_name = &name.parts.last().expect("checked len > 1").name;
+                Self::qualified_column(qualifier, col_name)
+            }
+        }
+    }
+}
+
+impl fmt::Display for LogicalExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Literal(lit) => write!(f, "{lit}"),
+            Self::Column { qualifier, name } => {
+                if let Some(q) = qualifier {
+                    write!(f, "{q}.{name}")
+                } else {
+                    write!(f, "{name}")
+                }
+            }
+            Self::BinaryOp { left, op, right } => write!(f, "({left} {op} {right})"),
+            Self::UnaryOp { op, operand } => match op {
+                UnaryOp::Not => write!(f, "NOT {operand}"),
+                UnaryOp::Neg => write!(f, "-{operand}"),
+                UnaryOp::IsNull => write!(f, "{operand} IS NULL"),
+                UnaryOp::IsNotNull => write!(f, "{operand} IS NOT NULL"),
+            },
+            Self::ScalarFunction { func, args } => {
+                write!(f, "{func}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
+            }
+            Self::AggregateFunction {
+                func,
+                arg,
+                distinct,
+            } => {
+                write!(f, "{func}(")?;
+                if *distinct {
+                    write!(f, "DISTINCT ")?;
+                }
+                write!(f, "{arg})")
+            }
+            Self::Cast { expr, data_type } => write!(f, "CAST({expr} AS {data_type:?})"),
+            Self::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                write!(f, "CASE")?;
+                if let Some(op) = operand {
+                    write!(f, " {op}")?;
+                }
+                for (when, then) in when_clauses {
+                    write!(f, " WHEN {when} THEN {then}")?;
+                }
+                if let Some(else_res) = else_result {
+                    write!(f, " ELSE {else_res}")?;
+                }
+                write!(f, " END")
+            }
+            Self::InList {
+                expr,
+                list,
+                negated,
+            } => {
+                write!(f, "{expr}")?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " IN (")?;
+                for (i, item) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, ")")
+            }
+            Self::Between {
+                expr,
+                low,
+                high,
+                negated,
+            } => {
+                write!(f, "{expr}")?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " BETWEEN {low} AND {high}")
+            }
+            Self::Subquery(_) => write!(f, "(subquery)"),
+            Self::Exists { negated, .. } => {
+                if *negated {
+                    write!(f, "NOT EXISTS (subquery)")
+                } else {
+                    write!(f, "EXISTS (subquery)")
+                }
+            }
+            Self::InSubquery { expr, negated, .. } => {
+                write!(f, "{expr}")?;
+                if *negated {
+                    write!(f, " NOT")?;
+                }
+                write!(f, " IN (subquery)")
+            }
+            Self::Wildcard => write!(f, "*"),
+            Self::QualifiedWildcard(qualifier) => write!(f, "{qualifier}.*"),
+            Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
+            Self::Parameter(idx) => write!(f, "${idx}"),
+        }
+    }
+}
+
+/// Scalar function types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScalarFunction {
+    // String functions
+    /// UPPER(string).
+    Upper,
+    /// LOWER(string).
+    Lower,
+    /// LENGTH(string).
+    Length,
+    /// CONCAT(string, ...).
+    Concat,
+    /// SUBSTRING(string, start, length).
+    Substring,
+    /// TRIM(string).
+    Trim,
+    /// COALESCE(expr, ...).
+    Coalesce,
+    /// NULLIF(expr1, expr2).
+    NullIf,
+
+    // Numeric functions
+    /// ABS(number).
+    Abs,
+    /// CEIL(number).
+    Ceil,
+    /// FLOOR(number).
+    Floor,
+    /// ROUND(number, precision).
+    Round,
+    /// SQRT(number).
+    Sqrt,
+    /// POWER(base, exponent).
+    Power,
+
+    // Date/time functions
+    /// `NOW()`.
+    Now,
+    /// `CURRENT_DATE`.
+    CurrentDate,
+    /// `CURRENT_TIME`.
+    CurrentTime,
+    /// `EXTRACT(field FROM datetime)`.
+    Extract,
+
+    // Vector functions
+    /// `VECTOR_DIMENSION(vector)`.
+    VectorDimension,
+    /// `VECTOR_NORM(vector)`.
+    VectorNorm,
+
+    // Other
+    /// Custom/user-defined function.
+    Custom(u32), // Index into function registry
+}
+
+impl fmt::Display for ScalarFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Upper => "UPPER",
+            Self::Lower => "LOWER",
+            Self::Length => "LENGTH",
+            Self::Concat => "CONCAT",
+            Self::Substring => "SUBSTRING",
+            Self::Trim => "TRIM",
+            Self::Coalesce => "COALESCE",
+            Self::NullIf => "NULLIF",
+            Self::Abs => "ABS",
+            Self::Ceil => "CEIL",
+            Self::Floor => "FLOOR",
+            Self::Round => "ROUND",
+            Self::Sqrt => "SQRT",
+            Self::Power => "POWER",
+            Self::Now => "NOW",
+            Self::CurrentDate => "CURRENT_DATE",
+            Self::CurrentTime => "CURRENT_TIME",
+            Self::Extract => "EXTRACT",
+            Self::VectorDimension => "VECTOR_DIMENSION",
+            Self::VectorNorm => "VECTOR_NORM",
+            Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
+        };
+        write!(f, "{name}")
+    }
+}
+
+/// Aggregate function types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateFunction {
+    /// COUNT(*) or COUNT(expr).
+    Count,
+    /// SUM(expr).
+    Sum,
+    /// AVG(expr).
+    Avg,
+    /// MIN(expr).
+    Min,
+    /// MAX(expr).
+    Max,
+    /// `ARRAY_AGG(expr)`.
+    ArrayAgg,
+    /// `STRING_AGG(expr, separator)`.
+    StringAgg,
+    /// Vector average.
+    VectorAvg,
+    /// Vector centroid.
+    VectorCentroid,
+}
+
+impl fmt::Display for AggregateFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Count => "COUNT",
+            Self::Sum => "SUM",
+            Self::Avg => "AVG",
+            Self::Min => "MIN",
+            Self::Max => "MAX",
+            Self::ArrayAgg => "ARRAY_AGG",
+            Self::StringAgg => "STRING_AGG",
+            Self::VectorAvg => "VECTOR_AVG",
+            Self::VectorCentroid => "VECTOR_CENTROID",
+        };
+        write!(f, "{name}")
+    }
+}
+
+/// Sort order for ORDER BY expressions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortOrder {
+    /// The expression to sort by.
+    pub expr: LogicalExpr,
+    /// Whether to sort ascending (true) or descending (false).
+    pub ascending: bool,
+    /// Whether nulls come first.
+    pub nulls_first: Option<bool>,
+}
+
+impl SortOrder {
+    /// Creates an ascending sort order.
+    #[must_use]
+    pub fn asc(expr: LogicalExpr) -> Self {
+        Self {
+            expr,
+            ascending: true,
+            nulls_first: None,
+        }
+    }
+
+    /// Creates a descending sort order.
+    #[must_use]
+    pub fn desc(expr: LogicalExpr) -> Self {
+        Self {
+            expr,
+            ascending: false,
+            nulls_first: None,
+        }
+    }
+
+    /// Sets nulls first ordering.
+    #[must_use]
+    pub const fn nulls_first(mut self) -> Self {
+        self.nulls_first = Some(true);
+        self
+    }
+
+    /// Sets nulls last ordering.
+    #[must_use]
+    pub const fn nulls_last(mut self) -> Self {
+        self.nulls_first = Some(false);
+        self
+    }
+}
+
+impl fmt::Display for SortOrder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.expr)?;
+        if self.ascending {
+            write!(f, " ASC")?;
+        } else {
+            write!(f, " DESC")?;
+        }
+        match self.nulls_first {
+            Some(true) => write!(f, " NULLS FIRST")?,
+            Some(false) => write!(f, " NULLS LAST")?,
+            None => {}
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expr_builders() {
+        let expr = LogicalExpr::column("age").gt(LogicalExpr::integer(21));
+        assert_eq!(expr.to_string(), "(age > 21)");
+    }
+
+    #[test]
+    fn compound_expressions() {
+        let expr = LogicalExpr::column("age")
+            .gt(LogicalExpr::integer(18))
+            .and(LogicalExpr::column("status").eq(LogicalExpr::string("active")));
+        assert_eq!(expr.to_string(), "((age > 18) AND (status = 'active'))");
+    }
+
+    #[test]
+    fn qualified_column() {
+        let expr = LogicalExpr::qualified_column("users", "id");
+        assert_eq!(expr.to_string(), "users.id");
+    }
+
+    #[test]
+    fn aggregate_functions() {
+        let count = LogicalExpr::count(LogicalExpr::wildcard(), false);
+        assert_eq!(count.to_string(), "COUNT(*)");
+
+        let count_distinct = LogicalExpr::count(LogicalExpr::column("id"), true);
+        assert_eq!(count_distinct.to_string(), "COUNT(DISTINCT id)");
+
+        let sum = LogicalExpr::sum(LogicalExpr::column("amount"), false);
+        assert_eq!(sum.to_string(), "SUM(amount)");
+    }
+
+    #[test]
+    fn contains_aggregate() {
+        let simple = LogicalExpr::column("id");
+        assert!(!simple.contains_aggregate());
+
+        let agg = LogicalExpr::count(LogicalExpr::wildcard(), false);
+        assert!(agg.contains_aggregate());
+
+        let nested = LogicalExpr::count(LogicalExpr::wildcard(), false)
+            .add(LogicalExpr::integer(1));
+        assert!(nested.contains_aggregate());
+    }
+
+    #[test]
+    fn sort_order_display() {
+        let asc = SortOrder::asc(LogicalExpr::column("name"));
+        assert_eq!(asc.to_string(), "name ASC");
+
+        let desc_nulls_first = SortOrder::desc(LogicalExpr::column("date")).nulls_first();
+        assert_eq!(desc_nulls_first.to_string(), "date DESC NULLS FIRST");
+    }
+
+    #[test]
+    fn alias_expression() {
+        let expr = LogicalExpr::count(LogicalExpr::wildcard(), false).alias("total");
+        assert_eq!(expr.to_string(), "COUNT(*) AS total");
+        assert_eq!(expr.column_name(), Some("total"));
+    }
+
+    #[test]
+    fn in_list_expression() {
+        let expr = LogicalExpr::column("status")
+            .in_list(vec![
+                LogicalExpr::string("active"),
+                LogicalExpr::string("pending"),
+            ], false);
+        assert_eq!(expr.to_string(), "status IN ('active', 'pending')");
+    }
+
+    #[test]
+    fn between_expression() {
+        let expr = LogicalExpr::column("age")
+            .between(LogicalExpr::integer(18), LogicalExpr::integer(65), false);
+        assert_eq!(expr.to_string(), "age BETWEEN 18 AND 65");
+    }
+}
