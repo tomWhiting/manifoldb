@@ -1,0 +1,20 @@
+[package]
+name = "manifoldb-vector"
+description = "Vector storage and similarity search for ManifoldDB"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+manifoldb-core = { workspace = true }
+manifoldb-storage = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true

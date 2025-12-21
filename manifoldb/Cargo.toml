@@ -1,0 +1,27 @@
+[package]
+name = "manifoldb"
+description = "A multi-paradigm embedded database for graph, vector, and relational data"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+manifoldb-core = { workspace = true }
+manifoldb-storage = { workspace = true }
+manifoldb-graph = { workspace = true }
+manifoldb-vector = { workspace = true }
+manifoldb-query = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[lints]
+workspace = true

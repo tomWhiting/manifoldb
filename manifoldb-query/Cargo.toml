@@ -1,0 +1,21 @@
+[package]
+name = "manifoldb-query"
+description = "Query parsing, planning, and execution for ManifoldDB"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+manifoldb-core = { workspace = true }
+manifoldb-storage = { workspace = true }
+manifoldb-graph = { workspace = true }
+manifoldb-vector = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true
