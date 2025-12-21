@@ -45,7 +45,28 @@
 //! - [`encoding`] - Key encoding for storage
 //! - [`error`] - Error types
 //! - [`index`] - Vector indexes (HNSW)
-//! - [`ops`] - Vector search operators - future
+//! - [`ops`] - Vector search operators ([`AnnScan`], [`ExactKnn`], [`VectorFilter`])
+//!
+//! # Search Operators
+//!
+//! The [`ops`] module provides operators for vector similarity search:
+//!
+//! - [`AnnScan`] - Approximate nearest neighbor search using HNSW
+//! - [`ExactKnn`] - Brute force k-NN search for small sets or validation
+//! - [`VectorFilter`] - Post-filter results by predicates
+//!
+//! ## Example
+//!
+//! ```ignore
+//! use manifoldb_vector::ops::{AnnScan, VectorOperator, SearchConfig};
+//!
+//! // Search for 10 nearest neighbors
+//! let mut scan = AnnScan::k_nearest(&index, &query, 10)?;
+//!
+//! while let Some(m) = scan.next()? {
+//!     println!("Entity {:?} at distance {}", m.entity_id, m.distance);
+//! }
+//! ```
 
 pub mod distance;
 pub mod encoding;
@@ -59,5 +80,6 @@ pub mod types;
 pub use distance::DistanceMetric;
 pub use error::VectorError;
 pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
+pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
 pub use store::VectorStore;
 pub use types::{Embedding, EmbeddingName, EmbeddingSpace};
