@@ -331,12 +331,11 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage()?;
 
         // Create range for this entity's edges
+        // The index key format is: entity_id (8 bytes) + edge_id (8 bytes)
+        // We want all keys that start with this entity_id
         let start_key = entity_id.as_u64().to_be_bytes().to_vec();
-        let mut end_key = start_key.clone();
-        // Increment the last byte to get exclusive upper bound
-        if let Some(last) = end_key.last_mut() {
-            *last = last.saturating_add(1);
-        }
+        // For the end key, use entity_id + 1 to capture all edge_ids for this entity
+        let end_key = (entity_id.as_u64().wrapping_add(1)).to_be_bytes().to_vec();
 
         let mut cursor = storage
             .range(

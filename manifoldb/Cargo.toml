@@ -20,6 +20,9 @@ serde = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+# Required for integration tests that use internal crates directly
+manifoldb-storage = { workspace = true }
+manifoldb-vector = { workspace = true }
 
 [[bench]]
 name = "benchmarks"
