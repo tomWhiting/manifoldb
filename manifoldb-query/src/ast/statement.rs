@@ -144,10 +144,7 @@ impl SelectItem {
     /// Creates an aliased expression item.
     #[must_use]
     pub fn aliased(expr: Expr, alias: impl Into<Identifier>) -> Self {
-        Self::Expr {
-            expr,
-            alias: Some(alias.into()),
-        }
+        Self::Expr { expr, alias: Some(alias.into()) }
     }
 }
 
@@ -191,19 +188,13 @@ impl TableRef {
     /// Creates a simple table reference.
     #[must_use]
     pub fn table(name: impl Into<QualifiedName>) -> Self {
-        Self::Table {
-            name: name.into(),
-            alias: None,
-        }
+        Self::Table { name: name.into(), alias: None }
     }
 
     /// Creates an aliased table reference.
     #[must_use]
     pub fn aliased(name: impl Into<QualifiedName>, alias: impl Into<TableAlias>) -> Self {
-        Self::Table {
-            name: name.into(),
-            alias: Some(alias.into()),
-        }
+        Self::Table { name: name.into(), alias: Some(alias.into()) }
     }
 }
 
@@ -220,19 +211,13 @@ impl TableAlias {
     /// Creates a simple alias.
     #[must_use]
     pub fn new(name: impl Into<Identifier>) -> Self {
-        Self {
-            name: name.into(),
-            columns: vec![],
-        }
+        Self { name: name.into(), columns: vec![] }
     }
 
     /// Creates an alias with column names.
     #[must_use]
     pub fn with_columns(name: impl Into<Identifier>, columns: Vec<Identifier>) -> Self {
-        Self {
-            name: name.into(),
-            columns,
-        }
+        Self { name: name.into(), columns }
     }
 }
 
@@ -271,23 +256,13 @@ impl JoinClause {
     /// Creates an inner join.
     #[must_use]
     pub const fn inner(left: TableRef, right: TableRef, on: Expr) -> Self {
-        Self {
-            left,
-            right,
-            join_type: JoinType::Inner,
-            condition: JoinCondition::On(on),
-        }
+        Self { left, right, join_type: JoinType::Inner, condition: JoinCondition::On(on) }
     }
 
     /// Creates a left outer join.
     #[must_use]
     pub const fn left_join(left: TableRef, right: TableRef, on: Expr) -> Self {
-        Self {
-            left,
-            right,
-            join_type: JoinType::LeftOuter,
-            condition: JoinCondition::On(on),
-        }
+        Self { left, right, join_type: JoinType::LeftOuter, condition: JoinCondition::On(on) }
     }
 }
 
@@ -501,10 +476,7 @@ impl Assignment {
     /// Creates a new assignment.
     #[must_use]
     pub fn new(column: impl Into<Identifier>, value: Expr) -> Self {
-        Self {
-            column: column.into(),
-            value,
-        }
+        Self { column: column.into(), value }
     }
 }
 
@@ -571,12 +543,7 @@ impl CreateTableStatement {
     /// Creates a new CREATE TABLE statement.
     #[must_use]
     pub fn new(name: impl Into<QualifiedName>, columns: Vec<ColumnDef>) -> Self {
-        Self {
-            if_not_exists: false,
-            name: name.into(),
-            columns,
-            constraints: vec![],
-        }
+        Self { if_not_exists: false, name: name.into(), columns, constraints: vec![] }
     }
 }
 
@@ -595,11 +562,7 @@ impl ColumnDef {
     /// Creates a new column definition.
     #[must_use]
     pub fn new(name: impl Into<Identifier>, data_type: DataType) -> Self {
-        Self {
-            name: name.into(),
-            data_type,
-            constraints: vec![],
-        }
+        Self { name: name.into(), data_type, constraints: vec![] }
     }
 
     /// Adds a NOT NULL constraint.
@@ -780,12 +743,7 @@ impl IndexColumn {
     /// Creates a new index column.
     #[must_use]
     pub const fn new(expr: Expr) -> Self {
-        Self {
-            expr,
-            asc: None,
-            nulls_first: None,
-            opclass: None,
-        }
+        Self { expr, asc: None, nulls_first: None, opclass: None }
     }
 }
 
@@ -819,9 +777,7 @@ mod tests {
     fn select_builder() {
         let stmt = SelectStatement::new(vec![SelectItem::Wildcard])
             .from(TableRef::table(QualifiedName::simple("users")))
-            .where_clause(
-                Expr::column(QualifiedName::simple("id")).eq(Expr::integer(1)),
-            );
+            .where_clause(Expr::column(QualifiedName::simple("id")).eq(Expr::integer(1)));
 
         assert!(stmt.where_clause.is_some());
         assert_eq!(stmt.from.len(), 1);
@@ -840,9 +796,7 @@ mod tests {
 
     #[test]
     fn column_def_builder() {
-        let col = ColumnDef::new("id", DataType::BigInt)
-            .primary_key()
-            .not_null();
+        let col = ColumnDef::new("id", DataType::BigInt).primary_key().not_null();
 
         assert_eq!(col.constraints.len(), 2);
     }

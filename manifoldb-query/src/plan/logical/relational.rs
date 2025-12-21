@@ -27,12 +27,7 @@ impl ScanNode {
     /// Creates a new scan node for the given table.
     #[must_use]
     pub fn new(table_name: impl Into<String>) -> Self {
-        Self {
-            table_name: table_name.into(),
-            alias: None,
-            projection: None,
-            filter: None,
-        }
+        Self { table_name: table_name.into(), alias: None, projection: None, filter: None }
     }
 
     /// Sets the table alias.
@@ -154,61 +149,37 @@ impl JoinNode {
     /// Creates a new inner join.
     #[must_use]
     pub fn inner(condition: LogicalExpr) -> Self {
-        Self {
-            join_type: JoinType::Inner,
-            condition: Some(condition),
-            using_columns: vec![],
-        }
+        Self { join_type: JoinType::Inner, condition: Some(condition), using_columns: vec![] }
     }
 
     /// Creates a new left outer join.
     #[must_use]
     pub fn left(condition: LogicalExpr) -> Self {
-        Self {
-            join_type: JoinType::Left,
-            condition: Some(condition),
-            using_columns: vec![],
-        }
+        Self { join_type: JoinType::Left, condition: Some(condition), using_columns: vec![] }
     }
 
     /// Creates a new right outer join.
     #[must_use]
     pub fn right(condition: LogicalExpr) -> Self {
-        Self {
-            join_type: JoinType::Right,
-            condition: Some(condition),
-            using_columns: vec![],
-        }
+        Self { join_type: JoinType::Right, condition: Some(condition), using_columns: vec![] }
     }
 
     /// Creates a new full outer join.
     #[must_use]
     pub fn full(condition: LogicalExpr) -> Self {
-        Self {
-            join_type: JoinType::Full,
-            condition: Some(condition),
-            using_columns: vec![],
-        }
+        Self { join_type: JoinType::Full, condition: Some(condition), using_columns: vec![] }
     }
 
     /// Creates a new cross join.
     #[must_use]
     pub const fn cross() -> Self {
-        Self {
-            join_type: JoinType::Cross,
-            condition: None,
-            using_columns: vec![],
-        }
+        Self { join_type: JoinType::Cross, condition: None, using_columns: vec![] }
     }
 
     /// Creates a join with USING clause.
     #[must_use]
     pub fn using(join_type: JoinType, columns: Vec<String>) -> Self {
-        Self {
-            join_type,
-            condition: None,
-            using_columns: columns,
-        }
+        Self { join_type, condition: None, using_columns: columns }
     }
 }
 
@@ -229,11 +200,7 @@ impl AggregateNode {
     /// Creates a new aggregate node.
     #[must_use]
     pub const fn new(group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self {
-            group_by,
-            aggregates,
-            having: None,
-        }
+        Self { group_by, aggregates, having: None }
     }
 
     /// Sets the HAVING clause.
@@ -282,28 +249,19 @@ impl LimitNode {
     /// Creates a limit-only node.
     #[must_use]
     pub const fn limit(n: usize) -> Self {
-        Self {
-            limit: Some(n),
-            offset: None,
-        }
+        Self { limit: Some(n), offset: None }
     }
 
     /// Creates an offset-only node.
     #[must_use]
     pub const fn offset(n: usize) -> Self {
-        Self {
-            limit: None,
-            offset: Some(n),
-        }
+        Self { limit: None, offset: Some(n) }
     }
 
     /// Creates a limit with offset node.
     #[must_use]
     pub const fn limit_offset(limit: usize, offset: usize) -> Self {
-        Self {
-            limit: Some(limit),
-            offset: Some(offset),
-        }
+        Self { limit: Some(limit), offset: Some(offset) }
     }
 }
 
@@ -326,9 +284,7 @@ impl DistinctNode {
     /// Creates a DISTINCT ON node.
     #[must_use]
     pub const fn on(columns: Vec<LogicalExpr>) -> Self {
-        Self {
-            on_columns: Some(columns),
-        }
+        Self { on_columns: Some(columns) }
     }
 }
 
@@ -418,10 +374,7 @@ impl ValuesNode {
     /// Creates a new values node.
     #[must_use]
     pub const fn new(rows: Vec<Vec<LogicalExpr>>) -> Self {
-        Self {
-            rows,
-            column_names: None,
-        }
+        Self { rows, column_names: None }
     }
 
     /// Sets column names for the values.

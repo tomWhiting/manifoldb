@@ -1,5 +1,7 @@
 //! Unique identifiers for entities and edges.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for an entity (node) in the graph.
@@ -26,6 +28,12 @@ impl From<u64> for EntityId {
     }
 }
 
+impl fmt::Display for EntityId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EntityId({})", self.0)
+    }
+}
+
 /// Unique identifier for an edge (relationship) in the graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct EdgeId(u64);
@@ -47,6 +55,12 @@ impl EdgeId {
 impl From<u64> for EdgeId {
     fn from(id: u64) -> Self {
         Self::new(id)
+    }
+}
+
+impl fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EdgeId({})", self.0)
     }
 }
 

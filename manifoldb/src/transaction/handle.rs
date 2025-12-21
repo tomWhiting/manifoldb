@@ -80,12 +80,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         storage: T,
         vector_sync_strategy: VectorSyncStrategy,
     ) -> Self {
-        Self {
-            tx_id,
-            storage: Some(storage),
-            read_only: false,
-            vector_sync_strategy,
-        }
+        Self { tx_id, storage: Some(storage), read_only: false, vector_sync_strategy }
     }
 
     /// Get the transaction ID.
@@ -108,9 +103,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
     /// Get the storage transaction, returning an error if already consumed.
     fn storage(&self) -> Result<&T, TransactionError> {
-        self.storage
-            .as_ref()
-            .ok_or(TransactionError::AlreadyCompleted)
+        self.storage.as_ref().ok_or(TransactionError::AlreadyCompleted)
     }
 
     /// Get a mutable reference to the storage transaction.
@@ -118,9 +111,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         if self.read_only {
             return Err(TransactionError::ReadOnly);
         }
-        self.storage
-            .as_mut()
-            .ok_or(TransactionError::AlreadyCompleted)
+        self.storage.as_mut().ok_or(TransactionError::AlreadyCompleted)
     }
 
     // ========================================================================
@@ -151,12 +142,10 @@ impl<T: Transaction> DatabaseTransaction<T> {
     pub fn put_entity(&mut self, entity: &Entity) -> Result<(), TransactionError> {
         let storage = self.storage_mut()?;
         let key = entity.id.as_u64().to_be_bytes();
-        let value =
-            bincode::serialize(entity).map_err(|e| TransactionError::Serialization(e.to_string()))?;
+        let value = bincode::serialize(entity)
+            .map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
-        storage
-            .put(tables::NODES, &key, &value)
-            .map_err(storage_error_to_tx_error)
+        storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)
     }
 
     /// Delete an entity by its ID.
@@ -169,9 +158,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage_mut()?;
         let key = id.as_u64().to_be_bytes();
 
-        storage
-            .delete(tables::NODES, &key)
-            .map_err(storage_error_to_tx_error)
+        storage.delete(tables::NODES, &key).map_err(storage_error_to_tx_error)
     }
 
     /// Create a new entity with an auto-generated ID.
@@ -240,21 +227,15 @@ impl<T: Transaction> DatabaseTransaction<T> {
             bincode::serialize(edge).map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
         // Store the edge data
-        storage
-            .put(tables::EDGES, &key, &value)
-            .map_err(storage_error_to_tx_error)?;
+        storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
 
         // Update outgoing edge index (source -> edge)
         let out_key = make_adjacency_key(edge.source, edge.id);
-        storage
-            .put(tables::EDGES_OUT, &out_key, &[])
-            .map_err(storage_error_to_tx_error)?;
+        storage.put(tables::EDGES_OUT, &out_key, &[]).map_err(storage_error_to_tx_error)?;
 
         // Update incoming edge index (target -> edge)
         let in_key = make_adjacency_key(edge.target, edge.id);
-        storage
-            .put(tables::EDGES_IN, &in_key, &[])
-            .map_err(storage_error_to_tx_error)?;
+        storage.put(tables::EDGES_IN, &in_key, &[]).map_err(storage_error_to_tx_error)?;
 
         Ok(())
     }
@@ -272,9 +253,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let key = id.as_u64().to_be_bytes();
 
         // Delete the edge data
-        let deleted = storage
-            .delete(tables::EDGES, &key)
-            .map_err(storage_error_to_tx_error)?;
+        let deleted = storage.delete(tables::EDGES, &key).map_err(storage_error_to_tx_error)?;
 
         if deleted {
             // Remove from outgoing edge index
@@ -395,10 +374,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     ///
     /// After commit, the transaction handle is consumed and cannot be used.
     pub fn commit(mut self) -> Result<(), TransactionError> {
-        let storage = self
-            .storage
-            .take()
-            .ok_or(TransactionError::AlreadyCompleted)?;
+        let storage = self.storage.take().ok_or(TransactionError::AlreadyCompleted)?;
 
         storage.commit().map_err(storage_error_to_tx_error)
     }
@@ -408,10 +384,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// This is typically implicit when a transaction is dropped without
     /// committing, but can be called explicitly for clarity.
     pub fn rollback(mut self) -> Result<(), TransactionError> {
-        let storage = self
-            .storage
-            .take()
-            .ok_or(TransactionError::AlreadyCompleted)?;
+        let storage = self.storage.take().ok_or(TransactionError::AlreadyCompleted)?;
 
         storage.rollback().map_err(storage_error_to_tx_error)
     }

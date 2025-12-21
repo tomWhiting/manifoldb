@@ -160,13 +160,7 @@ impl Decoder for Edge {
             offset += consumed;
         }
 
-        Ok(Self {
-            id,
-            source,
-            target,
-            edge_type,
-            properties,
-        })
+        Ok(Self { id, source, target, edge_type, properties })
     }
 }
 
@@ -190,20 +184,16 @@ mod tests {
 
     #[test]
     fn encode_decode_edge_with_properties() {
-        let original =
-            Edge::new(EdgeId::new(100), EntityId::new(1), EntityId::new(2), "KNOWS")
-                .with_property("since", "2024-01-01")
-                .with_property("weight", 0.8f64);
+        let original = Edge::new(EdgeId::new(100), EntityId::new(1), EntityId::new(2), "KNOWS")
+            .with_property("since", "2024-01-01")
+            .with_property("weight", 0.8f64);
         let encoded = original.encode().unwrap();
         let decoded = Edge::decode(&encoded).unwrap();
         assert_eq!(decoded.id, original.id);
         assert_eq!(decoded.source, original.source);
         assert_eq!(decoded.target, original.target);
         assert_eq!(decoded.edge_type.as_str(), "KNOWS");
-        assert_eq!(
-            decoded.get_property("since"),
-            Some(&Value::String("2024-01-01".to_owned()))
-        );
+        assert_eq!(decoded.get_property("since"), Some(&Value::String("2024-01-01".to_owned())));
         assert_eq!(decoded.get_property("weight"), Some(&Value::Float(0.8)));
     }
 
@@ -225,9 +215,7 @@ mod tests {
     #[test]
     fn decode_wrong_version() {
         let mut encoded =
-            Edge::new(EdgeId::new(1), EntityId::new(1), EntityId::new(2), "TEST")
-                .encode()
-                .unwrap();
+            Edge::new(EdgeId::new(1), EntityId::new(1), EntityId::new(2), "TEST").encode().unwrap();
         encoded[0] = 99; // Invalid version
         let result = Edge::decode(&encoded);
         assert!(result.is_err());

@@ -35,12 +35,9 @@ fn test_multiple_tables() {
     // Write to multiple tables in one transaction
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("users", b"user:1", b"Alice")
-            .expect("failed to put user");
-        tx.put("orders", b"order:1", b"Order for Alice")
-            .expect("failed to put order");
-        tx.put("users", b"user:2", b"Bob")
-            .expect("failed to put user");
+        tx.put("users", b"user:1", b"Alice").expect("failed to put user");
+        tx.put("orders", b"order:1", b"Order for Alice").expect("failed to put order");
+        tx.put("users", b"user:2", b"Bob").expect("failed to put user");
         tx.commit().expect("failed to commit");
     }
 
@@ -71,10 +68,8 @@ fn test_table_isolation() {
     // Write same key to different tables
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("table_a", b"key", b"value_a")
-            .expect("failed to put");
-        tx.put("table_b", b"key", b"value_b")
-            .expect("failed to put");
+        tx.put("table_a", b"key", b"value_a").expect("failed to put");
+        tx.put("table_b", b"key", b"value_b").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
@@ -98,18 +93,15 @@ fn test_rollback_discards_changes() {
     // First, write some initial data
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test", b"key", b"initial")
-            .expect("failed to put");
+        tx.put("test", b"key", b"initial").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
     // Start a write transaction but rollback
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test", b"key", b"modified")
-            .expect("failed to put");
-        tx.put("test", b"new_key", b"new_value")
-            .expect("failed to put");
+        tx.put("test", b"key", b"modified").expect("failed to put");
+        tx.put("test", b"new_key", b"new_value").expect("failed to put");
         tx.rollback().expect("failed to rollback");
     }
 
@@ -133,10 +125,8 @@ fn test_concurrent_read_transactions() {
     // Write some data
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test", b"key1", b"value1")
-            .expect("failed to put");
-        tx.put("test", b"key2", b"value2")
-            .expect("failed to put");
+        tx.put("test", b"key1", b"value1").expect("failed to put");
+        tx.put("test", b"key2", b"value2").expect("failed to put");
         tx.commit().expect("failed to commit");
     }
 
@@ -165,8 +155,7 @@ fn test_large_values() {
     // Write large value
     {
         let mut tx = engine.begin_write().expect("failed to begin write");
-        tx.put("test", b"large", &large_value)
-            .expect("failed to put large value");
+        tx.put("test", b"large", &large_value).expect("failed to put large value");
         tx.commit().expect("failed to commit");
     }
 
@@ -191,8 +180,7 @@ fn test_many_keys() {
         for i in 0..NUM_KEYS {
             let key = format!("key:{i:05}");
             let value = format!("value:{i:05}");
-            tx.put("test", key.as_bytes(), value.as_bytes())
-                .expect("failed to put");
+            tx.put("test", key.as_bytes(), value.as_bytes()).expect("failed to put");
         }
         tx.commit().expect("failed to commit");
     }

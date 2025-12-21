@@ -28,4 +28,6 @@ pub use statement::{
     SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias, TableConstraint,
     TableRef, UpdateStatement,
 };
-pub use vector::{DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams};
+pub use vector::{
+    DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,
+};

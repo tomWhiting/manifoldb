@@ -50,9 +50,7 @@ pub struct TransactionManagerConfig {
 
 impl Default for TransactionManagerConfig {
     fn default() -> Self {
-        Self {
-            vector_sync_strategy: VectorSyncStrategy::Synchronous,
-        }
+        Self { vector_sync_strategy: VectorSyncStrategy::Synchronous }
     }
 }
 
@@ -112,11 +110,7 @@ impl<E: StorageEngine> TransactionManager<E> {
 
     /// Create a new transaction manager with custom configuration.
     pub fn with_config(engine: E, config: TransactionManagerConfig) -> Self {
-        Self {
-            engine: Arc::new(engine),
-            config,
-            next_tx_id: AtomicU64::new(1),
-        }
+        Self { engine: Arc::new(engine), config, next_tx_id: AtomicU64::new(1) }
     }
 
     /// Get the vector synchronization strategy.
@@ -135,10 +129,8 @@ impl<E: StorageEngine> TransactionManager<E> {
     /// Returns an error if the transaction cannot be started.
     pub fn begin_read(&self) -> Result<DatabaseTransaction<E::Transaction<'_>>, TransactionError> {
         let tx_id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
-        let storage_tx = self
-            .engine
-            .begin_read()
-            .map_err(|e| storage_error_to_transaction_error(&e))?;
+        let storage_tx =
+            self.engine.begin_read().map_err(|e| storage_error_to_transaction_error(&e))?;
 
         Ok(DatabaseTransaction::new_read(tx_id, storage_tx))
     }
@@ -153,16 +145,10 @@ impl<E: StorageEngine> TransactionManager<E> {
     /// Returns an error if the transaction cannot be started.
     pub fn begin_write(&self) -> Result<DatabaseTransaction<E::Transaction<'_>>, TransactionError> {
         let tx_id = self.next_tx_id.fetch_add(1, Ordering::Relaxed);
-        let storage_tx = self
-            .engine
-            .begin_write()
-            .map_err(|e| storage_error_to_transaction_error(&e))?;
+        let storage_tx =
+            self.engine.begin_write().map_err(|e| storage_error_to_transaction_error(&e))?;
 
-        Ok(DatabaseTransaction::new_write(
-            tx_id,
-            storage_tx,
-            self.config.vector_sync_strategy,
-        ))
+        Ok(DatabaseTransaction::new_write(tx_id, storage_tx, self.config.vector_sync_strategy))
     }
 
     /// Flush any buffered data to durable storage.
@@ -173,9 +159,7 @@ impl<E: StorageEngine> TransactionManager<E> {
     ///
     /// Returns an error if the flush fails.
     pub fn flush(&self) -> Result<(), TransactionError> {
-        self.engine
-            .flush()
-            .map_err(|e| storage_error_to_transaction_error(&e))
+        self.engine.flush().map_err(|e| storage_error_to_transaction_error(&e))
     }
 
     /// Get a reference to the underlying storage engine.
@@ -212,9 +196,6 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = TransactionManagerConfig::default();
-        assert_eq!(
-            config.vector_sync_strategy,
-            VectorSyncStrategy::Synchronous
-        );
+        assert_eq!(config.vector_sync_strategy, VectorSyncStrategy::Synchronous);
     }
 }
