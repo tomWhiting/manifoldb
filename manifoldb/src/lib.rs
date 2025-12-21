@@ -1,6 +1,6 @@
-//! `ManifoldDB`
+//! `ManifoldDB` - A Multi-Paradigm Embedded Database
 //!
-//! A multi-paradigm embedded database that unifies graph, vector, and relational
+//! ManifoldDB is an embedded database that unifies graph, vector, and relational
 //! data operations in a single system.
 //!
 //! # Features
@@ -10,54 +10,131 @@
 //! - **SQL Support**: Query using familiar SQL syntax with extensions
 //! - **ACID Transactions**: Full transactional support across all operations
 //!
-//! # Transaction Example
+//! # Quick Start
+//!
+//! ## Opening a Database
 //!
 //! ```ignore
-//! use manifoldb::transaction::TransactionManager;
-//! use manifoldb_storage::backends::RedbEngine;
+//! use manifoldb::Database;
 //!
-//! // Create the transaction manager
-//! let engine = RedbEngine::open("mydb.redb")?;
-//! let manager = TransactionManager::new(engine);
+//! // Open or create a database file
+//! let db = Database::open("mydb.manifold")?;
+//!
+//! // Or create an in-memory database for testing
+//! let db = Database::in_memory()?;
+//! ```
+//!
+//! ## Using Transactions
+//!
+//! ManifoldDB provides ACID transactions for all operations:
+//!
+//! ```ignore
+//! use manifoldb::Database;
+//!
+//! let db = Database::in_memory()?;
 //!
 //! // Write transaction
-//! let mut tx = manager.begin_write()?;
-//! let entity = tx.create_entity()?.with_label("Person");
+//! let mut tx = db.begin()?;
+//! let entity = tx.create_entity()?.with_label("Person").with_property("name", "Alice");
 //! tx.put_entity(&entity)?;
 //! tx.commit()?;
 //!
 //! // Read transaction
-//! let tx = manager.begin_read()?;
-//! let entity = tx.get_entity(entity_id)?;
+//! let tx = db.begin_read()?;
+//! if let Some(entity) = tx.get_entity(entity_id)? {
+//!     println!("Found: {:?}", entity);
+//! }
 //! ```
 //!
-//! # SQL Example
+//! ## Executing SQL Queries
 //!
 //! ```ignore
 //! use manifoldb::Database;
 //!
 //! let db = Database::open("mydb.manifold")?;
 //!
-//! // Create entities
+//! // Execute statements
 //! db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)")?;
 //!
-//! // Query with SQL
+//! // Query data
 //! let results = db.query("SELECT * FROM users WHERE age > 25")?;
+//! for row in results {
+//!     println!("{:?}", row);
+//! }
+//! ```
 //!
-//! // Graph traversal
+//! ## Graph Operations
+//!
+//! ```ignore
+//! use manifoldb::Database;
+//!
+//! let db = Database::in_memory()?;
+//! let mut tx = db.begin()?;
+//!
+//! // Create nodes
+//! let alice = tx.create_entity()?.with_label("Person").with_property("name", "Alice");
+//! let bob = tx.create_entity()?.with_label("Person").with_property("name", "Bob");
+//! tx.put_entity(&alice)?;
+//! tx.put_entity(&bob)?;
+//!
+//! // Create edges
+//! let follows = tx.create_edge(alice.id, bob.id, "FOLLOWS")?;
+//! tx.put_edge(&follows)?;
+//!
+//! tx.commit()?;
+//!
+//! // Query with graph patterns
 //! let friends = db.query("
 //!     SELECT * FROM users
-//!     MATCH (u)-[:FRIENDS]->(f)
+//!     MATCH (u)-[:FOLLOWS]->(f)
 //!     WHERE u.name = 'Alice'
 //! ")?;
+//! ```
+//!
+//! ## Vector Search
+//!
+//! ```ignore
+//! use manifoldb::{Database, Value};
+//!
+//! let db = Database::open("mydb.manifold")?;
+//!
+//! // Store vectors as entity properties
+//! let mut tx = db.begin()?;
+//! let doc = tx.create_entity()?
+//!     .with_label("Document")
+//!     .with_property("embedding", vec![0.1f32, 0.2, 0.3]);
+//! tx.put_entity(&doc)?;
+//! tx.commit()?;
 //!
 //! // Vector similarity search
-//! let similar = db.query("
+//! let query_vector = vec![0.1f32, 0.2, 0.3];
+//! let similar = db.query_with_params("
 //!     SELECT * FROM documents
-//!     ORDER BY embedding <-> $query_vector
+//!     ORDER BY embedding <-> $1
 //!     LIMIT 10
-//! ")?;
+//! ", &[Value::Vector(query_vector)])?;
 //! ```
+//!
+//! # Configuration
+//!
+//! Use [`DatabaseBuilder`] for advanced configuration:
+//!
+//! ```ignore
+//! use manifoldb::{DatabaseBuilder, VectorSyncStrategy};
+//!
+//! let db = DatabaseBuilder::new()
+//!     .path("mydb.manifold")
+//!     .cache_size(128 * 1024 * 1024)  // 128MB cache
+//!     .vector_sync_strategy(VectorSyncStrategy::Async)
+//!     .open()?;
+//! ```
+//!
+//! # Modules
+//!
+//! - [`config`] - Database configuration and builder
+//! - [`database`] - Main database interface
+//! - [`error`] - Error types
+//! - [`transaction`] - Transaction management
 
 // Re-export core types
 pub use manifoldb_core::{
@@ -68,11 +145,16 @@ pub use manifoldb_core::{
 // Re-export storage types
 pub use manifoldb_storage::{StorageEngine, Transaction};
 
+// Modules
 pub mod config;
 pub mod database;
 pub mod error;
 pub mod transaction;
 
-pub use database::Database;
-pub use error::Error;
-pub use transaction::{DatabaseTransaction, TransactionManager, VectorSyncStrategy};
+// Public API re-exports
+pub use config::{Config, DatabaseBuilder};
+pub use database::{Database, FromValue, QueryParams, QueryResult, QueryRow};
+pub use error::{Error, Result};
+pub use transaction::{
+    DatabaseTransaction, TransactionManager, TransactionManagerConfig, VectorSyncStrategy,
+};
