@@ -11,12 +11,12 @@
 //!
 //! # Modules
 //!
-//! - [`context`] - Execution context (transactions, parameters)
+//! - `context` - Execution context (transactions, parameters)
 //! - [`row`] - Row type for intermediate results
-//! - [`operator`] - Operator trait and base types
+//! - `operator` - Operator trait and base types
 //! - [`operators`] - Concrete operator implementations
-//! - [`result`] - Query result types
-//! - [`executor`] - Main executor that drives query execution
+//! - `result` - Query result types
+//! - `executor` - Main executor that drives query execution
 //!
 //! # Example
 //!

@@ -1,6 +1,6 @@
 //! Error types for `ManifoldDB`.
 //!
-//! This module provides the [`Error`] type that represents all possible errors
+//! This module provides the [`enum@Error`] type that represents all possible errors
 //! when using `ManifoldDB`.
 
 use thiserror::Error;

@@ -453,7 +453,7 @@ pub enum Expr {
         negated: bool,
     },
 
-    /// Array access: expr[index].
+    /// Array access: `expr[index]`.
     ArrayIndex {
         /// The array expression.
         array: Box<Expr>,

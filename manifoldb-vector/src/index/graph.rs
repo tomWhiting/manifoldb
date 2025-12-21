@@ -22,7 +22,7 @@ pub struct HnswNode {
     /// The maximum layer this node appears in.
     pub max_layer: usize,
     /// Connections to other nodes, indexed by layer.
-    /// connections[layer] = list of neighbor entity IDs
+    /// `connections[layer]` = list of neighbor entity IDs
     pub connections: Vec<Vec<EntityId>>,
 }
 
