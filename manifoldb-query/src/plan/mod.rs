@@ -21,6 +21,7 @@
 //! ```
 
 pub mod logical;
+pub mod optimize;
 pub mod physical;
 
 // Re-export commonly used types
@@ -29,4 +30,9 @@ pub use logical::{
     FilterNode, JoinNode, JoinType, LimitNode, LogicalExpr, LogicalPlan, PathScanNode, PlanBuilder,
     PlanError, PlanResult, ProjectNode, ScanNode, SetOpNode, SetOpType, SortNode, SortOrder,
     UnionNode, ValuesNode, VectorDistanceNode,
+};
+
+pub use physical::{
+    Cost, CostModel, FullScanNode, HashJoinNode, HnswSearchNode, IndexRangeScanNode, IndexScanNode,
+    NestedLoopJoinNode, PhysicalPlan, PhysicalPlanner,
 };

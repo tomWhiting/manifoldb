@@ -329,13 +329,13 @@ mod expressions {
 
     #[test]
     fn parse_literal_float() {
-        let stmt = parse_single_statement("SELECT 3.14").unwrap();
+        let stmt = parse_single_statement("SELECT 1.5").unwrap();
         match stmt {
             Statement::Select(select) => {
                 if let SelectItem::Expr { expr: Expr::Literal(Literal::Float(f)), .. } =
                     &select.projection[0]
                 {
-                    assert!((f - 3.14).abs() < 0.001);
+                    assert!((f - 1.5).abs() < 0.001);
                 } else {
                     panic!("expected float literal");
                 }

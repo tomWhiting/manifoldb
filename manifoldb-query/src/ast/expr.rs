@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(Literal::Null.to_string(), "NULL");
         assert_eq!(Literal::Boolean(true).to_string(), "true");
         assert_eq!(Literal::Integer(42).to_string(), "42");
-        assert_eq!(Literal::Float(3.14).to_string(), "3.14");
+        assert_eq!(Literal::Float(1.5).to_string(), "1.5");
         assert_eq!(Literal::String("hello".into()).to_string(), "'hello'");
         assert_eq!(Literal::Vector(vec![1.0, 2.0, 3.0]).to_string(), "[1, 2, 3]");
     }

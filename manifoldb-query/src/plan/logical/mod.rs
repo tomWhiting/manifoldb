@@ -38,7 +38,7 @@ mod vector;
 
 pub use builder::PlanBuilder;
 pub use expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
-pub use graph::{ExpandDirection, ExpandNode, PathScanNode};
+pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
 pub use node::LogicalPlan;
 pub use relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode,
