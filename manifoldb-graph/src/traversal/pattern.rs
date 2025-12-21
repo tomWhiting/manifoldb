@@ -192,6 +192,55 @@ impl PatternMatch {
     }
 }
 
+/// Context for pattern matching operations.
+///
+/// Bundles related parameters to reduce function argument counts
+/// and improve code readability.
+struct MatchContext<'a, T: Transaction> {
+    /// Transaction for storage operations.
+    tx: &'a T,
+    /// Current node being processed.
+    current: EntityId,
+    /// Current step index in the pattern.
+    step_idx: usize,
+    /// Accumulated path nodes.
+    path_nodes: Vec<EntityId>,
+    /// Accumulated path edges for each step.
+    path_edges: Vec<Vec<EdgeId>>,
+    /// Set of visited nodes (for cycle detection).
+    visited: HashSet<EntityId>,
+    /// Accumulated match results.
+    results: &'a mut Vec<PatternMatch>,
+}
+
+impl<'a, T: Transaction> MatchContext<'a, T> {
+    /// Create a new match context.
+    fn new(
+        tx: &'a T,
+        start: EntityId,
+        allow_cycles: bool,
+        results: &'a mut Vec<PatternMatch>,
+    ) -> Self {
+        let visited = if allow_cycles {
+            HashSet::new()
+        } else {
+            let mut set = HashSet::new();
+            set.insert(start);
+            set
+        };
+
+        Self {
+            tx,
+            current: start,
+            step_idx: 0,
+            path_nodes: vec![start],
+            path_edges: Vec::new(),
+            visited,
+            results,
+        }
+    }
+}
+
 /// Path pattern matcher.
 ///
 /// Matches paths against a sequence of steps, supporting variable-length
@@ -284,15 +333,9 @@ impl PathPattern {
         }
 
         let mut results = Vec::new();
-        let mut visited = if self.allow_cycles {
-            HashSet::new()
-        } else {
-            let mut set = HashSet::new();
-            set.insert(start);
-            set
-        };
+        let mut ctx = MatchContext::new(tx, start, self.allow_cycles, &mut results);
 
-        self.match_from_step(tx, start, 0, vec![start], Vec::new(), &mut visited, &mut results)?;
+        self.match_from_step(&mut ctx)?;
 
         Ok(results)
     }
@@ -317,41 +360,31 @@ impl PathPattern {
     }
 
     /// Recursive helper to match pattern steps.
-    fn match_from_step<T: Transaction>(
-        &self,
-        tx: &T,
-        current: EntityId,
-        step_idx: usize,
-        path_nodes: Vec<EntityId>,
-        path_edges: Vec<Vec<EdgeId>>,
-        visited: &mut HashSet<EntityId>,
-        results: &mut Vec<PatternMatch>,
-    ) -> GraphResult<()> {
+    fn match_from_step<T: Transaction>(&self, ctx: &mut MatchContext<'_, T>) -> GraphResult<()> {
         // Check limit
         if let Some(limit) = self.limit {
-            if results.len() >= limit {
+            if ctx.results.len() >= limit {
                 return Ok(());
             }
         }
 
         // If we've processed all steps, we have a match
-        if step_idx >= self.steps.len() {
-            results.push(PatternMatch { nodes: path_nodes, step_edges: path_edges });
+        if ctx.step_idx >= self.steps.len() {
+            ctx.results.push(PatternMatch {
+                nodes: ctx.path_nodes.clone(),
+                step_edges: ctx.path_edges.clone(),
+            });
             return Ok(());
         }
 
-        let step = &self.steps[step_idx];
+        let step = &self.steps[ctx.step_idx];
 
         // Handle variable-length steps
         if step.is_variable_length() {
-            self.match_variable_step(
-                tx, current, step_idx, step, path_nodes, path_edges, visited, results,
-            )?;
+            self.match_variable_step(ctx, step)?;
         } else {
             // Single-hop step
-            self.match_single_step(
-                tx, current, step_idx, step, path_nodes, path_edges, visited, results,
-            )?;
+            self.match_single_step(ctx, step)?;
         }
 
         Ok(())
@@ -359,45 +392,42 @@ impl PathPattern {
 
     fn match_single_step<T: Transaction>(
         &self,
-        tx: &T,
-        current: EntityId,
-        step_idx: usize,
+        ctx: &mut MatchContext<'_, T>,
         step: &PathStep,
-        path_nodes: Vec<EntityId>,
-        path_edges: Vec<Vec<EdgeId>>,
-        visited: &mut HashSet<EntityId>,
-        results: &mut Vec<PatternMatch>,
     ) -> GraphResult<()> {
-        let neighbors = self.get_filtered_neighbors(tx, current, step)?;
+        let neighbors = self.get_filtered_neighbors(ctx.tx, ctx.current, step)?;
 
         for (neighbor, edge_id) in neighbors {
-            if !self.allow_cycles && visited.contains(&neighbor) {
+            if !self.allow_cycles && ctx.visited.contains(&neighbor) {
                 continue;
             }
 
+            // Save current state for backtracking
+            let prev_current = ctx.current;
+            let prev_step_idx = ctx.step_idx;
+            let prev_nodes_len = ctx.path_nodes.len();
+            let prev_edges_len = ctx.path_edges.len();
+
             // Build new path
-            let mut new_nodes = path_nodes.clone();
-            let mut new_edges = path_edges.clone();
-            new_nodes.push(neighbor);
-            new_edges.push(vec![edge_id]);
+            ctx.path_nodes.push(neighbor);
+            ctx.path_edges.push(vec![edge_id]);
+            ctx.current = neighbor;
+            ctx.step_idx += 1;
 
             // Track visited
-            let was_new = if self.allow_cycles { false } else { visited.insert(neighbor) };
+            let was_new = if self.allow_cycles { false } else { ctx.visited.insert(neighbor) };
 
             // Continue to next step
-            self.match_from_step(
-                tx,
-                neighbor,
-                step_idx + 1,
-                new_nodes,
-                new_edges,
-                visited,
-                results,
-            )?;
+            self.match_from_step(ctx)?;
 
-            // Untrack for backtracking
+            // Restore state for backtracking
+            ctx.path_nodes.truncate(prev_nodes_len);
+            ctx.path_edges.truncate(prev_edges_len);
+            ctx.current = prev_current;
+            ctx.step_idx = prev_step_idx;
+
             if was_new {
-                visited.remove(&neighbor);
+                ctx.visited.remove(&neighbor);
             }
         }
 
@@ -406,45 +436,43 @@ impl PathPattern {
 
     fn match_variable_step<T: Transaction>(
         &self,
-        tx: &T,
-        current: EntityId,
-        step_idx: usize,
+        ctx: &mut MatchContext<'_, T>,
         step: &PathStep,
-        path_nodes: Vec<EntityId>,
-        path_edges: Vec<Vec<EdgeId>>,
-        visited: &HashSet<EntityId>,
-        results: &mut Vec<PatternMatch>,
     ) -> GraphResult<()> {
         // Use BFS to explore variable-length paths
         let mut queue: VecDeque<(EntityId, Vec<EntityId>, Vec<EdgeId>, HashSet<EntityId>)> =
             VecDeque::new();
 
         // Initialize with current state
-        queue.push_back((current, vec![current], Vec::new(), visited.clone()));
+        queue.push_back((ctx.current, vec![ctx.current], Vec::new(), ctx.visited.clone()));
 
         while let Some((node, step_nodes, step_edges, step_visited)) = queue.pop_front() {
             let hop_count = step_edges.len();
 
             // If within valid hop range, try continuing with next step
             if hop_count >= step.min_hops {
-                let mut new_path_nodes = path_nodes.clone();
-                let mut new_path_edges = path_edges.clone();
+                // Save current state
+                let prev_current = ctx.current;
+                let prev_step_idx = ctx.step_idx;
+                let prev_nodes_len = ctx.path_nodes.len();
+                let prev_edges_len = ctx.path_edges.len();
+                let prev_visited = ctx.visited.clone();
 
                 // Add intermediate nodes (skip first which is already in path)
-                new_path_nodes.extend(step_nodes.iter().skip(1));
-                new_path_edges.push(step_edges.clone());
+                ctx.path_nodes.extend(step_nodes.iter().skip(1));
+                ctx.path_edges.push(step_edges.clone());
+                ctx.current = node;
+                ctx.step_idx += 1;
+                ctx.visited.clone_from(&step_visited);
 
-                let mut new_visited = step_visited.clone();
+                self.match_from_step(ctx)?;
 
-                self.match_from_step(
-                    tx,
-                    node,
-                    step_idx + 1,
-                    new_path_nodes,
-                    new_path_edges,
-                    &mut new_visited,
-                    results,
-                )?;
+                // Restore state
+                ctx.path_nodes.truncate(prev_nodes_len);
+                ctx.path_edges.truncate(prev_edges_len);
+                ctx.current = prev_current;
+                ctx.step_idx = prev_step_idx;
+                ctx.visited = prev_visited;
             }
 
             // Check if we can expand further
@@ -454,7 +482,7 @@ impl PathPattern {
             }
 
             // Expand to neighbors
-            let neighbors = self.get_filtered_neighbors(tx, node, step)?;
+            let neighbors = self.get_filtered_neighbors(ctx.tx, node, step)?;
 
             for (neighbor, edge_id) in neighbors {
                 if !self.allow_cycles && step_visited.contains(&neighbor) {
