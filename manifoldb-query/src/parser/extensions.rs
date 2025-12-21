@@ -123,8 +123,8 @@ impl ExtendedParser {
             let absolute_pos = search_from + pos;
 
             // Check word boundaries
-            let before_ok = absolute_pos == 0
-                || !input.as_bytes()[absolute_pos - 1].is_ascii_alphanumeric();
+            let before_ok =
+                absolute_pos == 0 || !input.as_bytes()[absolute_pos - 1].is_ascii_alphanumeric();
             let after_ok = absolute_pos + 5 >= input.len()
                 || !input.as_bytes()[absolute_pos + 5].is_ascii_alphanumeric();
 
@@ -142,7 +142,17 @@ impl ExtendedParser {
     fn find_match_end(input: &str) -> usize {
         let input_upper = input.to_uppercase();
 
-        let keywords = ["WHERE", "ORDER", "GROUP", "HAVING", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT"];
+        let keywords = [
+            "WHERE",
+            "ORDER",
+            "GROUP",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "UNION",
+            "INTERSECT",
+            "EXCEPT",
+        ];
 
         let mut min_pos = input.len();
 
@@ -258,7 +268,10 @@ impl ExtendedParser {
                 if let Some(ident) = name.name() {
                     // Vector operator markers shouldn't appear as columns after preprocessing,
                     // but if they do, they'll be handled by convert_vector_markers below
-                    if !matches!(ident.name.as_str(), "__VEC_EUCLIDEAN__" | "__VEC_COSINE__" | "__VEC_INNER__") {
+                    if !matches!(
+                        ident.name.as_str(),
+                        "__VEC_EUCLIDEAN__" | "__VEC_COSINE__" | "__VEC_INNER__"
+                    ) {
                         // Normal column reference - no action needed
                     }
                 }
@@ -367,9 +380,10 @@ impl ExtendedParser {
         let input = input.trim_start();
 
         if !input.starts_with('(') {
-            return Err(ParseError::InvalidPattern(
-                format!("expected '(' at start of node pattern, found: {}", input.chars().next().unwrap_or('?'))
-            ));
+            return Err(ParseError::InvalidPattern(format!(
+                "expected '(' at start of node pattern, found: {}",
+                input.chars().next().unwrap_or('?')
+            )));
         }
 
         let close_paren = Self::find_matching_paren(input, 0)
@@ -398,8 +412,7 @@ impl ExtendedParser {
 
         // Parse variable (before first colon or brace)
         if !current.starts_with(':') && !current.starts_with('{') {
-            let end = current.find([':', '{', ' '])
-                .unwrap_or(current.len());
+            let end = current.find([':', '{', ' ']).unwrap_or(current.len());
             let var_name = &current[..end];
             if !var_name.is_empty() {
                 variable = Some(Identifier::new(var_name));
@@ -410,8 +423,7 @@ impl ExtendedParser {
         // Parse labels (each starts with :)
         while current.starts_with(':') {
             current = &current[1..]; // Skip ':'
-            let end = current.find([':', '{', ' ', ')'])
-                .unwrap_or(current.len());
+            let end = current.find([':', '{', ' ', ')']).unwrap_or(current.len());
             let label = &current[..end];
             if !label.is_empty() {
                 labels.push(Identifier::new(label));
@@ -421,17 +433,14 @@ impl ExtendedParser {
 
         // Parse properties (in braces)
         if current.starts_with('{') {
-            let close_brace = current.find('}')
+            let close_brace = current
+                .find('}')
                 .ok_or_else(|| ParseError::InvalidPattern("unclosed properties".to_string()))?;
             let props_str = &current[1..close_brace];
             properties = Self::parse_properties(props_str)?;
         }
 
-        Ok(NodePattern {
-            variable,
-            labels,
-            properties,
-        })
+        Ok(NodePattern { variable, labels, properties })
     }
 
     /// Parses an edge pattern: `-[variable:TYPE*min..max]->` or `<-[...]-`.
@@ -445,13 +454,15 @@ impl ExtendedParser {
             // Could be -> or undirected, check ending
             (EdgeDirection::Right, 1) // Will verify later
         } else {
-            return Err(ParseError::InvalidPattern(
-                format!("expected edge pattern, found: {}", &input[..input.len().min(10)])
-            ));
+            return Err(ParseError::InvalidPattern(format!(
+                "expected edge pattern, found: {}",
+                &input[..input.len().min(10)]
+            )));
         };
 
         // Find the closing bracket
-        let bracket_end = input[bracket_start + 1..].find(']')
+        let bracket_end = input[bracket_start + 1..]
+            .find(']')
             .map(|p| p + bracket_start + 1)
             .ok_or_else(|| ParseError::InvalidPattern("unclosed edge pattern".to_string()))?;
 
@@ -485,21 +496,14 @@ impl ExtendedParser {
         let mut properties = Vec::new();
 
         if input.is_empty() {
-            return Ok(EdgePattern {
-                direction,
-                variable,
-                edge_types,
-                properties,
-                length,
-            });
+            return Ok(EdgePattern { direction, variable, edge_types, properties, length });
         }
 
         let mut current = input;
 
         // Parse variable (before first colon, asterisk, or brace)
         if !current.starts_with(':') && !current.starts_with('*') && !current.starts_with('{') {
-            let end = current.find([':', '*', '{', ' '])
-                .unwrap_or(current.len());
+            let end = current.find([':', '*', '{', ' ']).unwrap_or(current.len());
             let var_name = &current[..end];
             if !var_name.is_empty() {
                 variable = Some(Identifier::new(var_name));
@@ -510,8 +514,7 @@ impl ExtendedParser {
         // Parse edge types (each starts with : or |)
         while current.starts_with(':') || current.starts_with('|') {
             current = &current[1..]; // Skip ':' or '|'
-            let end = current.find(['|', '*', '{', ' ', ']'])
-                .unwrap_or(current.len());
+            let end = current.find(['|', '*', '{', ' ', ']']).unwrap_or(current.len());
             let edge_type = &current[..end];
             if !edge_type.is_empty() {
                 edge_types.push(Identifier::new(edge_type));
@@ -525,33 +528,31 @@ impl ExtendedParser {
             length = Self::parse_edge_length(current)?;
 
             // Skip past the length specification
-            let end = current.find(['{', ' ', ']'])
-                .unwrap_or(current.len());
+            let end = current.find(['{', ' ', ']']).unwrap_or(current.len());
             current = current[end..].trim_start();
         }
 
         // Parse properties (in braces)
         if current.starts_with('{') {
-            let close_brace = current.find('}')
-                .ok_or_else(|| ParseError::InvalidPattern("unclosed edge properties".to_string()))?;
+            let close_brace = current.find('}').ok_or_else(|| {
+                ParseError::InvalidPattern("unclosed edge properties".to_string())
+            })?;
             let props_str = &current[1..close_brace];
             properties = Self::parse_properties(props_str)?;
         }
 
-        Ok(EdgePattern {
-            direction,
-            variable,
-            edge_types,
-            properties,
-            length,
-        })
+        Ok(EdgePattern { direction, variable, edge_types, properties, length })
     }
 
     /// Parses edge length specification.
     fn parse_edge_length(input: &str) -> ParseResult<EdgeLength> {
         let input = input.trim();
 
-        if input.is_empty() || input.starts_with('{') || input.starts_with(' ') || input.starts_with(']') {
+        if input.is_empty()
+            || input.starts_with('{')
+            || input.starts_with(' ')
+            || input.starts_with(']')
+        {
             return Ok(EdgeLength::Any);
         }
 
@@ -559,38 +560,38 @@ impl ExtendedParser {
         if let Some(range_pos) = input.find("..") {
             let before = &input[..range_pos];
             let after_start = range_pos + 2;
-            let after_end = input[after_start..].find(|c: char| !c.is_ascii_digit())
+            let after_end = input[after_start..]
+                .find(|c: char| !c.is_ascii_digit())
                 .map_or(input.len(), |p| after_start + p);
             let after = &input[after_start..after_end];
 
             let min = if before.is_empty() {
                 None
             } else {
-                Some(before.parse::<u32>().map_err(|_|
+                Some(before.parse::<u32>().map_err(|_| {
                     ParseError::InvalidPattern(format!("invalid min in range: {before}"))
-                )?)
+                })?)
             };
 
             let max = if after.is_empty() {
                 None
             } else {
-                Some(after.parse::<u32>().map_err(|_|
+                Some(after.parse::<u32>().map_err(|_| {
                     ParseError::InvalidPattern(format!("invalid max in range: {after}"))
-                )?)
+                })?)
             };
 
             return Ok(EdgeLength::Range { min, max });
         }
 
         // Check for exact number
-        let num_end = input.find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(input.len());
+        let num_end = input.find(|c: char| !c.is_ascii_digit()).unwrap_or(input.len());
         let num_str = &input[..num_end];
 
         if !num_str.is_empty() {
-            let n = num_str.parse::<u32>().map_err(|_|
+            let n = num_str.parse::<u32>().map_err(|_| {
                 ParseError::InvalidPattern(format!("invalid edge length: {num_str}"))
-            )?;
+            })?;
             return Ok(EdgeLength::Exact(n));
         }
 
@@ -612,7 +613,8 @@ impl ExtendedParser {
                 continue;
             }
 
-            let colon_pos = pair.find(':')
+            let colon_pos = pair
+                .find(':')
                 .ok_or_else(|| ParseError::InvalidPattern(format!("invalid property: {pair}")))?;
 
             let name = pair[..colon_pos].trim();
@@ -620,10 +622,7 @@ impl ExtendedParser {
 
             let value = Self::parse_property_value(value_str);
 
-            properties.push(PropertyCondition {
-                name: Identifier::new(name),
-                value,
-            });
+            properties.push(PropertyCondition { name: Identifier::new(name), value });
         }
 
         Ok(properties)
@@ -635,7 +634,8 @@ impl ExtendedParser {
 
         // String literal
         if (input.starts_with('\'') && input.ends_with('\''))
-            || (input.starts_with('"') && input.ends_with('"')) {
+            || (input.starts_with('"') && input.ends_with('"'))
+        {
             let s = &input[1..input.len() - 1];
             return Expr::string(s);
         }
@@ -716,11 +716,7 @@ impl ExtendedParser {
 /// - `embedding <-> $query` (Euclidean distance)
 /// - `vec_column <=> $param` (Cosine distance)
 /// - `data <#> $vector` (Inner product)
-pub fn parse_vector_distance(
-    left: Expr,
-    metric: DistanceMetric,
-    right: Expr,
-) -> Expr {
+pub fn parse_vector_distance(left: Expr, metric: DistanceMetric, right: Expr) -> Expr {
     Expr::BinaryOp {
         left: Box::new(left),
         op: match metric {
@@ -819,33 +815,30 @@ mod tests {
 
     #[test]
     fn parse_long_path() {
-        let (path, _) = ExtendedParser::parse_path_pattern(
-            "(a)-[:KNOWS]->(b)-[:LIKES]->(c)"
-        ).unwrap();
+        let (path, _) =
+            ExtendedParser::parse_path_pattern("(a)-[:KNOWS]->(b)-[:LIKES]->(c)").unwrap();
         assert_eq!(path.steps.len(), 2);
     }
 
     #[test]
     fn parse_graph_pattern() {
-        let pattern = ExtendedParser::parse_graph_pattern(
-            "(u:User)-[:FOLLOWS]->(f:User)"
-        ).unwrap();
+        let pattern = ExtendedParser::parse_graph_pattern("(u:User)-[:FOLLOWS]->(f:User)").unwrap();
         assert_eq!(pattern.paths.len(), 1);
     }
 
     #[test]
     fn parse_multiple_paths() {
-        let pattern = ExtendedParser::parse_graph_pattern(
-            "(a)-[:R1]->(b), (b)-[:R2]->(c)"
-        ).unwrap();
+        let pattern =
+            ExtendedParser::parse_graph_pattern("(a)-[:R1]->(b), (b)-[:R2]->(c)").unwrap();
         assert_eq!(pattern.paths.len(), 2);
     }
 
     #[test]
     fn extract_match_clause() {
         let (sql, patterns) = ExtendedParser::extract_match_clauses(
-            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1"
-        ).unwrap();
+            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1",
+        )
+        .unwrap();
 
         assert!(sql.contains("SELECT * FROM users"));
         assert!(sql.contains("WHERE u.id = 1"));
@@ -855,9 +848,9 @@ mod tests {
 
     #[test]
     fn parse_extended_select() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1")
+                .unwrap();
 
         assert_eq!(stmts.len(), 1);
         if let Statement::Select(select) = &stmts[0] {
@@ -882,7 +875,8 @@ mod tests {
 
     #[test]
     fn parse_node_with_properties() {
-        let (node, _) = ExtendedParser::parse_node_pattern("(p:Person {name: 'Alice', age: 30})").unwrap();
+        let (node, _) =
+            ExtendedParser::parse_node_pattern("(p:Person {name: 'Alice', age: 30})").unwrap();
         assert_eq!(node.properties.len(), 2);
         assert_eq!(node.properties[0].name.name, "name");
         assert_eq!(node.properties[1].name.name, "age");

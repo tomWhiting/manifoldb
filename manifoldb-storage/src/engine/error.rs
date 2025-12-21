@@ -78,19 +78,13 @@ impl StorageError {
     /// corruption and configuration issues.
     #[must_use]
     pub const fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            Self::Conflict(_) | Self::Transaction(_) | Self::Io(_)
-        )
+        matches!(self, Self::Conflict(_) | Self::Transaction(_) | Self::Io(_))
     }
 
     /// Returns `true` if this is a "not found" type error.
     #[must_use]
     pub const fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::NotFound(_) | Self::TableNotFound(_) | Self::KeyNotFound
-        )
+        matches!(self, Self::NotFound(_) | Self::TableNotFound(_) | Self::KeyNotFound)
     }
 }
 

@@ -18,10 +18,7 @@ fn test_create_transaction_manager() {
     let engine = create_test_engine();
     let manager = TransactionManager::new(engine);
 
-    assert_eq!(
-        manager.vector_sync_strategy(),
-        VectorSyncStrategy::Synchronous
-    );
+    assert_eq!(manager.vector_sync_strategy(), VectorSyncStrategy::Synchronous);
 }
 
 #[test]
@@ -39,9 +36,7 @@ fn test_begin_write_transaction() {
     let engine = create_test_engine();
     let manager = TransactionManager::new(engine);
 
-    let tx = manager
-        .begin_write()
-        .expect("failed to begin write transaction");
+    let tx = manager.begin_write().expect("failed to begin write transaction");
     assert!(!tx.is_read_only());
     tx.rollback().expect("failed to rollback");
 }
@@ -83,10 +78,8 @@ fn test_create_and_get_entity() {
 
     // Read entity back
     let tx = manager.begin_read().expect("failed to begin read");
-    let retrieved = tx
-        .get_entity(entity_id)
-        .expect("failed to get entity")
-        .expect("entity not found");
+    let retrieved =
+        tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
     assert_eq!(retrieved.id, entity_id);
     assert!(retrieved.has_label("Person"));
@@ -103,34 +96,23 @@ fn test_update_entity() {
 
     // Create entity
     let mut tx = manager.begin_write().expect("failed to begin write");
-    let entity = tx
-        .create_entity()
-        .expect("failed to create entity")
-        .with_property("count", 1i64);
+    let entity = tx.create_entity().expect("failed to create entity").with_property("count", 1i64);
     let entity_id = entity.id;
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
     // Update entity
     let mut tx = manager.begin_write().expect("failed to begin write");
-    let mut entity = tx
-        .get_entity(entity_id)
-        .expect("failed to get entity")
-        .expect("entity not found");
+    let mut entity =
+        tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
     entity.set_property("count", 2i64);
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
     // Verify update
     let tx = manager.begin_read().expect("failed to begin read");
-    let entity = tx
-        .get_entity(entity_id)
-        .expect("failed to get entity")
-        .expect("entity not found");
-    assert_eq!(
-        entity.get_property("count"),
-        Some(&manifoldb::Value::Int(2))
-    );
+    let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
+    assert_eq!(entity.get_property("count"), Some(&manifoldb::Value::Int(2)));
 }
 
 #[test]
@@ -147,9 +129,7 @@ fn test_delete_entity() {
 
     // Delete entity
     let mut tx = manager.begin_write().expect("failed to begin write");
-    let deleted = tx
-        .delete_entity(entity_id)
-        .expect("failed to delete entity");
+    let deleted = tx.delete_entity(entity_id).expect("failed to delete entity");
     assert!(deleted);
     tx.commit().expect("failed to commit");
 
@@ -165,9 +145,7 @@ fn test_delete_nonexistent_entity() {
     let manager = TransactionManager::new(engine);
 
     let mut tx = manager.begin_write().expect("failed to begin write");
-    let deleted = tx
-        .delete_entity(EntityId::new(999))
-        .expect("failed to delete");
+    let deleted = tx.delete_entity(EntityId::new(999)).expect("failed to delete");
     assert!(!deleted);
 }
 
@@ -177,9 +155,7 @@ fn test_get_nonexistent_entity() {
     let manager = TransactionManager::new(engine);
 
     let tx = manager.begin_read().expect("failed to begin read");
-    let entity = tx
-        .get_entity(EntityId::new(999))
-        .expect("failed to get entity");
+    let entity = tx.get_entity(EntityId::new(999)).expect("failed to get entity");
     assert!(entity.is_none());
 }
 
@@ -210,10 +186,7 @@ fn test_create_and_get_edge() {
 
     // Read edge back
     let tx = manager.begin_read().expect("failed to begin read");
-    let retrieved = tx
-        .get_edge(edge_id)
-        .expect("failed to get edge")
-        .expect("edge not found");
+    let retrieved = tx.get_edge(edge_id).expect("failed to get edge").expect("edge not found");
 
     assert_eq!(retrieved.id, edge_id);
     assert_eq!(retrieved.source, entity1.id);
@@ -236,9 +209,7 @@ fn test_delete_edge() {
     let entity2 = tx.create_entity().expect("failed to create entity2");
     tx.put_entity(&entity1).expect("failed to put entity1");
     tx.put_entity(&entity2).expect("failed to put entity2");
-    let edge = tx
-        .create_edge(entity1.id, entity2.id, "KNOWS")
-        .expect("failed to create edge");
+    let edge = tx.create_edge(entity1.id, entity2.id, "KNOWS").expect("failed to create edge");
     let edge_id = edge.id;
     tx.put_edge(&edge).expect("failed to put edge");
     tx.commit().expect("failed to commit");
@@ -273,21 +244,15 @@ fn test_get_outgoing_edges() {
     tx.put_entity(&b).expect("failed to put B");
     tx.put_entity(&c).expect("failed to put C");
 
-    let edge_ab = tx
-        .create_edge(a.id, b.id, "LINKS")
-        .expect("failed to create edge A->B");
-    let edge_ac = tx
-        .create_edge(a.id, c.id, "LINKS")
-        .expect("failed to create edge A->C");
+    let edge_ab = tx.create_edge(a.id, b.id, "LINKS").expect("failed to create edge A->B");
+    let edge_ac = tx.create_edge(a.id, c.id, "LINKS").expect("failed to create edge A->C");
     tx.put_edge(&edge_ab).expect("failed to put edge A->B");
     tx.put_edge(&edge_ac).expect("failed to put edge A->C");
     tx.commit().expect("failed to commit");
 
     // Get outgoing edges from A
     let tx = manager.begin_read().expect("failed to begin read");
-    let edges = tx
-        .get_outgoing_edges(a.id)
-        .expect("failed to get outgoing edges");
+    let edges = tx.get_outgoing_edges(a.id).expect("failed to get outgoing edges");
     assert_eq!(edges.len(), 2);
 
     // Verify edge targets
@@ -296,9 +261,7 @@ fn test_get_outgoing_edges() {
     assert!(targets.contains(&c.id));
 
     // B should have no outgoing edges
-    let edges = tx
-        .get_outgoing_edges(b.id)
-        .expect("failed to get outgoing edges from B");
+    let edges = tx.get_outgoing_edges(b.id).expect("failed to get outgoing edges from B");
     assert!(edges.is_empty());
 }
 
@@ -316,21 +279,15 @@ fn test_get_incoming_edges() {
     tx.put_entity(&b).expect("failed to put B");
     tx.put_entity(&c).expect("failed to put C");
 
-    let edge_ac = tx
-        .create_edge(a.id, c.id, "POINTS_TO")
-        .expect("failed to create edge A->C");
-    let edge_bc = tx
-        .create_edge(b.id, c.id, "POINTS_TO")
-        .expect("failed to create edge B->C");
+    let edge_ac = tx.create_edge(a.id, c.id, "POINTS_TO").expect("failed to create edge A->C");
+    let edge_bc = tx.create_edge(b.id, c.id, "POINTS_TO").expect("failed to create edge B->C");
     tx.put_edge(&edge_ac).expect("failed to put edge A->C");
     tx.put_edge(&edge_bc).expect("failed to put edge B->C");
     tx.commit().expect("failed to commit");
 
     // Get incoming edges to C
     let tx = manager.begin_read().expect("failed to begin read");
-    let edges = tx
-        .get_incoming_edges(c.id)
-        .expect("failed to get incoming edges");
+    let edges = tx.get_incoming_edges(c.id).expect("failed to get incoming edges");
     assert_eq!(edges.len(), 2);
 
     // Verify edge sources
@@ -339,9 +296,7 @@ fn test_get_incoming_edges() {
     assert!(sources.contains(&b.id));
 
     // A should have no incoming edges
-    let edges = tx
-        .get_incoming_edges(a.id)
-        .expect("failed to get incoming edges to A");
+    let edges = tx.get_incoming_edges(a.id).expect("failed to get incoming edges to A");
     assert!(edges.is_empty());
 }
 
@@ -376,25 +331,18 @@ fn test_atomicity_rollback() {
     // Create one entity and commit
     let mut tx = manager.begin_write().expect("failed to begin write");
     let committed_entity = tx.create_entity().expect("failed to create committed entity");
-    tx.put_entity(&committed_entity)
-        .expect("failed to put committed entity");
+    tx.put_entity(&committed_entity).expect("failed to put committed entity");
     tx.commit().expect("failed to commit");
 
     // Start new transaction, add entity, then rollback
     let mut tx = manager.begin_write().expect("failed to begin write");
-    let rolled_back_entity = tx
-        .create_entity()
-        .expect("failed to create rolled back entity");
-    tx.put_entity(&rolled_back_entity)
-        .expect("failed to put rolled back entity");
+    let rolled_back_entity = tx.create_entity().expect("failed to create rolled back entity");
+    tx.put_entity(&rolled_back_entity).expect("failed to put rolled back entity");
     tx.rollback().expect("failed to rollback");
 
     // Only committed entity should be visible
     let tx = manager.begin_read().expect("failed to begin read");
-    assert!(tx
-        .get_entity(committed_entity.id)
-        .expect("failed to get committed entity")
-        .is_some());
+    assert!(tx.get_entity(committed_entity.id).expect("failed to get committed entity").is_some());
     assert!(tx
         .get_entity(rolled_back_entity.id)
         .expect("failed to get rolled back entity")
@@ -467,9 +415,7 @@ fn test_vector_sync_strategy_configuration() {
     use manifoldb::transaction::TransactionManagerConfig;
 
     let engine = create_test_engine();
-    let config = TransactionManagerConfig {
-        vector_sync_strategy: VectorSyncStrategy::Async,
-    };
+    let config = TransactionManagerConfig { vector_sync_strategy: VectorSyncStrategy::Async };
     let manager = TransactionManager::with_config(engine, config);
 
     assert_eq!(manager.vector_sync_strategy(), VectorSyncStrategy::Async);
@@ -481,18 +427,11 @@ fn test_hybrid_vector_sync_strategy() {
 
     let engine = create_test_engine();
     let config = TransactionManagerConfig {
-        vector_sync_strategy: VectorSyncStrategy::Hybrid {
-            async_threshold: 100,
-        },
+        vector_sync_strategy: VectorSyncStrategy::Hybrid { async_threshold: 100 },
     };
     let manager = TransactionManager::with_config(engine, config);
 
-    assert_eq!(
-        manager.vector_sync_strategy(),
-        VectorSyncStrategy::Hybrid {
-            async_threshold: 100
-        }
-    );
+    assert_eq!(manager.vector_sync_strategy(), VectorSyncStrategy::Hybrid { async_threshold: 100 });
 }
 
 // ============================================================================
@@ -516,18 +455,9 @@ fn test_multiple_read_transactions() {
     let tx3 = manager.begin_read().expect("failed to begin read 3");
 
     // All should see the same data
-    assert!(tx1
-        .get_entity(entity.id)
-        .expect("failed to get from tx1")
-        .is_some());
-    assert!(tx2
-        .get_entity(entity.id)
-        .expect("failed to get from tx2")
-        .is_some());
-    assert!(tx3
-        .get_entity(entity.id)
-        .expect("failed to get from tx3")
-        .is_some());
+    assert!(tx1.get_entity(entity.id).expect("failed to get from tx1").is_some());
+    assert!(tx2.get_entity(entity.id).expect("failed to get from tx2").is_some());
+    assert!(tx3.get_entity(entity.id).expect("failed to get from tx3").is_some());
 
     tx1.rollback().expect("failed to rollback tx1");
     tx2.rollback().expect("failed to rollback tx2");
@@ -572,16 +502,12 @@ fn test_edge_id_generation_across_transactions() {
     tx.put_entity(&e2).expect("failed to put e2");
     tx.put_entity(&e3).expect("failed to put e3");
 
-    let edge1 = tx
-        .create_edge(e1.id, e2.id, "A")
-        .expect("failed to create edge1");
+    let edge1 = tx.create_edge(e1.id, e2.id, "A").expect("failed to create edge1");
     tx.put_edge(&edge1).expect("failed to put edge1");
     tx.commit().expect("failed to commit 1");
 
     let mut tx = manager.begin_write().expect("failed to begin write 2");
-    let edge2 = tx
-        .create_edge(e2.id, e3.id, "B")
-        .expect("failed to create edge2");
+    let edge2 = tx.create_edge(e2.id, e3.id, "B").expect("failed to create edge2");
     tx.put_edge(&edge2).expect("failed to put edge2");
     tx.commit().expect("failed to commit 2");
 

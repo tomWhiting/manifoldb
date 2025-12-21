@@ -78,7 +78,11 @@ fn hash_string(s: &str) -> u64 {
 /// This enables efficient range scans for "all edges from entity X" or
 /// "all edges of type Y from entity X".
 #[must_use]
-pub fn encode_edge_by_source_key(source: EntityId, edge_type: &EdgeType, edge_id: EdgeId) -> Vec<u8> {
+pub fn encode_edge_by_source_key(
+    source: EntityId,
+    edge_type: &EdgeType,
+    edge_id: EdgeId,
+) -> Vec<u8> {
     let mut key = Vec::with_capacity(25);
     key.push(PREFIX_EDGE_BY_SOURCE);
     key.extend_from_slice(&source.as_u64().to_be_bytes());
@@ -116,7 +120,11 @@ pub fn encode_edge_by_source_type_prefix(source: EntityId, edge_type: &EdgeType)
 ///
 /// The key format is: `[PREFIX_EDGE_BY_TARGET][target_id][edge_type_hash][edge_id]`
 #[must_use]
-pub fn encode_edge_by_target_key(target: EntityId, edge_type: &EdgeType, edge_id: EdgeId) -> Vec<u8> {
+pub fn encode_edge_by_target_key(
+    target: EntityId,
+    edge_type: &EdgeType,
+    edge_id: EdgeId,
+) -> Vec<u8> {
     let mut key = Vec::with_capacity(25);
     key.push(PREFIX_EDGE_BY_TARGET);
     key.extend_from_slice(&target.as_u64().to_be_bytes());
@@ -331,11 +339,8 @@ mod tests {
     fn key_prefixes_partition_keyspace() {
         let entity_key = encode_entity_key(EntityId::new(1));
         let edge_key = encode_edge_key(EdgeId::new(1));
-        let edge_by_source = encode_edge_by_source_key(
-            EntityId::new(1),
-            &EdgeType::new("X"),
-            EdgeId::new(1),
-        );
+        let edge_by_source =
+            encode_edge_by_source_key(EntityId::new(1), &EdgeType::new("X"), EdgeId::new(1));
 
         // Different prefixes ensure keys don't collide
         assert!(entity_key[0] != edge_key[0]);

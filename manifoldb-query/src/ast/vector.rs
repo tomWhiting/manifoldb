@@ -23,11 +23,7 @@ impl VectorSearch {
     /// Creates a new vector search with the specified metric.
     #[must_use]
     pub fn new(vector_expr: Expr, query_expr: Expr, metric: DistanceMetric) -> Self {
-        Self {
-            vector_expr: Box::new(vector_expr),
-            query_expr: Box::new(query_expr),
-            metric,
-        }
+        Self { vector_expr: Box::new(vector_expr), query_expr: Box::new(query_expr), metric }
     }
 
     /// Creates an Euclidean distance search.
@@ -128,12 +124,7 @@ impl VectorSearchParams {
     /// Creates empty search parameters.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            limit: None,
-            ef_search: None,
-            n_probe: None,
-            distance_threshold: None,
-        }
+        Self { limit: None, ef_search: None, n_probe: None, distance_threshold: None }
     }
 
     /// Sets the result limit.
@@ -200,10 +191,7 @@ impl VectorAggregate {
     /// Creates a new vector aggregate.
     #[must_use]
     pub fn new(op: VectorAggregateOp, expr: Expr) -> Self {
-        Self {
-            op,
-            expr: Box::new(expr),
-        }
+        Self { op, expr: Box::new(expr) }
     }
 }
 
@@ -220,15 +208,9 @@ mod tests {
 
     #[test]
     fn distance_metric_function_names() {
-        assert_eq!(
-            DistanceMetric::Euclidean.function_name(),
-            "euclidean_distance"
-        );
+        assert_eq!(DistanceMetric::Euclidean.function_name(), "euclidean_distance");
         assert_eq!(DistanceMetric::Cosine.function_name(), "cosine_distance");
-        assert_eq!(
-            DistanceMetric::InnerProduct.function_name(),
-            "inner_product"
-        );
+        assert_eq!(DistanceMetric::InnerProduct.function_name(), "inner_product");
     }
 
     #[test]

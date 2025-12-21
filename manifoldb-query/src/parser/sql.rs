@@ -31,10 +31,7 @@ pub fn parse_sql(sql: &str) -> ParseResult<Vec<Statement>> {
     let dialect = GenericDialect {};
     let statements = Parser::parse_sql(&dialect, sql)?;
 
-    statements
-        .into_iter()
-        .map(convert_statement)
-        .collect()
+    statements.into_iter().map(convert_statement).collect()
 }
 
 /// Parses a single SQL statement.
@@ -45,10 +42,7 @@ pub fn parse_sql(sql: &str) -> ParseResult<Vec<Statement>> {
 pub fn parse_single_statement(sql: &str) -> ParseResult<Statement> {
     let mut stmts = parse_sql(sql)?;
     if stmts.len() != 1 {
-        return Err(ParseError::SqlSyntax(format!(
-            "expected 1 statement, found {}",
-            stmts.len()
-        )));
+        return Err(ParseError::SqlSyntax(format!("expected 1 statement, found {}", stmts.len())));
     }
     // SAFETY: We just verified there's exactly one statement
     Ok(stmts.remove(0))
@@ -82,27 +76,25 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
             let create_stmt = convert_create_index(create)?;
             Ok(Statement::CreateIndex(create_stmt))
         }
-        sp::Statement::Drop { object_type, if_exists, names, cascade, .. } => {
-            match object_type {
-                sp::ObjectType::Table => {
-                    let drop_stmt = DropTableStatement {
-                        if_exists,
-                        names: names.into_iter().map(convert_object_name).collect(),
-                        cascade,
-                    };
-                    Ok(Statement::DropTable(drop_stmt))
-                }
-                sp::ObjectType::Index => {
-                    let drop_stmt = DropIndexStatement {
-                        if_exists,
-                        names: names.into_iter().map(convert_object_name).collect(),
-                        cascade,
-                    };
-                    Ok(Statement::DropIndex(drop_stmt))
-                }
-                _ => Err(ParseError::Unsupported(format!("DROP {object_type:?}"))),
+        sp::Statement::Drop { object_type, if_exists, names, cascade, .. } => match object_type {
+            sp::ObjectType::Table => {
+                let drop_stmt = DropTableStatement {
+                    if_exists,
+                    names: names.into_iter().map(convert_object_name).collect(),
+                    cascade,
+                };
+                Ok(Statement::DropTable(drop_stmt))
             }
-        }
+            sp::ObjectType::Index => {
+                let drop_stmt = DropIndexStatement {
+                    if_exists,
+                    names: names.into_iter().map(convert_object_name).collect(),
+                    cascade,
+                };
+                Ok(Statement::DropIndex(drop_stmt))
+            }
+            _ => Err(ParseError::Unsupported(format!("DROP {object_type:?}"))),
+        },
         sp::Statement::Explain { statement, .. } => {
             let inner = convert_statement(*statement)?;
             Ok(Statement::Explain(Box::new(inner)))
@@ -146,7 +138,8 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
         }
         sp::SetExpr::Values(values) => {
             // VALUES as a standalone select
-            let rows: Vec<Vec<Expr>> = values.rows
+            let rows: Vec<Vec<Expr>> = values
+                .rows
                 .into_iter()
                 .map(|row| row.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>())
                 .collect::<ParseResult<Vec<_>>>()?;
@@ -173,7 +166,8 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
     let mut result = body;
 
     if let Some(order_by) = query.order_by {
-        result.order_by = order_by.exprs
+        result.order_by = order_by
+            .exprs
             .into_iter()
             .map(convert_order_by_expr)
             .collect::<ParseResult<Vec<_>>>()?;
@@ -194,35 +188,28 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
 fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
     let distinct = match select.distinct {
         Some(sp::Distinct::Distinct) => true,
-        Some(sp::Distinct::On(_)) => return Err(ParseError::Unsupported("DISTINCT ON".to_string())),
+        Some(sp::Distinct::On(_)) => {
+            return Err(ParseError::Unsupported("DISTINCT ON".to_string()))
+        }
         None => false,
     };
 
-    let projection = select.projection
-        .into_iter()
-        .map(convert_select_item)
-        .collect::<ParseResult<Vec<_>>>()?;
+    let projection =
+        select.projection.into_iter().map(convert_select_item).collect::<ParseResult<Vec<_>>>()?;
 
-    let from = select.from
-        .into_iter()
-        .map(convert_table_with_joins)
-        .collect::<ParseResult<Vec<_>>>()?;
+    let from =
+        select.from.into_iter().map(convert_table_with_joins).collect::<ParseResult<Vec<_>>>()?;
 
-    let where_clause = select.selection
-        .map(convert_expr)
-        .transpose()?;
+    let where_clause = select.selection.map(convert_expr).transpose()?;
 
     let group_by = match select.group_by {
-        sp::GroupByExpr::Expressions(exprs, _) => exprs
-            .into_iter()
-            .map(convert_expr)
-            .collect::<ParseResult<Vec<_>>>()?,
+        sp::GroupByExpr::Expressions(exprs, _) => {
+            exprs.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?
+        }
         sp::GroupByExpr::All(_) => return Err(ParseError::Unsupported("GROUP BY ALL".to_string())),
     };
 
-    let having = select.having
-        .map(convert_expr)
-        .transpose()?;
+    let having = select.having.map(convert_expr).transpose()?;
 
     Ok(SelectStatement {
         distinct,
@@ -243,16 +230,10 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
 fn convert_select_item(item: sp::SelectItem) -> ParseResult<SelectItem> {
     match item {
         sp::SelectItem::UnnamedExpr(expr) => {
-            Ok(SelectItem::Expr {
-                expr: convert_expr(expr)?,
-                alias: None,
-            })
+            Ok(SelectItem::Expr { expr: convert_expr(expr)?, alias: None })
         }
         sp::SelectItem::ExprWithAlias { expr, alias } => {
-            Ok(SelectItem::Expr {
-                expr: convert_expr(expr)?,
-                alias: Some(convert_ident(alias)),
-            })
+            Ok(SelectItem::Expr { expr: convert_expr(expr)?, alias: Some(convert_ident(alias)) })
         }
         sp::SelectItem::Wildcard(_) => Ok(SelectItem::Wildcard),
         sp::SelectItem::QualifiedWildcard(name, _) => {
@@ -296,12 +277,7 @@ fn convert_table_with_joins(twj: sp::TableWithJoins) -> ParseResult<TableRef> {
             _ => JoinCondition::None,
         };
 
-        result = TableRef::Join(Box::new(JoinClause {
-            left: result,
-            right,
-            join_type,
-            condition,
-        }));
+        result = TableRef::Join(Box::new(JoinClause { left: result, right, join_type, condition }));
     }
 
     Ok(result)
@@ -322,14 +298,13 @@ fn convert_join_constraint(constraint: sp::JoinConstraint) -> ParseResult<JoinCo
 /// Converts a table factor.
 fn convert_table_factor(factor: sp::TableFactor) -> ParseResult<TableRef> {
     match factor {
-        sp::TableFactor::Table { name, alias, .. } => {
-            Ok(TableRef::Table {
-                name: convert_object_name(name),
-                alias: alias.map(convert_table_alias),
-            })
-        }
+        sp::TableFactor::Table { name, alias, .. } => Ok(TableRef::Table {
+            name: convert_object_name(name),
+            alias: alias.map(convert_table_alias),
+        }),
         sp::TableFactor::Derived { subquery, alias, .. } => {
-            let alias = alias.ok_or_else(|| ParseError::MissingClause("alias for subquery".to_string()))?;
+            let alias =
+                alias.ok_or_else(|| ParseError::MissingClause("alias for subquery".to_string()))?;
             Ok(TableRef::Subquery {
                 query: Box::new(convert_query(*subquery)?),
                 alias: convert_table_alias(alias),
@@ -352,7 +327,9 @@ fn convert_table_factor(factor: sp::TableFactor) -> ParseResult<TableRef> {
             if let Some(alias) = alias {
                 // Wrap in another table ref with alias if needed
                 match &mut result {
-                    TableRef::Table { alias: ref mut a, .. } => *a = Some(convert_table_alias(alias)),
+                    TableRef::Table { alias: ref mut a, .. } => {
+                        *a = Some(convert_table_alias(alias))
+                    }
                     TableRef::Subquery { alias: ref mut a, .. } => *a = convert_table_alias(alias),
                     _ => {}
                 }
@@ -370,22 +347,21 @@ fn convert_function_args(args: sp::FunctionArguments) -> ParseResult<Vec<Expr>> 
         sp::FunctionArguments::Subquery(_) => {
             Err(ParseError::Unsupported("subquery function argument".to_string()))
         }
-        sp::FunctionArguments::List(arg_list) => {
-            arg_list.args
-                .into_iter()
-                .map(|arg| match arg {
-                    sp::FunctionArg::Unnamed(expr) => expr,
-                    sp::FunctionArg::Named { arg, .. } => arg,
-                })
-                .map(|arg_expr| match arg_expr {
-                    sp::FunctionArgExpr::Expr(e) => convert_expr(e),
-                    sp::FunctionArgExpr::QualifiedWildcard(name) => {
-                        Ok(Expr::QualifiedWildcard(convert_object_name(name)))
-                    }
-                    sp::FunctionArgExpr::Wildcard => Ok(Expr::Wildcard),
-                })
-                .collect::<ParseResult<Vec<_>>>()
-        }
+        sp::FunctionArguments::List(arg_list) => arg_list
+            .args
+            .into_iter()
+            .map(|arg| match arg {
+                sp::FunctionArg::Unnamed(expr) => expr,
+                sp::FunctionArg::Named { arg, .. } => arg,
+            })
+            .map(|arg_expr| match arg_expr {
+                sp::FunctionArgExpr::Expr(e) => convert_expr(e),
+                sp::FunctionArgExpr::QualifiedWildcard(name) => {
+                    Ok(Expr::QualifiedWildcard(convert_object_name(name)))
+                }
+                sp::FunctionArgExpr::Wildcard => Ok(Expr::Wildcard),
+            })
+            .collect::<ParseResult<Vec<_>>>(),
     }
 }
 
@@ -405,37 +381,26 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
             Ok(Expr::Column(QualifiedName::simple(convert_ident(ident))))
         }
         sp::Expr::CompoundIdentifier(idents) => {
-            Ok(Expr::Column(QualifiedName::new(
-                idents.into_iter().map(convert_ident).collect(),
-            )))
+            Ok(Expr::Column(QualifiedName::new(idents.into_iter().map(convert_ident).collect())))
         }
         sp::Expr::Value(value) => convert_value(value),
         sp::Expr::BinaryOp { left, op, right } => {
             let left = convert_expr(*left)?;
             let right = convert_expr(*right)?;
             let op = convert_binary_op(&op)?;
-            Ok(Expr::BinaryOp {
-                left: Box::new(left),
-                op,
-                right: Box::new(right),
-            })
+            Ok(Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) })
         }
         sp::Expr::UnaryOp { op, expr } => {
             let operand = convert_expr(*expr)?;
             let op = convert_unary_op(op)?;
-            Ok(Expr::UnaryOp {
-                op,
-                operand: Box::new(operand),
-            })
+            Ok(Expr::UnaryOp { op, operand: Box::new(operand) })
         }
         sp::Expr::Nested(inner) => convert_expr(*inner),
         sp::Expr::Function(func) => convert_function(func),
-        sp::Expr::Cast { expr, data_type, .. } => {
-            Ok(Expr::Cast {
-                expr: Box::new(convert_expr(*expr)?),
-                data_type: format_data_type(&data_type),
-            })
-        }
+        sp::Expr::Cast { expr, data_type, .. } => Ok(Expr::Cast {
+            expr: Box::new(convert_expr(*expr)?),
+            data_type: format_data_type(&data_type),
+        }),
         sp::Expr::Case { operand, conditions, results, else_result } => {
             let when_clauses: Vec<(Expr, Expr)> = conditions
                 .into_iter()
@@ -449,90 +414,61 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
                 else_result: else_result.map(|e| convert_expr(*e)).transpose()?.map(Box::new),
             }))
         }
-        sp::Expr::Subquery(query) => {
-            Ok(Expr::Subquery(crate::ast::expr::Subquery {
-                query: Box::new(convert_query(*query)?),
-            }))
-        }
-        sp::Expr::Exists { subquery, .. } => {
-            Ok(Expr::Exists(crate::ast::expr::Subquery {
-                query: Box::new(convert_query(*subquery)?),
-            }))
-        }
-        sp::Expr::InList { expr, list, negated } => {
-            Ok(Expr::InList {
-                expr: Box::new(convert_expr(*expr)?),
-                list: list.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?,
-                negated,
-            })
-        }
-        sp::Expr::InSubquery { expr, subquery, negated } => {
-            Ok(Expr::InSubquery {
-                expr: Box::new(convert_expr(*expr)?),
-                subquery: crate::ast::expr::Subquery {
-                    query: Box::new(convert_query(*subquery)?),
-                },
-                negated,
-            })
-        }
-        sp::Expr::Between { expr, low, high, negated } => {
-            Ok(Expr::Between {
-                expr: Box::new(convert_expr(*expr)?),
-                low: Box::new(convert_expr(*low)?),
-                high: Box::new(convert_expr(*high)?),
-                negated,
-            })
-        }
+        sp::Expr::Subquery(query) => Ok(Expr::Subquery(crate::ast::expr::Subquery {
+            query: Box::new(convert_query(*query)?),
+        })),
+        sp::Expr::Exists { subquery, .. } => Ok(Expr::Exists(crate::ast::expr::Subquery {
+            query: Box::new(convert_query(*subquery)?),
+        })),
+        sp::Expr::InList { expr, list, negated } => Ok(Expr::InList {
+            expr: Box::new(convert_expr(*expr)?),
+            list: list.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?,
+            negated,
+        }),
+        sp::Expr::InSubquery { expr, subquery, negated } => Ok(Expr::InSubquery {
+            expr: Box::new(convert_expr(*expr)?),
+            subquery: crate::ast::expr::Subquery { query: Box::new(convert_query(*subquery)?) },
+            negated,
+        }),
+        sp::Expr::Between { expr, low, high, negated } => Ok(Expr::Between {
+            expr: Box::new(convert_expr(*expr)?),
+            low: Box::new(convert_expr(*low)?),
+            high: Box::new(convert_expr(*high)?),
+            negated,
+        }),
         sp::Expr::IsNull(expr) => {
-            Ok(Expr::UnaryOp {
-                op: UnaryOp::IsNull,
-                operand: Box::new(convert_expr(*expr)?),
-            })
+            Ok(Expr::UnaryOp { op: UnaryOp::IsNull, operand: Box::new(convert_expr(*expr)?) })
         }
         sp::Expr::IsNotNull(expr) => {
-            Ok(Expr::UnaryOp {
-                op: UnaryOp::IsNotNull,
-                operand: Box::new(convert_expr(*expr)?),
-            })
+            Ok(Expr::UnaryOp { op: UnaryOp::IsNotNull, operand: Box::new(convert_expr(*expr)?) })
         }
         sp::Expr::Tuple(exprs) => {
-            Ok(Expr::Tuple(
-                exprs.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?
-            ))
+            Ok(Expr::Tuple(exprs.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?))
         }
         sp::Expr::Array(arr) => {
             let sp::Array { elem, .. } = arr;
-            let elements = elem
-                .into_iter()
-                .map(convert_expr)
-                .collect::<ParseResult<Vec<_>>>()?;
+            let elements = elem.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
             Ok(Expr::Tuple(elements))
         }
-        sp::Expr::Subscript { expr, subscript } => {
-            match *subscript {
-                sp::Subscript::Index { index } => {
-                    Ok(Expr::ArrayIndex {
-                        array: Box::new(convert_expr(*expr)?),
-                        index: Box::new(convert_expr(index)?),
-                    })
-                }
-                sp::Subscript::Slice { .. } => Err(ParseError::Unsupported("subscript slice".to_string())),
+        sp::Expr::Subscript { expr, subscript } => match *subscript {
+            sp::Subscript::Index { index } => Ok(Expr::ArrayIndex {
+                array: Box::new(convert_expr(*expr)?),
+                index: Box::new(convert_expr(index)?),
+            }),
+            sp::Subscript::Slice { .. } => {
+                Err(ParseError::Unsupported("subscript slice".to_string()))
             }
-        }
-        sp::Expr::Like { negated, expr, pattern, escape_char: _, any: _ } => {
-            Ok(Expr::BinaryOp {
-                left: Box::new(convert_expr(*expr)?),
-                op: if negated { BinaryOp::NotLike } else { BinaryOp::Like },
-                right: Box::new(convert_expr(*pattern)?),
-            })
-        }
-        sp::Expr::ILike { negated, expr, pattern, escape_char: _, any: _ } => {
-            Ok(Expr::BinaryOp {
-                left: Box::new(convert_expr(*expr)?),
-                op: if negated { BinaryOp::NotILike } else { BinaryOp::ILike },
-                right: Box::new(convert_expr(*pattern)?),
-            })
-        }
+        },
+        sp::Expr::Like { negated, expr, pattern, escape_char: _, any: _ } => Ok(Expr::BinaryOp {
+            left: Box::new(convert_expr(*expr)?),
+            op: if negated { BinaryOp::NotLike } else { BinaryOp::Like },
+            right: Box::new(convert_expr(*pattern)?),
+        }),
+        sp::Expr::ILike { negated, expr, pattern, escape_char: _, any: _ } => Ok(Expr::BinaryOp {
+            left: Box::new(convert_expr(*expr)?),
+            op: if negated { BinaryOp::NotILike } else { BinaryOp::ILike },
+            right: Box::new(convert_expr(*pattern)?),
+        }),
         sp::Expr::Named { name, .. } => {
             // Named parameter like $name
             Ok(Expr::Parameter(ParameterRef::Named(name.value)))
@@ -597,7 +533,9 @@ fn convert_binary_op(op: &sp::BinaryOperator) -> ParseResult<BinaryOp> {
         sp::BinaryOperator::Arrow => Err(ParseError::Unsupported("-> operator".to_string())),
         sp::BinaryOperator::LongArrow => Err(ParseError::Unsupported("->> operator".to_string())),
         sp::BinaryOperator::HashArrow => Err(ParseError::Unsupported("#> operator".to_string())),
-        sp::BinaryOperator::HashLongArrow => Err(ParseError::Unsupported("#>> operator".to_string())),
+        sp::BinaryOperator::HashLongArrow => {
+            Err(ParseError::Unsupported("#>> operator".to_string()))
+        }
         _ => Err(ParseError::Unsupported(format!("binary operator: {op:?}"))),
     }
 }
@@ -619,14 +557,9 @@ fn convert_function(func: sp::Function) -> ParseResult<Expr> {
     let name = convert_object_name(func.name);
     let args = convert_function_args(func.args)?;
 
-    let filter = func.filter
-        .map(|f| convert_expr(*f))
-        .transpose()?
-        .map(Box::new);
+    let filter = func.filter.map(|f| convert_expr(*f)).transpose()?.map(Box::new);
 
-    let over = func.over
-        .map(convert_window_spec)
-        .transpose()?;
+    let over = func.over.map(convert_window_spec).transpose()?;
 
     Ok(Expr::Function(FunctionCall {
         name,
@@ -641,25 +574,18 @@ fn convert_function(func: sp::Function) -> ParseResult<Expr> {
 fn convert_window_spec(spec: sp::WindowType) -> ParseResult<WindowSpec> {
     match spec {
         sp::WindowType::WindowSpec(spec) => {
-            let partition_by = spec.partition_by
-                .into_iter()
-                .map(convert_expr)
-                .collect::<ParseResult<Vec<_>>>()?;
+            let partition_by =
+                spec.partition_by.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
 
-            let order_by = spec.order_by
+            let order_by = spec
+                .order_by
                 .into_iter()
                 .map(convert_order_by_expr)
                 .collect::<ParseResult<Vec<_>>>()?;
 
-            let frame = spec.window_frame
-                .map(convert_window_frame)
-                .transpose()?;
+            let frame = spec.window_frame.map(convert_window_frame).transpose()?;
 
-            Ok(WindowSpec {
-                partition_by,
-                order_by,
-                frame,
-            })
+            Ok(WindowSpec { partition_by, order_by, frame })
         }
         sp::WindowType::NamedWindow(_) => {
             Err(ParseError::Unsupported("named window reference".to_string()))
@@ -676,9 +602,7 @@ fn convert_window_frame(frame: sp::WindowFrame) -> ParseResult<WindowFrame> {
     };
 
     let start = convert_window_frame_bound(frame.start_bound)?;
-    let end = frame.end_bound
-        .map(convert_window_frame_bound)
-        .transpose()?;
+    let end = frame.end_bound.map(convert_window_frame_bound).transpose()?;
 
     Ok(WindowFrame { units, start, end })
 }
@@ -702,11 +626,7 @@ fn convert_window_frame_bound(bound: sp::WindowFrameBound) -> ParseResult<Window
 fn convert_order_by_expr(expr: sp::OrderByExpr) -> ParseResult<OrderByExpr> {
     let asc = expr.asc.unwrap_or(true); // Default to ASC
 
-    Ok(OrderByExpr {
-        expr: Box::new(convert_expr(expr.expr)?),
-        asc,
-        nulls_first: expr.nulls_first,
-    })
+    Ok(OrderByExpr { expr: Box::new(convert_expr(expr.expr)?), asc, nulls_first: expr.nulls_first })
 }
 
 /// Converts an INSERT statement.
@@ -714,15 +634,13 @@ fn convert_insert(insert: sp::Insert) -> ParseResult<InsertStatement> {
     // Extract table name
     let table = convert_object_name(insert.table_name);
 
-    let columns: Vec<Identifier> = insert.columns
-        .into_iter()
-        .map(convert_ident)
-        .collect();
+    let columns: Vec<Identifier> = insert.columns.into_iter().map(convert_ident).collect();
 
     let source = match insert.source {
         Some(source) => match *source.body {
             sp::SetExpr::Values(values) => {
-                let rows: Vec<Vec<Expr>> = values.rows
+                let rows: Vec<Vec<Expr>> = values
+                    .rows
                     .into_iter()
                     .map(|row| row.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>())
                     .collect::<ParseResult<Vec<_>>>()?;
@@ -733,26 +651,19 @@ fn convert_insert(insert: sp::Insert) -> ParseResult<InsertStatement> {
                 InsertSource::Query(Box::new(query))
             }
             _ => return Err(ParseError::Unsupported("INSERT source type".to_string())),
-        }
+        },
         None => InsertSource::DefaultValues,
     };
 
-    let on_conflict = insert.on
-        .map(convert_on_conflict)
-        .transpose()?;
+    let on_conflict = insert.on.map(convert_on_conflict).transpose()?;
 
-    let returning = insert.returning
+    let returning = insert
+        .returning
         .map(|items| items.into_iter().map(convert_select_item).collect::<ParseResult<Vec<_>>>())
         .transpose()?
         .unwrap_or_default();
 
-    Ok(InsertStatement {
-        table,
-        columns,
-        source,
-        on_conflict,
-        returning,
-    })
+    Ok(InsertStatement { table, columns, source, on_conflict, returning })
 }
 
 /// Converts ON CONFLICT clause.
@@ -775,17 +686,21 @@ fn convert_on_conflict(on: sp::OnInsert) -> ParseResult<OnConflict> {
                 Some(sp::ConflictTarget::Columns(cols)) => {
                     ConflictTarget::Columns(cols.into_iter().map(convert_ident).collect())
                 }
-                Some(sp::ConflictTarget::OnConstraint(name)) => {
-                    ConflictTarget::Constraint(convert_object_name(name).parts.into_iter().next()
-                        .unwrap_or_else(|| Identifier::new("unknown")))
-                }
+                Some(sp::ConflictTarget::OnConstraint(name)) => ConflictTarget::Constraint(
+                    convert_object_name(name)
+                        .parts
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(|| Identifier::new("unknown")),
+                ),
                 None => ConflictTarget::Columns(vec![]),
             };
 
             let action = match conflict.action {
                 sp::OnConflictAction::DoNothing => ConflictAction::DoNothing,
                 sp::OnConflictAction::DoUpdate(update) => ConflictAction::DoUpdate {
-                    assignments: update.assignments
+                    assignments: update
+                        .assignments
                         .into_iter()
                         .map(convert_assignment)
                         .collect::<ParseResult<Vec<_>>>()?,
@@ -803,21 +718,18 @@ fn convert_on_conflict(on: sp::OnInsert) -> ParseResult<OnConflict> {
 fn convert_assignment(assign: sp::Assignment) -> ParseResult<Assignment> {
     // Convert assignment target to column name
     let column = match assign.target {
-        sp::AssignmentTarget::ColumnName(names) => {
-            names.0.into_iter()
-                .next()
-                .map(convert_ident)
-                .ok_or_else(|| ParseError::MissingClause("assignment target".to_string()))?
-        }
+        sp::AssignmentTarget::ColumnName(names) => names
+            .0
+            .into_iter()
+            .next()
+            .map(convert_ident)
+            .ok_or_else(|| ParseError::MissingClause("assignment target".to_string()))?,
         sp::AssignmentTarget::Tuple(_) => {
             return Err(ParseError::Unsupported("tuple assignment target".to_string()));
         }
     };
 
-    Ok(Assignment {
-        column,
-        value: convert_expr(assign.value)?,
-    })
+    Ok(Assignment { column, value: convert_expr(assign.value)? })
 }
 
 /// Converts an UPDATE statement.
@@ -833,15 +745,11 @@ fn convert_update(
         return Err(ParseError::Unsupported("complex UPDATE target".to_string()));
     };
 
-    let assignments = assignments
-        .into_iter()
-        .map(convert_assignment)
-        .collect::<ParseResult<Vec<_>>>()?;
+    let assignments =
+        assignments.into_iter().map(convert_assignment).collect::<ParseResult<Vec<_>>>()?;
 
     let from_clause = from
-        .map(|f| f.into_iter()
-            .map(convert_table_with_joins)
-            .collect::<ParseResult<Vec<_>>>())
+        .map(|f| f.into_iter().map(convert_table_with_joins).collect::<ParseResult<Vec<_>>>())
         .transpose()?
         .unwrap_or_default();
 
@@ -866,14 +774,14 @@ fn convert_update(
 /// Converts a DELETE statement.
 fn convert_delete(delete: sp::Delete) -> ParseResult<DeleteStatement> {
     let from_table = match delete.from {
-        sp::FromTable::WithFromKeyword(tables) => {
-            tables.into_iter().next()
-                .ok_or_else(|| ParseError::MissingClause("FROM".to_string()))?
-        }
-        sp::FromTable::WithoutKeyword(tables) => {
-            tables.into_iter().next()
-                .ok_or_else(|| ParseError::MissingClause("table".to_string()))?
-        }
+        sp::FromTable::WithFromKeyword(tables) => tables
+            .into_iter()
+            .next()
+            .ok_or_else(|| ParseError::MissingClause("FROM".to_string()))?,
+        sp::FromTable::WithoutKeyword(tables) => tables
+            .into_iter()
+            .next()
+            .ok_or_else(|| ParseError::MissingClause("table".to_string()))?,
     };
 
     let table_ref = convert_table_with_joins(from_table)?;
@@ -881,14 +789,16 @@ fn convert_delete(delete: sp::Delete) -> ParseResult<DeleteStatement> {
         return Err(ParseError::Unsupported("complex DELETE target".to_string()));
     };
 
-    let using = delete.using
+    let using = delete
+        .using
         .map(|u| u.into_iter().map(convert_table_with_joins).collect::<ParseResult<Vec<_>>>())
         .transpose()?
         .unwrap_or_default();
 
     let where_clause = delete.selection.map(convert_expr).transpose()?;
 
-    let returning = delete.returning
+    let returning = delete
+        .returning
         .map(|items| items.into_iter().map(convert_select_item).collect::<ParseResult<Vec<_>>>())
         .transpose()?
         .unwrap_or_default();
@@ -905,12 +815,11 @@ fn convert_delete(delete: sp::Delete) -> ParseResult<DeleteStatement> {
 
 /// Converts a CREATE TABLE statement.
 fn convert_create_table(create: sp::CreateTable) -> ParseResult<CreateTableStatement> {
-    let columns = create.columns
-        .into_iter()
-        .map(convert_column_def)
-        .collect::<ParseResult<Vec<_>>>()?;
+    let columns =
+        create.columns.into_iter().map(convert_column_def).collect::<ParseResult<Vec<_>>>()?;
 
-    let constraints = create.constraints
+    let constraints = create
+        .constraints
         .into_iter()
         .map(convert_table_constraint)
         .collect::<ParseResult<Vec<_>>>()?;
@@ -925,10 +834,8 @@ fn convert_create_table(create: sp::CreateTable) -> ParseResult<CreateTableState
 
 /// Converts a column definition.
 fn convert_column_def(col: sp::ColumnDef) -> ParseResult<ColumnDef> {
-    let constraints = col.options
-        .into_iter()
-        .filter_map(|opt| convert_column_option(opt.option).ok())
-        .collect();
+    let constraints =
+        col.options.into_iter().filter_map(|opt| convert_column_option(opt.option).ok()).collect();
 
     Ok(ColumnDef {
         name: convert_ident(col.name),
@@ -955,12 +862,8 @@ fn convert_column_option(opt: sp::ColumnOption) -> ParseResult<ColumnConstraint>
                 column: referred_columns.into_iter().next().map(convert_ident),
             })
         }
-        sp::ColumnOption::Check(expr) => {
-            Ok(ColumnConstraint::Check(convert_expr(expr)?))
-        }
-        sp::ColumnOption::Default(expr) => {
-            Ok(ColumnConstraint::Default(convert_expr(expr)?))
-        }
+        sp::ColumnOption::Check(expr) => Ok(ColumnConstraint::Check(convert_expr(expr)?)),
+        sp::ColumnOption::Default(expr) => Ok(ColumnConstraint::Default(convert_expr(expr)?)),
         _ => Err(ParseError::Unsupported("column option".to_string())),
     }
 }
@@ -968,31 +871,24 @@ fn convert_column_option(opt: sp::ColumnOption) -> ParseResult<ColumnConstraint>
 /// Converts a table constraint.
 fn convert_table_constraint(constraint: sp::TableConstraint) -> ParseResult<TableConstraint> {
     match constraint {
-        sp::TableConstraint::PrimaryKey { columns, name, .. } => {
-            Ok(TableConstraint::PrimaryKey {
-                name: name.map(convert_ident),
-                columns: columns.into_iter().map(convert_ident).collect(),
-            })
-        }
-        sp::TableConstraint::Unique { columns, name, .. } => {
-            Ok(TableConstraint::Unique {
-                name: name.map(convert_ident),
-                columns: columns.into_iter().map(convert_ident).collect(),
-            })
-        }
-        sp::TableConstraint::ForeignKey { columns, foreign_table, referred_columns, name, .. } => {
-            Ok(TableConstraint::ForeignKey {
-                name: name.map(convert_ident),
-                columns: columns.into_iter().map(convert_ident).collect(),
-                references_table: convert_object_name(foreign_table),
-                references_columns: referred_columns.into_iter().map(convert_ident).collect(),
-            })
-        }
+        sp::TableConstraint::PrimaryKey { columns, name, .. } => Ok(TableConstraint::PrimaryKey {
+            name: name.map(convert_ident),
+            columns: columns.into_iter().map(convert_ident).collect(),
+        }),
+        sp::TableConstraint::Unique { columns, name, .. } => Ok(TableConstraint::Unique {
+            name: name.map(convert_ident),
+            columns: columns.into_iter().map(convert_ident).collect(),
+        }),
+        sp::TableConstraint::ForeignKey {
+            columns, foreign_table, referred_columns, name, ..
+        } => Ok(TableConstraint::ForeignKey {
+            name: name.map(convert_ident),
+            columns: columns.into_iter().map(convert_ident).collect(),
+            references_table: convert_object_name(foreign_table),
+            references_columns: referred_columns.into_iter().map(convert_ident).collect(),
+        }),
         sp::TableConstraint::Check { name, expr } => {
-            Ok(TableConstraint::Check {
-                name: name.map(convert_ident),
-                expr: convert_expr(*expr)?,
-            })
+            Ok(TableConstraint::Check { name: name.map(convert_ident), expr: convert_expr(*expr)? })
         }
         _ => Err(ParseError::Unsupported("table constraint".to_string())),
     }
@@ -1000,14 +896,16 @@ fn convert_table_constraint(constraint: sp::TableConstraint) -> ParseResult<Tabl
 
 /// Converts a CREATE INDEX statement.
 fn convert_create_index(create: sp::CreateIndex) -> ParseResult<CreateIndexStatement> {
-    let name = create.name
+    let name = create
+        .name
         .map(convert_object_name)
         .and_then(|n| n.parts.into_iter().next())
         .ok_or_else(|| ParseError::MissingClause("index name".to_string()))?;
 
     let table = convert_object_name(create.table_name);
 
-    let columns = create.columns
+    let columns = create
+        .columns
         .into_iter()
         .map(|col| {
             Ok(IndexColumn {
@@ -1037,10 +935,14 @@ fn convert_data_type(dt: sp::DataType) -> ParseResult<DataType> {
     match dt {
         sp::DataType::Boolean | sp::DataType::Bool => Ok(DataType::Boolean),
         sp::DataType::SmallInt(_) | sp::DataType::Int2(_) => Ok(DataType::SmallInt),
-        sp::DataType::Int(_) | sp::DataType::Integer(_) | sp::DataType::Int4(_) => Ok(DataType::Integer),
+        sp::DataType::Int(_) | sp::DataType::Integer(_) | sp::DataType::Int4(_) => {
+            Ok(DataType::Integer)
+        }
         sp::DataType::BigInt(_) | sp::DataType::Int8(_) => Ok(DataType::BigInt),
         sp::DataType::Real | sp::DataType::Float4 => Ok(DataType::Real),
-        sp::DataType::DoublePrecision | sp::DataType::Double | sp::DataType::Float8 => Ok(DataType::DoublePrecision),
+        sp::DataType::DoublePrecision | sp::DataType::Double | sp::DataType::Float8 => {
+            Ok(DataType::DoublePrecision)
+        }
         sp::DataType::Numeric(info) | sp::DataType::Decimal(info) => {
             let (precision, scale) = match info {
                 sp::ExactNumberInfo::None => (None, None),
@@ -1050,11 +952,9 @@ fn convert_data_type(dt: sp::DataType) -> ParseResult<DataType> {
             Ok(DataType::Numeric { precision, scale })
         }
         sp::DataType::Varchar(len) | sp::DataType::CharVarying(len) => {
-            let len_val = len.and_then(|l| {
-                match l {
-                    sp::CharacterLength::IntegerLength { length, .. } => Some(length as u32),
-                    sp::CharacterLength::Max => None,
-                }
+            let len_val = len.and_then(|l| match l {
+                sp::CharacterLength::IntegerLength { length, .. } => Some(length as u32),
+                sp::CharacterLength::Max => None,
             });
             Ok(DataType::Varchar(len_val))
         }
@@ -1066,25 +966,18 @@ fn convert_data_type(dt: sp::DataType) -> ParseResult<DataType> {
         sp::DataType::Interval => Ok(DataType::Interval),
         sp::DataType::JSON => Ok(DataType::Json),
         sp::DataType::Uuid => Ok(DataType::Uuid),
-        sp::DataType::Array(elem) => {
-            match elem {
-                sp::ArrayElemTypeDef::AngleBracket(inner) |
-                sp::ArrayElemTypeDef::SquareBracket(inner, _) => {
-                    Ok(DataType::Array(Box::new(convert_data_type(*inner)?)))
-                }
-                sp::ArrayElemTypeDef::None => {
-                    Err(ParseError::Unsupported("untyped array".to_string()))
-                }
-                sp::ArrayElemTypeDef::Parenthesis(_) => {
-                    Err(ParseError::Unsupported("parenthesized array type".to_string()))
-                }
+        sp::DataType::Array(elem) => match elem {
+            sp::ArrayElemTypeDef::AngleBracket(inner)
+            | sp::ArrayElemTypeDef::SquareBracket(inner, _) => {
+                Ok(DataType::Array(Box::new(convert_data_type(*inner)?)))
             }
-        }
+            sp::ArrayElemTypeDef::None => Err(ParseError::Unsupported("untyped array".to_string())),
+            sp::ArrayElemTypeDef::Parenthesis(_) => {
+                Err(ParseError::Unsupported("parenthesized array type".to_string()))
+            }
+        },
         sp::DataType::Custom(name, _) => {
-            let name_str = name.0.iter()
-                .map(|p| p.value.clone())
-                .collect::<Vec<_>>()
-                .join(".");
+            let name_str = name.0.iter().map(|p| p.value.clone()).collect::<Vec<_>>().join(".");
 
             // Check for VECTOR type
             if name_str.eq_ignore_ascii_case("vector") {
@@ -1109,10 +1002,7 @@ fn convert_object_name(name: sp::ObjectName) -> QualifiedName {
 
 /// Converts an identifier.
 fn convert_ident(ident: sp::Ident) -> Identifier {
-    Identifier {
-        name: ident.value,
-        quote_style: ident.quote_style,
-    }
+    Identifier { name: ident.value, quote_style: ident.quote_style }
 }
 
 #[cfg(test)]
@@ -1145,7 +1035,8 @@ mod tests {
 
     #[test]
     fn parse_insert() {
-        let stmt = parse_single_statement("INSERT INTO users (name, age) VALUES ('Alice', 30)").unwrap();
+        let stmt =
+            parse_single_statement("INSERT INTO users (name, age) VALUES ('Alice', 30)").unwrap();
         match stmt {
             Statement::Insert(insert) => {
                 assert_eq!(insert.columns.len(), 2);
@@ -1187,8 +1078,9 @@ mod tests {
     #[test]
     fn parse_create_table() {
         let stmt = parse_single_statement(
-            "CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL)"
-        ).unwrap();
+            "CREATE TABLE users (id BIGINT PRIMARY KEY, name VARCHAR(100) NOT NULL)",
+        )
+        .unwrap();
         match stmt {
             Statement::CreateTable(create) => {
                 assert_eq!(create.columns.len(), 2);
@@ -1200,8 +1092,9 @@ mod tests {
     #[test]
     fn parse_join() {
         let stmt = parse_single_statement(
-            "SELECT u.name, o.total FROM users u INNER JOIN orders o ON u.id = o.user_id"
-        ).unwrap();
+            "SELECT u.name, o.total FROM users u INNER JOIN orders o ON u.id = o.user_id",
+        )
+        .unwrap();
         match stmt {
             Statement::Select(select) => {
                 assert_eq!(select.from.len(), 1);

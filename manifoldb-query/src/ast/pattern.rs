@@ -56,19 +56,13 @@ impl PathPattern {
     /// Creates a path pattern with just a starting node.
     #[must_use]
     pub const fn node(node: NodePattern) -> Self {
-        Self {
-            start: node,
-            steps: vec![],
-        }
+        Self { start: node, steps: vec![] }
     }
 
     /// Creates a path pattern with a node, edge, and another node.
     #[must_use]
     pub fn chain(start: NodePattern, edge: EdgePattern, end: NodePattern) -> Self {
-        Self {
-            start,
-            steps: vec![(edge, end)],
-        }
+        Self { start, steps: vec![(edge, end)] }
     }
 
     /// Extends this path with another step.
@@ -106,31 +100,19 @@ impl NodePattern {
     /// Creates an anonymous node pattern (no variable, no labels).
     #[must_use]
     pub const fn anonymous() -> Self {
-        Self {
-            variable: None,
-            labels: vec![],
-            properties: vec![],
-        }
+        Self { variable: None, labels: vec![], properties: vec![] }
     }
 
     /// Creates a node pattern with just a variable.
     #[must_use]
     pub fn var(name: impl Into<Identifier>) -> Self {
-        Self {
-            variable: Some(name.into()),
-            labels: vec![],
-            properties: vec![],
-        }
+        Self { variable: Some(name.into()), labels: vec![], properties: vec![] }
     }
 
     /// Creates a node pattern with a variable and label.
     #[must_use]
     pub fn with_label(name: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
-        Self {
-            variable: Some(name.into()),
-            labels: vec![label.into()],
-            properties: vec![],
-        }
+        Self { variable: Some(name.into()), labels: vec![label.into()], properties: vec![] }
     }
 
     /// Adds a label to this node pattern.
@@ -143,10 +125,7 @@ impl NodePattern {
     /// Adds a property condition to this node pattern.
     #[must_use]
     pub fn property(mut self, name: impl Into<Identifier>, value: Expr) -> Self {
-        self.properties.push(PropertyCondition {
-            name: name.into(),
-            value,
-        });
+        self.properties.push(PropertyCondition { name: name.into(), value });
         self
     }
 }
@@ -252,10 +231,7 @@ impl EdgePattern {
     /// Adds a property condition to this edge pattern.
     #[must_use]
     pub fn property(mut self, name: impl Into<Identifier>, value: Expr) -> Self {
-        self.properties.push(PropertyCondition {
-            name: name.into(),
-            value,
-        });
+        self.properties.push(PropertyCondition { name: name.into(), value });
         self
     }
 }
@@ -361,28 +337,19 @@ impl EdgeLength {
     /// Creates a range with only a minimum.
     #[must_use]
     pub const fn at_least(min: u32) -> Self {
-        Self::Range {
-            min: Some(min),
-            max: None,
-        }
+        Self::Range { min: Some(min), max: None }
     }
 
     /// Creates a range with only a maximum.
     #[must_use]
     pub const fn at_most(max: u32) -> Self {
-        Self::Range {
-            min: None,
-            max: Some(max),
-        }
+        Self::Range { min: None, max: Some(max) }
     }
 
     /// Creates a bounded range.
     #[must_use]
     pub const fn between(min: u32, max: u32) -> Self {
-        Self::Range {
-            min: Some(min),
-            max: Some(max),
-        }
+        Self::Range { min: Some(min), max: Some(max) }
     }
 }
 
@@ -437,10 +404,8 @@ mod tests {
         let edge = EdgePattern::directed().edge_type("FOLLOWS");
         assert_eq!(edge.to_string(), "-[:FOLLOWS]->");
 
-        let edge = EdgePattern::directed()
-            .var("r")
-            .edge_type("FOLLOWS")
-            .length(EdgeLength::between(1, 3));
+        let edge =
+            EdgePattern::directed().var("r").edge_type("FOLLOWS").length(EdgeLength::between(1, 3));
         assert_eq!(edge.to_string(), "-[r:FOLLOWS*1..3]->");
     }
 
@@ -461,10 +426,7 @@ mod tests {
             EdgePattern::directed().edge_type("KNOWS"),
             NodePattern::var("b"),
         )
-        .then(
-            EdgePattern::directed().edge_type("LIKES"),
-            NodePattern::var("c"),
-        );
+        .then(EdgePattern::directed().edge_type("LIKES"), NodePattern::var("c"));
 
         assert_eq!(path.steps.len(), 2);
         assert_eq!(path.to_string(), "(a)-[:KNOWS]->(b)-[:LIKES]->(c)");
@@ -475,12 +437,6 @@ mod tests {
         assert_eq!(EdgeLength::Single, EdgeLength::Single);
         assert_eq!(EdgeLength::Any, EdgeLength::Any);
         assert_eq!(EdgeLength::Exact(3), EdgeLength::Exact(3));
-        assert_eq!(
-            EdgeLength::at_least(2),
-            EdgeLength::Range {
-                min: Some(2),
-                max: None
-            }
-        );
+        assert_eq!(EdgeLength::at_least(2), EdgeLength::Range { min: Some(2), max: None });
     }
 }

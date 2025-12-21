@@ -201,19 +201,13 @@ impl ExpandLength {
     /// Creates an "at most N" length.
     #[must_use]
     pub const fn at_most(max: usize) -> Self {
-        Self::Range {
-            min: 0,
-            max: Some(max),
-        }
+        Self::Range { min: 0, max: Some(max) }
     }
 
     /// Creates a bounded range length.
     #[must_use]
     pub const fn between(min: usize, max: usize) -> Self {
-        Self::Range {
-            min,
-            max: Some(max),
-        }
+        Self::Range { min, max: Some(max) }
     }
 
     /// Creates from AST `EdgeLength`.
@@ -223,10 +217,9 @@ impl ExpandLength {
             EdgeLength::Single => Self::Single,
             EdgeLength::Exact(n) => Self::Exact(*n as usize),
             EdgeLength::Any => Self::Range { min: 0, max: None },
-            EdgeLength::Range { min, max } => Self::Range {
-                min: min.unwrap_or(0) as usize,
-                max: max.map(|m| m as usize),
-            },
+            EdgeLength::Range { min, max } => {
+                Self::Range { min: min.unwrap_or(0) as usize, max: max.map(|m| m as usize) }
+            }
         }
     }
 }
@@ -237,10 +230,7 @@ impl std::fmt::Display for ExpandLength {
             Self::Single => write!(f, ""),
             Self::Exact(n) => write!(f, "*{n}"),
             Self::Range { min, max: None } => write!(f, "*{min}.."),
-            Self::Range {
-                min,
-                max: Some(max),
-            } => write!(f, "*{min}..{max}"),
+            Self::Range { min, max: Some(max) } => write!(f, "*{min}..{max}"),
         }
     }
 }
@@ -276,12 +266,7 @@ impl PathScanNode {
     /// Creates a new path scan with the given steps.
     #[must_use]
     pub const fn new(steps: Vec<PathStep>) -> Self {
-        Self {
-            steps,
-            start_filter: None,
-            all_paths: false,
-            track_path: false,
-        }
+        Self { steps, start_filter: None, all_paths: false, track_path: false }
     }
 
     /// Sets the starting node filter.
@@ -320,19 +305,13 @@ impl PathStep {
     /// Creates a new required path step.
     #[must_use]
     pub const fn required(expand: ExpandNode) -> Self {
-        Self {
-            expand,
-            optional: false,
-        }
+        Self { expand, optional: false }
     }
 
     /// Creates a new optional path step.
     #[must_use]
     pub const fn optional(expand: ExpandNode) -> Self {
-        Self {
-            expand,
-            optional: true,
-        }
+        Self { expand, optional: true }
     }
 }
 
@@ -342,9 +321,7 @@ mod tests {
 
     #[test]
     fn expand_node_basic() {
-        let expand = ExpandNode::outgoing("a", "b")
-            .with_edge_type("FOLLOWS")
-            .with_edge_var("r");
+        let expand = ExpandNode::outgoing("a", "b").with_edge_type("FOLLOWS").with_edge_var("r");
 
         assert_eq!(expand.src_var, "a");
         assert_eq!(expand.dst_var, "b");
@@ -379,9 +356,7 @@ mod tests {
                     .with_edge_type("KNOWS")
                     .with_length(ExpandLength::between(1, 3)),
             ),
-            PathStep::required(
-                ExpandNode::outgoing("b", "c").with_edge_type("WORKS_AT"),
-            ),
+            PathStep::required(ExpandNode::outgoing("b", "c").with_edge_type("WORKS_AT")),
         ])
         .track_path();
 
