@@ -9,6 +9,40 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use manifoldb_core::Value;
+use manifoldb_vector::{Embedding, SearchResult, VectorError};
+
+/// A trait for providing access to vector indexes.
+///
+/// This trait allows type-erased access to vector indexes for query execution.
+/// Implementations can wrap HNSW indexes or other vector index types.
+pub trait VectorIndexProvider: Send + Sync {
+    /// Search for nearest neighbors in the specified index.
+    ///
+    /// # Arguments
+    ///
+    /// * `index_name` - The name of the vector index to search
+    /// * `query` - The query embedding
+    /// * `k` - Number of nearest neighbors to return
+    /// * `ef_search` - Optional HNSW ef_search parameter
+    ///
+    /// # Returns
+    ///
+    /// A vector of search results sorted by distance, or an error if the
+    /// index is not found or the search fails.
+    fn search(
+        &self,
+        index_name: &str,
+        query: &Embedding,
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> Result<Vec<SearchResult>, VectorError>;
+
+    /// Check if a vector index exists.
+    fn has_index(&self, index_name: &str) -> bool;
+
+    /// Get the dimension of vectors in the specified index.
+    fn dimension(&self, index_name: &str) -> Option<usize>;
+}
 
 use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
 
@@ -20,6 +54,7 @@ use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
 /// - Execution statistics
 /// - Runtime configuration
 /// - Graph storage access (for graph traversal queries)
+/// - Vector index access (optional)
 pub struct ExecutionContext {
     /// Query parameters (1-indexed).
     parameters: HashMap<u32, Value>,
@@ -31,6 +66,8 @@ pub struct ExecutionContext {
     config: ExecutionConfig,
     /// Graph accessor for graph traversal operations.
     graph: Arc<dyn GraphAccessor>,
+    /// Optional vector index provider for HNSW searches.
+    vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
 }
 
 impl ExecutionContext {
@@ -45,6 +82,7 @@ impl ExecutionContext {
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
+            vector_index_provider: None,
         }
     }
 
@@ -57,6 +95,7 @@ impl ExecutionContext {
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
+            vector_index_provider: None,
         }
     }
 
@@ -80,6 +119,33 @@ impl ExecutionContext {
     #[must_use]
     pub fn graph_arc(&self) -> Arc<dyn GraphAccessor> {
         Arc::clone(&self.graph)
+    }
+
+    /// Creates a context with a vector index provider.
+    #[must_use]
+    pub fn with_vector_index_provider(mut self, provider: Arc<dyn VectorIndexProvider>) -> Self {
+        self.vector_index_provider = Some(provider);
+        self
+    }
+
+    /// Sets the vector index provider.
+    pub fn set_vector_index_provider(&mut self, provider: Arc<dyn VectorIndexProvider>) {
+        self.vector_index_provider = Some(provider);
+    }
+
+    /// Returns a reference to the vector index provider if one is set.
+    #[must_use]
+    pub fn vector_index_provider(&self) -> Option<&dyn VectorIndexProvider> {
+        self.vector_index_provider.as_deref()
+    }
+
+    /// Returns a clone of the vector index provider Arc if one is set.
+    ///
+    /// This is useful for operators that need to hold onto the provider
+    /// for the duration of their execution.
+    #[must_use]
+    pub fn vector_index_provider_arc(&self) -> Option<Arc<dyn VectorIndexProvider>> {
+        self.vector_index_provider.clone()
     }
 
     /// Adds a parameter value.
@@ -157,6 +223,7 @@ impl std::fmt::Debug for ExecutionContext {
             .field("stats", &self.stats)
             .field("config", &self.config)
             .field("graph", &"<GraphAccessor>")
+            .field("vector_index_provider", &self.vector_index_provider.is_some())
             .finish()
     }
 }
