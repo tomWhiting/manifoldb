@@ -393,7 +393,7 @@ fn entity_with_various_property_types() {
         Entity::new(id)
             .with_property("string", "hello")
             .with_property("int", 42i64)
-            .with_property("float", 3.14f64)
+            .with_property("float", 2.71f64)
             .with_property("bool", true)
             .with_property("vector", Value::Vector(vec![1.0, 2.0, 3.0]))
     })
@@ -404,7 +404,7 @@ fn entity_with_various_property_types() {
     let retrieved = NodeStore::get(&tx, entity.id).unwrap().unwrap();
     assert_eq!(retrieved.get_property("string"), Some(&Value::String("hello".to_owned())));
     assert_eq!(retrieved.get_property("int"), Some(&Value::Int(42)));
-    assert_eq!(retrieved.get_property("float"), Some(&Value::Float(3.14)));
+    assert_eq!(retrieved.get_property("float"), Some(&Value::Float(2.71)));
     assert_eq!(retrieved.get_property("bool"), Some(&Value::Bool(true)));
     assert_eq!(retrieved.get_property("vector"), Some(&Value::Vector(vec![1.0, 2.0, 3.0])));
 }
