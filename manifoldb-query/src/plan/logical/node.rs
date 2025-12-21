@@ -20,8 +20,8 @@ use std::fmt;
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
-    AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode,
-    SetOpNode, SortNode, UnionNode, ValuesNode,
+    AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
+    SortNode, UnionNode, ValuesNode,
 };
 use super::vector::{AnnSearchNode, VectorDistanceNode};
 
@@ -234,139 +234,91 @@ impl LogicalPlan {
     /// Adds a filter to this plan.
     #[must_use]
     pub fn filter(self, predicate: LogicalExpr) -> Self {
-        Self::Filter {
-            node: FilterNode::new(predicate),
-            input: Box::new(self),
-        }
+        Self::Filter { node: FilterNode::new(predicate), input: Box::new(self) }
     }
 
     /// Adds a projection to this plan.
     #[must_use]
     pub fn project(self, exprs: Vec<LogicalExpr>) -> Self {
-        Self::Project {
-            node: ProjectNode::new(exprs),
-            input: Box::new(self),
-        }
+        Self::Project { node: ProjectNode::new(exprs), input: Box::new(self) }
     }
 
     /// Adds an aggregation to this plan.
     #[must_use]
     pub fn aggregate(self, group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self::Aggregate {
-            node: AggregateNode::new(group_by, aggregates),
-            input: Box::new(self),
-        }
+        Self::Aggregate { node: AggregateNode::new(group_by, aggregates), input: Box::new(self) }
     }
 
     /// Adds a sort to this plan.
     #[must_use]
     pub fn sort(self, order_by: Vec<SortOrder>) -> Self {
-        Self::Sort {
-            node: SortNode::new(order_by),
-            input: Box::new(self),
-        }
+        Self::Sort { node: SortNode::new(order_by), input: Box::new(self) }
     }
 
     /// Adds a limit to this plan.
     #[must_use]
     pub fn limit(self, n: usize) -> Self {
-        Self::Limit {
-            node: LimitNode::limit(n),
-            input: Box::new(self),
-        }
+        Self::Limit { node: LimitNode::limit(n), input: Box::new(self) }
     }
 
     /// Adds an offset to this plan.
     #[must_use]
     pub fn offset(self, n: usize) -> Self {
-        Self::Limit {
-            node: LimitNode::offset(n),
-            input: Box::new(self),
-        }
+        Self::Limit { node: LimitNode::offset(n), input: Box::new(self) }
     }
 
     /// Adds limit and offset to this plan.
     #[must_use]
     pub fn limit_offset(self, limit: usize, offset: usize) -> Self {
-        Self::Limit {
-            node: LimitNode::limit_offset(limit, offset),
-            input: Box::new(self),
-        }
+        Self::Limit { node: LimitNode::limit_offset(limit, offset), input: Box::new(self) }
     }
 
     /// Adds DISTINCT to this plan.
     #[must_use]
     pub fn distinct(self) -> Self {
-        Self::Distinct {
-            node: DistinctNode::all(),
-            input: Box::new(self),
-        }
+        Self::Distinct { node: DistinctNode::all(), input: Box::new(self) }
     }
 
     /// Adds an alias to this plan.
     #[must_use]
     pub fn alias(self, name: impl Into<String>) -> Self {
-        Self::Alias {
-            alias: name.into(),
-            input: Box::new(self),
-        }
+        Self::Alias { alias: name.into(), input: Box::new(self) }
     }
 
     /// Creates an inner join with another plan.
     #[must_use]
     pub fn inner_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join {
-            node: JoinNode::inner(on),
-            left: Box::new(self),
-            right: Box::new(right),
-        }
+        Self::Join { node: JoinNode::inner(on), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a left outer join with another plan.
     #[must_use]
     pub fn left_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join {
-            node: JoinNode::left(on),
-            left: Box::new(self),
-            right: Box::new(right),
-        }
+        Self::Join { node: JoinNode::left(on), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a cross join with another plan.
     #[must_use]
     pub fn cross_join(self, right: LogicalPlan) -> Self {
-        Self::Join {
-            node: JoinNode::cross(),
-            left: Box::new(self),
-            right: Box::new(right),
-        }
+        Self::Join { node: JoinNode::cross(), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a UNION ALL with another plan.
     #[must_use]
     pub fn union_all(self, other: LogicalPlan) -> Self {
-        Self::Union {
-            node: UnionNode::all(),
-            inputs: vec![self, other],
-        }
+        Self::Union { node: UnionNode::all(), inputs: vec![self, other] }
     }
 
     /// Adds a graph expand operation.
     #[must_use]
     pub fn expand(self, node: ExpandNode) -> Self {
-        Self::Expand {
-            node,
-            input: Box::new(self),
-        }
+        Self::Expand { node, input: Box::new(self) }
     }
 
     /// Adds an ANN search operation.
     #[must_use]
     pub fn ann_search(self, node: AnnSearchNode) -> Self {
-        Self::AnnSearch {
-            node,
-            input: Box::new(self),
-        }
+        Self::AnnSearch { node, input: Box::new(self) }
     }
 
     // ========== Utility Methods ==========
@@ -442,10 +394,7 @@ impl LogicalPlan {
     /// Returns true if this is a leaf node (no children).
     #[must_use]
     pub fn is_leaf(&self) -> bool {
-        matches!(
-            self,
-            Self::Scan(_) | Self::Values(_) | Self::Empty { .. }
-        )
+        matches!(self, Self::Scan(_) | Self::Values(_) | Self::Empty { .. })
     }
 
     /// Returns the node type name (for display/debugging).
@@ -611,19 +560,10 @@ impl DisplayTree<'_> {
                 write!(f, "SetOp: {}", node.op_type)?;
             }
             LogicalPlan::Union { node, inputs, .. } => {
-                write!(
-                    f,
-                    "Union{}: {} inputs",
-                    if node.all { " All" } else { "" },
-                    inputs.len()
-                )?;
+                write!(f, "Union{}: {} inputs", if node.all { " All" } else { "" }, inputs.len())?;
             }
             LogicalPlan::Expand { node, .. } => {
-                write!(
-                    f,
-                    "Expand: ({}){}({})",
-                    node.src_var, node.direction, node.dst_var
-                )?;
+                write!(f, "Expand: ({}){}({})", node.src_var, node.direction, node.dst_var)?;
                 if !node.edge_types.is_empty() {
                     write!(f, " [types: {}]", node.edge_types.join("|"))?;
                 }
@@ -649,9 +589,7 @@ impl DisplayTree<'_> {
                     write!(f, " ({})", columns.join(", "))?;
                 }
             }
-            LogicalPlan::Update {
-                table, assignments, ..
-            } => {
+            LogicalPlan::Update { table, assignments, .. } => {
                 write!(f, "Update: {table} SET ")?;
                 for (i, (col, _)) in assignments.iter().enumerate() {
                     if i > 0 {
@@ -739,10 +677,7 @@ mod tests {
     fn display_tree() {
         let plan = LogicalPlan::scan("users")
             .filter(LogicalExpr::column("age").gt(LogicalExpr::integer(21)))
-            .project(vec![
-                LogicalExpr::column("id"),
-                LogicalExpr::column("name"),
-            ])
+            .project(vec![LogicalExpr::column("id"), LogicalExpr::column("name")])
             .limit(10);
 
         let output = format!("{plan}");

@@ -63,7 +63,8 @@ mod standard_sql {
 
     #[test]
     fn parse_select_with_where() {
-        let stmt = parse_single_statement("SELECT * FROM users WHERE id = 1 AND active = true").unwrap();
+        let stmt =
+            parse_single_statement("SELECT * FROM users WHERE id = 1 AND active = true").unwrap();
         match stmt {
             Statement::Select(select) => {
                 assert!(select.where_clause.is_some());
@@ -79,7 +80,8 @@ mod standard_sql {
 
     #[test]
     fn parse_select_with_order_by() {
-        let stmt = parse_single_statement("SELECT * FROM users ORDER BY name ASC, created_at DESC").unwrap();
+        let stmt = parse_single_statement("SELECT * FROM users ORDER BY name ASC, created_at DESC")
+            .unwrap();
         match stmt {
             Statement::Select(select) => {
                 assert_eq!(select.order_by.len(), 2);
@@ -116,8 +118,9 @@ mod standard_sql {
     #[test]
     fn parse_inner_join() {
         let stmt = parse_single_statement(
-            "SELECT u.name, o.total FROM users u INNER JOIN orders o ON u.id = o.user_id"
-        ).unwrap();
+            "SELECT u.name, o.total FROM users u INNER JOIN orders o ON u.id = o.user_id",
+        )
+        .unwrap();
         match stmt {
             Statement::Select(select) => {
                 assert_eq!(select.from.len(), 1);
@@ -133,9 +136,9 @@ mod standard_sql {
 
     #[test]
     fn parse_left_join() {
-        let stmt = parse_single_statement(
-            "SELECT * FROM users u LEFT JOIN orders o ON u.id = o.user_id"
-        ).unwrap();
+        let stmt =
+            parse_single_statement("SELECT * FROM users u LEFT JOIN orders o ON u.id = o.user_id")
+                .unwrap();
         match stmt {
             Statement::Select(select) => {
                 if let TableRef::Join(join) = &select.from[0] {
@@ -151,8 +154,9 @@ mod standard_sql {
     #[test]
     fn parse_group_by_having() {
         let stmt = parse_single_statement(
-            "SELECT category, COUNT(*) FROM products GROUP BY category HAVING COUNT(*) > 5"
-        ).unwrap();
+            "SELECT category, COUNT(*) FROM products GROUP BY category HAVING COUNT(*) > 5",
+        )
+        .unwrap();
         match stmt {
             Statement::Select(select) => {
                 assert_eq!(select.group_by.len(), 1);
@@ -164,9 +168,9 @@ mod standard_sql {
 
     #[test]
     fn parse_subquery() {
-        let stmt = parse_single_statement(
-            "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)"
-        ).unwrap();
+        let stmt =
+            parse_single_statement("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")
+                .unwrap();
         match stmt {
             Statement::Select(select) => {
                 if let Some(Expr::InSubquery { .. }) = select.where_clause {
@@ -182,8 +186,9 @@ mod standard_sql {
     #[test]
     fn parse_insert_values() {
         let stmt = parse_single_statement(
-            "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')"
-        ).unwrap();
+            "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')",
+        )
+        .unwrap();
         match stmt {
             Statement::Insert(insert) => {
                 assert_eq!(insert.columns.len(), 2);
@@ -195,8 +200,9 @@ mod standard_sql {
     #[test]
     fn parse_insert_multiple_rows() {
         let stmt = parse_single_statement(
-            "INSERT INTO users (name) VALUES ('Alice'), ('Bob'), ('Charlie')"
-        ).unwrap();
+            "INSERT INTO users (name) VALUES ('Alice'), ('Bob'), ('Charlie')",
+        )
+        .unwrap();
         match stmt {
             Statement::Insert(insert) => {
                 if let manifoldb_query::ast::InsertSource::Values(rows) = &insert.source {
@@ -212,8 +218,9 @@ mod standard_sql {
     #[test]
     fn parse_update() {
         let stmt = parse_single_statement(
-            "UPDATE users SET name = 'Bob', email = 'bob@example.com' WHERE id = 1"
-        ).unwrap();
+            "UPDATE users SET name = 'Bob', email = 'bob@example.com' WHERE id = 1",
+        )
+        .unwrap();
         match stmt {
             Statement::Update(update) => {
                 assert_eq!(update.assignments.len(), 2);
@@ -242,8 +249,9 @@ mod standard_sql {
                 name VARCHAR(100) NOT NULL,
                 email TEXT UNIQUE,
                 created_at TIMESTAMP
-            )"
-        ).unwrap();
+            )",
+        )
+        .unwrap();
         match stmt {
             Statement::CreateTable(create) => {
                 assert_eq!(create.columns.len(), 4);
@@ -255,9 +263,7 @@ mod standard_sql {
 
     #[test]
     fn parse_create_index() {
-        let stmt = parse_single_statement(
-            "CREATE INDEX idx_users_email ON users (email)"
-        ).unwrap();
+        let stmt = parse_single_statement("CREATE INDEX idx_users_email ON users (email)").unwrap();
         match stmt {
             Statement::CreateIndex(create) => {
                 assert_eq!(create.name.name, "idx_users_email");
@@ -309,7 +315,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT 42").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let SelectItem::Expr { expr: Expr::Literal(Literal::Integer(42)), .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::Literal(Literal::Integer(42)), .. } =
+                    &select.projection[0]
+                {
                     // Good
                 } else {
                     panic!("expected integer literal 42");
@@ -324,7 +332,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT 3.14").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let SelectItem::Expr { expr: Expr::Literal(Literal::Float(f)), .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::Literal(Literal::Float(f)), .. } =
+                    &select.projection[0]
+                {
                     assert!((f - 3.14).abs() < 0.001);
                 } else {
                     panic!("expected float literal");
@@ -339,7 +349,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT 'hello world'").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let SelectItem::Expr { expr: Expr::Literal(Literal::String(s)), .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::Literal(Literal::String(s)), .. } =
+                    &select.projection[0]
+                {
                     assert_eq!(s, "hello world");
                 } else {
                     panic!("expected string literal");
@@ -354,7 +366,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT true").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let SelectItem::Expr { expr: Expr::Literal(Literal::Boolean(true)), .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::Literal(Literal::Boolean(true)), .. } =
+                    &select.projection[0]
+                {
                     // Good
                 } else {
                     panic!("expected boolean true");
@@ -369,7 +383,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT NULL").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let SelectItem::Expr { expr: Expr::Literal(Literal::Null), .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::Literal(Literal::Null), .. } =
+                    &select.projection[0]
+                {
                     // Good
                 } else {
                     panic!("expected NULL");
@@ -385,7 +401,9 @@ mod expressions {
         match stmt {
             Statement::Select(select) => {
                 // Due to operator precedence, this should be 1 + (2 * 3)
-                if let SelectItem::Expr { expr: Expr::BinaryOp { op: BinaryOp::Add, .. }, .. } = &select.projection[0] {
+                if let SelectItem::Expr { expr: Expr::BinaryOp { op: BinaryOp::Add, .. }, .. } =
+                    &select.projection[0]
+                {
                     // Good - top-level is Add
                 } else {
                     panic!("expected binary operation");
@@ -445,7 +463,9 @@ mod expressions {
         let stmt = parse_single_statement("SELECT * FROM t WHERE x IS NULL").unwrap();
         match stmt {
             Statement::Select(select) => {
-                if let Some(Expr::UnaryOp { op: manifoldb_query::ast::UnaryOp::IsNull, .. }) = &select.where_clause {
+                if let Some(Expr::UnaryOp { op: manifoldb_query::ast::UnaryOp::IsNull, .. }) =
+                    &select.where_clause
+                {
                     // Good
                 } else {
                     panic!("expected IS NULL");
@@ -469,8 +489,9 @@ mod expressions {
     #[test]
     fn parse_case_expression() {
         let stmt = parse_single_statement(
-            "SELECT CASE WHEN x > 0 THEN 'positive' ELSE 'non-positive' END FROM t"
-        ).unwrap();
+            "SELECT CASE WHEN x > 0 THEN 'positive' ELSE 'non-positive' END FROM t",
+        )
+        .unwrap();
         match stmt {
             Statement::Select(select) => {
                 if let SelectItem::Expr { expr: Expr::Case(_), .. } = &select.projection[0] {
@@ -546,9 +567,9 @@ mod graph_patterns {
 
     #[test]
     fn parse_simple_match() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1")
+                .unwrap();
 
         assert_eq!(stmts.len(), 1);
         if let Statement::Select(select) = &stmts[0] {
@@ -562,9 +583,9 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_with_labels() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM users MATCH (u:User)-[:FOLLOWS]->(f:User)"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM users MATCH (u:User)-[:FOLLOWS]->(f:User)")
+                .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -578,9 +599,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_multiple_labels() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (p:Person:Employee)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (p:Person:Employee)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -592,9 +611,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_with_variable() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[r:KNOWS]->(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)-[r:KNOWS]->(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -607,9 +624,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_undirected() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:KNOWS]-(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:KNOWS]-(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -622,9 +637,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_left_direction() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)<-[:CREATED_BY]-(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)<-[:CREATED_BY]-(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -637,9 +650,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_variable_length() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:PATH*1..5]->(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:PATH*1..5]->(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -652,9 +663,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_any_length() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:PATH*]->(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:PATH*]->(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -667,9 +676,7 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_min_only() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:PATH*2..]->(b)"
-        ).unwrap();
+        let stmts = ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:PATH*2..]->(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -682,9 +689,9 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_long_path() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:R1]->(b)-[:R2]->(c)-[:R3]->(d)")
+                .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -696,9 +703,8 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_multiple_paths() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:R1]->(b), (b)-[:R2]->(c)"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:R1]->(b), (b)-[:R2]->(c)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -710,9 +716,8 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_multiple_edge_types() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:KNOWS|FOLLOWS]->(b)"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:KNOWS|FOLLOWS]->(b)").unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -725,9 +730,9 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_with_properties() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (p:Person {name: 'Alice'})-[:KNOWS]->(f)"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM t MATCH (p:Person {name: 'Alice'})-[:KNOWS]->(f)")
+                .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
@@ -740,8 +745,9 @@ mod graph_patterns {
     #[test]
     fn parse_match_with_where() {
         let stmts = ExtendedParser::parse(
-            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1 AND f.active = true"
-        ).unwrap();
+            "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1 AND f.active = true",
+        )
+        .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             assert!(select.match_clause.is_some());
@@ -753,9 +759,9 @@ mod graph_patterns {
 
     #[test]
     fn parse_match_with_order_limit() {
-        let stmts = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-[:R]->(b) ORDER BY a.name LIMIT 10"
-        ).unwrap();
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM t MATCH (a)-[:R]->(b) ORDER BY a.name LIMIT 10")
+                .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             assert!(select.match_clause.is_some());
@@ -827,8 +833,9 @@ mod combined {
     #[test]
     fn parse_graph_with_from() {
         let stmts = ExtendedParser::parse(
-            "SELECT d.*, a.name FROM docs d MATCH (d)-[:AUTHORED_BY]->(a) WHERE d.id = 1"
-        ).unwrap();
+            "SELECT d.*, a.name FROM docs d MATCH (d)-[:AUTHORED_BY]->(a) WHERE d.id = 1",
+        )
+        .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             assert!(!select.from.is_empty());
@@ -848,8 +855,9 @@ mod combined {
              WHERE u.active = true
              GROUP BY u.name
              ORDER BY follower_count DESC
-             LIMIT 10"
-        ).unwrap();
+             LIMIT 10",
+        )
+        .unwrap();
 
         if let Statement::Select(select) = &stmts[0] {
             assert!(select.match_clause.is_some());
@@ -904,17 +912,13 @@ mod errors {
 
     #[test]
     fn invalid_pattern_unclosed() {
-        let result = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a"
-        );
+        let result = ExtendedParser::parse("SELECT * FROM t MATCH (a");
         assert!(result.is_err());
     }
 
     #[test]
     fn invalid_edge_pattern() {
-        let result = ExtendedParser::parse(
-            "SELECT * FROM t MATCH (a)-->(b)"
-        );
+        let result = ExtendedParser::parse("SELECT * FROM t MATCH (a)-->(b)");
         // This should fail - edges need brackets
         assert!(result.is_err());
     }
@@ -926,18 +930,15 @@ mod errors {
 
 mod ast_builders {
     use manifoldb_query::ast::{
-        Expr, Identifier, NodePattern, EdgePattern, PathPattern, QualifiedName,
-        SelectItem, SelectStatement, TableRef,
+        EdgePattern, Expr, Identifier, NodePattern, PathPattern, QualifiedName, SelectItem,
+        SelectStatement, TableRef,
     };
 
     #[test]
     fn build_select_programmatically() {
         let select = SelectStatement::new(vec![SelectItem::Wildcard])
             .from(TableRef::table(QualifiedName::simple("users")))
-            .where_clause(
-                Expr::column(QualifiedName::simple("id"))
-                    .eq(Expr::integer(1))
-            )
+            .where_clause(Expr::column(QualifiedName::simple("id")).eq(Expr::integer(1)))
             .limit(Expr::integer(10));
 
         assert!(matches!(select.projection[0], SelectItem::Wildcard));
@@ -951,10 +952,8 @@ mod ast_builders {
             NodePattern::with_label("a", "Person"),
             EdgePattern::directed().edge_type("KNOWS"),
             NodePattern::with_label("b", "Person"),
-        ).then(
-            EdgePattern::directed().edge_type("LIKES"),
-            NodePattern::var("c"),
-        );
+        )
+        .then(EdgePattern::directed().edge_type("LIKES"), NodePattern::var("c"));
 
         assert_eq!(path.steps.len(), 2);
         assert_eq!(path.start.labels[0].name, "Person");
@@ -964,10 +963,7 @@ mod ast_builders {
     fn build_expression_chain() {
         let expr = Expr::column(QualifiedName::simple("x"))
             .gt(Expr::integer(0))
-            .and(
-                Expr::column(QualifiedName::simple("y"))
-                    .lt(Expr::integer(100))
-            );
+            .and(Expr::column(QualifiedName::simple("y")).lt(Expr::integer(100)));
 
         match expr {
             Expr::BinaryOp { op: manifoldb_query::ast::BinaryOp::And, .. } => {}

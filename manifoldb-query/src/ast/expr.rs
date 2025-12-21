@@ -58,19 +58,13 @@ impl Identifier {
     /// Creates a new unquoted identifier.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            quote_style: None,
-        }
+        Self { name: name.into(), quote_style: None }
     }
 
     /// Creates a new quoted identifier.
     #[must_use]
     pub fn quoted(name: impl Into<String>, quote: char) -> Self {
-        Self {
-            name: name.into(),
-            quote_style: Some(quote),
-        }
+        Self { name: name.into(), quote_style: Some(quote) }
     }
 }
 
@@ -112,17 +106,13 @@ impl QualifiedName {
     /// Creates a simple (unqualified) name.
     #[must_use]
     pub fn simple(name: impl Into<Identifier>) -> Self {
-        Self {
-            parts: vec![name.into()],
-        }
+        Self { parts: vec![name.into()] }
     }
 
     /// Creates a two-part qualified name (e.g., `table.column`).
     #[must_use]
     pub fn qualified(qualifier: impl Into<Identifier>, name: impl Into<Identifier>) -> Self {
-        Self {
-            parts: vec![qualifier.into(), name.into()],
-        }
+        Self { parts: vec![qualifier.into(), name.into()] }
     }
 
     /// Returns the final (unqualified) name.
@@ -280,13 +270,7 @@ impl FunctionCall {
     /// Creates a new function call with the given name and arguments.
     #[must_use]
     pub fn new(name: impl Into<QualifiedName>, args: Vec<Expr>) -> Self {
-        Self {
-            name: name.into(),
-            args,
-            distinct: false,
-            filter: None,
-            over: None,
-        }
+        Self { name: name.into(), args, distinct: false, filter: None, over: None }
     }
 }
 
@@ -359,21 +343,13 @@ impl OrderByExpr {
     /// Creates a new ascending order by expression.
     #[must_use]
     pub fn asc(expr: Expr) -> Self {
-        Self {
-            expr: Box::new(expr),
-            asc: true,
-            nulls_first: None,
-        }
+        Self { expr: Box::new(expr), asc: true, nulls_first: None }
     }
 
     /// Creates a new descending order by expression.
     #[must_use]
     pub fn desc(expr: Expr) -> Self {
-        Self {
-            expr: Box::new(expr),
-            asc: false,
-            nulls_first: None,
-        }
+        Self { expr: Box::new(expr), asc: false, nulls_first: None }
     }
 }
 
@@ -556,20 +532,13 @@ impl Expr {
     /// Creates a binary operation expression.
     #[must_use]
     pub fn binary(left: Self, op: BinaryOp, right: Self) -> Self {
-        Self::BinaryOp {
-            left: Box::new(left),
-            op,
-            right: Box::new(right),
-        }
+        Self::BinaryOp { left: Box::new(left), op, right: Box::new(right) }
     }
 
     /// Creates a unary operation expression.
     #[must_use]
     pub fn unary(op: UnaryOp, operand: Self) -> Self {
-        Self::UnaryOp {
-            op,
-            operand: Box::new(operand),
-        }
+        Self::UnaryOp { op, operand: Box::new(operand) }
     }
 
     /// Creates a function call expression.
@@ -677,10 +646,7 @@ mod tests {
         assert_eq!(Literal::Integer(42).to_string(), "42");
         assert_eq!(Literal::Float(3.14).to_string(), "3.14");
         assert_eq!(Literal::String("hello".into()).to_string(), "'hello'");
-        assert_eq!(
-            Literal::Vector(vec![1.0, 2.0, 3.0]).to_string(),
-            "[1, 2, 3]"
-        );
+        assert_eq!(Literal::Vector(vec![1.0, 2.0, 3.0]).to_string(), "[1, 2, 3]");
     }
 
     #[test]
@@ -708,9 +674,7 @@ mod tests {
             .and(Expr::column(QualifiedName::simple("active")).eq(Expr::boolean(true)));
 
         match expr {
-            Expr::BinaryOp {
-                op: BinaryOp::And, ..
-            } => (),
+            Expr::BinaryOp { op: BinaryOp::And, .. } => (),
             _ => panic!("expected AND expression"),
         }
     }

@@ -118,9 +118,7 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         LogicalPlan::Project { node, input } => {
             validate_plan(input)?;
             if node.exprs.is_empty() {
-                return Err(PlanError::InvalidAggregation(
-                    "empty projection".to_string(),
-                ));
+                return Err(PlanError::InvalidAggregation("empty projection".to_string()));
             }
         }
 
@@ -222,9 +220,7 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 ));
             }
             if node.vector_column.is_empty() {
-                return Err(PlanError::InvalidVectorOp(
-                    "vector column name is empty".to_string(),
-                ));
+                return Err(PlanError::InvalidVectorOp("vector column name is empty".to_string()));
             }
         }
 
@@ -297,10 +293,7 @@ mod tests {
     #[test]
     fn invalid_empty_table_name() {
         let plan = LogicalPlan::scan("");
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::UnknownTable(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::UnknownTable(_))));
     }
 
     #[test]
@@ -313,10 +306,7 @@ mod tests {
     #[test]
     fn invalid_empty_projection() {
         let plan = LogicalPlan::scan("users").project(vec![]);
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::InvalidAggregation(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidAggregation(_))));
     }
 
     #[test]
@@ -337,10 +327,7 @@ mod tests {
             node: AggregateNode::new(vec![], vec![]),
             input: Box::new(LogicalPlan::scan("products")),
         };
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::InvalidAggregation(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidAggregation(_))));
     }
 
     #[test]
@@ -349,25 +336,16 @@ mod tests {
             node: SortNode::new(vec![]),
             input: Box::new(LogicalPlan::scan("users")),
         };
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::InvalidOrderBy(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidOrderBy(_))));
     }
 
     #[test]
     fn invalid_empty_limit() {
         let plan = LogicalPlan::Limit {
-            node: LimitNode {
-                limit: None,
-                offset: None,
-            },
+            node: LimitNode { limit: None, offset: None },
             input: Box::new(LogicalPlan::scan("users")),
         };
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::InvalidLimit(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidLimit(_))));
     }
 
     #[test]
@@ -391,10 +369,7 @@ mod tests {
             vec![LogicalExpr::integer(1), LogicalExpr::string("a")],
             vec![LogicalExpr::integer(2)], // Wrong length
         ]));
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::TypeMismatch(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::TypeMismatch(_))));
     }
 
     #[test]
@@ -403,10 +378,7 @@ mod tests {
             node: AnnSearchNode::euclidean("embedding", LogicalExpr::param(1), 0),
             input: Box::new(LogicalPlan::scan("documents")),
         };
-        assert!(matches!(
-            validate_plan(&plan),
-            Err(PlanError::InvalidVectorOp(_))
-        ));
+        assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidVectorOp(_))));
     }
 
     #[test]

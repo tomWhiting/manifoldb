@@ -125,27 +125,27 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             if rest.len() < 8 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let bytes: [u8; 8] = rest[..8].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read i64 bytes".to_owned())
-            })?;
+            let bytes: [u8; 8] = rest[..8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read i64 bytes".to_owned()))?;
             Ok((Value::Int(i64::from_be_bytes(bytes)), 9))
         }
         tags::FLOAT => {
             if rest.len() < 8 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let bytes: [u8; 8] = rest[..8].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read f64 bytes".to_owned())
-            })?;
+            let bytes: [u8; 8] = rest[..8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read f64 bytes".to_owned()))?;
             Ok((Value::Float(f64::from_be_bytes(bytes)), 9))
         }
         tags::STRING => {
             if rest.len() < 4 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let len_bytes: [u8; 4] = rest[..4].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read length".to_owned())
-            })?;
+            let len_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
             let len = u32::from_be_bytes(len_bytes) as usize;
             if rest.len() < 4 + len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
@@ -158,9 +158,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             if rest.len() < 4 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let len_bytes: [u8; 4] = rest[..4].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read length".to_owned())
-            })?;
+            let len_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
             let len = u32::from_be_bytes(len_bytes) as usize;
             if rest.len() < 4 + len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
@@ -171,9 +171,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             if rest.len() < 4 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let len_bytes: [u8; 4] = rest[..4].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read length".to_owned())
-            })?;
+            let len_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
             let count = u32::from_be_bytes(len_bytes) as usize;
             let byte_len = count * 4;
             if rest.len() < 4 + byte_len {
@@ -182,9 +182,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let mut vec = Vec::with_capacity(count);
             for i in 0..count {
                 let offset = 4 + i * 4;
-                let f_bytes: [u8; 4] = rest[offset..offset + 4].try_into().map_err(|_| {
-                    CoreError::Encoding("failed to read f32 bytes".to_owned())
-                })?;
+                let f_bytes: [u8; 4] = rest[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read f32 bytes".to_owned()))?;
                 vec.push(f32::from_le_bytes(f_bytes));
             }
             Ok((Value::Vector(vec), 5 + byte_len))
@@ -193,9 +193,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             if rest.len() < 4 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
-            let len_bytes: [u8; 4] = rest[..4].try_into().map_err(|_| {
-                CoreError::Encoding("failed to read length".to_owned())
-            })?;
+            let len_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
             let count = u32::from_be_bytes(len_bytes) as usize;
             let mut arr = Vec::with_capacity(count);
             let mut offset = 5; // tag + length bytes

@@ -14,22 +14,17 @@ fn arb_value() -> impl Strategy<Value = Value> {
         any::<bool>().prop_map(Value::Bool),
         any::<i64>().prop_map(Value::Int),
         // Filter out NaN since NaN != NaN
-        any::<f64>()
-            .prop_filter("not NaN", |f| !f.is_nan())
-            .prop_map(Value::Float),
+        any::<f64>().prop_filter("not NaN", |f| !f.is_nan()).prop_map(Value::Float),
         ".*".prop_map(Value::String),
         prop::collection::vec(any::<u8>(), 0..100).prop_map(Value::Bytes),
-        prop::collection::vec(
-            any::<f32>().prop_filter("not NaN", |f| !f.is_nan()),
-            0..50
-        )
-        .prop_map(Value::Vector),
+        prop::collection::vec(any::<f32>().prop_filter("not NaN", |f| !f.is_nan()), 0..50)
+            .prop_map(Value::Vector),
     ];
 
     leaf.prop_recursive(
-        3,   // depth
-        64,  // size
-        10,  // items per collection
+        3,  // depth
+        64, // size
+        10, // items per collection
         |inner| prop::collection::vec(inner, 0..10).prop_map(Value::Array),
     )
 }
@@ -69,12 +64,8 @@ fn arb_edge() -> impl Strategy<Value = Edge> {
         prop::collection::hash_map("[a-zA-Z_][a-zA-Z0-9_]*", arb_value(), 0..10),
     )
         .prop_map(|(id, source, target, edge_type, properties)| {
-            let mut edge = Edge::new(
-                EdgeId::new(id),
-                EntityId::new(source),
-                EntityId::new(target),
-                edge_type,
-            );
+            let mut edge =
+                Edge::new(EdgeId::new(id), EntityId::new(source), EntityId::new(target), edge_type);
             edge.properties = properties;
             edge
         })
