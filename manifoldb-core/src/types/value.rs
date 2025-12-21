@@ -129,7 +129,7 @@ mod tests {
     fn value_conversions() {
         assert_eq!(Value::from(true).as_bool(), Some(true));
         assert_eq!(Value::from(42i64).as_int(), Some(42));
-        assert_eq!(Value::from(2.718f64).as_float(), Some(2.718));
+        assert_eq!(Value::from(2.5f64).as_float(), Some(2.5));
         assert_eq!(Value::from("hello").as_str(), Some("hello"));
     }
 
