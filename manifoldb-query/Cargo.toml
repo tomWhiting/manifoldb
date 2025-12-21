@@ -13,6 +13,7 @@ manifoldb-storage = { workspace = true }
 manifoldb-graph = { workspace = true }
 manifoldb-vector = { workspace = true }
 thiserror = { workspace = true }
+sqlparser = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
