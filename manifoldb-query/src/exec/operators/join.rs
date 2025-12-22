@@ -1,8 +1,5 @@
 //! Join operators for combining data from multiple sources.
 
-// Allow unwrap - state invariants guarantee these are Some when accessed
-#![allow(clippy::unwrap_used)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -139,31 +136,33 @@ impl Operator for NestedLoopJoinOp {
                 }
             }
 
-            let left_row = self.current_left.as_ref().unwrap();
+            // Process current left row - use if let to avoid unwrap
+            // State invariant: current_left is Some after the block above
+            if let Some(left_row) = &self.current_left {
+                // Try to find matching right row
+                while self.right_position < self.right_rows.len() {
+                    let right_row = &self.right_rows[self.right_position];
+                    self.right_position += 1;
 
-            // Try to find matching right row
-            while self.right_position < self.right_rows.len() {
-                let right_row = &self.right_rows[self.right_position];
-                self.right_position += 1;
-
-                if self.matches(left_row, right_row)? {
-                    self.matched_left = true;
-                    self.base.inc_rows_produced();
-                    return Ok(Some(left_row.merge(right_row)));
-                }
-            }
-
-            // No more right rows for this left row
-            match self.join_type {
-                JoinType::Left | JoinType::Full => {
-                    if !self.matched_left {
-                        // Output left row with NULL right
+                    if self.matches(left_row, right_row)? {
                         self.matched_left = true;
                         self.base.inc_rows_produced();
-                        return Ok(Some(left_row.merge(&self.right_null_row())));
+                        return Ok(Some(left_row.merge(right_row)));
                     }
                 }
-                _ => {}
+
+                // No more right rows for this left row
+                match self.join_type {
+                    JoinType::Left | JoinType::Full => {
+                        if !self.matched_left {
+                            // Output left row with NULL right
+                            self.matched_left = true;
+                            self.base.inc_rows_produced();
+                            return Ok(Some(left_row.merge(&self.right_null_row())));
+                        }
+                    }
+                    _ => {}
+                }
             }
 
             // Move to next left row
@@ -358,17 +357,19 @@ impl Operator for HashJoinOp {
                     let key = self.compute_key(&probe_row, &self.probe_keys)?;
                     // Clone only the Arc pointer, not the underlying Vec<Row>
                     self.current_matches = self.hash_table.get(&key).cloned();
-                    self.current_probe = Some(probe_row);
                     self.match_position = 0;
 
                     // Handle left outer join with no matches
                     let has_no_matches =
                         self.current_matches.as_ref().map_or(true, |m| m.is_empty());
                     if has_no_matches && self.join_type == JoinType::Left {
-                        let probe = self.current_probe.as_ref().unwrap();
                         self.base.inc_rows_produced();
-                        return Ok(Some(self.build_null_row().merge(probe)));
+                        // Use probe_row directly before moving it to current_probe
+                        let result = self.build_null_row().merge(&probe_row);
+                        self.current_probe = Some(probe_row);
+                        return Ok(Some(result));
                     }
+                    self.current_probe = Some(probe_row);
                 }
                 None => {
                     self.base.set_finished();
