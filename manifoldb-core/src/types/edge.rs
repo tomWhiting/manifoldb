@@ -1,4 +1,25 @@
 //! Edge (relationship) types for the graph.
+//!
+//! This module provides the [`Edge`] type, which represents a directed relationship
+//! between two entities in the graph.
+//!
+//! # Example
+//!
+//! ```
+//! use manifoldb_core::types::{Edge, EdgeId, EntityId};
+//!
+//! let alice = EntityId::new(1);
+//! let bob = EntityId::new(2);
+//!
+//! // Create an edge from Alice to Bob
+//! let follows = Edge::new(EdgeId::new(1), alice, bob, "FOLLOWS")
+//!     .with_property("since", "2024-01-01")
+//!     .with_property("close_friend", true);
+//!
+//! assert_eq!(follows.edge_type.as_str(), "FOLLOWS");
+//! assert_eq!(follows.source, alice);
+//! assert_eq!(follows.target, bob);
+//! ```
 
 use std::collections::HashMap;
 
@@ -7,6 +28,21 @@ use serde::{Deserialize, Serialize};
 use super::{EdgeId, EntityId, Value};
 
 /// The type of an edge, describing the relationship.
+///
+/// Edge types categorize relationships, such as "FOLLOWS", "LIKES", "WORKS_AT",
+/// or "PURCHASED". They are typically written in `SCREAMING_SNAKE_CASE` by convention.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::EdgeType;
+///
+/// let edge_type = EdgeType::new("FOLLOWS");
+/// assert_eq!(edge_type.as_str(), "FOLLOWS");
+///
+/// // Also works via From trait
+/// let edge_type: EdgeType = "WORKS_AT".into();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EdgeType(String);
 
@@ -42,11 +78,31 @@ impl From<String> for EdgeType {
 
 /// An edge (relationship) between two entities in the graph.
 ///
-/// Edges connect entities and have:
-/// - A unique identifier
-/// - A source and target entity
-/// - A type describing the relationship
-/// - Properties as key-value pairs
+/// Edges are directed relationships connecting a source entity to a target entity.
+/// They have:
+/// - A unique identifier ([`EdgeId`])
+/// - A source and target entity ([`EntityId`])
+/// - A type describing the relationship ([`EdgeType`])
+/// - Properties as key-value pairs ([`Value`])
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::types::{Edge, EdgeId, EntityId, Value};
+///
+/// let user_id = EntityId::new(1);
+/// let product_id = EntityId::new(100);
+///
+/// // Create a purchase relationship with properties
+/// let purchased = Edge::new(EdgeId::new(1), user_id, product_id, "PURCHASED")
+///     .with_property("quantity", 2i64)
+///     .with_property("price", 29.99f64)
+///     .with_property("timestamp", "2024-01-15T10:30:00Z");
+///
+/// assert_eq!(purchased.source, user_id);
+/// assert_eq!(purchased.target, product_id);
+/// assert_eq!(purchased.get_property("quantity"), Some(&Value::Int(2)));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     /// Unique identifier for this edge.
