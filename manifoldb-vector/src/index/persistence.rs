@@ -88,15 +88,19 @@ pub struct IndexMetadata {
     pub ef_search: usize,
     /// The ml parameter (stored as bits).
     pub ml_bits: u64,
+    /// Number of PQ segments (0 = disabled).
+    pub pq_segments: usize,
+    /// Number of PQ centroids per segment.
+    pub pq_centroids: usize,
 }
 
 impl IndexMetadata {
     /// Serialize metadata to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(64);
+        let mut bytes = Vec::with_capacity(72);
 
-        // Version byte
-        bytes.push(1);
+        // Version byte (2 = with PQ support)
+        bytes.push(2);
 
         // Dimension (4 bytes)
         bytes.extend_from_slice(&(self.dimension as u32).to_be_bytes());
@@ -128,6 +132,10 @@ impl IndexMetadata {
         // ml as bits (8 bytes)
         bytes.extend_from_slice(&self.ml_bits.to_be_bytes());
 
+        // PQ parameters (4 bytes each)
+        bytes.extend_from_slice(&(self.pq_segments as u32).to_be_bytes());
+        bytes.extend_from_slice(&(self.pq_centroids as u32).to_be_bytes());
+
         bytes
     }
 
@@ -138,7 +146,7 @@ impl IndexMetadata {
         }
 
         let version = bytes[0];
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(VectorError::Encoding(format!("unsupported metadata version: {version}")));
         }
 
@@ -191,6 +199,15 @@ impl IndexMetadata {
         let ef_search = read_u32(bytes, &mut pos)? as usize;
         let ml_bits = read_u64(bytes, &mut pos)?;
 
+        // PQ parameters (version 2+)
+        let (pq_segments, pq_centroids) = if version >= 2 {
+            let segments = read_u32(bytes, &mut pos)? as usize;
+            let centroids = read_u32(bytes, &mut pos)? as usize;
+            (segments, centroids)
+        } else {
+            (0, 256) // Defaults for version 1
+        };
+
         Ok(Self {
             dimension,
             distance_metric,
@@ -201,6 +218,8 @@ impl IndexMetadata {
             ef_construction,
             ef_search,
             ml_bits,
+            pq_segments,
+            pq_centroids,
         })
     }
 }
@@ -463,6 +482,8 @@ pub fn save_graph<E: StorageEngine>(
         ef_construction: config.ef_construction,
         ef_search: config.ef_search,
         ml_bits: config.ml.to_bits(),
+        pq_segments: config.pq_segments,
+        pq_centroids: config.pq_centroids,
     };
     save_metadata(engine, table, &metadata)?;
 
@@ -639,6 +660,8 @@ pub fn save_graph_tx<T: Transaction>(
         ef_construction: config.ef_construction,
         ef_search: config.ef_search,
         ml_bits: config.ml.to_bits(),
+        pq_segments: config.pq_segments,
+        pq_centroids: config.pq_centroids,
     };
     save_metadata_tx(tx, table, &metadata)?;
 
@@ -721,6 +744,8 @@ mod tests {
             ef_construction: 200,
             ef_search: 50,
             ml_bits: 0.5_f64.to_bits(),
+            pq_segments: 8,
+            pq_centroids: 256,
         };
 
         let bytes = metadata.to_bytes();
@@ -734,6 +759,8 @@ mod tests {
         assert_eq!(decoded.m_max0, 32);
         assert_eq!(decoded.ef_construction, 200);
         assert_eq!(decoded.ef_search, 50);
+        assert_eq!(decoded.pq_segments, 8);
+        assert_eq!(decoded.pq_centroids, 256);
     }
 
     #[test]
@@ -748,12 +775,15 @@ mod tests {
             ef_construction: 100,
             ef_search: 25,
             ml_bits: 0.3_f64.to_bits(),
+            pq_segments: 0,
+            pq_centroids: 256,
         };
 
         let bytes = metadata.to_bytes();
         let decoded = IndexMetadata::from_bytes(&bytes).unwrap();
 
         assert_eq!(decoded.entry_point, None);
+        assert_eq!(decoded.pq_segments, 0);
     }
 
     #[test]
@@ -819,6 +849,8 @@ mod tests {
             ef_construction: 200,
             ef_search: 50,
             ml_bits: 0.5_f64.to_bits(),
+            pq_segments: 8,
+            pq_centroids: 256,
         };
 
         save_metadata(&engine, table, &metadata).unwrap();
@@ -826,5 +858,7 @@ mod tests {
 
         assert_eq!(loaded.dimension, metadata.dimension);
         assert_eq!(loaded.entry_point, metadata.entry_point);
+        assert_eq!(loaded.pq_segments, metadata.pq_segments);
+        assert_eq!(loaded.pq_centroids, metadata.pq_centroids);
     }
 }

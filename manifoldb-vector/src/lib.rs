@@ -73,6 +73,7 @@ pub mod encoding;
 pub mod error;
 pub mod index;
 pub mod ops;
+pub mod quantization;
 pub mod store;
 pub mod types;
 
@@ -81,5 +82,6 @@ pub use distance::{CachedNorm, DistanceMetric};
 pub use error::VectorError;
 pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
+pub use quantization::{KMeans, KMeansConfig, PQCode, PQConfig, ProductQuantizer};
 pub use store::{SparseVectorStore, VectorStore};
 pub use types::{Embedding, EmbeddingName, EmbeddingSpace, SparseEmbedding, SparseEmbeddingSpace};

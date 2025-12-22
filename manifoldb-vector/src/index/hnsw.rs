@@ -131,6 +131,9 @@ impl<E: StorageEngine> HnswIndex<E> {
                 ef_construction: metadata.ef_construction,
                 ef_search: metadata.ef_search,
                 ml: f64::from_bits(metadata.ml_bits),
+                pq_segments: metadata.pq_segments,
+                pq_centroids: metadata.pq_centroids,
+                pq_training_samples: 1000, // Default
             };
 
             return Ok(Self {
@@ -156,6 +159,8 @@ impl<E: StorageEngine> HnswIndex<E> {
             ef_construction: config.ef_construction,
             ef_search: config.ef_search,
             ml_bits: config.ml.to_bits(),
+            pq_segments: config.pq_segments,
+            pq_centroids: config.pq_centroids,
         };
         save_metadata(&engine, &table, &metadata)?;
 
@@ -186,6 +191,9 @@ impl<E: StorageEngine> HnswIndex<E> {
             ef_construction: metadata.ef_construction,
             ef_search: metadata.ef_search,
             ml: f64::from_bits(metadata.ml_bits),
+            pq_segments: metadata.pq_segments,
+            pq_centroids: metadata.pq_centroids,
+            pq_training_samples: 1000, // Default
         };
 
         Ok(Self {
@@ -395,6 +403,8 @@ impl<E: StorageEngine> HnswIndex<E> {
             ef_construction: self.config.ef_construction,
             ef_search: self.config.ef_search,
             ml_bits: self.config.ml.to_bits(),
+            pq_segments: self.config.pq_segments,
+            pq_centroids: self.config.pq_centroids,
         };
         persistence::save_metadata(&self.engine, &self.table, &metadata)?;
         Ok(())
@@ -569,6 +579,8 @@ impl<E: StorageEngine> HnswIndex<E> {
             ef_construction: self.config.ef_construction,
             ef_search: self.config.ef_search,
             ml_bits: self.config.ml.to_bits(),
+            pq_segments: self.config.pq_segments,
+            pq_centroids: self.config.pq_centroids,
         };
         persistence::save_metadata_tx(&mut tx, &self.table, &metadata)?;
 

@@ -52,6 +52,16 @@ pub struct HnswIndexEntry {
     pub ef_search: usize,
     /// The ml parameter as bits.
     pub ml_bits: u64,
+    /// Number of PQ segments (0 = disabled).
+    #[serde(default)]
+    pub pq_segments: usize,
+    /// Number of PQ centroids per segment.
+    #[serde(default = "default_pq_centroids")]
+    pub pq_centroids: usize,
+}
+
+fn default_pq_centroids() -> usize {
+    256
 }
 
 /// Serializable version of DistanceMetric.
@@ -107,6 +117,8 @@ impl HnswIndexEntry {
             ef_construction: config.ef_construction,
             ef_search: config.ef_search,
             ml_bits: config.ml.to_bits(),
+            pq_segments: config.pq_segments,
+            pq_centroids: config.pq_centroids,
         }
     }
 
@@ -119,6 +131,9 @@ impl HnswIndexEntry {
             ef_construction: self.ef_construction,
             ef_search: self.ef_search,
             ml: f64::from_bits(self.ml_bits),
+            pq_segments: self.pq_segments,
+            pq_centroids: self.pq_centroids,
+            pq_training_samples: 1000, // Default
         }
     }
 
