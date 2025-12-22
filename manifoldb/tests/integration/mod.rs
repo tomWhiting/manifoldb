@@ -8,6 +8,7 @@ pub mod concurrency;
 pub mod correctness;
 pub mod crud;
 pub mod ddl;
+pub mod e2e;
 pub mod graph;
 pub mod recovery;
 pub mod scale;
