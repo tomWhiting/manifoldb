@@ -39,6 +39,15 @@ pub enum GraphError {
     #[error("internal error: {0}")]
     Internal(String),
 
+    /// An invalid edge weight was encountered.
+    #[error("invalid edge weight on edge {edge_id}: {message}")]
+    InvalidWeight {
+        /// The edge with the invalid weight.
+        edge_id: EdgeId,
+        /// Description of the weight issue.
+        message: String,
+    },
+
     /// Data corruption detected in storage.
     #[error("data corruption: {0}")]
     DataCorruption(String),
