@@ -327,7 +327,7 @@ impl PhysicalPlanner {
             scan = scan.with_filter(filter.clone());
         }
 
-        PhysicalPlan::FullScan(scan)
+        PhysicalPlan::FullScan(Box::new(scan))
     }
 
     fn plan_values(&self, node: &crate::plan::logical::ValuesNode) -> PhysicalPlan {
@@ -393,7 +393,7 @@ impl PhysicalPlanner {
             agg_node = agg_node.with_having(having.clone());
         }
 
-        PhysicalPlan::HashAggregate { node: agg_node, input: Box::new(input_plan) }
+        PhysicalPlan::HashAggregate { node: Box::new(agg_node), input: Box::new(input_plan) }
     }
 
     fn plan_sort(
@@ -483,9 +483,9 @@ impl PhysicalPlanner {
                 };
 
                 return PhysicalPlan::HashJoin {
-                    node: HashJoinNode::new(node.join_type, build_keys, probe_keys)
+                    node: Box::new(HashJoinNode::new(node.join_type, build_keys, probe_keys)
                         .with_join_order(join_order)
-                        .with_cost(cost),
+                        .with_cost(cost)),
                     build: Box::new(build_plan),
                     probe: Box::new(probe_plan),
                 };
@@ -567,7 +567,7 @@ impl PhysicalPlanner {
             exec_node = exec_node.with_node_labels(node.node_labels.clone());
         }
 
-        PhysicalPlan::GraphExpand { node: exec_node, input: Box::new(input_plan) }
+        PhysicalPlan::GraphExpand { node: Box::new(exec_node), input: Box::new(input_plan) }
     }
 
     fn plan_path_scan(&self, node: &PathScanNode, input: &LogicalPlan) -> PhysicalPlan {
@@ -607,7 +607,7 @@ impl PhysicalPlanner {
             exec_node = exec_node.with_track_path();
         }
 
-        PhysicalPlan::GraphPathScan { node: exec_node, input: Box::new(input_plan) }
+        PhysicalPlan::GraphPathScan { node: Box::new(exec_node), input: Box::new(input_plan) }
     }
 
     fn plan_ann_search(&self, node: &AnnSearchNode, input: &LogicalPlan) -> PhysicalPlan {
@@ -645,7 +645,7 @@ impl PhysicalPlanner {
                 hnsw_node = hnsw_node.with_distance_alias(alias);
             }
 
-            PhysicalPlan::HnswSearch { node: hnsw_node, input: Box::new(input_plan) }
+            PhysicalPlan::HnswSearch { node: Box::new(hnsw_node), input: Box::new(input_plan) }
         } else {
             // Use brute-force search
             let cost = self.cost_model.brute_force_search_cost(table_rows, node.k);
@@ -667,7 +667,7 @@ impl PhysicalPlanner {
                 bf_node = bf_node.with_distance_alias(alias);
             }
 
-            PhysicalPlan::BruteForceSearch { node: bf_node, input: Box::new(input_plan) }
+            PhysicalPlan::BruteForceSearch { node: Box::new(bf_node), input: Box::new(input_plan) }
         }
     }
 
@@ -806,7 +806,7 @@ mod tests {
 
     #[test]
     fn plan_simple_scan() {
-        let logical = LogicalPlan::Scan(ScanNode::new("users"));
+        let logical = LogicalPlan::Scan(Box::new(ScanNode::new("users")));
         let planner = PhysicalPlanner::new();
         let physical = planner.plan(&logical);
 
@@ -868,9 +868,9 @@ mod tests {
 
         // Non-equijoin condition triggers nested loop
         let logical = LogicalPlan::Join {
-            node: JoinNode::inner(
+            node: Box::new(JoinNode::inner(
                 LogicalExpr::column("users.id").gt(LogicalExpr::column("orders.user_id")),
-            ),
+            )),
             left: Box::new(users),
             right: Box::new(orders),
         };
@@ -888,9 +888,9 @@ mod tests {
 
         // Equijoin condition triggers hash join
         let logical = LogicalPlan::Join {
-            node: JoinNode::inner(
+            node: Box::new(JoinNode::inner(
                 LogicalExpr::column("users.id").eq(LogicalExpr::column("orders.user_id")),
-            ),
+            )),
             left: Box::new(users),
             right: Box::new(orders),
         };
@@ -951,7 +951,7 @@ mod tests {
         let orders = LogicalPlan::scan("orders");
 
         let joined = LogicalPlan::Join {
-            node: JoinNode::inner(LogicalExpr::column("id").eq(LogicalExpr::column("user_id"))),
+            node: Box::new(JoinNode::inner(LogicalExpr::column("id").eq(LogicalExpr::column("user_id")))),
             left: Box::new(users),
             right: Box::new(orders),
         };

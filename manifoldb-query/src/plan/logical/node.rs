@@ -29,12 +29,15 @@ use super::vector::{AnnSearchNode, VectorDistanceNode};
 ///
 /// This is a tree structure where each node represents an operation,
 /// and children represent inputs to that operation.
+///
+/// Large node types are boxed to reduce enum size overhead. This improves
+/// memory efficiency when many `LogicalPlan` instances are created during
+/// query planning.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub enum LogicalPlan {
     // ========== Leaf Nodes (no inputs) ==========
-    /// Table scan.
-    Scan(ScanNode),
+    /// Table scan (boxed - 120 bytes unboxed).
+    Scan(Box<ScanNode>),
 
     /// Inline values (VALUES clause).
     Values(ValuesNode),
@@ -62,10 +65,10 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
     },
 
-    /// Aggregation (GROUP BY).
+    /// Aggregation (GROUP BY) (boxed node - 96 bytes unboxed).
     Aggregate {
         /// The aggregate node.
-        node: AggregateNode,
+        node: Box<AggregateNode>,
         /// The input plan.
         input: Box<LogicalPlan>,
     },
@@ -103,10 +106,10 @@ pub enum LogicalPlan {
     },
 
     // ========== Binary Nodes (two inputs) ==========
-    /// Join two relations.
+    /// Join two relations (boxed node - 80 bytes unboxed).
     Join {
         /// The join node.
-        node: JoinNode,
+        node: Box<JoinNode>,
         /// The left input.
         left: Box<LogicalPlan>,
         /// The right input.
@@ -133,35 +136,35 @@ pub enum LogicalPlan {
     },
 
     // ========== Graph Nodes ==========
-    /// Graph edge expansion.
+    /// Graph edge expansion (boxed node - 248 bytes unboxed).
     Expand {
         /// The expand node.
-        node: ExpandNode,
+        node: Box<ExpandNode>,
         /// The input plan (provides source nodes).
         input: Box<LogicalPlan>,
     },
 
-    /// Path pattern scan.
+    /// Path pattern scan (boxed node - 80 bytes unboxed).
     PathScan {
         /// The path scan node.
-        node: PathScanNode,
+        node: Box<PathScanNode>,
         /// The input plan (provides starting nodes).
         input: Box<LogicalPlan>,
     },
 
     // ========== Vector Nodes ==========
-    /// Approximate nearest neighbor search.
+    /// Approximate nearest neighbor search (boxed node - 208 bytes unboxed).
     AnnSearch {
         /// The ANN search node.
-        node: AnnSearchNode,
+        node: Box<AnnSearchNode>,
         /// The input plan (table to search).
         input: Box<LogicalPlan>,
     },
 
-    /// Vector distance computation.
+    /// Vector distance computation (boxed node - 128 bytes unboxed).
     VectorDistance {
         /// The distance node.
-        node: VectorDistanceNode,
+        node: Box<VectorDistanceNode>,
         /// The input plan.
         input: Box<LogicalPlan>,
     },
@@ -208,13 +211,13 @@ impl LogicalPlan {
     /// Creates a table scan.
     #[must_use]
     pub fn scan(table: impl Into<String>) -> Self {
-        Self::Scan(ScanNode::new(table))
+        Self::Scan(Box::new(ScanNode::new(table)))
     }
 
     /// Creates a table scan with alias.
     #[must_use]
     pub fn scan_aliased(table: impl Into<String>, alias: impl Into<String>) -> Self {
-        Self::Scan(ScanNode::new(table).with_alias(alias))
+        Self::Scan(Box::new(ScanNode::new(table).with_alias(alias)))
     }
 
     /// Creates an empty relation.
@@ -246,7 +249,7 @@ impl LogicalPlan {
     /// Adds an aggregation to this plan.
     #[must_use]
     pub fn aggregate(self, group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self::Aggregate { node: AggregateNode::new(group_by, aggregates), input: Box::new(self) }
+        Self::Aggregate { node: Box::new(AggregateNode::new(group_by, aggregates)), input: Box::new(self) }
     }
 
     /// Adds a sort to this plan.
@@ -288,19 +291,19 @@ impl LogicalPlan {
     /// Creates an inner join with another plan.
     #[must_use]
     pub fn inner_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: JoinNode::inner(on), left: Box::new(self), right: Box::new(right) }
+        Self::Join { node: Box::new(JoinNode::inner(on)), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a left outer join with another plan.
     #[must_use]
     pub fn left_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: JoinNode::left(on), left: Box::new(self), right: Box::new(right) }
+        Self::Join { node: Box::new(JoinNode::left(on)), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a cross join with another plan.
     #[must_use]
     pub fn cross_join(self, right: LogicalPlan) -> Self {
-        Self::Join { node: JoinNode::cross(), left: Box::new(self), right: Box::new(right) }
+        Self::Join { node: Box::new(JoinNode::cross()), left: Box::new(self), right: Box::new(right) }
     }
 
     /// Creates a UNION ALL with another plan.
@@ -312,13 +315,13 @@ impl LogicalPlan {
     /// Adds a graph expand operation.
     #[must_use]
     pub fn expand(self, node: ExpandNode) -> Self {
-        Self::Expand { node, input: Box::new(self) }
+        Self::Expand { node: Box::new(node), input: Box::new(self) }
     }
 
     /// Adds an ANN search operation.
     #[must_use]
     pub fn ann_search(self, node: AnnSearchNode) -> Self {
-        Self::AnnSearch { node, input: Box::new(self) }
+        Self::AnnSearch { node: Box::new(node), input: Box::new(self) }
     }
 
     // ========== Utility Methods ==========

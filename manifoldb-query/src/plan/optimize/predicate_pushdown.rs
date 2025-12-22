@@ -58,7 +58,7 @@ impl PredicatePushdown {
             }
 
             // For Scan nodes, push predicates into the scan if possible
-            LogicalPlan::Scan(node) => self.push_to_scan(node, predicates),
+            LogicalPlan::Scan(node) => self.push_to_scan(*node, predicates),
 
             // For Project, push through but keep predicates that use projected columns
             LogicalPlan::Project { node, input } => {
@@ -67,7 +67,7 @@ impl PredicatePushdown {
 
             // For Aggregate, some predicates can be pushed, others must stay above
             LogicalPlan::Aggregate { node, input } => {
-                self.push_through_aggregate(node, *input, predicates)
+                self.push_through_aggregate(*node, *input, predicates)
             }
 
             // For Sort, push all predicates through
@@ -96,7 +96,7 @@ impl PredicatePushdown {
 
             // For Join, push predicates to appropriate sides
             LogicalPlan::Join { node, left, right } => {
-                self.push_through_join(node, *left, *right, predicates)
+                self.push_through_join(*node, *left, *right, predicates)
             }
 
             // For SetOp, predicates cannot be pushed through
@@ -138,7 +138,7 @@ impl PredicatePushdown {
                     self.references_only_scan_columns(p)
                 });
 
-                let mut search_node = node;
+                let mut search_node = *node;
                 if !pushable.is_empty() {
                     let combined = Self::combine_predicates(pushable);
                     search_node.filter = Some(match search_node.filter {
@@ -149,7 +149,7 @@ impl PredicatePushdown {
 
                 let optimized_input = self.push_down(*input, Vec::new());
                 let result =
-                    LogicalPlan::AnnSearch { node: search_node, input: Box::new(optimized_input) };
+                    LogicalPlan::AnnSearch { node: Box::new(search_node), input: Box::new(optimized_input) };
                 self.apply_predicates(result, remaining)
             }
 
@@ -196,7 +196,7 @@ impl PredicatePushdown {
     /// Pushes predicates into a scan node.
     fn push_to_scan(&self, mut node: ScanNode, predicates: Vec<LogicalExpr>) -> LogicalPlan {
         if predicates.is_empty() {
-            return LogicalPlan::Scan(node);
+            return LogicalPlan::Scan(Box::new(node));
         }
 
         // Combine all predicates
@@ -208,7 +208,7 @@ impl PredicatePushdown {
             None => combined,
         });
 
-        LogicalPlan::Scan(node)
+        LogicalPlan::Scan(Box::new(node))
     }
 
     /// Pushes predicates through a projection.
@@ -239,7 +239,7 @@ impl PredicatePushdown {
 
         let optimized_input = self.push_down(input, pushable);
 
-        let result = LogicalPlan::Aggregate { node, input: Box::new(optimized_input) };
+        let result = LogicalPlan::Aggregate { node: Box::new(node), input: Box::new(optimized_input) };
 
         self.apply_predicates(result, remaining)
     }
@@ -291,7 +291,7 @@ impl PredicatePushdown {
         let optimized_right = self.push_down(right, right_predicates);
 
         let result = LogicalPlan::Join {
-            node,
+            node: Box::new(node),
             left: Box::new(optimized_left),
             right: Box::new(optimized_right),
         };
@@ -606,10 +606,10 @@ mod tests {
 
         // Filter on left table
         let plan = LogicalPlan::Join {
-            node: crate::plan::logical::JoinNode::inner(
+            node: Box::new(crate::plan::logical::JoinNode::inner(
                 LogicalExpr::qualified_column("users", "id")
                     .eq(LogicalExpr::qualified_column("orders", "user_id")),
-            ),
+            )),
             left: Box::new(left),
             right: Box::new(right),
         }

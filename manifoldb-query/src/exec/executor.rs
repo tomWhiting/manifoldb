@@ -157,11 +157,11 @@ impl Executor {
 fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
     match plan {
         // Scan operations
-        PhysicalPlan::FullScan(node) => Ok(Box::new(FullScanOp::new(node.clone()))),
+        PhysicalPlan::FullScan(node) => Ok(Box::new(FullScanOp::new((**node).clone()))),
 
-        PhysicalPlan::IndexScan(node) => Ok(Box::new(IndexScanOp::new(node.clone()))),
+        PhysicalPlan::IndexScan(node) => Ok(Box::new(IndexScanOp::new((**node).clone()))),
 
-        PhysicalPlan::IndexRangeScan(node) => Ok(Box::new(IndexRangeScanOp::new(node.clone()))),
+        PhysicalPlan::IndexRangeScan(node) => Ok(Box::new(IndexRangeScanOp::new((**node).clone()))),
 
         PhysicalPlan::Values { rows, .. } => {
             // Convert LogicalExpr rows to Value rows
@@ -308,7 +308,7 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         // Graph operations
         PhysicalPlan::GraphExpand { node, input } => {
             let input_op = build_operator_tree(input)?;
-            Ok(Box::new(GraphExpandOp::new(node.clone(), input_op)))
+            Ok(Box::new(GraphExpandOp::new((**node).clone(), input_op)))
         }
 
         PhysicalPlan::GraphPathScan { node, input } => {
@@ -354,9 +354,9 @@ mod tests {
     };
 
     fn make_scan_plan() -> PhysicalPlan {
-        PhysicalPlan::FullScan(
+        PhysicalPlan::FullScan(Box::new(
             FullScanNode::new("users").with_projection(vec!["id".to_string(), "name".to_string()]),
-        )
+        ))
     }
 
     #[test]

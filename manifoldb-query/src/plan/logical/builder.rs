@@ -168,7 +168,7 @@ impl PlanBuilder {
                     scan = scan.with_alias(&a.name.name);
                 }
 
-                Ok(LogicalPlan::Scan(scan))
+                Ok(LogicalPlan::Scan(Box::new(scan)))
             }
 
             TableRef::Subquery { query, alias } => {
@@ -189,7 +189,7 @@ impl PlanBuilder {
                     scan = scan.with_alias(&a.name.name);
                 }
 
-                Ok(LogicalPlan::Scan(scan))
+                Ok(LogicalPlan::Scan(Box::new(scan)))
             }
         }
     }
@@ -227,7 +227,7 @@ impl PlanBuilder {
             JoinCondition::None => JoinNode { join_type, condition: None, using_columns: vec![] },
         };
 
-        Ok(LogicalPlan::Join { node, left: Box::new(left), right: Box::new(right) })
+        Ok(LogicalPlan::Join { node: Box::new(node), left: Box::new(left), right: Box::new(right) })
     }
 
     /// Builds aggregate plan.
@@ -248,7 +248,7 @@ impl PlanBuilder {
         }
 
         Ok(LogicalPlan::Aggregate {
-            node: AggregateNode::new(group_by, aggregates),
+            node: Box::new(AggregateNode::new(group_by, aggregates)),
             input: Box::new(input),
         })
     }
@@ -517,7 +517,7 @@ impl PlanBuilder {
                     expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
             }
 
-            plan = LogicalPlan::Expand { node: expand, input: Box::new(plan) };
+            plan = LogicalPlan::Expand { node: Box::new(expand), input: Box::new(plan) };
 
             current_var = dst_var;
         }

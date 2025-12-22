@@ -6,21 +6,24 @@ use super::expr::{Expr, Identifier, OrderByExpr, QualifiedName};
 use super::pattern::GraphPattern;
 
 /// A parsed SQL statement.
+///
+/// Large statement types are boxed to reduce enum size overhead.
+/// This improves memory efficiency when many Statement instances
+/// are created (e.g., in query planning).
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub enum Statement {
-    /// SELECT statement.
-    Select(SelectStatement),
-    /// INSERT statement.
-    Insert(InsertStatement),
-    /// UPDATE statement.
-    Update(UpdateStatement),
-    /// DELETE statement.
-    Delete(DeleteStatement),
+    /// SELECT statement (boxed - 744 bytes unboxed).
+    Select(Box<SelectStatement>),
+    /// INSERT statement (boxed - 304 bytes unboxed).
+    Insert(Box<InsertStatement>),
+    /// UPDATE statement (boxed - 328 bytes unboxed).
+    Update(Box<UpdateStatement>),
+    /// DELETE statement (boxed - 304 bytes unboxed).
+    Delete(Box<DeleteStatement>),
     /// CREATE TABLE statement.
     CreateTable(CreateTableStatement),
-    /// CREATE INDEX statement.
-    CreateIndex(CreateIndexStatement),
+    /// CREATE INDEX statement (boxed - 288 bytes unboxed).
+    CreateIndex(Box<CreateIndexStatement>),
     /// DROP TABLE statement.
     DropTable(DropTableStatement),
     /// DROP INDEX statement.
