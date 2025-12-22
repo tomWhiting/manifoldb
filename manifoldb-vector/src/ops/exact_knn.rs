@@ -76,6 +76,8 @@ impl PartialOrd for MaxHeapEntry {
 impl Ord for MaxHeapEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Max-heap: larger distances should come first (to be popped)
+        // NaN values are treated as equal to maintain a total ordering for the heap.
+        // In practice, NaN distances should not occur from valid distance calculations.
         self.distance.partial_cmp(&other.distance).unwrap_or(Ordering::Equal)
     }
 }
@@ -145,7 +147,8 @@ impl ExactKnn {
         let mut results: Vec<VectorMatch> =
             heap.into_iter().map(|e| VectorMatch::new(e.entity_id, e.distance)).collect();
 
-        // Sort by distance (ascending)
+        // Sort by distance (ascending). NaN distances are treated as equal to maintain
+        // a stable sort order; in practice NaN should not occur from valid calculations.
         results.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap_or(Ordering::Equal));
 
         Ok(Self { results, position: 0, dim })

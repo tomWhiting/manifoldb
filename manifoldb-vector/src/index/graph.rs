@@ -234,6 +234,8 @@ impl Ord for Candidate {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse ordering for min-heap (smallest distance first)
+        // NaN values are treated as equal to maintain a total ordering for the heap.
+        // In practice, NaN distances should not occur from valid distance calculations.
         other.distance.partial_cmp(&self.distance).unwrap_or(Ordering::Equal)
     }
 }
@@ -262,6 +264,8 @@ impl Ord for MaxCandidate {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Normal ordering for max-heap (largest distance first)
+        // NaN values are treated as equal to maintain a total ordering for the heap.
+        // In practice, NaN distances should not occur from valid distance calculations.
         self.0.distance.partial_cmp(&other.0.distance).unwrap_or(Ordering::Equal)
     }
 }

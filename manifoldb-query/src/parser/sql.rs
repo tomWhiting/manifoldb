@@ -686,13 +686,13 @@ fn convert_on_conflict(on: sp::OnInsert) -> ParseResult<OnConflict> {
                 Some(sp::ConflictTarget::Columns(cols)) => {
                     ConflictTarget::Columns(cols.into_iter().map(convert_ident).collect())
                 }
-                Some(sp::ConflictTarget::OnConstraint(name)) => ConflictTarget::Constraint(
-                    convert_object_name(name)
-                        .parts
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| Identifier::new("unknown")),
-                ),
+                Some(sp::ConflictTarget::OnConstraint(name)) => {
+                    let converted = convert_object_name(name);
+                    let ident = converted.parts.into_iter().next().ok_or_else(|| {
+                        ParseError::MissingClause("constraint name in ON CONFLICT".to_string())
+                    })?;
+                    ConflictTarget::Constraint(ident)
+                }
                 None => ConflictTarget::Columns(vec![]),
             };
 

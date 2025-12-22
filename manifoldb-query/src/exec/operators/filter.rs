@@ -93,11 +93,18 @@ impl Operator for FilterOp {
 }
 
 /// Evaluates a logical expression against a row.
+///
+/// # NULL semantics
+///
+/// This function follows SQL NULL semantics:
+/// - Missing columns return NULL (supports schema evolution and sparse data)
+/// - Unresolved parameters return NULL (should be resolved before reaching filter)
 pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
     match expr {
         LogicalExpr::Literal(lit) => Ok(literal_to_value(lit)),
 
         LogicalExpr::Column { qualifier: _, name } => {
+            // Missing columns return NULL - follows SQL semantics for sparse/dynamic schemas
             Ok(row.get_by_name(name).cloned().unwrap_or(Value::Null))
         }
 
@@ -113,7 +120,7 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
         }
 
         LogicalExpr::Parameter(_idx) => {
-            // Parameters should be resolved before evaluation
+            // Parameters should be resolved before evaluation - return NULL as fallback
             Ok(Value::Null)
         }
 

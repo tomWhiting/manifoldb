@@ -53,7 +53,7 @@ impl<E: StorageEngine> VectorStore<E> {
         }
 
         // Store the space metadata
-        tx.put(TABLE_EMBEDDING_SPACES, &key, &space.to_bytes())?;
+        tx.put(TABLE_EMBEDDING_SPACES, &key, &space.to_bytes()?)?;
         tx.commit()?;
 
         Ok(())

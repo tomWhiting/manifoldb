@@ -296,7 +296,7 @@ fn execute_insert<T: Transaction>(
             // Set properties from columns and values
             for (i, col) in columns.iter().enumerate() {
                 if let Some(expr) = row_exprs.get(i) {
-                    let value = evaluate_literal_expr(expr, ctx);
+                    let value = evaluate_literal_expr(expr, ctx)?;
                     entity = entity.with_property(col, value);
                 }
             }
@@ -373,6 +373,13 @@ fn execute_delete<T: Transaction>(
 }
 
 /// Evaluate a logical expression to a value.
+///
+/// # NULL semantics
+///
+/// This function follows SQL NULL semantics:
+/// - Missing entity properties return NULL (sparse property model)
+/// - Missing parameters return NULL (consistent with SQL prepared statements)
+/// - Unsupported expressions return NULL (graceful degradation)
 fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) -> Value {
     match expr {
         LogicalExpr::Literal(lit) => literal_to_value(lit),
@@ -381,11 +388,13 @@ fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) ->
             if name == "id" || name == "_id" {
                 Value::Int(entity.id.as_u64() as i64)
             } else {
+                // Missing properties return NULL - this is intentional for sparse property model
                 entity.get_property(name).cloned().unwrap_or(Value::Null)
             }
         }
 
         LogicalExpr::Parameter(idx) => {
+            // Missing parameters return NULL - consistent with SQL NULL semantics
             ctx.get_parameter(*idx as u32).cloned().unwrap_or(Value::Null)
         }
 
@@ -404,13 +413,22 @@ fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) ->
 }
 
 /// Evaluate a literal expression (for INSERT VALUES).
-fn evaluate_literal_expr(expr: &LogicalExpr, ctx: &ExecutionContext) -> Value {
+///
+/// # Errors
+///
+/// Returns an error if a parameter reference cannot be resolved or if the expression
+/// type is not supported in literal context.
+fn evaluate_literal_expr(expr: &LogicalExpr, ctx: &ExecutionContext) -> Result<Value> {
     match expr {
-        LogicalExpr::Literal(lit) => literal_to_value(lit),
-        LogicalExpr::Parameter(idx) => {
-            ctx.get_parameter(*idx as u32).cloned().unwrap_or(Value::Null)
-        }
-        _ => Value::Null,
+        LogicalExpr::Literal(lit) => Ok(literal_to_value(lit)),
+        LogicalExpr::Parameter(idx) => ctx
+            .get_parameter(*idx as u32)
+            .cloned()
+            .ok_or_else(|| Error::Execution(format!("missing parameter at index {}", idx))),
+        other => Err(Error::Execution(format!(
+            "unsupported expression type in VALUES clause: {:?}",
+            std::mem::discriminant(other)
+        ))),
     }
 }
 

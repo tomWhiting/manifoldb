@@ -614,10 +614,10 @@ impl PhysicalPlanner {
         let input_plan = self.plan(input);
         let table_rows = input_plan.cost().cardinality();
 
-        // Check for HNSW index
+        // Check for HNSW index - only available when we can identify the source table
         let has_hnsw = self
-            .catalog
-            .get_hnsw_index(self.get_table_name(input).unwrap_or_default(), &node.vector_column)
+            .get_table_name(input)
+            .and_then(|table| self.catalog.get_hnsw_index(table, &node.vector_column))
             .is_some();
 
         // Choose algorithm based on data size and index availability

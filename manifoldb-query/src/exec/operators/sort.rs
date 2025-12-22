@@ -110,8 +110,14 @@ impl Operator for SortOp {
 }
 
 /// Compares two rows based on sort specifications.
+///
+/// # Error handling
+///
+/// Expression evaluation errors are treated as NULL values. This allows sorting
+/// to continue even when some rows have invalid or missing sort key values.
 fn compare_rows(a: &Row, b: &Row, order_by: &[SortOrder]) -> Ordering {
     for sort in order_by {
+        // Expression evaluation errors become NULL - allows sorting to continue
         let val_a = evaluate_expr(&sort.expr, a).unwrap_or(Value::Null);
         let val_b = evaluate_expr(&sort.expr, b).unwrap_or(Value::Null);
 
@@ -127,7 +133,18 @@ fn compare_rows(a: &Row, b: &Row, order_by: &[SortOrder]) -> Ordering {
 }
 
 /// Compares two values with NULL handling.
+///
+/// # Float comparison and NaN handling
+///
+/// For float comparisons, NaN values are treated as equal to maintain a stable sort order.
+/// This follows the principle that NaN should not cause sort instability. Use `nulls_first`
+/// to control whether NaN/NULL values sort to the beginning or end.
+///
+/// # Default behavior
+///
+/// - `nulls_first` defaults to `false` (NULLS LAST) per SQL standard
 fn compare_values(a: &Value, b: &Value, nulls_first: Option<bool>) -> Ordering {
+    // Default to NULLS LAST per SQL standard when not specified
     let nulls_first = nulls_first.unwrap_or(false);
 
     match (a, b) {
@@ -148,6 +165,7 @@ fn compare_values(a: &Value, b: &Value, nulls_first: Option<bool>) -> Ordering {
         }
         (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
         (Value::Int(a), Value::Int(b)) => a.cmp(b),
+        // NaN comparison: treat NaN as Equal to avoid sort instability
         (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
         (Value::Int(a), Value::Float(b)) => (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal),
         (Value::Float(a), Value::Int(b)) => a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal),

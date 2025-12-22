@@ -134,21 +134,36 @@ impl EmbeddingSpace {
     /// - N bytes: name (UTF-8)
     /// - 4 bytes: dimension (big-endian u32)
     /// - 1 byte: distance metric
-    #[must_use]
-    pub fn to_bytes(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name length exceeds u16::MAX or the dimension exceeds u32::MAX.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, VectorError> {
         let name_bytes = self.name.as_str().as_bytes();
         let mut bytes = Vec::with_capacity(8 + name_bytes.len());
 
         // Version
         bytes.push(1);
 
-        // Name length and name
-        let name_len = u16::try_from(name_bytes.len()).unwrap_or(u16::MAX);
+        // Name length and name - fail if name is too long
+        let name_len = u16::try_from(name_bytes.len()).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding name too long: {} bytes exceeds maximum of {}",
+                name_bytes.len(),
+                u16::MAX
+            ))
+        })?;
         bytes.extend_from_slice(&name_len.to_be_bytes());
-        bytes.extend_from_slice(&name_bytes[..name_len as usize]);
+        bytes.extend_from_slice(name_bytes);
 
-        // Dimension
-        let dim = u32::try_from(self.dimension).unwrap_or(u32::MAX);
+        // Dimension - fail if dimension is too large
+        let dim = u32::try_from(self.dimension).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding dimension too large: {} exceeds maximum of {}",
+                self.dimension,
+                u32::MAX
+            ))
+        })?;
         bytes.extend_from_slice(&dim.to_be_bytes());
 
         // Distance metric
@@ -158,7 +173,7 @@ impl EmbeddingSpace {
             DistanceMetric::DotProduct => 2,
         });
 
-        bytes
+        Ok(bytes)
     }
 
     /// Decode an embedding space from bytes.
@@ -262,7 +277,7 @@ mod tests {
         let name = EmbeddingName::new("test_space").unwrap();
         let space = EmbeddingSpace::new(name, 384, DistanceMetric::Cosine);
 
-        let bytes = space.to_bytes();
+        let bytes = space.to_bytes().unwrap();
         let restored = EmbeddingSpace::from_bytes(&bytes).unwrap();
 
         assert_eq!(space.name().as_str(), restored.name().as_str());
@@ -278,7 +293,7 @@ mod tests {
             let name = EmbeddingName::new("test").unwrap();
             let space = EmbeddingSpace::new(name, 128, metric);
 
-            let bytes = space.to_bytes();
+            let bytes = space.to_bytes().unwrap();
             let restored = EmbeddingSpace::from_bytes(&bytes).unwrap();
 
             assert_eq!(space.distance_metric(), restored.distance_metric());
