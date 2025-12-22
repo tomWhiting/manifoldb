@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "manifoldb",
-    "manifoldb-core",
-    "manifoldb-storage",
-    "manifoldb-graph",
-    "manifoldb-vector",
-    "manifoldb-query",
+    "crates/manifoldb",
+    "crates/manifoldb-core",
+    "crates/manifoldb-storage",
+    "crates/manifoldb-graph",
+    "crates/manifoldb-vector",
+    "crates/manifoldb-query",
 ]
 
 [workspace.package]
@@ -19,12 +19,12 @@ rust-version = "1.75"
 
 [workspace.dependencies]
 # Internal crates
-manifoldb = { path = "manifoldb" }
-manifoldb-core = { path = "manifoldb-core" }
-manifoldb-storage = { path = "manifoldb-storage" }
-manifoldb-graph = { path = "manifoldb-graph" }
-manifoldb-vector = { path = "manifoldb-vector" }
-manifoldb-query = { path = "manifoldb-query" }
+manifoldb = { path = "crates/manifoldb" }
+manifoldb-core = { path = "crates/manifoldb-core" }
+manifoldb-storage = { path = "crates/manifoldb-storage" }
+manifoldb-graph = { path = "crates/manifoldb-graph" }
+manifoldb-vector = { path = "crates/manifoldb-vector" }
+manifoldb-query = { path = "crates/manifoldb-query" }
 
 # Storage
 redb = "3.1"
