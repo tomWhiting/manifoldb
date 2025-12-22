@@ -189,7 +189,7 @@ impl VectorType {
 /// Distance metric configuration.
 ///
 /// Different vector types support different distance metrics.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DistanceType {
     /// Distance metrics for dense and multi-vectors.
     Dense(DistanceMetric),
