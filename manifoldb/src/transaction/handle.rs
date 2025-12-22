@@ -416,14 +416,15 @@ impl<T: Transaction> DatabaseTransaction<T> {
         if deleted {
             // Remove from simple outgoing edge index
             let out_key = make_adjacency_key(edge.source, edge.id);
-            let _ = storage.delete(tables::EDGES_OUT, &out_key);
+            storage.delete(tables::EDGES_OUT, &out_key).map_err(storage_error_to_tx_error)?;
 
             // Remove from simple incoming edge index
             let in_key = make_adjacency_key(edge.target, edge.id);
-            let _ = storage.delete(tables::EDGES_IN, &in_key);
+            storage.delete(tables::EDGES_IN, &in_key).map_err(storage_error_to_tx_error)?;
 
             // Remove from graph layer indexes
-            let _ = IndexMaintenance::remove_edge_indexes(storage, &edge);
+            IndexMaintenance::remove_edge_indexes(storage, &edge)
+                .map_err(|e| TransactionError::Storage(e.to_string()))?;
         }
 
         Ok(deleted)

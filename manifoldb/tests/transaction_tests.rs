@@ -226,6 +226,81 @@ fn test_delete_edge() {
     assert!(edge.is_none());
 }
 
+#[test]
+fn test_delete_edge_cleans_up_indexes() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> B -> C with multiple edges from A
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    let c = tx.create_entity().expect("failed to create C");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    tx.put_entity(&c).expect("failed to put C");
+
+    // Create edges: A -> B, A -> C, B -> C
+    let edge_ab = tx.create_edge(a.id, b.id, "CONNECTS").expect("failed to create edge A->B");
+    let edge_ac = tx.create_edge(a.id, c.id, "CONNECTS").expect("failed to create edge A->C");
+    let edge_bc = tx.create_edge(b.id, c.id, "CONNECTS").expect("failed to create edge B->C");
+    let edge_ab_id = edge_ab.id;
+    let edge_ac_id = edge_ac.id;
+    let edge_bc_id = edge_bc.id;
+    tx.put_edge(&edge_ab).expect("failed to put edge A->B");
+    tx.put_edge(&edge_ac).expect("failed to put edge A->C");
+    tx.put_edge(&edge_bc).expect("failed to put edge B->C");
+    tx.commit().expect("failed to commit");
+
+    // Verify initial state: A has 2 outgoing edges, B has 1 incoming and 1 outgoing
+    let tx = manager.begin_read().expect("failed to begin read");
+    let outgoing_a = tx.get_outgoing_edges(a.id).expect("failed to get outgoing from A");
+    assert_eq!(outgoing_a.len(), 2);
+    let incoming_b = tx.get_incoming_edges(b.id).expect("failed to get incoming to B");
+    assert_eq!(incoming_b.len(), 1);
+    let outgoing_b = tx.get_outgoing_edges(b.id).expect("failed to get outgoing from B");
+    assert_eq!(outgoing_b.len(), 1);
+    let incoming_c = tx.get_incoming_edges(c.id).expect("failed to get incoming to C");
+    assert_eq!(incoming_c.len(), 2);
+    tx.rollback().expect("failed to rollback");
+
+    // Delete edge A->B
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let deleted = tx.delete_edge(edge_ab_id).expect("failed to delete edge A->B");
+    assert!(deleted);
+    tx.commit().expect("failed to commit");
+
+    // Verify indexes are cleaned up:
+    // - A should now have 1 outgoing edge (only A->C remains)
+    // - B should have 0 incoming edges (A->B was deleted)
+    // - The deleted edge should not appear in any traversals
+    let tx = manager.begin_read().expect("failed to begin read");
+
+    // Verify edge is gone
+    assert!(tx.get_edge(edge_ab_id).expect("failed to get edge").is_none());
+
+    // Verify outgoing index for A is correct
+    let outgoing_a = tx.get_outgoing_edges(a.id).expect("failed to get outgoing from A");
+    assert_eq!(outgoing_a.len(), 1);
+    assert_eq!(outgoing_a[0].id, edge_ac_id);
+
+    // Verify incoming index for B is correct (should be empty now)
+    let incoming_b = tx.get_incoming_edges(b.id).expect("failed to get incoming to B");
+    assert!(incoming_b.is_empty());
+
+    // Verify B's outgoing edges are unaffected
+    let outgoing_b = tx.get_outgoing_edges(b.id).expect("failed to get outgoing from B");
+    assert_eq!(outgoing_b.len(), 1);
+    assert_eq!(outgoing_b[0].id, edge_bc_id);
+
+    // Verify C's incoming edges are correct (only A->C and B->C)
+    let incoming_c = tx.get_incoming_edges(c.id).expect("failed to get incoming to C");
+    assert_eq!(incoming_c.len(), 2);
+    let incoming_ids: std::collections::HashSet<_> = incoming_c.iter().map(|e| e.id).collect();
+    assert!(incoming_ids.contains(&edge_ac_id));
+    assert!(incoming_ids.contains(&edge_bc_id));
+}
+
 // ============================================================================
 // Traversal Tests
 // ============================================================================
