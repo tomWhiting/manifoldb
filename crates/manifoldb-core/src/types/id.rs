@@ -126,6 +126,55 @@ impl fmt::Display for EdgeId {
     }
 }
 
+/// Unique identifier for a point in a vector collection.
+///
+/// `PointId` wraps a `u64` and provides type safety to prevent accidentally
+/// using a point ID where an entity ID or edge ID is expected (or vice versa).
+///
+/// Points are used in vector collections (similar to Qdrant) where each point
+/// has an ID, a payload (JSON-like data), and one or more named vectors.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::PointId;
+///
+/// let id = PointId::new(42);
+/// assert_eq!(id.as_u64(), 42);
+/// println!("{}", id); // Prints: PointId(42)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PointId(u64);
+
+impl PointId {
+    /// Create a new `PointId` from a raw u64 value.
+    #[inline]
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw u64 value.
+    #[inline]
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for PointId {
+    #[inline]
+    fn from(id: u64) -> Self {
+        Self::new(id)
+    }
+}
+
+impl fmt::Display for PointId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PointId({})", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,9 +192,19 @@ mod tests {
     }
 
     #[test]
+    fn point_id_roundtrip() {
+        let id = PointId::new(999);
+        assert_eq!(id.as_u64(), 999);
+    }
+
+    #[test]
     fn ids_are_ordered() {
         let a = EntityId::new(1);
         let b = EntityId::new(2);
         assert!(a < b);
+
+        let p1 = PointId::new(10);
+        let p2 = PointId::new(20);
+        assert!(p1 < p2);
     }
 }
