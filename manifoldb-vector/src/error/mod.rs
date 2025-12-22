@@ -23,6 +23,15 @@ pub enum VectorError {
         actual: usize,
     },
 
+    /// Index out of bounds.
+    #[error("index out of bounds: {index} >= {max}")]
+    IndexOutOfBounds {
+        /// The index that was out of bounds.
+        index: usize,
+        /// The maximum valid index (exclusive).
+        max: usize,
+    },
+
     /// Invalid value in a vector (NaN, Infinity).
     #[error("invalid value at index {index}: {value} - {reason}")]
     InvalidValue {
