@@ -146,6 +146,7 @@ pub use manifoldb_core::{
 pub use manifoldb_storage::{StorageEngine, Transaction};
 
 // Modules
+pub mod backup;
 pub mod config;
 pub mod database;
 pub mod error;

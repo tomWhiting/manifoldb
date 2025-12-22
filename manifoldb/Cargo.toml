@@ -16,6 +16,8 @@ manifoldb-query = { workspace = true }
 thiserror = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -24,6 +26,10 @@ criterion = { workspace = true }
 manifoldb-storage = { workspace = true }
 manifoldb-vector = { workspace = true }
 manifoldb-graph = { workspace = true }
+
+[[bin]]
+name = "manifoldb"
+path = "src/bin/manifoldb.rs"
 
 [[bench]]
 name = "benchmarks"
