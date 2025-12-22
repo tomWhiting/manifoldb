@@ -357,8 +357,18 @@ impl EdgeStore {
         while let Some((key, _)) = cursor.next()? {
             // Extract edge ID from the key (last 8 bytes after prefix + type hash)
             if key.len() >= 17 {
-                let id_bytes: [u8; 8] = key[9..17].try_into().unwrap_or([0; 8]);
+                let id_bytes: [u8; 8] = key[9..17].try_into().map_err(|_| {
+                    GraphError::DataCorruption(format!(
+                        "malformed edge type index key: expected 8 bytes for edge ID at offset 9, got {} total bytes",
+                        key.len()
+                    ))
+                })?;
                 ids.push(EdgeId::new(u64::from_be_bytes(id_bytes)));
+            } else {
+                return Err(GraphError::DataCorruption(format!(
+                    "malformed edge type index key: expected at least 17 bytes, got {}",
+                    key.len()
+                )));
             }
         }
 

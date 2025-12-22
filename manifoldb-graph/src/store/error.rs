@@ -38,6 +38,10 @@ pub enum GraphError {
     /// An internal error occurred.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Data corruption detected in storage.
+    #[error("data corruption: {0}")]
+    DataCorruption(String),
 }
 
 impl From<CoreError> for GraphError {
