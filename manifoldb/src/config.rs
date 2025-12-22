@@ -21,6 +21,9 @@ use crate::cache::CacheConfig;
 use crate::error::Error;
 use crate::transaction::{BatchWriterConfig, TransactionManagerConfig, VectorSyncStrategy};
 
+/// Default maximum rows in memory (1 million rows).
+pub const DEFAULT_MAX_ROWS_IN_MEMORY: usize = 1_000_000;
+
 /// Configuration for a database.
 ///
 /// This struct holds the validated configuration for opening a database.
@@ -50,6 +53,15 @@ pub struct Config {
 
     /// Configuration for write batching.
     pub batch_writer_config: BatchWriterConfig,
+
+    /// Maximum rows that operators can materialize in memory.
+    ///
+    /// This limit applies to blocking operators like sort, join, and aggregate.
+    /// When exceeded, queries return a `QueryTooLarge` error.
+    ///
+    /// Set to 0 to disable the limit (not recommended for production).
+    /// Default: 1,000,000 rows.
+    pub max_rows_in_memory: usize,
 }
 
 impl Default for Config {
@@ -63,6 +75,7 @@ impl Default for Config {
             in_memory: false,
             query_cache_config: CacheConfig::default(),
             batch_writer_config: BatchWriterConfig::default(),
+            max_rows_in_memory: DEFAULT_MAX_ROWS_IN_MEMORY,
         }
     }
 }
@@ -275,6 +288,31 @@ impl DatabaseBuilder {
     #[must_use]
     pub fn disable_write_batching(mut self) -> Self {
         self.config.batch_writer_config = BatchWriterConfig::disabled();
+        self
+    }
+
+    /// Set the maximum rows that operators can materialize in memory.
+    ///
+    /// This limit applies to blocking operators like sort, join, and aggregate.
+    /// When exceeded, queries return a `QueryTooLarge` error instead of consuming
+    /// unbounded memory.
+    ///
+    /// Set to 0 to disable the limit (not recommended for production).
+    /// Default: 1,000,000 rows.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::DatabaseBuilder;
+    ///
+    /// let db = DatabaseBuilder::new()
+    ///     .path("mydb.manifold")
+    ///     .max_rows_in_memory(500_000)  // 500K row limit
+    ///     .open()?;
+    /// ```
+    #[must_use]
+    pub const fn max_rows_in_memory(mut self, limit: usize) -> Self {
+        self.config.max_rows_in_memory = limit;
         self
     }
 

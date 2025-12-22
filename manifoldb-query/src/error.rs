@@ -60,6 +60,18 @@ pub enum ParseError {
         /// The right operand type.
         right_type: String,
     },
+
+    /// Query materialized too many rows in memory.
+    ///
+    /// This error is returned when an operator (like sort, join, or aggregate)
+    /// needs to materialize more rows than the configured limit allows.
+    #[error("query materialized {actual} rows, limit is {limit}")]
+    QueryTooLarge {
+        /// The number of rows the query attempted to materialize.
+        actual: usize,
+        /// The configured maximum rows allowed.
+        limit: usize,
+    },
 }
 
 impl From<sqlparser::parser::ParserError> for ParseError {

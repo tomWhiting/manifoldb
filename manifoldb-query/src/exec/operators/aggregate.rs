@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use manifoldb_core::Value;
 
+use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
@@ -33,6 +34,8 @@ pub struct HashAggregateOp {
     aggregated: bool,
     /// Reusable buffer for computing group keys.
     key_buffer: Vec<u8>,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
 }
 
 impl HashAggregateOp {
@@ -64,6 +67,7 @@ impl HashAggregateOp {
             results_iter: Vec::new().into_iter(),
             aggregated: false,
             key_buffer: Vec::with_capacity(64), // Pre-allocate for typical key sizes
+            max_rows_in_memory: 0,              // Set in open() from context
         }
     }
 
@@ -83,6 +87,20 @@ impl HashAggregateOp {
             for expr in &self.group_by {
                 let value = evaluate_expr(expr, &row)?;
                 encode_value(&value, &mut key_buffer);
+            }
+
+            // Check if this is a new group and check limit before inserting
+            let is_new_group = !self.groups.contains_key(&key_buffer);
+            if is_new_group
+                && self.max_rows_in_memory > 0
+                && self.groups.len() >= self.max_rows_in_memory
+            {
+                // Restore buffer before returning error
+                self.key_buffer = key_buffer;
+                return Err(ParseError::QueryTooLarge {
+                    actual: self.groups.len() + 1,
+                    limit: self.max_rows_in_memory,
+                });
             }
 
             // Only clone the key when inserting a new group
@@ -158,6 +176,7 @@ impl Operator for HashAggregateOp {
         self.groups.clear();
         self.results_iter = Vec::new().into_iter();
         self.aggregated = false;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
         self.base.set_open();
         Ok(())
     }

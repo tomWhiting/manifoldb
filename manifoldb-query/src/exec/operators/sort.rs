@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use manifoldb_core::Value;
 
+use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
@@ -26,6 +27,8 @@ pub struct SortOp {
     sorted_iter: std::vec::IntoIter<Row>,
     /// Whether rows have been materialized.
     materialized: bool,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
 }
 
 impl SortOp {
@@ -39,15 +42,24 @@ impl SortOp {
             input,
             sorted_iter: Vec::new().into_iter(),
             materialized: false,
+            max_rows_in_memory: 0, // Set in open() from context
         }
     }
 
     /// Materializes and sorts all input rows.
     fn materialize_and_sort(&mut self) -> OperatorResult<()> {
-        // Collect all rows
+        // Collect all rows with size limit check
         let mut rows = Vec::new();
         while let Some(row) = self.input.next()? {
             rows.push(row);
+
+            // Check limit after each row (0 means no limit)
+            if self.max_rows_in_memory > 0 && rows.len() > self.max_rows_in_memory {
+                return Err(ParseError::QueryTooLarge {
+                    actual: rows.len(),
+                    limit: self.max_rows_in_memory,
+                });
+            }
         }
 
         // Sort rows
@@ -66,6 +78,7 @@ impl Operator for SortOp {
         self.input.open(ctx)?;
         self.sorted_iter = Vec::new().into_iter();
         self.materialized = false;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
         self.base.set_open();
         Ok(())
     }
@@ -291,6 +304,64 @@ mod tests {
         assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(1)));
         assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(2)));
         assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(3)));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_exceeds_row_limit() {
+        use crate::exec::context::ExecutionConfig;
+
+        // Create input with 5 rows
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["x".to_string()],
+            vec![
+                vec![Value::Int(5)],
+                vec![Value::Int(3)],
+                vec![Value::Int(1)],
+                vec![Value::Int(4)],
+                vec![Value::Int(2)],
+            ],
+        ));
+
+        let order_by = vec![SortOrder::asc(LogicalExpr::column("x"))];
+        let mut op = SortOp::new(order_by, input);
+
+        // Set limit to 3 rows
+        let config = ExecutionConfig::new().with_max_rows_in_memory(3);
+        let ctx = ExecutionContext::new().with_config(config);
+        op.open(&ctx).unwrap();
+
+        // Should fail when trying to materialize more than 3 rows
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::error::ParseError::QueryTooLarge { actual: 4, limit: 3 }));
+    }
+
+    #[test]
+    fn sort_within_row_limit() {
+        use crate::exec::context::ExecutionConfig;
+
+        // Create input with 3 rows
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["x".to_string()],
+            vec![vec![Value::Int(3)], vec![Value::Int(1)], vec![Value::Int(2)]],
+        ));
+
+        let order_by = vec![SortOrder::asc(LogicalExpr::column("x"))];
+        let mut op = SortOp::new(order_by, input);
+
+        // Set limit to 5 rows (more than we have)
+        let config = ExecutionConfig::new().with_max_rows_in_memory(5);
+        let ctx = ExecutionContext::new().with_config(config);
+        op.open(&ctx).unwrap();
+
+        // Should succeed
+        assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(1)));
+        assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(2)));
+        assert_eq!(op.next().unwrap().unwrap().get(0), Some(&Value::Int(3)));
+        assert!(op.next().unwrap().is_none());
 
         op.close().unwrap();
     }

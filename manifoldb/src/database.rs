@@ -506,8 +506,13 @@ impl Database {
         // Start a read transaction
         let tx = self.begin_read()?;
 
-        // Execute the query
-        let result = execute_query(&tx, &clean_sql, params);
+        // Execute the query with the configured row limit
+        let result = crate::execution::execute_query_with_limit(
+            &tx,
+            &clean_sql,
+            params,
+            self.config.max_rows_in_memory,
+        );
 
         match result {
             Ok(result_set) => {

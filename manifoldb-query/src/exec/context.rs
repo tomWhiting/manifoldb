@@ -218,6 +218,22 @@ impl ExecutionContext {
     pub fn record_rows_filtered(&self, count: u64) {
         self.stats.rows_filtered.fetch_add(count, Ordering::Relaxed);
     }
+
+    /// Sets the execution configuration.
+    #[must_use]
+    pub fn with_config(mut self, config: ExecutionConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Returns the maximum rows in memory limit.
+    ///
+    /// Returns 0 if the limit is disabled.
+    #[inline]
+    #[must_use]
+    pub fn max_rows_in_memory(&self) -> usize {
+        self.config.max_rows_in_memory
+    }
 }
 
 impl Default for ExecutionContext {
@@ -299,6 +315,9 @@ impl Default for ExecutionStats {
     }
 }
 
+/// Default maximum rows in memory (1 million rows).
+pub const DEFAULT_MAX_ROWS_IN_MEMORY: usize = 1_000_000;
+
 /// Configuration options for query execution.
 #[derive(Debug, Clone)]
 pub struct ExecutionConfig {
@@ -308,13 +327,27 @@ pub struct ExecutionConfig {
     pub collect_stats: bool,
     /// Memory limit in bytes (0 for no limit).
     pub memory_limit: usize,
+    /// Maximum number of rows that operators can materialize in memory.
+    ///
+    /// This limit applies to blocking operators like sort, join, and aggregate
+    /// that need to collect rows before producing output. When an operator
+    /// exceeds this limit, it returns a `QueryTooLarge` error.
+    ///
+    /// Set to 0 to disable the limit (not recommended for production).
+    /// Default: 1,000,000 rows.
+    pub max_rows_in_memory: usize,
 }
 
 impl ExecutionConfig {
     /// Creates a new configuration with defaults.
     #[must_use]
     pub const fn new() -> Self {
-        Self { max_batch_size: 1024, collect_stats: false, memory_limit: 0 }
+        Self {
+            max_batch_size: 1024,
+            collect_stats: false,
+            memory_limit: 0,
+            max_rows_in_memory: DEFAULT_MAX_ROWS_IN_MEMORY,
+        }
     }
 
     /// Sets the maximum batch size.
@@ -335,6 +368,16 @@ impl ExecutionConfig {
     #[must_use]
     pub const fn with_memory_limit(mut self, limit: usize) -> Self {
         self.memory_limit = limit;
+        self
+    }
+
+    /// Sets the maximum rows that can be materialized in memory.
+    ///
+    /// This limit applies to blocking operators like sort, join, and aggregate.
+    /// Set to 0 to disable the limit (not recommended for production).
+    #[must_use]
+    pub const fn with_max_rows_in_memory(mut self, limit: usize) -> Self {
+        self.max_rows_in_memory = limit;
         self
     }
 }

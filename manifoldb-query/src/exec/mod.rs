@@ -40,7 +40,7 @@ pub mod operators;
 pub mod row;
 
 // Re-exports
-pub use context::{CancellationToken, ExecutionContext, VectorIndexProvider};
+pub use context::{CancellationToken, ExecutionConfig, ExecutionContext, VectorIndexProvider};
 pub use executor::{execute_plan, Executor};
 pub use graph_accessor::{
     GraphAccessError, GraphAccessResult, GraphAccessor, NeighborResult, NullGraphAccessor,
