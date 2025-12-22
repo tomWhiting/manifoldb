@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use manifoldb_core::Value;
 
+use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
@@ -35,6 +36,8 @@ pub struct NestedLoopJoinOp {
     matched_left: bool,
     /// Whether right is materialized.
     right_materialized: bool,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
 }
 
 impl NestedLoopJoinOp {
@@ -58,6 +61,7 @@ impl NestedLoopJoinOp {
             right_position: 0,
             matched_left: false,
             right_materialized: false,
+            max_rows_in_memory: 0, // Set in open() from context
         }
     }
 
@@ -107,15 +111,24 @@ impl Operator for NestedLoopJoinOp {
         self.right_position = 0;
         self.matched_left = false;
         self.right_materialized = false;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
         self.base.set_open();
         Ok(())
     }
 
     fn next(&mut self) -> OperatorResult<Option<Row>> {
-        // Materialize right side on first call
+        // Materialize right side on first call with size limit check
         if !self.right_materialized {
             while let Some(row) = self.right.next()? {
                 self.right_rows.push(row);
+
+                // Check limit after each row (0 means no limit)
+                if self.max_rows_in_memory > 0 && self.right_rows.len() > self.max_rows_in_memory {
+                    return Err(ParseError::QueryTooLarge {
+                        actual: self.right_rows.len(),
+                        limit: self.max_rows_in_memory,
+                    });
+                }
             }
             self.right_materialized = true;
         }
@@ -220,6 +233,8 @@ pub struct HashJoinOp {
     match_position: usize,
     /// Whether hash table is built.
     built: bool,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
 }
 
 impl HashJoinOp {
@@ -247,6 +262,7 @@ impl HashJoinOp {
             current_matches: None,
             match_position: 0,
             built: false,
+            max_rows_in_memory: 0, // Set in open() from context
         }
     }
 
@@ -286,9 +302,19 @@ impl HashJoinOp {
     fn build_hash_table(&mut self) -> OperatorResult<()> {
         // First, collect all rows into a temporary HashMap with Vec
         let mut temp_table: HashMap<Vec<u8>, Vec<Row>> = HashMap::new();
+        let mut total_rows = 0usize;
         while let Some(row) = self.build.next()? {
             let key = self.compute_key(&row, &self.build_keys)?;
             temp_table.entry(key).or_default().push(row);
+            total_rows += 1;
+
+            // Check limit after each row (0 means no limit)
+            if self.max_rows_in_memory > 0 && total_rows > self.max_rows_in_memory {
+                return Err(ParseError::QueryTooLarge {
+                    actual: total_rows,
+                    limit: self.max_rows_in_memory,
+                });
+            }
         }
         // Convert to Arc<Vec<Row>> for sharing without cloning
         for (key, rows) in temp_table {
@@ -325,6 +351,7 @@ impl Operator for HashJoinOp {
         self.current_matches = None;
         self.match_position = 0;
         self.built = false;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
         self.base.set_open();
         Ok(())
     }
@@ -424,6 +451,8 @@ pub struct MergeJoinOp {
     right_buffer: Vec<Row>,
     /// Position in right buffer.
     buffer_position: usize,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
 }
 
 impl MergeJoinOp {
@@ -448,6 +477,7 @@ impl MergeJoinOp {
             current_right: None,
             right_buffer: Vec::new(),
             buffer_position: 0,
+            max_rows_in_memory: 0, // Set in open() from context
         }
     }
 
@@ -480,6 +510,7 @@ impl Operator for MergeJoinOp {
         self.current_right = self.right.next()?;
         self.right_buffer.clear();
         self.buffer_position = 0;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
         self.base.set_open();
         Ok(())
     }
@@ -527,6 +558,16 @@ impl Operator for MergeJoinOp {
                         match &self.current_right {
                             Some(r) if self.compare_keys(left, r)? == std::cmp::Ordering::Equal => {
                                 self.right_buffer.push(r.clone());
+
+                                // Check limit after each row (0 means no limit)
+                                if self.max_rows_in_memory > 0
+                                    && self.right_buffer.len() > self.max_rows_in_memory
+                                {
+                                    return Err(ParseError::QueryTooLarge {
+                                        actual: self.right_buffer.len(),
+                                        limit: self.max_rows_in_memory,
+                                    });
+                                }
                             }
                             _ => break,
                         }

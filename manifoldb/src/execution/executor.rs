@@ -37,6 +37,23 @@ pub fn execute_query<T: Transaction>(
     sql: &str,
     params: &[Value],
 ) -> Result<ResultSet> {
+    execute_query_with_limit(tx, sql, params, 0)
+}
+
+/// Execute a SELECT query with a row limit and return the result set.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction to execute against
+/// * `sql` - The SQL query to execute
+/// * `params` - The parameter values
+/// * `max_rows_in_memory` - Maximum rows operators can materialize (0 = no limit)
+pub fn execute_query_with_limit<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    sql: &str,
+    params: &[Value],
+    max_rows_in_memory: usize,
+) -> Result<ResultSet> {
     // Parse SQL using ExtendedParser to support MATCH syntax
     let stmt = ExtendedParser::parse_single(sql)?;
 
@@ -48,8 +65,8 @@ pub fn execute_query<T: Transaction>(
     let planner = PhysicalPlanner::new();
     let physical_plan = planner.plan(&logical_plan);
 
-    // Create execution context with parameters
-    let ctx = create_context(params);
+    // Create execution context with parameters and row limit
+    let ctx = create_context_with_limit(params, max_rows_in_memory);
 
     // Execute the plan against storage
     execute_physical_plan(tx, &physical_plan, &logical_plan, &ctx)
@@ -147,11 +164,19 @@ pub fn execute_prepared_statement<T: Transaction>(
 
 /// Create an execution context with bound parameters.
 fn create_context(params: &[Value]) -> ExecutionContext {
+    create_context_with_limit(params, 0)
+}
+
+fn create_context_with_limit(params: &[Value], max_rows_in_memory: usize) -> ExecutionContext {
+    use manifoldb_query::exec::ExecutionConfig;
+
     let mut param_map = HashMap::new();
     for (i, value) in params.iter().enumerate() {
         param_map.insert((i + 1) as u32, value.clone());
     }
-    ExecutionContext::with_parameters(param_map)
+
+    let config = ExecutionConfig::new().with_max_rows_in_memory(max_rows_in_memory);
+    ExecutionContext::with_parameters(param_map).with_config(config)
 }
 
 /// Execute a physical plan and return the result set.
