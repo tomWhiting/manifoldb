@@ -42,12 +42,14 @@
 //! ```
 
 use std::path::Path;
+use std::sync::Arc;
 
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
 
+use crate::cache::{extract_cache_hint, CacheHint, CacheMetrics, QueryCache, QueryCacheKey};
 use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
-use crate::execution::{execute_query, execute_statement};
+use crate::execution::{execute_query, execute_statement, extract_tables_from_sql};
 use crate::transaction::{DatabaseTransaction, TransactionManager};
 
 /// The main `ManifoldDB` database handle.
@@ -114,6 +116,8 @@ pub struct Database {
     manager: TransactionManager<RedbEngine>,
     /// The configuration used to open this database.
     config: Config,
+    /// Query result cache.
+    query_cache: QueryCache,
 }
 
 impl Database {
@@ -184,8 +188,9 @@ impl Database {
         };
 
         let manager = TransactionManager::with_config(engine, config.transaction_config());
+        let query_cache = QueryCache::new(config.query_cache_config.clone());
 
-        Ok(Self { manager, config })
+        Ok(Self { manager, config, query_cache })
     }
 
     /// Returns a builder for creating a database with custom configuration.
@@ -305,6 +310,11 @@ impl Database {
     /// Returns an error if the statement cannot be parsed, parameters are
     /// invalid, or execution fails.
     ///
+    /// # Cache Invalidation
+    ///
+    /// This method automatically invalidates any cached query results that
+    /// accessed the tables modified by this statement.
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -314,6 +324,9 @@ impl Database {
     /// )?;
     /// ```
     pub fn execute_with_params(&self, sql: &str, params: &[manifoldb_core::Value]) -> Result<u64> {
+        // Extract tables that will be modified for cache invalidation
+        let affected_tables = extract_tables_from_sql(sql);
+
         // Start a write transaction
         let mut tx = self.begin()?;
 
@@ -322,6 +335,9 @@ impl Database {
 
         // Commit the transaction
         tx.commit().map_err(Error::Transaction)?;
+
+        // Invalidate cache entries for affected tables
+        self.query_cache.invalidate_tables(&affected_tables);
 
         Ok(count)
     }
@@ -373,11 +389,29 @@ impl Database {
     /// Returns an error if the query cannot be parsed, parameters are
     /// invalid, or execution fails.
     ///
+    /// # Cache Hints
+    ///
+    /// You can control caching behavior with hints:
+    /// - `/*+ CACHE */` - Force caching of this query result
+    /// - `/*+ NO_CACHE */` - Skip caching for this query
+    ///
     /// # Examples
     ///
     /// ```ignore
     /// let results = db.query_with_params(
     ///     "SELECT * FROM users WHERE name = $1",
+    ///     &["Alice".into()],
+    /// )?;
+    ///
+    /// // Force caching
+    /// let results = db.query_with_params(
+    ///     "/*+ CACHE */ SELECT * FROM users WHERE name = $1",
+    ///     &["Alice".into()],
+    /// )?;
+    ///
+    /// // Skip caching
+    /// let results = db.query_with_params(
+    ///     "/*+ NO_CACHE */ SELECT * FROM users WHERE name = $1",
     ///     &["Alice".into()],
     /// )?;
     /// ```
@@ -386,14 +420,43 @@ impl Database {
         sql: &str,
         params: &[manifoldb_core::Value],
     ) -> Result<QueryResult> {
+        // Extract cache hint and clean SQL
+        let (hint, clean_sql) = extract_cache_hint(sql);
+
+        // Determine if we should use caching
+        let use_cache = match hint {
+            CacheHint::Cache => true,
+            CacheHint::NoCache => false,
+            CacheHint::Default => self.query_cache.is_enabled(),
+        };
+
+        // Try to get from cache if caching is enabled
+        if use_cache {
+            let cache_key = QueryCacheKey::new(&clean_sql, params);
+            if let Some(cached_result) = self.query_cache.get(&cache_key) {
+                // Update LRU order
+                self.query_cache.touch(&cache_key);
+                return Ok(cached_result);
+            }
+        }
+
         // Start a read transaction
         let tx = self.begin_read()?;
 
         // Execute the query
-        let result_set = execute_query(&tx, sql, params)?;
+        let result_set = execute_query(&tx, &clean_sql, params)?;
 
         // Convert the ResultSet to our QueryResult
-        Ok(QueryResult::from_result_set(result_set))
+        let result = QueryResult::from_result_set(result_set);
+
+        // Cache the result if caching is enabled
+        if use_cache {
+            let cache_key = QueryCacheKey::new(&clean_sql, params);
+            let accessed_tables = extract_tables_from_sql(&clean_sql);
+            self.query_cache.insert(cache_key, result.clone(), accessed_tables);
+        }
+
+        Ok(result)
     }
 
     /// Flush any buffered data to durable storage.
@@ -416,6 +479,47 @@ impl Database {
     #[must_use]
     pub fn transaction_manager(&self) -> &TransactionManager<RedbEngine> {
         &self.manager
+    }
+
+    /// Get the query cache.
+    ///
+    /// Use this to access cache operations like clearing or checking metrics.
+    #[must_use]
+    pub fn query_cache(&self) -> &QueryCache {
+        &self.query_cache
+    }
+
+    /// Get the cache metrics.
+    ///
+    /// Returns metrics about cache hits, misses, and evictions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let metrics = db.cache_metrics();
+    /// println!("Hit rate: {:?}", metrics.hit_rate());
+    /// println!("Total lookups: {}", metrics.total_lookups());
+    /// ```
+    #[must_use]
+    pub fn cache_metrics(&self) -> Arc<CacheMetrics> {
+        self.query_cache.metrics()
+    }
+
+    /// Clear the query cache.
+    ///
+    /// This removes all cached query results. Useful after bulk data
+    /// modifications or when you want to ensure fresh data.
+    pub fn clear_cache(&self) {
+        self.query_cache.clear();
+    }
+
+    /// Invalidate cache entries for specific tables.
+    ///
+    /// This is automatically called during write operations, but can
+    /// be called manually if you modify data outside of the normal
+    /// execute methods.
+    pub fn invalidate_cache_for_tables(&self, tables: &[String]) {
+        self.query_cache.invalidate_tables(tables);
     }
 }
 
@@ -929,5 +1033,147 @@ mod tests {
 
         let result = db.query("INVALID SQL SYNTAX !!!");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_query_cache_hit() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // First query - cache miss
+        let _result1 = db.query("SELECT * FROM users").expect("query failed");
+
+        // Check metrics
+        let metrics = db.cache_metrics();
+        assert_eq!(metrics.misses(), 1);
+        assert_eq!(metrics.hits(), 0);
+
+        // Second query - cache hit
+        let _result2 = db.query("SELECT * FROM users").expect("query failed");
+
+        assert_eq!(metrics.misses(), 1);
+        assert_eq!(metrics.hits(), 1);
+    }
+
+    #[test]
+    fn test_query_cache_invalidation_on_insert() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Execute initial query
+        let _result1 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 1);
+
+        // Second query - cache hit
+        let _result2 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().hits(), 1);
+
+        // Insert invalidates the cache
+        db.execute("INSERT INTO users (name) VALUES ('Alice')").expect("insert failed");
+
+        // Query again - should be a miss since cache was invalidated
+        let _result3 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 2);
+    }
+
+    #[test]
+    fn test_query_cache_no_cache_hint() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Query with NO_CACHE hint - should not cache
+        let _result1 = db.query("/*+ NO_CACHE */ SELECT * FROM users").expect("query failed");
+
+        // Metrics should show no cache activity (hint bypasses cache)
+        // Since NO_CACHE skips caching entirely, we won't see a miss recorded
+
+        // Regular query - cache miss
+        let _result2 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 1);
+
+        // Same query again - cache hit
+        let _result3 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().hits(), 1);
+    }
+
+    #[test]
+    fn test_query_cache_with_params() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        let params1 = &[manifoldb_core::Value::Int(1)];
+        let params2 = &[manifoldb_core::Value::Int(2)];
+
+        // Query with param 1
+        let _result1 = db
+            .query_with_params("SELECT * FROM users WHERE id = $1", params1)
+            .expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 1);
+
+        // Same query, same params - cache hit
+        let _result2 = db
+            .query_with_params("SELECT * FROM users WHERE id = $1", params1)
+            .expect("query failed");
+        assert_eq!(db.cache_metrics().hits(), 1);
+
+        // Same query, different params - cache miss
+        let _result3 = db
+            .query_with_params("SELECT * FROM users WHERE id = $1", params2)
+            .expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 2);
+    }
+
+    #[test]
+    fn test_query_cache_clear() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Populate cache
+        let _result1 = db.query("SELECT * FROM users").expect("query failed");
+        let _result2 = db.query("SELECT * FROM orders").expect("query failed");
+
+        assert_eq!(db.query_cache().len(), 2);
+
+        // Clear cache
+        db.clear_cache();
+
+        assert!(db.query_cache().is_empty());
+
+        // Queries should miss again
+        let _result3 = db.query("SELECT * FROM users").expect("query failed");
+        assert_eq!(db.cache_metrics().misses(), 3);
+    }
+
+    #[test]
+    fn test_query_cache_disabled() {
+        use crate::cache::CacheConfig;
+
+        let db = DatabaseBuilder::in_memory()
+            .query_cache_config(CacheConfig::disabled())
+            .open()
+            .expect("failed to create db");
+
+        // Queries should not be cached
+        let _result1 = db.query("SELECT * FROM users").expect("query failed");
+        let _result2 = db.query("SELECT * FROM users").expect("query failed");
+
+        // No hits or misses should be recorded for disabled cache
+        assert_eq!(db.cache_metrics().hits(), 0);
+        // Misses are not recorded for disabled cache
+    }
+
+    #[test]
+    fn test_query_cache_metrics() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Generate some cache activity
+        let _result1 = db.query("SELECT * FROM users").expect("query failed");
+        let _result2 = db.query("SELECT * FROM users").expect("query failed");
+        let _result3 = db.query("SELECT * FROM orders").expect("query failed");
+        let _result4 = db.query("SELECT * FROM users").expect("query failed");
+
+        let metrics = db.cache_metrics();
+
+        assert_eq!(metrics.total_lookups(), 4);
+        assert_eq!(metrics.hits(), 2); // users hit twice (after first miss)
+        assert_eq!(metrics.misses(), 2); // users first + orders first
+
+        let hit_rate = metrics.hit_rate().expect("should have hit rate");
+        assert!((hit_rate - 50.0).abs() < 0.1); // 50% hit rate
     }
 }

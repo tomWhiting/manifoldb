@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::cache::CacheConfig;
 use crate::error::Error;
 use crate::transaction::{TransactionManagerConfig, VectorSyncStrategy};
 
@@ -43,6 +44,9 @@ pub struct Config {
 
     /// Whether to use an in-memory database (for testing).
     pub in_memory: bool,
+
+    /// Configuration for the query result cache.
+    pub query_cache_config: CacheConfig,
 }
 
 impl Default for Config {
@@ -54,6 +58,7 @@ impl Default for Config {
             max_size: None,
             vector_sync_strategy: VectorSyncStrategy::Synchronous,
             in_memory: false,
+            query_cache_config: CacheConfig::default(),
         }
     }
 }
@@ -192,6 +197,41 @@ impl DatabaseBuilder {
     #[must_use]
     pub const fn vector_sync_strategy(mut self, strategy: VectorSyncStrategy) -> Self {
         self.config.vector_sync_strategy = strategy;
+        self
+    }
+
+    /// Set the query cache configuration.
+    ///
+    /// The query cache stores the results of SELECT queries to avoid
+    /// repeated execution of identical queries.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{DatabaseBuilder, cache::CacheConfig};
+    /// use std::time::Duration;
+    ///
+    /// let db = DatabaseBuilder::new()
+    ///     .path("mydb.manifold")
+    ///     .query_cache_config(
+    ///         CacheConfig::new()
+    ///             .max_entries(5000)
+    ///             .ttl(Some(Duration::from_secs(600)))
+    ///     )
+    ///     .open()?;
+    /// ```
+    #[must_use]
+    pub fn query_cache_config(mut self, config: CacheConfig) -> Self {
+        self.config.query_cache_config = config;
+        self
+    }
+
+    /// Disable the query cache.
+    ///
+    /// Equivalent to `query_cache_config(CacheConfig::disabled())`.
+    #[must_use]
+    pub fn disable_query_cache(mut self) -> Self {
+        self.config.query_cache_config = CacheConfig::disabled();
         self
     }
 
