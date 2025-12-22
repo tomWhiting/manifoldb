@@ -148,8 +148,10 @@ impl PredicatePushdown {
                 }
 
                 let optimized_input = self.push_down(*input, Vec::new());
-                let result =
-                    LogicalPlan::AnnSearch { node: Box::new(search_node), input: Box::new(optimized_input) };
+                let result = LogicalPlan::AnnSearch {
+                    node: Box::new(search_node),
+                    input: Box::new(optimized_input),
+                };
                 self.apply_predicates(result, remaining)
             }
 
@@ -239,7 +241,8 @@ impl PredicatePushdown {
 
         let optimized_input = self.push_down(input, pushable);
 
-        let result = LogicalPlan::Aggregate { node: Box::new(node), input: Box::new(optimized_input) };
+        let result =
+            LogicalPlan::Aggregate { node: Box::new(node), input: Box::new(optimized_input) };
 
         self.apply_predicates(result, remaining)
     }

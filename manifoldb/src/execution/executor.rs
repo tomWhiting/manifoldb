@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use manifoldb_core::{Entity, Value};
 use manifoldb_query::ast::Literal;
+use manifoldb_query::exec::operators::{HashAggregateOp, ValuesOp};
 use manifoldb_query::exec::row::{Row, Schema};
-use manifoldb_query::exec::{ExecutionContext, ResultSet};
+use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::parse_single_statement;
 use manifoldb_query::plan::logical::LogicalExpr;
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
@@ -97,6 +98,40 @@ fn execute_physical_plan<T: Transaction>(
 
     match logical {
         LogicalPlan::Project { node, input } => {
+            // Check if input is an aggregate - if so, handle specially
+            if let LogicalPlan::Aggregate { node: agg_node, input: agg_input } = input.as_ref() {
+                // Execute aggregate and project the results
+                let result = execute_aggregate(tx, agg_node, agg_input, ctx)?;
+
+                // If projecting only aggregate columns, return as-is
+                // Otherwise, we need to project from the aggregate result
+                let has_wildcard = node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+                if has_wildcard {
+                    return Ok(result);
+                }
+
+                // Project from aggregate result
+                let projected_columns: Vec<String> =
+                    node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+                let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+                let result_schema = result.schema_arc();
+
+                let rows: Vec<Row> = result
+                    .rows()
+                    .iter()
+                    .map(|row| {
+                        let values: Vec<Value> = node
+                            .exprs
+                            .iter()
+                            .map(|expr| evaluate_expr_on_row(expr, row, &result_schema, ctx))
+                            .collect();
+                        Row::new(Arc::clone(&new_schema), values)
+                    })
+                    .collect();
+
+                return Ok(ResultSet::with_rows(new_schema, rows));
+            }
+
             // First execute the input
             let input_result = execute_logical_plan(tx, input, ctx)?;
 
@@ -127,6 +162,12 @@ fn execute_physical_plan<T: Transaction>(
                 Ok(ResultSet::with_rows(schema, rows))
             }
         }
+
+        LogicalPlan::Aggregate { node, input } => {
+            // Execute aggregate directly (not wrapped in Project)
+            execute_aggregate(tx, node, input, ctx)
+        }
+
         _ => {
             // For other plan types, execute and return
             let entities = execute_logical_plan(tx, logical, ctx)?;
@@ -137,6 +178,90 @@ fn execute_physical_plan<T: Transaction>(
 
             Ok(ResultSet::with_rows(schema, rows))
         }
+    }
+}
+
+/// Execute an aggregate logical plan and return the result set.
+fn execute_aggregate<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &manifoldb_query::plan::logical::AggregateNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute the input plan to get entities
+    let entities = execute_logical_plan(tx, input, ctx)?;
+
+    // Collect all columns from entities to build the schema for the input operator
+    let columns = collect_all_columns(&entities);
+
+    // Convert entities to rows for the operator
+    let scan = StorageScan::new(entities, columns.clone());
+    let rows: Vec<Vec<Value>> = scan.collect_values();
+
+    // Create a ValuesOp as input to the aggregate operator
+    let input_op: Box<dyn Operator> = Box::new(ValuesOp::with_columns(columns, rows));
+
+    // Create the HashAggregateOp
+    let mut agg_op = HashAggregateOp::new(
+        node.group_by.clone(),
+        node.aggregates.clone(),
+        node.having.clone(),
+        input_op,
+    );
+
+    // Execute the aggregate operator
+    agg_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = agg_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = agg_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    agg_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Evaluate an expression on a Row (for aggregate result projection).
+fn evaluate_expr_on_row(
+    expr: &LogicalExpr,
+    row: &Row,
+    schema: &Arc<Schema>,
+    ctx: &ExecutionContext,
+) -> Value {
+    match expr {
+        LogicalExpr::Literal(lit) => literal_to_value(lit),
+
+        LogicalExpr::Column { name, .. } => {
+            // Find column index in schema
+            if let Some(idx) = schema.index_of(name) {
+                row.get(idx).cloned().unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+
+        LogicalExpr::Parameter(idx) => {
+            ctx.get_parameter(*idx as u32).cloned().unwrap_or(Value::Null)
+        }
+
+        LogicalExpr::Alias { expr, .. } => evaluate_expr_on_row(expr, row, schema, ctx),
+
+        LogicalExpr::AggregateFunction { func, .. } => {
+            // Look up the aggregate result by its name (e.g., "COUNT", "SUM")
+            let name = format!("{func}");
+            if let Some(idx) = schema.index_of(&name) {
+                row.get(idx).cloned().unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+
+        LogicalExpr::Wildcard => Value::Null,
+
+        _ => Value::Null,
     }
 }
 
@@ -226,9 +351,10 @@ fn execute_logical_plan<T: Transaction>(
 
         LogicalPlan::Empty { .. } => Ok(Vec::new()),
 
-        LogicalPlan::Aggregate { .. } => Err(Error::Execution(
-            "Aggregate queries not yet supported in entity execution".to_string(),
-        )),
+        LogicalPlan::Aggregate { input, .. } => {
+            // Execute the input - aggregation is handled at the physical plan level
+            execute_logical_plan(tx, input, ctx)
+        }
 
         LogicalPlan::Distinct { .. } => Err(Error::Execution(
             "DISTINCT queries not yet supported in entity execution".to_string(),

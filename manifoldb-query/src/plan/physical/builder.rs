@@ -483,9 +483,11 @@ impl PhysicalPlanner {
                 };
 
                 return PhysicalPlan::HashJoin {
-                    node: Box::new(HashJoinNode::new(node.join_type, build_keys, probe_keys)
-                        .with_join_order(join_order)
-                        .with_cost(cost)),
+                    node: Box::new(
+                        HashJoinNode::new(node.join_type, build_keys, probe_keys)
+                            .with_join_order(join_order)
+                            .with_cost(cost),
+                    ),
                     build: Box::new(build_plan),
                     probe: Box::new(probe_plan),
                 };
@@ -951,7 +953,9 @@ mod tests {
         let orders = LogicalPlan::scan("orders");
 
         let joined = LogicalPlan::Join {
-            node: Box::new(JoinNode::inner(LogicalExpr::column("id").eq(LogicalExpr::column("user_id")))),
+            node: Box::new(JoinNode::inner(
+                LogicalExpr::column("id").eq(LogicalExpr::column("user_id")),
+            )),
             left: Box::new(users),
             right: Box::new(orders),
         };

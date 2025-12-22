@@ -452,3 +452,196 @@ fn test_invalid_sql_syntax() {
     let result = db.query("SELEKT * FORM users");
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Aggregate Query Tests
+// ============================================================================
+
+#[test]
+fn test_count_aggregate() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Bob', 25)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Charlie', 35)").expect("insert failed");
+
+    // Count all rows
+    let result = db.query("SELECT COUNT(*) FROM users").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    // Check the count value
+    let count_val = result.rows()[0].get(0);
+    assert_eq!(count_val, Some(&Value::Int(3)));
+}
+
+#[test]
+fn test_sum_aggregate() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO products (name, price) VALUES ('Widget', 10)").expect("insert failed");
+    db.execute("INSERT INTO products (name, price) VALUES ('Gadget', 25)").expect("insert failed");
+    db.execute("INSERT INTO products (name, price) VALUES ('Gizmo', 15)").expect("insert failed");
+
+    // Sum prices
+    let result = db.query("SELECT SUM(price) FROM products").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    // Check the sum value - it returns as float
+    if let Some(Value::Float(sum)) = result.rows()[0].get(0) {
+        assert!((sum - 50.0).abs() < 0.001);
+    } else {
+        panic!("Expected float sum value, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_group_by_count() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data - two departments with different counts
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Alice', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Bob', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Charlie', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Diana', 'Sales')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Eve', 'Sales')")
+        .expect("insert failed");
+
+    // Group by department and count
+    let result =
+        db.query("SELECT dept, COUNT(*) FROM employees GROUP BY dept").expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    // Find Engineering and Sales rows
+    let mut eng_count = 0;
+    let mut sales_count = 0;
+
+    for row in result.rows() {
+        if let Some(Value::String(dept)) = row.get(0) {
+            if let Some(Value::Int(count)) = row.get(1) {
+                if dept == "Engineering" {
+                    eng_count = *count;
+                } else if dept == "Sales" {
+                    sales_count = *count;
+                }
+            }
+        }
+    }
+
+    assert_eq!(eng_count, 3, "Engineering should have 3 employees");
+    assert_eq!(sales_count, 2, "Sales should have 2 employees");
+}
+
+#[test]
+fn test_group_by_sum() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data - products by category
+    db.execute("INSERT INTO products (category, price) VALUES ('Electronics', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Electronics', 150)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Clothing', 50)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Clothing', 75)")
+        .expect("insert failed");
+
+    // Group by category and sum prices
+    let result = db
+        .query("SELECT category, SUM(price) FROM products GROUP BY category")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    // Find the sums for each category
+    let mut electronics_sum = 0.0;
+    let mut clothing_sum = 0.0;
+
+    for row in result.rows() {
+        if let Some(Value::String(category)) = row.get(0) {
+            if let Some(Value::Float(sum)) = row.get(1) {
+                if category == "Electronics" {
+                    electronics_sum = *sum;
+                } else if category == "Clothing" {
+                    clothing_sum = *sum;
+                }
+            }
+        }
+    }
+
+    assert!((electronics_sum - 250.0).abs() < 0.001, "Electronics sum should be 250");
+    assert!((clothing_sum - 125.0).abs() < 0.001, "Clothing sum should be 125");
+}
+
+#[test]
+fn test_min_max_aggregate() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Bob', 25)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Charlie', 35)").expect("insert failed");
+
+    // Get min and max age
+    let result = db.query("SELECT MIN(age), MAX(age) FROM users").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+
+    let min_val = result.rows()[0].get(0);
+    let max_val = result.rows()[0].get(1);
+
+    assert_eq!(min_val, Some(&Value::Int(25)), "Min age should be 25");
+    assert_eq!(max_val, Some(&Value::Int(35)), "Max age should be 35");
+}
+
+#[test]
+fn test_aggregate_empty_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Count on empty table should return 0
+    let result = db.query("SELECT COUNT(*) FROM empty_table").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    let count_val = result.rows()[0].get(0);
+    assert_eq!(count_val, Some(&Value::Int(0)));
+}
+
+#[test]
+fn test_multiple_aggregates() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO products (name, price) VALUES ('Widget', 10)").expect("insert failed");
+    db.execute("INSERT INTO products (name, price) VALUES ('Gadget', 25)").expect("insert failed");
+    db.execute("INSERT INTO products (name, price) VALUES ('Gizmo', 15)").expect("insert failed");
+
+    // Multiple aggregates in one query
+    let result = db
+        .query("SELECT COUNT(*), SUM(price), MIN(price), MAX(price) FROM products")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    let row = &result.rows()[0];
+
+    // COUNT(*)
+    assert_eq!(row.get(0), Some(&Value::Int(3)));
+
+    // SUM(price)
+    if let Some(Value::Float(sum)) = row.get(1) {
+        assert!((sum - 50.0).abs() < 0.001);
+    } else {
+        panic!("Expected float sum value");
+    }
+
+    // MIN(price)
+    assert_eq!(row.get(2), Some(&Value::Int(10)));
+
+    // MAX(price)
+    assert_eq!(row.get(3), Some(&Value::Int(25)));
+}
