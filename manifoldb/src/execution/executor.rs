@@ -226,9 +226,52 @@ fn execute_logical_plan<T: Transaction>(
 
         LogicalPlan::Empty { .. } => Ok(Vec::new()),
 
-        _ => {
-            // For unimplemented plan types, return empty
-            Ok(Vec::new())
+        LogicalPlan::Aggregate { .. } => Err(Error::Execution(
+            "Aggregate queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::Distinct { .. } => Err(Error::Execution(
+            "DISTINCT queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::Alias { input, .. } => {
+            // Alias is logical-only, just execute the input
+            execute_logical_plan(tx, input, ctx)
+        }
+
+        LogicalPlan::Join { .. } => {
+            Err(Error::Execution("JOIN queries not yet supported in entity execution".to_string()))
+        }
+
+        LogicalPlan::SetOp { .. } => Err(Error::Execution(
+            "Set operations (INTERSECT/EXCEPT) not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::Union { .. } => {
+            Err(Error::Execution("UNION queries not yet supported in entity execution".to_string()))
+        }
+
+        LogicalPlan::Expand { .. } => Err(Error::Execution(
+            "Graph EXPAND queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::PathScan { .. } => Err(Error::Execution(
+            "Graph path scan queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::AnnSearch { .. } => Err(Error::Execution(
+            "ANN search queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::VectorDistance { .. } => Err(Error::Execution(
+            "Vector distance queries not yet supported in entity execution".to_string(),
+        )),
+
+        LogicalPlan::Insert { .. } | LogicalPlan::Update { .. } | LogicalPlan::Delete { .. } => {
+            Err(Error::Execution(
+                "DML statements should be executed via execute_statement, not execute_logical_plan"
+                    .to_string(),
+            ))
         }
     }
 }
