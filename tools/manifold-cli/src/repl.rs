@@ -54,10 +54,7 @@ impl Repl {
 
     /// Get the history file path.
     fn history_path() -> PathBuf {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("manifold")
-            .join("history.txt")
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("manifold").join("history.txt")
     }
 
     /// Run the REPL loop.
@@ -303,11 +300,11 @@ impl Repl {
                 key: "Failed Queries".to_string(),
                 value: metrics.queries.failed_queries.to_string(),
             },
-            InfoRow { key: "Total Transactions".to_string(), value: total_transactions.to_string() },
             InfoRow {
-                key: "Commits".to_string(),
-                value: metrics.transactions.commits.to_string(),
+                key: "Total Transactions".to_string(),
+                value: total_transactions.to_string(),
             },
+            InfoRow { key: "Commits".to_string(), value: metrics.transactions.commits.to_string() },
             InfoRow {
                 key: "Rollbacks".to_string(),
                 value: metrics.transactions.rollbacks.to_string(),

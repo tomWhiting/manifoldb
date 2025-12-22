@@ -204,9 +204,14 @@ fn value_to_string(value: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::String(s) => s.clone(),
         Value::Bytes(b) => hex::encode(b),
-        Value::Vector(v) => format!("[{}]", v.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")),
+        Value::Vector(v) => {
+            format!("[{}]", v.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","))
+        }
         Value::SparseVector(sv) => {
-            format!("[{}]", sv.iter().map(|(i, v)| format!("{i}:{v}")).collect::<Vec<_>>().join(","))
+            format!(
+                "[{}]",
+                sv.iter().map(|(i, v)| format!("{i}:{v}")).collect::<Vec<_>>().join(",")
+            )
         }
         Value::MultiVector(mv) => format!("[{} vectors]", mv.len()),
         Value::Array(arr) => {
