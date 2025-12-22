@@ -52,6 +52,8 @@ use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
 use crate::execution::{execute_query, execute_statement, extract_tables_from_sql};
 use crate::metrics::{CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot};
+use crate::prepared::{PreparedStatement, PreparedStatementCache};
+use crate::schema::SchemaManager;
 use crate::transaction::{DatabaseTransaction, TransactionManager};
 
 /// The main `ManifoldDB` database handle.
@@ -120,6 +122,8 @@ pub struct Database {
     config: Config,
     /// Query result cache.
     query_cache: QueryCache,
+    /// Prepared statement cache.
+    prepared_cache: PreparedStatementCache,
     /// Database metrics.
     db_metrics: Arc<DatabaseMetrics>,
 }
@@ -193,9 +197,20 @@ impl Database {
 
         let manager = TransactionManager::with_config(engine, config.transaction_config());
         let query_cache = QueryCache::new(config.query_cache_config.clone());
+        let prepared_cache = PreparedStatementCache::default();
         let db_metrics = Arc::new(DatabaseMetrics::new());
 
-        Ok(Self { manager, config, query_cache, db_metrics })
+        // Initialize prepared cache with current schema version
+        let db = Self { manager, config, query_cache, prepared_cache, db_metrics };
+
+        // Load initial schema version
+        if let Ok(tx) = db.begin_read() {
+            if let Ok(version) = SchemaManager::get_version(&tx) {
+                db.prepared_cache.set_schema_version(version);
+            }
+        }
+
+        Ok(db)
     }
 
     /// Returns a builder for creating a database with custom configuration.
@@ -334,6 +349,9 @@ impl Database {
         // Extract tables that will be modified for cache invalidation
         let affected_tables = extract_tables_from_sql(sql);
 
+        // Check if this is a DDL statement
+        let is_ddl = Self::is_ddl_statement(sql);
+
         // Start a write transaction
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
@@ -343,6 +361,10 @@ impl Database {
 
         match result {
             Ok(count) => {
+                // Get schema version before commit if DDL
+                let new_schema_version =
+                    if is_ddl { SchemaManager::get_version(&tx).ok() } else { None };
+
                 // Commit the transaction
                 let commit_start = Instant::now();
                 tx.commit().map_err(Error::Transaction)?;
@@ -353,6 +375,12 @@ impl Database {
 
                 // Invalidate cache entries for affected tables
                 self.query_cache.invalidate_tables(&affected_tables);
+                self.prepared_cache.invalidate_tables(&affected_tables);
+
+                // Update prepared statement cache schema version if DDL
+                if let Some(version) = new_schema_version {
+                    self.prepared_cache.set_schema_version(version);
+                }
 
                 Ok(count)
             }
@@ -363,6 +391,16 @@ impl Database {
                 Err(e)
             }
         }
+    }
+
+    /// Check if a SQL statement is a DDL statement.
+    fn is_ddl_statement(sql: &str) -> bool {
+        let sql_upper = sql.trim().to_uppercase();
+        sql_upper.starts_with("CREATE TABLE")
+            || sql_upper.starts_with("DROP TABLE")
+            || sql_upper.starts_with("CREATE INDEX")
+            || sql_upper.starts_with("DROP INDEX")
+            || sql_upper.starts_with("ALTER TABLE")
     }
 
     /// Execute a SQL query and return results.
@@ -614,6 +652,215 @@ impl Database {
     pub fn reset_metrics(&self) {
         self.db_metrics.reset();
         self.query_cache.metrics().reset();
+    }
+
+    /// Prepare a SQL statement for repeated execution.
+    ///
+    /// Prepared statements cache the parsed AST and query plan, amortizing
+    /// parsing and planning costs over multiple executions.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL statement to prepare. Use `$1`, `$2`, etc. for parameters.
+    ///
+    /// # Returns
+    ///
+    /// A prepared statement that can be executed multiple times with different parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL cannot be parsed or planned.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, Value};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Prepare once
+    /// let stmt = db.prepare("SELECT * FROM users WHERE age > $1")?;
+    ///
+    /// // Execute multiple times with different parameters
+    /// let young = stmt.query(&db, &[Value::Int(18)])?;
+    /// let old = stmt.query(&db, &[Value::Int(65)])?;
+    /// ```
+    pub fn prepare(&self, sql: &str) -> Result<Arc<PreparedStatement>> {
+        self.prepared_cache.prepare(sql)
+    }
+
+    /// Get or prepare a SQL statement (uses cache).
+    ///
+    /// This is like `prepare`, but uses the prepared statement cache.
+    /// If the same SQL was previously prepared and the schema hasn't changed,
+    /// the cached statement is returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - The SQL statement to prepare. Use `$1`, `$2`, etc. for parameters.
+    ///
+    /// # Returns
+    ///
+    /// A prepared statement that can be executed multiple times with different parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL cannot be parsed or planned.
+    pub fn prepare_cached(&self, sql: &str) -> Result<Arc<PreparedStatement>> {
+        self.prepared_cache.get_or_prepare(sql)
+    }
+
+    /// Execute a prepared statement that returns results (SELECT).
+    ///
+    /// # Arguments
+    ///
+    /// * `stmt` - The prepared statement to execute
+    /// * `params` - The parameter values to bind
+    ///
+    /// # Returns
+    ///
+    /// A [`QueryResult`] containing the query results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the statement has been invalidated by schema changes,
+    /// or if execution fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let stmt = db.prepare("SELECT * FROM users WHERE age > $1")?;
+    /// let results = db.query_prepared(&stmt, &[Value::Int(21)])?;
+    /// ```
+    pub fn query_prepared(
+        &self,
+        stmt: &PreparedStatement,
+        params: &[manifoldb_core::Value],
+    ) -> Result<QueryResult> {
+        // Check if statement is still valid
+        let current_version = self.prepared_cache.schema_version();
+        if !stmt.is_valid(current_version) {
+            return Err(Error::Execution(
+                "Prepared statement is invalid due to schema changes. Please re-prepare."
+                    .to_string(),
+            ));
+        }
+
+        let start = Instant::now();
+
+        // Start a read transaction
+        let tx = self.begin_read()?;
+
+        // Execute using the cached plans
+        let result = crate::execution::execute_prepared_query(&tx, stmt, params);
+
+        match result {
+            Ok(result_set) => {
+                // Record successful query
+                self.db_metrics.record_query(start.elapsed(), true);
+
+                // Convert the ResultSet to our QueryResult
+                Ok(QueryResult::from_result_set(result_set))
+            }
+            Err(e) => {
+                // Record failed query
+                self.db_metrics.record_query(start.elapsed(), false);
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute a prepared DML statement (INSERT, UPDATE, DELETE).
+    ///
+    /// # Arguments
+    ///
+    /// * `stmt` - The prepared statement to execute
+    /// * `params` - The parameter values to bind
+    ///
+    /// # Returns
+    ///
+    /// The number of rows affected by the statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the statement has been invalidated by schema changes,
+    /// or if execution fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let stmt = db.prepare("INSERT INTO users (name, age) VALUES ($1, $2)")?;
+    /// let count = db.execute_prepared(&stmt, &[Value::from("Alice"), Value::Int(30)])?;
+    /// ```
+    pub fn execute_prepared(
+        &self,
+        stmt: &PreparedStatement,
+        params: &[manifoldb_core::Value],
+    ) -> Result<u64> {
+        // Check if statement is still valid
+        let current_version = self.prepared_cache.schema_version();
+        if !stmt.is_valid(current_version) {
+            return Err(Error::Execution(
+                "Prepared statement is invalid due to schema changes. Please re-prepare."
+                    .to_string(),
+            ));
+        }
+
+        let start = Instant::now();
+
+        // Start a write transaction
+        let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
+
+        // Execute using the cached plans
+        let result = crate::execution::execute_prepared_statement(&mut tx, stmt, params);
+
+        match result {
+            Ok(count) => {
+                // Get schema version before commit if DDL
+                let new_schema_version =
+                    if stmt.is_ddl() { SchemaManager::get_version(&tx).ok() } else { None };
+
+                // Commit the transaction
+                let commit_start = Instant::now();
+                tx.commit().map_err(Error::Transaction)?;
+                self.db_metrics.record_commit(commit_start.elapsed());
+
+                // Record successful query
+                self.db_metrics.record_query(start.elapsed(), true);
+
+                // Invalidate cache entries for affected tables
+                let affected_tables: Vec<String> = stmt.accessed_tables().iter().cloned().collect();
+                self.query_cache.invalidate_tables(&affected_tables);
+                self.prepared_cache.invalidate_tables(&affected_tables);
+
+                // Update prepared statement cache schema version if DDL
+                if let Some(version) = new_schema_version {
+                    self.prepared_cache.set_schema_version(version);
+                }
+
+                Ok(count)
+            }
+            Err(e) => {
+                // Record failed query and rollback
+                self.db_metrics.record_query(start.elapsed(), false);
+                self.db_metrics.record_rollback();
+                Err(e)
+            }
+        }
+    }
+
+    /// Get the prepared statement cache.
+    ///
+    /// Use this to access cache operations like clearing or checking metrics.
+    #[must_use]
+    pub fn prepared_cache(&self) -> &PreparedStatementCache {
+        &self.prepared_cache
+    }
+
+    /// Clear the prepared statement cache.
+    pub fn clear_prepared_cache(&self) {
+        self.prepared_cache.clear();
     }
 }
 

@@ -23,6 +23,8 @@ use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuil
 use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
 
+use crate::prepared::PreparedStatement;
+
 use super::graph_accessor;
 use super::StorageScan;
 use crate::error::{Error, Result};
@@ -71,6 +73,57 @@ pub fn execute_statement<T: Transaction>(
 
     // Execute based on the statement type
     match &logical_plan {
+        LogicalPlan::Insert { table, columns, input, .. } => {
+            execute_insert(tx, table, columns, input, &ctx)
+        }
+        LogicalPlan::Update { table, assignments, filter, .. } => {
+            execute_update(tx, table, assignments, filter, &ctx)
+        }
+        LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+
+        // DDL statements
+        LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
+        LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
+        LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
+        LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+
+        _ => {
+            // For SELECT, we shouldn't be here but handle gracefully
+            Err(Error::Execution("Expected DML or DDL statement".to_string()))
+        }
+    }
+}
+
+/// Execute a prepared SELECT query and return the result set.
+///
+/// This uses the cached logical and physical plans from the prepared statement,
+/// avoiding the parsing and planning overhead.
+pub fn execute_prepared_query<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    stmt: &PreparedStatement,
+    params: &[Value],
+) -> Result<ResultSet> {
+    // Create execution context with parameters
+    let ctx = create_context(params);
+
+    // Execute the plan against storage using cached plans
+    execute_physical_plan(tx, stmt.physical_plan(), stmt.logical_plan(), &ctx)
+}
+
+/// Execute a prepared DML/DDL statement and return the affected row count.
+///
+/// This uses the cached logical plan from the prepared statement,
+/// avoiding the parsing and planning overhead.
+pub fn execute_prepared_statement<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    stmt: &PreparedStatement,
+    params: &[Value],
+) -> Result<u64> {
+    // Create execution context with parameters
+    let ctx = create_context(params);
+
+    // Execute based on the statement type
+    match stmt.logical_plan() {
         LogicalPlan::Insert { table, columns, input, .. } => {
             execute_insert(tx, table, columns, input, &ctx)
         }

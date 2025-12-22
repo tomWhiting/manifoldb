@@ -10,6 +10,7 @@ pub mod crud;
 pub mod ddl;
 pub mod e2e;
 pub mod graph;
+pub mod prepared;
 pub mod recovery;
 pub mod scale;
 pub mod sql;
