@@ -254,6 +254,45 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 return Err(PlanError::UnknownTable("empty table name".to_string()));
             }
         }
+
+        LogicalPlan::CreateTable(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::UnknownTable("empty table name".to_string()));
+            }
+            if node.columns.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE TABLE must have at least one column".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropTable(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::UnknownTable("DROP TABLE requires table name".to_string()));
+            }
+        }
+
+        LogicalPlan::CreateIndex(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("CREATE INDEX requires index name".to_string()));
+            }
+            if node.table.is_empty() {
+                return Err(PlanError::UnknownTable(
+                    "CREATE INDEX requires table name".to_string(),
+                ));
+            }
+            if node.columns.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE INDEX must specify at least one column".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropIndex(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::Unsupported("DROP INDEX requires index name".to_string()));
+            }
+        }
     }
 
     Ok(())

@@ -17,6 +17,7 @@
 
 use std::fmt;
 
+use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
@@ -203,6 +204,19 @@ pub enum LogicalPlan {
         /// Whether to return deleted rows.
         returning: Vec<LogicalExpr>,
     },
+
+    // ========== DDL Nodes ==========
+    /// CREATE TABLE operation.
+    CreateTable(CreateTableNode),
+
+    /// DROP TABLE operation.
+    DropTable(DropTableNode),
+
+    /// CREATE INDEX operation.
+    CreateIndex(CreateIndexNode),
+
+    /// DROP INDEX operation.
+    DropIndex(DropIndexNode),
 }
 
 impl LogicalPlan {
@@ -249,7 +263,10 @@ impl LogicalPlan {
     /// Adds an aggregation to this plan.
     #[must_use]
     pub fn aggregate(self, group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self::Aggregate { node: Box::new(AggregateNode::new(group_by, aggregates)), input: Box::new(self) }
+        Self::Aggregate {
+            node: Box::new(AggregateNode::new(group_by, aggregates)),
+            input: Box::new(self),
+        }
     }
 
     /// Adds a sort to this plan.
@@ -291,19 +308,31 @@ impl LogicalPlan {
     /// Creates an inner join with another plan.
     #[must_use]
     pub fn inner_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: Box::new(JoinNode::inner(on)), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::inner(on)),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a left outer join with another plan.
     #[must_use]
     pub fn left_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: Box::new(JoinNode::left(on)), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::left(on)),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a cross join with another plan.
     #[must_use]
     pub fn cross_join(self, right: LogicalPlan) -> Self {
-        Self::Join { node: Box::new(JoinNode::cross()), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::cross()),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a UNION ALL with another plan.
@@ -357,6 +386,12 @@ impl LogicalPlan {
 
             // DML without input
             Self::Update { .. } | Self::Delete { .. } => vec![],
+
+            // DDL nodes (no inputs)
+            Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
         }
     }
 
@@ -391,6 +426,12 @@ impl LogicalPlan {
 
             // DML without input
             Self::Update { .. } | Self::Delete { .. } => vec![],
+
+            // DDL nodes (no inputs)
+            Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
         }
     }
 
@@ -424,6 +465,10 @@ impl LogicalPlan {
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
+            Self::CreateTable(_) => "CreateTable",
+            Self::DropTable(_) => "DropTable",
+            Self::CreateIndex(_) => "CreateIndex",
+            Self::DropIndex(_) => "DropIndex",
         }
     }
 
@@ -605,6 +650,37 @@ impl DisplayTree<'_> {
                 write!(f, "Delete: {table}")?;
                 if let Some(filt) = filter {
                     write!(f, " WHERE {filt}")?;
+                }
+            }
+            LogicalPlan::CreateTable(node) => {
+                write!(f, "CreateTable: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                write!(f, " ({} columns)", node.columns.len())?;
+            }
+            LogicalPlan::DropTable(node) => {
+                write!(f, "DropTable: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::CreateIndex(node) => {
+                write!(f, "CreateIndex: {} ON {}", node.name, node.table)?;
+                if node.unique {
+                    write!(f, " UNIQUE")?;
+                }
+                if let Some(method) = &node.using {
+                    write!(f, " USING {method}")?;
+                }
+            }
+            LogicalPlan::DropIndex(node) => {
+                write!(f, "DropIndex: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
                 }
             }
         }

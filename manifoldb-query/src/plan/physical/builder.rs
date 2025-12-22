@@ -306,6 +306,12 @@ impl PhysicalPlanner {
             LogicalPlan::Delete { table, filter, returning } => {
                 self.plan_delete(table, filter, returning)
             }
+
+            // DDL nodes - these are executed directly without physical plans
+            LogicalPlan::CreateTable(node) => PhysicalPlan::CreateTable(node.clone()),
+            LogicalPlan::DropTable(node) => PhysicalPlan::DropTable(node.clone()),
+            LogicalPlan::CreateIndex(node) => PhysicalPlan::CreateIndex(node.clone()),
+            LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
         }
     }
 
@@ -483,9 +489,11 @@ impl PhysicalPlanner {
                 };
 
                 return PhysicalPlan::HashJoin {
-                    node: Box::new(HashJoinNode::new(node.join_type, build_keys, probe_keys)
-                        .with_join_order(join_order)
-                        .with_cost(cost)),
+                    node: Box::new(
+                        HashJoinNode::new(node.join_type, build_keys, probe_keys)
+                            .with_join_order(join_order)
+                            .with_cost(cost),
+                    ),
                     build: Box::new(build_plan),
                     probe: Box::new(probe_plan),
                 };
@@ -951,7 +959,9 @@ mod tests {
         let orders = LogicalPlan::scan("orders");
 
         let joined = LogicalPlan::Join {
-            node: Box::new(JoinNode::inner(LogicalExpr::column("id").eq(LogicalExpr::column("user_id")))),
+            node: Box::new(JoinNode::inner(
+                LogicalExpr::column("id").eq(LogicalExpr::column("user_id")),
+            )),
             left: Box::new(users),
             right: Box::new(orders),
         };

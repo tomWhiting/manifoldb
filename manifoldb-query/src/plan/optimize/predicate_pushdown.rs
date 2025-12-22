@@ -148,8 +148,10 @@ impl PredicatePushdown {
                 }
 
                 let optimized_input = self.push_down(*input, Vec::new());
-                let result =
-                    LogicalPlan::AnnSearch { node: Box::new(search_node), input: Box::new(optimized_input) };
+                let result = LogicalPlan::AnnSearch {
+                    node: Box::new(search_node),
+                    input: Box::new(optimized_input),
+                };
                 self.apply_predicates(result, remaining)
             }
 
@@ -189,6 +191,15 @@ impl PredicatePushdown {
 
             LogicalPlan::Empty { columns } => {
                 self.apply_predicates(LogicalPlan::Empty { columns }, predicates)
+            }
+
+            // DDL operations - no predicate pushdown
+            LogicalPlan::CreateTable(_)
+            | LogicalPlan::DropTable(_)
+            | LogicalPlan::CreateIndex(_)
+            | LogicalPlan::DropIndex(_) => {
+                // DDL statements don't have predicates to push
+                plan
             }
         }
     }
@@ -239,7 +250,8 @@ impl PredicatePushdown {
 
         let optimized_input = self.push_down(input, pushable);
 
-        let result = LogicalPlan::Aggregate { node: Box::new(node), input: Box::new(optimized_input) };
+        let result =
+            LogicalPlan::Aggregate { node: Box::new(node), input: Box::new(optimized_input) };
 
         self.apply_predicates(result, remaining)
     }

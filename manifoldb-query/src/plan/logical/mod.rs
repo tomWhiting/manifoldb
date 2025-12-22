@@ -29,6 +29,7 @@
 //! ```
 
 mod builder;
+mod ddl;
 mod expr;
 mod graph;
 mod node;
@@ -37,6 +38,7 @@ mod validate;
 mod vector;
 
 pub use builder::PlanBuilder;
+pub use ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
 pub use expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
 pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
 pub use node::LogicalPlan;
