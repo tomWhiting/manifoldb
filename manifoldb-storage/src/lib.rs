@@ -58,5 +58,6 @@ pub use engine::{
 };
 
 pub use wal::{
-    Lsn, Operation, TxnId, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalWriter,
+    Lsn, Operation, RecoveryMode, RecoveryStats, TxnId, WalConfig, WalEntry, WalError, WalRecovery,
+    WalResult, WalWriter,
 };

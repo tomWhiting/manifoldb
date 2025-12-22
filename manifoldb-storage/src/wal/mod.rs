@@ -57,7 +57,7 @@ mod writer;
 
 pub use entry::{Operation, WalEntry};
 pub use error::{WalError, WalResult};
-pub use recovery::WalRecovery;
+pub use recovery::{RecoveryMode, RecoveryStats, WalRecovery};
 pub use writer::{WalConfig, WalWriter};
 
 /// Log Sequence Number - monotonically increasing identifier for WAL entries
