@@ -7,7 +7,7 @@
 // Allow expect - the invariant is guaranteed by the data structure
 #![allow(clippy::expect_used)]
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use manifoldb_core::{Edge, EdgeId, EdgeType, EntityId};
 use manifoldb_storage::Transaction;
@@ -439,68 +439,114 @@ impl PathPattern {
         ctx: &mut MatchContext<'_, T>,
         step: &PathStep,
     ) -> GraphResult<()> {
-        // Use BFS to explore variable-length paths
-        let mut queue: VecDeque<(EntityId, Vec<EntityId>, Vec<EdgeId>, HashSet<EntityId>)> =
-            VecDeque::new();
+        // Use DFS with backtracking to avoid O(n) cloning per BFS level.
+        // This approach uses push/pop on shared vectors rather than cloning
+        // entire collections for each queue entry.
+        self.dfs_variable_step(ctx, step, ctx.current, 0)
+    }
 
-        // Initialize with current state
-        queue.push_back((ctx.current, vec![ctx.current], Vec::new(), ctx.visited.clone()));
-
-        while let Some((node, step_nodes, step_edges, step_visited)) = queue.pop_front() {
-            let hop_count = step_edges.len();
-
-            // If within valid hop range, try continuing with next step
-            if hop_count >= step.min_hops {
-                // Save current state
-                let prev_current = ctx.current;
-                let prev_step_idx = ctx.step_idx;
-                let prev_nodes_len = ctx.path_nodes.len();
-                let prev_edges_len = ctx.path_edges.len();
-                let prev_visited = ctx.visited.clone();
-
-                // Add intermediate nodes (skip first which is already in path)
-                ctx.path_nodes.extend(step_nodes.iter().skip(1));
-                ctx.path_edges.push(step_edges.clone());
-                ctx.current = node;
-                ctx.step_idx += 1;
-                ctx.visited.clone_from(&step_visited);
-
-                self.match_from_step(ctx)?;
-
-                // Restore state
-                ctx.path_nodes.truncate(prev_nodes_len);
-                ctx.path_edges.truncate(prev_edges_len);
-                ctx.current = prev_current;
-                ctx.step_idx = prev_step_idx;
-                ctx.visited = prev_visited;
+    /// DFS helper for variable-length step matching with backtracking.
+    /// Uses push/pop on shared vectors to avoid cloning.
+    fn dfs_variable_step<T: Transaction>(
+        &self,
+        ctx: &mut MatchContext<'_, T>,
+        step: &PathStep,
+        current_node: EntityId,
+        hop_count: usize,
+    ) -> GraphResult<()> {
+        // Check limit
+        if let Some(limit) = self.limit {
+            if ctx.results.len() >= limit {
+                return Ok(());
             }
+        }
 
-            // Check if we can expand further
-            let can_expand = step.max_hops.map_or(true, |max| hop_count < max);
-            if !can_expand {
+        // If within valid hop range, try continuing with next step
+        if hop_count >= step.min_hops {
+            // Save current state for backtracking
+            let prev_current = ctx.current;
+            let prev_step_idx = ctx.step_idx;
+            let prev_nodes_len = ctx.path_nodes.len();
+            let prev_edges_len = ctx.path_edges.len();
+
+            // Update context for next step
+            ctx.current = current_node;
+            ctx.step_idx += 1;
+
+            // The path_nodes already contain the nodes for this variable step
+            // (added during DFS descent). We need to collect edges from the last
+            // `hop_count` positions that were added during descent.
+            // We use a marker approach: path_edges.len() tracks how many complete steps
+            // we have recorded. For variable steps, we record all edges at once when
+            // we commit to continuing to the next pattern step.
+
+            // Since we're using DFS and path_nodes already has the nodes from descent,
+            // we just need to collect the current step's edges.
+            // For now, push an empty vec that we'll populate via match context tracking.
+
+            // Actually, we need to track edges during descent too. Let's use a separate
+            // vector in a revised approach.
+
+            self.match_from_step(ctx)?;
+
+            // Restore state
+            ctx.path_nodes.truncate(prev_nodes_len);
+            ctx.path_edges.truncate(prev_edges_len);
+            ctx.current = prev_current;
+            ctx.step_idx = prev_step_idx;
+        }
+
+        // Check if we can expand further
+        let can_expand = step.max_hops.map_or(true, |max| hop_count < max);
+        if !can_expand {
+            return Ok(());
+        }
+
+        // Check limit again before expansion
+        if let Some(limit) = self.limit {
+            if ctx.results.len() >= limit {
+                return Ok(());
+            }
+        }
+
+        // Expand to neighbors using DFS with backtracking
+        let neighbors = self.get_filtered_neighbors(ctx.tx, current_node, step)?;
+
+        for (neighbor, edge_id) in neighbors {
+            if !self.allow_cycles && ctx.visited.contains(&neighbor) {
                 continue;
             }
 
-            // Expand to neighbors
-            let neighbors = self.get_filtered_neighbors(ctx.tx, node, step)?;
+            // Push state for this neighbor
+            ctx.path_nodes.push(neighbor);
 
-            for (neighbor, edge_id) in neighbors {
-                if !self.allow_cycles && step_visited.contains(&neighbor) {
-                    continue;
+            // Track edge for this step - we need to manage step edges carefully
+            // For the first hop, we push a new vec; for subsequent hops, we extend
+            if hop_count == 0 {
+                ctx.path_edges.push(vec![edge_id]);
+            } else {
+                // Extend the current step's edges
+                if let Some(last_edges) = ctx.path_edges.last_mut() {
+                    last_edges.push(edge_id);
                 }
+            }
 
-                let mut new_step_nodes = step_nodes.clone();
-                let mut new_step_edges = step_edges.clone();
-                let mut new_step_visited = step_visited.clone();
+            let was_new = if self.allow_cycles { false } else { ctx.visited.insert(neighbor) };
 
-                new_step_nodes.push(neighbor);
-                new_step_edges.push(edge_id);
+            // Recurse
+            self.dfs_variable_step(ctx, step, neighbor, hop_count + 1)?;
 
-                if !self.allow_cycles {
-                    new_step_visited.insert(neighbor);
-                }
+            // Pop state (backtrack)
+            ctx.path_nodes.pop();
 
-                queue.push_back((neighbor, new_step_nodes, new_step_edges, new_step_visited));
+            if hop_count == 0 {
+                ctx.path_edges.pop();
+            } else if let Some(last_edges) = ctx.path_edges.last_mut() {
+                last_edges.pop();
+            }
+
+            if was_new {
+                ctx.visited.remove(&neighbor);
             }
         }
 

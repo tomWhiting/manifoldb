@@ -329,6 +329,163 @@ fn graph_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Wide Graph Pattern Matching Benchmarks
+// ============================================================================
+
+fn wide_graph_benchmarks(c: &mut Criterion) {
+    use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};
+    use manifoldb_graph::traversal::{AllShortestPaths, Direction, PathPattern, PathStep};
+    use manifoldb_storage::backends::RedbEngine;
+    use manifoldb_storage::{StorageEngine, Transaction as StorageTransaction};
+
+    let mut group = c.benchmark_group("wide_graph");
+
+    // Setup wide graph with high fanout (100+ neighbors per node)
+    // Structure: center -> 100 level1 nodes -> 10 level2 nodes each
+    let wide_engine = RedbEngine::in_memory().expect("failed");
+    let (center_id, _level1_ids, level2_ids) = {
+        let id_gen = IdGenerator::new();
+        let mut tx = wide_engine.begin_write().expect("failed");
+
+        // Create center node
+        let center = NodeStore::create(&mut tx, &id_gen, |id| {
+            manifoldb_core::Entity::new(id).with_label("Center")
+        })
+        .expect("failed");
+
+        // Create 100 level1 nodes connected to center
+        let mut level1 = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let node = NodeStore::create(&mut tx, &id_gen, |id| {
+                manifoldb_core::Entity::new(id).with_property("level", 1i64)
+            })
+            .expect("failed");
+            level1.push(node.id);
+
+            EdgeStore::create(&mut tx, &id_gen, center.id, node.id, "CONNECTS", |id| {
+                manifoldb_core::Edge::new(id, center.id, node.id, "CONNECTS")
+            })
+            .expect("failed");
+        }
+
+        // Create 10 level2 nodes per level1 node (1000 total)
+        let mut level2 = Vec::with_capacity(1000);
+        for &l1_id in &level1 {
+            for _ in 0..10 {
+                let node = NodeStore::create(&mut tx, &id_gen, |id| {
+                    manifoldb_core::Entity::new(id).with_property("level", 2i64)
+                })
+                .expect("failed");
+                level2.push(node.id);
+
+                EdgeStore::create(&mut tx, &id_gen, l1_id, node.id, "CONNECTS", |id| {
+                    manifoldb_core::Edge::new(id, l1_id, node.id, "CONNECTS")
+                })
+                .expect("failed");
+            }
+        }
+
+        tx.commit().expect("failed");
+        (center.id, level1, level2)
+    };
+
+    // Variable-length pattern matching on wide graph: (center)-[:CONNECTS*1..2]->(target)
+    group.bench_function("pattern_variable_length_fanout_100", |b| {
+        b.iter(|| {
+            let tx = wide_engine.begin_read().expect("failed");
+            let pattern = PathPattern::new()
+                .add_step(PathStep::outgoing("CONNECTS").variable_length(1, 2))
+                .with_limit(100); // Limit to avoid measuring result collection
+
+            let matches = pattern.find_from(&tx, center_id).expect("failed");
+            black_box(matches.len())
+        });
+    });
+
+    // Multi-step pattern: (center)-[:CONNECTS]->(l1)-[:CONNECTS]->(l2)
+    group.bench_function("pattern_multi_step_fanout_100", |b| {
+        b.iter(|| {
+            let tx = wide_engine.begin_read().expect("failed");
+            let pattern = PathPattern::new()
+                .add_step(PathStep::outgoing("CONNECTS"))
+                .add_step(PathStep::outgoing("CONNECTS"))
+                .with_limit(100);
+
+            let matches = pattern.find_from(&tx, center_id).expect("failed");
+            black_box(matches.len())
+        });
+    });
+
+    // All shortest paths in wide graph
+    group.bench_function("all_shortest_paths_wide", |b| {
+        // Find paths from center to a level2 node
+        let target = level2_ids[500]; // Pick a node in the middle
+
+        b.iter(|| {
+            let tx = wide_engine.begin_read().expect("failed");
+            let paths = AllShortestPaths::new(center_id, target, Direction::Outgoing)
+                .find(&tx)
+                .expect("failed");
+            black_box(paths.len())
+        });
+    });
+
+    // Setup very wide graph (fanout 500+)
+    let very_wide_engine = RedbEngine::in_memory().expect("failed");
+    let very_wide_center = {
+        let id_gen = IdGenerator::new();
+        let mut tx = very_wide_engine.begin_write().expect("failed");
+
+        let center = NodeStore::create(&mut tx, &id_gen, |id| {
+            manifoldb_core::Entity::new(id).with_label("Center")
+        })
+        .expect("failed");
+
+        // Create 500 directly connected nodes
+        for i in 0..500 {
+            let node = NodeStore::create(&mut tx, &id_gen, |id| {
+                manifoldb_core::Entity::new(id).with_property("index", i as i64)
+            })
+            .expect("failed");
+
+            EdgeStore::create(&mut tx, &id_gen, center.id, node.id, "LINKS", |id| {
+                manifoldb_core::Edge::new(id, center.id, node.id, "LINKS")
+            })
+            .expect("failed");
+        }
+
+        tx.commit().expect("failed");
+        center.id
+    };
+
+    // Pattern matching with 500 fanout
+    group.bench_function("pattern_fanout_500", |b| {
+        b.iter(|| {
+            let tx = very_wide_engine.begin_read().expect("failed");
+            let pattern = PathPattern::new().add_step(PathStep::outgoing("LINKS"));
+
+            let matches = pattern.find_from(&tx, very_wide_center).expect("failed");
+            black_box(matches.len())
+        });
+    });
+
+    // Variable length with 500 fanout
+    group.bench_function("pattern_variable_fanout_500", |b| {
+        b.iter(|| {
+            let tx = very_wide_engine.begin_read().expect("failed");
+            let pattern = PathPattern::new()
+                .add_step(PathStep::outgoing("LINKS").variable_length(0, 1))
+                .with_limit(100);
+
+            let matches = pattern.find_from(&tx, very_wide_center).expect("failed");
+            black_box(matches.len())
+        });
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Vector Search Benchmarks
 // ============================================================================
 
@@ -587,6 +744,7 @@ criterion_group!(
     benches,
     storage_benchmarks,
     graph_benchmarks,
+    wide_graph_benchmarks,
     vector_benchmarks,
     query_benchmarks
 );

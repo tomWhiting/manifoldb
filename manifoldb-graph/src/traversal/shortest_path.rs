@@ -606,11 +606,20 @@ impl AllShortestPaths {
         results: &mut Vec<PathResult>,
     ) {
         if current == self.source {
-            // We've reached the source, create a path
-            let mut nodes = path_nodes.clone();
-            let mut edges = path_edges.clone();
-            nodes.reverse();
-            edges.reverse();
+            // We've reached the source - build path by iterating in reverse
+            // without cloning and then reversing
+            let path_len = path_edges.len();
+            let mut nodes = Vec::with_capacity(path_nodes.len());
+            let mut edges = Vec::with_capacity(path_len);
+
+            // Iterate in reverse order to build forward path
+            for &node in path_nodes.iter().rev() {
+                nodes.push(node);
+            }
+            for &edge in path_edges.iter().rev() {
+                edges.push(edge);
+            }
+
             results.push(PathResult::new(nodes, edges));
             return;
         }
