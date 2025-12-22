@@ -1273,7 +1273,45 @@ fn dijkstra_negative_weight_error() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.to_string().contains("negative"));
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("invalid edge weight"),
+        "Expected 'invalid edge weight', got: {err_str}"
+    );
+    assert!(err_str.contains("negative"), "Expected 'negative' in error, got: {err_str}");
+}
+
+#[test]
+fn dijkstra_non_numeric_weight_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+
+    // Create edge with non-numeric weight (a string instead of a number)
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| {
+        Edge::new(id, a.id, b.id, "EDGE").with_property("weight", "not a number")
+    })
+    .unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Should return error for non-numeric weight
+    let result =
+        Dijkstra::new(a.id, b.id, Direction::Outgoing).with_weight_property("weight").find(&tx);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    // Verify we get the InvalidWeight error with appropriate message
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("invalid edge weight"),
+        "Expected 'invalid edge weight', got: {err_str}"
+    );
+    assert!(err_str.contains("non-numeric"), "Expected 'non-numeric' in error, got: {err_str}");
 }
 
 #[test]
