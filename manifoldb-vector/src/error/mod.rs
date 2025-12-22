@@ -58,4 +58,10 @@ pub enum VectorError {
     /// Storage backend error.
     #[error("storage error: {0}")]
     Storage(#[from] manifoldb_storage::StorageError),
+
+    /// Lock poisoned - indicates concurrent panic corrupted the data structure.
+    ///
+    /// This error is unrecoverable - the index must be dropped and recreated.
+    #[error("index corrupted: lock poisoned due to prior panic in another thread")]
+    LockPoisoned,
 }

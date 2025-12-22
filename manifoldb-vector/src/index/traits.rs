@@ -83,5 +83,9 @@ pub trait VectorIndex {
     }
 
     /// Get the dimension of embeddings in this index.
-    fn dimension(&self) -> usize;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there's a concurrency error (lock poisoning).
+    fn dimension(&self) -> Result<usize, VectorError>;
 }

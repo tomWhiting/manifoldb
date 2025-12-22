@@ -58,7 +58,7 @@ impl<'a, E: StorageEngine> AnnScan<'a, E> {
         query: &Embedding,
         config: SearchConfig,
     ) -> Result<Self, VectorError> {
-        let dim = index.dimension();
+        let dim = index.dimension()?;
 
         // Validate dimension
         if query.dimension() != dim {
