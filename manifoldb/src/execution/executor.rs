@@ -539,8 +539,148 @@ fn execute_path_scan<T: Transaction>(
 
 /// Execute an ANN (approximate nearest neighbor) search.
 ///
-/// Uses `BruteForceSearchOp` for exact k-NN search when no HNSW index is available.
+/// Uses HNSW index when available (with in-traversal filtering for efficiency),
+/// otherwise falls back to `BruteForceSearchOp` for exact k-NN search.
 fn execute_ann_search<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &AnnSearchNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Try to find an HNSW index for this column
+    let table_name = extract_table_name(input);
+    let index_name = if let Some(table) = table_name {
+        crate::vector::find_index_for_column(tx, &table, &node.vector_column).ok().flatten()
+    } else {
+        None
+    };
+
+    // If we have an index, use it for efficient filtered search
+    if let Some(idx_name) = index_name {
+        return execute_ann_search_with_index(tx, node, input, ctx, &idx_name);
+    }
+
+    // Fall back to brute force search
+    execute_ann_search_brute_force(tx, node, input, ctx)
+}
+
+/// Execute ANN search using an HNSW index.
+fn execute_ann_search_with_index<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &AnnSearchNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+    index_name: &str,
+) -> Result<ResultSet> {
+    use manifoldb_vector::types::Embedding;
+    use std::collections::HashSet;
+
+    // Evaluate the query vector
+    let query_value = evaluate_literal_expr(&node.query_vector, ctx)
+        .map_err(|_| Error::Execution("Could not evaluate query vector".to_string()))?;
+
+    let query_vec = match query_value {
+        Value::Vector(v) => v,
+        _ => {
+            return Err(Error::Execution("Query must be a vector".to_string()));
+        }
+    };
+
+    let query = Embedding::new(query_vec).map_err(|e| Error::Execution(e.to_string()))?;
+
+    // Execute the input plan to get entities that pass any non-vector filters
+    let entities = execute_logical_plan(tx, input, ctx)?;
+
+    // Collect all columns for the output schema
+    let mut columns = collect_all_columns(&entities);
+
+    // Create a set of entity IDs that pass the input filters (pre-filter stage)
+    let matching_ids: HashSet<manifoldb_core::EntityId> = entities.iter().map(|e| e.id).collect();
+
+    // Create entity lookup map for building result rows
+    let entity_map: std::collections::HashMap<manifoldb_core::EntityId, &manifoldb_core::Entity> =
+        entities.iter().map(|e| (e.id, e)).collect();
+
+    // If there's a filter in the AnnSearchNode, we need to combine it with entity matching
+    let has_filter = node.filter.is_some() || !matching_ids.is_empty();
+
+    let search_result = if has_filter && !entity_map.is_empty() {
+        // Create a predicate that checks if an entity ID is in our matching set
+        // AND evaluates the ANN search filter if present
+        let predicate = |id: manifoldb_core::EntityId| {
+            // Must be in the set of entities from input
+            if !matching_ids.contains(&id) {
+                return false;
+            }
+            // If there's an additional filter, evaluate it
+            if let Some(ref filter_expr) = node.filter {
+                if let Some(entity) = entity_map.get(&id) {
+                    return evaluate_predicate(filter_expr, entity, ctx);
+                }
+                return false;
+            }
+            true
+        };
+
+        // Use filtered HNSW search
+        crate::vector::search_index_filtered(
+            tx,
+            index_name,
+            &query,
+            node.k,
+            predicate,
+            node.params.ef_search,
+            None,
+        )
+        .map_err(|e| Error::Execution(e.to_string()))?
+    } else {
+        // Use regular HNSW search (no filter)
+        crate::vector::search_index(tx, index_name, &query, node.k, node.params.ef_search)
+            .map_err(|e| Error::Execution(e.to_string()))?
+    };
+
+    // Add distance column if requested
+    if node.include_distance {
+        let distance_col = node.distance_alias.clone().unwrap_or_else(|| "distance".to_string());
+        columns.push(distance_col);
+    }
+
+    let schema = Arc::new(Schema::new(columns.clone()));
+    let mut result_rows = Vec::new();
+
+    // Get non-distance columns for building rows
+    let data_columns: Vec<&String> = if node.include_distance {
+        columns.iter().take(columns.len() - 1).collect()
+    } else {
+        columns.iter().collect()
+    };
+
+    for result in search_result {
+        if let Some(entity) = entity_map.get(&result.entity_id) {
+            let mut values: Vec<Value> = data_columns
+                .iter()
+                .map(|col| {
+                    if *col == "id" {
+                        Value::Int(entity.id.as_u64() as i64)
+                    } else {
+                        entity.get_property(*col).cloned().unwrap_or(Value::Null)
+                    }
+                })
+                .collect();
+
+            if node.include_distance {
+                values.push(Value::Float(f64::from(result.distance)));
+            }
+
+            result_rows.push(Row::new(Arc::clone(&schema), values));
+        }
+    }
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Execute ANN search using brute force (no index).
+fn execute_ann_search_brute_force<T: Transaction>(
     tx: &DatabaseTransaction<T>,
     node: &AnnSearchNode,
     input: &LogicalPlan,
@@ -583,6 +723,19 @@ fn execute_ann_search<T: Transaction>(
     search_op.close().map_err(|e| Error::Execution(e.to_string()))?;
 
     Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Extract the table name from a logical plan's scan node.
+fn extract_table_name(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::Scan(node) => Some(node.table_name.clone()),
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Alias { input, .. } => extract_table_name(input),
+        _ => None,
+    }
 }
 
 /// Execute a vector distance computation.

@@ -59,8 +59,8 @@ mod traits;
 
 pub use config::HnswConfig;
 pub use graph::{
-    search_layer, select_neighbors_heuristic, select_neighbors_simple, Candidate, HnswGraph,
-    HnswNode,
+    search_layer, search_layer_filtered, select_neighbors_heuristic, select_neighbors_simple,
+    Candidate, HnswGraph, HnswNode,
 };
 pub use hnsw::HnswIndex;
 pub use persistence::{
@@ -71,4 +71,4 @@ pub use persistence::{
     PREFIX_HNSW_NODE,
 };
 pub use registry::{EmbeddingLookup, HnswIndexEntry, HnswRegistry, HNSW_REGISTRY_TABLE};
-pub use traits::{SearchResult, VectorIndex};
+pub use traits::{FilteredSearchConfig, SearchResult, VectorIndex};

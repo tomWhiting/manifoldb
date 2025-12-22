@@ -23,8 +23,9 @@ use manifoldb_core::{Entity, EntityId, TransactionError, Value};
 use manifoldb_storage::Transaction;
 use manifoldb_vector::distance::DistanceMetric;
 use manifoldb_vector::index::{
-    clear_index_tx, hnsw_table_name, load_graph_tx, load_metadata_tx, save_graph_tx, HnswConfig,
-    HnswGraph, HnswIndexEntry, HnswNode, HnswRegistry,
+    clear_index_tx, hnsw_table_name, load_graph_tx, load_metadata_tx, save_graph_tx,
+    search_layer_filtered, FilteredSearchConfig, HnswConfig, HnswGraph, HnswIndexEntry, HnswNode,
+    HnswRegistry, SearchResult,
 };
 use manifoldb_vector::types::Embedding;
 
@@ -270,6 +271,145 @@ pub fn load_index<T: Transaction>(
     let graph = load_graph_tx(storage, &table_name, &metadata)?;
 
     Ok((graph, entry.config()))
+}
+
+/// Find an HNSW index for a given table and column.
+pub fn find_index_for_column<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    table: &str,
+    column: &str,
+) -> Result<Option<String>, VectorIndexError> {
+    let storage = tx.storage_ref()?;
+
+    // List all indexes for this table
+    let indexes = HnswRegistry::list_for_table(storage, table)?;
+
+    // Find one that matches the column
+    for entry in indexes {
+        if entry.column == column {
+            return Ok(Some(entry.name.clone()));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Perform an HNSW search without filtering.
+pub fn search_index<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    index_name: &str,
+    query: &Embedding,
+    k: usize,
+    ef_search: Option<usize>,
+) -> Result<Vec<SearchResult>, VectorIndexError> {
+    let (graph, config) = load_index(tx, index_name)?;
+
+    if graph.dimension != query.len() {
+        return Err(VectorIndexError::DimensionMismatch {
+            expected: graph.dimension,
+            actual: query.len(),
+        });
+    }
+
+    if graph.nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let entry_point =
+        graph.entry_point.ok_or_else(|| VectorIndexError::Storage("no entry point".to_string()))?;
+
+    // ef_search defaults to configured value, but is always at least k
+    let ef = ef_search.unwrap_or(config.ef_search).max(k);
+
+    // Search from top layer to layer 1, using ef=1 (greedy)
+    let mut current_ep = vec![entry_point];
+
+    for layer in (1..=graph.max_layer).rev() {
+        let candidates =
+            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer);
+        current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
+        if current_ep.is_empty() {
+            current_ep = vec![entry_point];
+        }
+    }
+
+    // Search layer 0 with full ef
+    let candidates = manifoldb_vector::index::search_layer(&graph, query, &current_ep, ef, 0);
+
+    // Return top k results
+    let results: Vec<SearchResult> = candidates
+        .into_iter()
+        .take(k)
+        .map(|c| SearchResult::new(c.entity_id, c.distance))
+        .collect();
+
+    Ok(results)
+}
+
+/// Perform a filtered HNSW search.
+///
+/// This applies the filter during graph traversal, which is more efficient
+/// than post-filtering when the filter is selective.
+pub fn search_index_filtered<T, F>(
+    tx: &DatabaseTransaction<T>,
+    index_name: &str,
+    query: &Embedding,
+    k: usize,
+    predicate: F,
+    ef_search: Option<usize>,
+    filter_config: Option<FilteredSearchConfig>,
+) -> Result<Vec<SearchResult>, VectorIndexError>
+where
+    T: Transaction,
+    F: Fn(EntityId) -> bool,
+{
+    let (graph, config) = load_index(tx, index_name)?;
+
+    if graph.dimension != query.len() {
+        return Err(VectorIndexError::DimensionMismatch {
+            expected: graph.dimension,
+            actual: query.len(),
+        });
+    }
+
+    if graph.nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let entry_point =
+        graph.entry_point.ok_or_else(|| VectorIndexError::Storage("no entry point".to_string()))?;
+
+    // Get filtered search config
+    let fc = filter_config.unwrap_or_default();
+
+    // Calculate adjusted ef_search for filtering
+    let base_ef = ef_search.unwrap_or(config.ef_search).max(k);
+    let ef = fc.adjusted_ef(base_ef, None);
+
+    // Search from top layer to layer 1, using ef=1 (greedy)
+    // Note: We don't filter in upper layers - just find a good entry point
+    let mut current_ep = vec![entry_point];
+
+    for layer in (1..=graph.max_layer).rev() {
+        let candidates =
+            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer);
+        current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
+        if current_ep.is_empty() {
+            current_ep = vec![entry_point];
+        }
+    }
+
+    // Search layer 0 with filter applied during traversal
+    let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &predicate);
+
+    // Return top k results
+    let results: Vec<SearchResult> = candidates
+        .into_iter()
+        .take(k)
+        .map(|c| SearchResult::new(c.entity_id, c.distance))
+        .collect();
+
+    Ok(results)
 }
 
 /// Update an entity in the HNSW index.

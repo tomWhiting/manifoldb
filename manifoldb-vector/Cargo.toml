@@ -33,5 +33,9 @@ rand = "0.8"
 name = "distance"
 harness = false
 
+[[bench]]
+name = "filtered_search"
+harness = false
+
 [lints]
 workspace = true

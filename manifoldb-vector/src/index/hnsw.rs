@@ -13,12 +13,14 @@ use crate::error::VectorError;
 use crate::types::Embedding;
 
 use super::config::HnswConfig;
-use super::graph::{search_layer, select_neighbors_heuristic, Candidate, HnswGraph, HnswNode};
+use super::graph::{
+    search_layer, search_layer_filtered, select_neighbors_heuristic, Candidate, HnswGraph, HnswNode,
+};
 use super::persistence::{
     self, delete_node, load_graph, load_metadata, save_graph, save_metadata, save_node, table_name,
     update_connections, IndexMetadata,
 };
-use super::traits::{SearchResult, VectorIndex};
+use super::traits::{FilteredSearchConfig, SearchResult, VectorIndex};
 
 /// Random level generator for HNSW.
 ///
@@ -473,6 +475,68 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         Ok(results)
     }
 
+    fn search_with_filter<F>(
+        &self,
+        query: &Embedding,
+        k: usize,
+        predicate: F,
+        ef_search: Option<usize>,
+        config: Option<FilteredSearchConfig>,
+    ) -> Result<Vec<SearchResult>, VectorError>
+    where
+        F: Fn(EntityId) -> bool,
+    {
+        let graph = self.graph.read().map_err(|_| VectorError::LockPoisoned)?;
+
+        // Validate dimension
+        if query.dimension() != graph.dimension {
+            return Err(VectorError::DimensionMismatch {
+                expected: graph.dimension,
+                actual: query.dimension(),
+            });
+        }
+
+        if graph.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Get filtered search config
+        let filter_config = config.unwrap_or_default();
+
+        // Calculate adjusted ef_search for filtering
+        // When filtering, we need to explore more nodes to find k matching results
+        let base_ef = ef_search.unwrap_or(self.config.ef_search).max(k);
+        let ef = filter_config.adjusted_ef(base_ef, None);
+
+        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
+        #[allow(clippy::unwrap_used)]
+        let entry_point = graph.entry_point.unwrap();
+
+        // Search from top layer to layer 1, using ef=1 (greedy)
+        // Note: We don't filter in upper layers - just find a good entry point
+        let mut current_ep = vec![entry_point];
+
+        for layer in (1..=graph.max_layer).rev() {
+            let candidates = search_layer(&graph, query, &current_ep, 1, layer);
+            current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
+            if current_ep.is_empty() {
+                current_ep = vec![entry_point];
+            }
+        }
+
+        // Search layer 0 with filter applied during traversal
+        let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &predicate);
+
+        // Return top k results
+        let results: Vec<SearchResult> = candidates
+            .into_iter()
+            .take(k)
+            .map(|c| SearchResult::new(c.entity_id, c.distance))
+            .collect();
+
+        Ok(results)
+    }
+
     fn contains(&self, entity_id: EntityId) -> Result<bool, VectorError> {
         let graph = self.graph.read().map_err(|_| VectorError::LockPoisoned)?;
         Ok(graph.contains(entity_id))
@@ -763,5 +827,115 @@ mod tests {
 
         // e1 should be closest (cosine distance = 0)
         assert_eq!(results[0].entity_id, EntityId::new(1));
+    }
+
+    #[test]
+    fn test_search_with_filter() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert embeddings at increasing distances from origin
+        for i in 1..=10 {
+            let embedding = create_test_embedding(4, i as f32);
+            index.insert(EntityId::new(i as u64), &embedding).unwrap();
+        }
+
+        // Query close to the first embedding
+        let query = create_test_embedding(4, 1.5);
+
+        // Filter to only include even entity IDs
+        let predicate = |id: EntityId| id.as_u64() % 2 == 0;
+
+        let results = index.search_with_filter(&query, 3, predicate, None, None).unwrap();
+
+        // Should only return even IDs
+        assert!(!results.is_empty());
+        for result in &results {
+            assert_eq!(result.entity_id.as_u64() % 2, 0);
+        }
+
+        // First result should be entity 2 (closest even to 1.5)
+        assert_eq!(results[0].entity_id, EntityId::new(2));
+    }
+
+    #[test]
+    fn test_search_with_filter_empty_match() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert some embeddings
+        for i in 1..=5 {
+            let embedding = create_test_embedding(4, i as f32);
+            index.insert(EntityId::new(i as u64), &embedding).unwrap();
+        }
+
+        let query = create_test_embedding(4, 1.0);
+
+        // Filter that matches nothing
+        let predicate = |_id: EntityId| false;
+
+        let results = index.search_with_filter(&query, 3, predicate, None, None).unwrap();
+
+        // Should return empty results
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_with_filter_all_match() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert some embeddings
+        for i in 1..=5 {
+            let embedding = create_test_embedding(4, i as f32);
+            index.insert(EntityId::new(i as u64), &embedding).unwrap();
+        }
+
+        let query = create_test_embedding(4, 1.0);
+
+        // Filter that matches everything
+        let predicate = |_id: EntityId| true;
+
+        let results = index.search_with_filter(&query, 3, predicate, None, None).unwrap();
+
+        // Should return 3 results
+        assert_eq!(results.len(), 3);
+        // Results should be the same as regular search
+        let regular_results = index.search(&query, 3, None).unwrap();
+        assert_eq!(results[0].entity_id, regular_results[0].entity_id);
+    }
+
+    #[test]
+    fn test_filtered_search_config() {
+        let config = FilteredSearchConfig::new()
+            .with_min_ef_search(50)
+            .with_max_ef_search(1000)
+            .with_ef_multiplier(3.0);
+
+        assert_eq!(config.min_ef_search, 50);
+        assert_eq!(config.max_ef_search, 1000);
+        assert_eq!(config.ef_multiplier, 3.0);
+
+        // Test ef adjustment
+        let adjusted = config.adjusted_ef(100, None);
+        assert_eq!(adjusted, 300); // 100 * 3.0 = 300
+
+        // With selectivity 0.5, multiplier should be 2.0
+        let adjusted_selective = config.adjusted_ef(100, Some(0.5));
+        assert_eq!(adjusted_selective, 200);
+
+        // With selectivity 0.1, multiplier should be 10.0
+        let adjusted_very_selective = config.adjusted_ef(100, Some(0.1));
+        assert_eq!(adjusted_very_selective, 1000); // Clamped to max
+
+        // Test clamping
+        let adjusted_min = config.adjusted_ef(10, None);
+        assert_eq!(adjusted_min, 50); // Clamped to min
     }
 }

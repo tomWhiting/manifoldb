@@ -281,6 +281,38 @@ pub fn search_layer(
     ef: usize,
     layer: usize,
 ) -> Vec<Candidate> {
+    search_layer_filtered(graph, query, entry_points, ef, layer, |_| true)
+}
+
+/// Search layer with a filter predicate applied during traversal.
+///
+/// Only nodes that pass the predicate are included in the results.
+/// Nodes that fail the predicate are still traversed (their neighbors are explored)
+/// but they are not added to the result set.
+///
+/// # Arguments
+///
+/// * `graph` - The HNSW graph to search
+/// * `query` - The query embedding
+/// * `entry_points` - Initial entry points to start search from
+/// * `ef` - The beam width (number of candidates to track)
+/// * `layer` - The layer to search
+/// * `predicate` - A predicate function that returns true for nodes to include in results
+///
+/// # Returns
+///
+/// A vector of candidates that pass the predicate, sorted by distance.
+pub fn search_layer_filtered<F>(
+    graph: &HnswGraph,
+    query: &Embedding,
+    entry_points: &[EntityId],
+    ef: usize,
+    layer: usize,
+    predicate: F,
+) -> Vec<Candidate>
+where
+    F: Fn(EntityId) -> bool,
+{
     if entry_points.is_empty() {
         return Vec::new();
     }
@@ -295,7 +327,10 @@ pub fn search_layer(
             visited.insert(ep);
             let candidate = Candidate::new(ep, dist);
             candidates.push(candidate);
-            results.push(MaxCandidate(candidate));
+            // Only add to results if it passes the predicate
+            if predicate(ep) {
+                results.push(MaxCandidate(candidate));
+            }
         }
     }
 
@@ -305,7 +340,8 @@ pub fn search_layer(
         let furthest_result = results.peek().map_or(f32::INFINITY, |c| c.0.distance);
 
         // If the closest candidate is further than the furthest result, we're done
-        if current.distance > furthest_result {
+        // But only if we have enough results
+        if current.distance > furthest_result && results.len() >= ef {
             break;
         }
 
@@ -320,10 +356,15 @@ pub fn search_layer(
                 if let Some(neighbor_dist) = graph.distance_to_node(query, neighbor_id) {
                     let furthest_result = results.peek().map_or(f32::INFINITY, |c| c.0.distance);
 
-                    // Only add if better than worst result or results not full
-                    if results.len() < ef || neighbor_dist < furthest_result {
-                        let neighbor_candidate = Candidate::new(neighbor_id, neighbor_dist);
-                        candidates.push(neighbor_candidate);
+                    // Always explore for graph traversal (add to candidates)
+                    // This ensures we find good paths even through non-matching nodes
+                    let neighbor_candidate = Candidate::new(neighbor_id, neighbor_dist);
+                    candidates.push(neighbor_candidate);
+
+                    // Only add to results if it passes the predicate
+                    if predicate(neighbor_id)
+                        && (results.len() < ef || neighbor_dist < furthest_result)
+                    {
                         results.push(MaxCandidate(neighbor_candidate));
 
                         // Trim results to ef size
