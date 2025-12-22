@@ -108,7 +108,7 @@ impl ResultSet {
 
     /// Returns the column names.
     #[must_use]
-    pub fn columns(&self) -> &[String] {
+    pub fn columns(&self) -> Vec<&str> {
         self.schema.columns()
     }
 

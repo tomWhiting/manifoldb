@@ -56,7 +56,8 @@ impl GraphExpandOp {
     #[must_use]
     pub fn new(node: GraphExpandExecNode, input: BoxedOperator) -> Self {
         // Build output schema: input columns + dst_var + optional edge_var
-        let mut columns: Vec<String> = input.schema().columns().to_vec();
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
         columns.push(node.dst_var.clone());
         if let Some(ref edge_var) = node.edge_var {
             columns.push(edge_var.clone());
@@ -270,7 +271,8 @@ impl GraphPathScanOp {
         input: BoxedOperator,
     ) -> Self {
         // Build output schema
-        let mut columns: Vec<String> = input.schema().columns().to_vec();
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
         // Add columns for path nodes
         columns.push("path_start".to_string());
         columns.push("path_end".to_string());

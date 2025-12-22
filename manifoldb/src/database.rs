@@ -471,7 +471,7 @@ impl QueryResult {
     /// Create a query result from the query engine's result set.
     #[must_use]
     pub fn from_result_set(result_set: manifoldb_query::ResultSet) -> Self {
-        let columns = result_set.columns().to_vec();
+        let columns = result_set.columns().into_iter().map(|s| s.to_owned()).collect();
         let rows =
             result_set.into_iter().map(|row| QueryRow { values: row.values().to_vec() }).collect();
         Self { columns, rows }

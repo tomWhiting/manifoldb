@@ -11,17 +11,28 @@ use manifoldb_core::Value;
 /// A schema defines the column names and their order in a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
-    /// Column names in order.
-    columns: Vec<String>,
+    /// Column names in order (using Arc<str> to avoid cloning).
+    columns: Vec<Arc<str>>,
     /// Map from column name to index for fast lookup.
-    name_to_index: HashMap<String, usize>,
+    name_to_index: HashMap<Arc<str>, usize>,
 }
 
 impl Schema {
     /// Creates a new schema from column names.
     #[must_use]
     pub fn new(columns: Vec<String>) -> Self {
-        let name_to_index = columns.iter().enumerate().map(|(i, name)| (name.clone(), i)).collect();
+        let arc_columns: Vec<Arc<str>> =
+            columns.into_iter().map(|s| Arc::from(s.as_str())).collect();
+        let name_to_index =
+            arc_columns.iter().enumerate().map(|(i, name)| (Arc::clone(name), i)).collect();
+        Self { columns: arc_columns, name_to_index }
+    }
+
+    /// Creates a new schema from Arc<str> column names (avoids allocation).
+    #[must_use]
+    pub fn from_arcs(columns: Vec<Arc<str>>) -> Self {
+        let name_to_index =
+            columns.iter().enumerate().map(|(i, name)| (Arc::clone(name), i)).collect();
         Self { columns, name_to_index }
     }
 
@@ -31,9 +42,15 @@ impl Schema {
         Self { columns: Vec::new(), name_to_index: HashMap::new() }
     }
 
-    /// Returns the column names.
+    /// Returns the column names as string slices.
     #[must_use]
-    pub fn columns(&self) -> &[String] {
+    pub fn columns(&self) -> Vec<&str> {
+        self.columns.iter().map(|s| s.as_ref()).collect()
+    }
+
+    /// Returns the Arc<str> column names (for efficient cloning).
+    #[must_use]
+    pub fn columns_arc(&self) -> &[Arc<str>] {
         &self.columns
     }
 
@@ -58,31 +75,31 @@ impl Schema {
     /// Gets the column name at an index.
     #[must_use]
     pub fn column_at(&self, index: usize) -> Option<&str> {
-        self.columns.get(index).map(String::as_str)
+        self.columns.get(index).map(|s| s.as_ref())
     }
 
     /// Creates a new schema with an additional column.
     #[must_use]
     pub fn with_column(&self, name: impl Into<String>) -> Self {
-        let mut columns = self.columns.clone();
-        columns.push(name.into());
-        Self::new(columns)
+        let mut columns: Vec<Arc<str>> = self.columns.iter().map(Arc::clone).collect();
+        columns.push(Arc::from(name.into().as_str()));
+        Self::from_arcs(columns)
     }
 
-    /// Creates a new schema by merging with another.
+    /// Creates a new schema by merging with another (efficiently clones Arc<str>).
     #[must_use]
     pub fn merge(&self, other: &Schema) -> Self {
-        let mut columns = self.columns.clone();
-        columns.extend(other.columns.iter().cloned());
-        Self::new(columns)
+        let mut columns: Vec<Arc<str>> = self.columns.iter().map(Arc::clone).collect();
+        columns.extend(other.columns.iter().map(Arc::clone));
+        Self::from_arcs(columns)
     }
 
     /// Creates a projection of this schema with only the given columns.
     #[must_use]
     pub fn project(&self, indices: &[usize]) -> Self {
-        let columns: Vec<String> =
-            indices.iter().filter_map(|&i| self.columns.get(i).cloned()).collect();
-        Self::new(columns)
+        let columns: Vec<Arc<str>> =
+            indices.iter().filter_map(|&i| self.columns.get(i).map(Arc::clone)).collect();
+        Self::from_arcs(columns)
     }
 }
 
@@ -222,6 +239,24 @@ impl Row {
         Self { schema, values }
     }
 
+    /// Consumes self and merges with another row's values (borrowed).
+    /// More efficient than `merge` when the left row can be consumed.
+    #[must_use]
+    pub fn merge_consume_left(mut self, other: &Row) -> Self {
+        let schema = Arc::new(self.schema.merge(&other.schema));
+        self.values.extend(other.values.iter().cloned());
+        Self { schema, values: self.values }
+    }
+
+    /// Consumes both rows and merges them.
+    /// Most efficient merge operation when both rows can be consumed.
+    #[must_use]
+    pub fn merge_consume_both(mut self, mut other: Row) -> Self {
+        let schema = Arc::new(self.schema.merge(&other.schema));
+        self.values.append(&mut other.values);
+        Self { schema, values: self.values }
+    }
+
     /// Consumes the row and returns the values.
     #[must_use]
     pub fn into_values(self) -> Vec<Value> {
@@ -232,20 +267,20 @@ impl Row {
     #[must_use]
     pub fn to_map(&self) -> HashMap<String, Value> {
         self.schema
-            .columns()
+            .columns_arc()
             .iter()
             .zip(self.values.iter())
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .map(|(name, value)| (name.to_string(), value.clone()))
             .collect()
     }
 }
 
 impl IntoIterator for Row {
-    type Item = (String, Value);
-    type IntoIter = std::iter::Zip<std::vec::IntoIter<String>, std::vec::IntoIter<Value>>;
+    type Item = (Arc<str>, Value);
+    type IntoIter = std::iter::Zip<std::vec::IntoIter<Arc<str>>, std::vec::IntoIter<Value>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.schema.columns.clone().into_iter().zip(self.values)
+        self.schema.columns.iter().map(Arc::clone).collect::<Vec<_>>().into_iter().zip(self.values)
     }
 }
 

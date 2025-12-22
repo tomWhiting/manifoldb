@@ -121,7 +121,8 @@ impl HnswSearchOp {
         input: BoxedOperator,
     ) -> Self {
         // Build output schema
-        let mut columns: Vec<String> = input.schema().columns().to_vec();
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
         let distance_name = distance_alias.clone().unwrap_or_else(|| "distance".to_string());
         if include_distance {
             columns.push(distance_name.clone());
@@ -362,7 +363,8 @@ impl BruteForceSearchOp {
         distance_alias: Option<String>,
         input: BoxedOperator,
     ) -> Self {
-        let mut columns: Vec<String> = input.schema().columns().to_vec();
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
         let distance_name = distance_alias.clone().unwrap_or_else(|| "distance".to_string());
         if include_distance {
             columns.push(distance_name.clone());

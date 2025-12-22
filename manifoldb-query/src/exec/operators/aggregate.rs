@@ -27,10 +27,8 @@ pub struct HashAggregateOp {
     input: BoxedOperator,
     /// Aggregation state: group key -> accumulators.
     groups: HashMap<Vec<u8>, GroupState>,
-    /// Results iterator.
-    results: Vec<Row>,
-    /// Position in results.
-    position: usize,
+    /// Results iterator (consumes rows without cloning).
+    results_iter: std::vec::IntoIter<Row>,
     /// Whether aggregation is complete.
     aggregated: bool,
 }
@@ -61,8 +59,7 @@ impl HashAggregateOp {
             having,
             input,
             groups: HashMap::new(),
-            results: Vec::new(),
-            position: 0,
+            results_iter: Vec::new().into_iter(),
             aggregated: false,
         }
     }
@@ -105,6 +102,7 @@ impl HashAggregateOp {
 
         // Build result rows
         let schema = self.base.schema();
+        let mut results = Vec::with_capacity(self.groups.len());
         for state in self.groups.values() {
             let mut values = state.group_values.clone();
             for acc in &state.accumulators {
@@ -121,7 +119,7 @@ impl HashAggregateOp {
                 }
             }
 
-            self.results.push(row);
+            results.push(row);
         }
 
         // Handle case with no groups (scalar aggregation)
@@ -136,9 +134,11 @@ impl HashAggregateOp {
                 }
             }
             let row = Row::new(Arc::clone(&schema), values);
-            self.results.push(row);
+            results.push(row);
         }
 
+        // Convert to iterator for zero-copy consumption
+        self.results_iter = results.into_iter();
         self.aggregated = true;
         Ok(())
     }
@@ -148,8 +148,7 @@ impl Operator for HashAggregateOp {
     fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
         self.input.open(ctx)?;
         self.groups.clear();
-        self.results.clear();
-        self.position = 0;
+        self.results_iter = Vec::new().into_iter();
         self.aggregated = false;
         self.base.set_open();
         Ok(())
@@ -160,21 +159,23 @@ impl Operator for HashAggregateOp {
             self.aggregate_all()?;
         }
 
-        if self.position >= self.results.len() {
-            self.base.set_finished();
-            return Ok(None);
+        // Iterator yields owned rows without cloning
+        match self.results_iter.next() {
+            Some(row) => {
+                self.base.inc_rows_produced();
+                Ok(Some(row))
+            }
+            None => {
+                self.base.set_finished();
+                Ok(None)
+            }
         }
-
-        let row = self.results[self.position].clone();
-        self.position += 1;
-        self.base.inc_rows_produced();
-        Ok(Some(row))
     }
 
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
         self.groups.clear();
-        self.results.clear();
+        self.results_iter = Vec::new().into_iter();
         self.base.set_closed();
         Ok(())
     }

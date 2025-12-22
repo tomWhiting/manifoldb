@@ -211,12 +211,12 @@ pub struct HashJoinOp {
     build: BoxedOperator,
     /// Probe (right) input.
     probe: BoxedOperator,
-    /// Hash table: key -> list of matching rows.
-    hash_table: HashMap<Vec<u8>, Vec<Row>>,
+    /// Hash table: key -> shared list of matching rows (Arc avoids cloning on probe).
+    hash_table: HashMap<Vec<u8>, Arc<Vec<Row>>>,
     /// Current probe row.
     current_probe: Option<Row>,
-    /// Current matches for probe row.
-    current_matches: Vec<Row>,
+    /// Current matches for probe row (shared reference, no clone).
+    current_matches: Option<Arc<Vec<Row>>>,
     /// Position in current matches.
     match_position: usize,
     /// Whether hash table is built.
@@ -245,7 +245,7 @@ impl HashJoinOp {
             probe,
             hash_table: HashMap::new(),
             current_probe: None,
-            current_matches: Vec::new(),
+            current_matches: None,
             match_position: 0,
             built: false,
         }
@@ -284,9 +284,15 @@ impl HashJoinOp {
 
     /// Builds the hash table from the build side.
     fn build_hash_table(&mut self) -> OperatorResult<()> {
+        // First, collect all rows into a temporary HashMap with Vec
+        let mut temp_table: HashMap<Vec<u8>, Vec<Row>> = HashMap::new();
         while let Some(row) = self.build.next()? {
             let key = self.compute_key(&row, &self.build_keys)?;
-            self.hash_table.entry(key).or_default().push(row);
+            temp_table.entry(key).or_default().push(row);
+        }
+        // Convert to Arc<Vec<Row>> for sharing without cloning
+        for (key, rows) in temp_table {
+            self.hash_table.insert(key, Arc::new(rows));
         }
         self.built = true;
         Ok(())
@@ -316,7 +322,7 @@ impl Operator for HashJoinOp {
         self.probe.open(ctx)?;
         self.hash_table.clear();
         self.current_probe = None;
-        self.current_matches.clear();
+        self.current_matches = None;
         self.match_position = 0;
         self.built = false;
         self.base.set_open();
@@ -331,14 +337,16 @@ impl Operator for HashJoinOp {
 
         loop {
             // Return next match if available
-            while self.match_position < self.current_matches.len() {
-                let build_row = &self.current_matches[self.match_position];
-                self.match_position += 1;
+            if let Some(ref matches) = self.current_matches {
+                while self.match_position < matches.len() {
+                    let build_row = &matches[self.match_position];
+                    self.match_position += 1;
 
-                if let Some(probe_row) = &self.current_probe {
-                    if self.filter_passes(build_row, probe_row)? {
-                        self.base.inc_rows_produced();
-                        return Ok(Some(build_row.merge(probe_row)));
+                    if let Some(probe_row) = &self.current_probe {
+                        if self.filter_passes(build_row, probe_row)? {
+                            self.base.inc_rows_produced();
+                            return Ok(Some(build_row.merge(probe_row)));
+                        }
                     }
                 }
             }
@@ -347,12 +355,15 @@ impl Operator for HashJoinOp {
             match self.probe.next()? {
                 Some(probe_row) => {
                     let key = self.compute_key(&probe_row, &self.probe_keys)?;
-                    self.current_matches = self.hash_table.get(&key).cloned().unwrap_or_default();
+                    // Clone only the Arc pointer, not the underlying Vec<Row>
+                    self.current_matches = self.hash_table.get(&key).cloned();
                     self.current_probe = Some(probe_row);
                     self.match_position = 0;
 
                     // Handle left outer join with no matches
-                    if self.current_matches.is_empty() && self.join_type == JoinType::Left {
+                    let has_no_matches =
+                        self.current_matches.as_ref().map_or(true, |m| m.is_empty());
+                    if has_no_matches && self.join_type == JoinType::Left {
                         let probe = self.current_probe.as_ref().unwrap();
                         self.base.inc_rows_produced();
                         return Ok(Some(self.build_null_row().merge(probe)));

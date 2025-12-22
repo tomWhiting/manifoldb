@@ -22,10 +22,8 @@ pub struct SortOp {
     order_by: Vec<SortOrder>,
     /// Input operator.
     input: BoxedOperator,
-    /// Materialized and sorted rows.
-    sorted_rows: Vec<Row>,
-    /// Current position in sorted rows.
-    position: usize,
+    /// Iterator over sorted rows (consumes without cloning).
+    sorted_iter: std::vec::IntoIter<Row>,
     /// Whether rows have been materialized.
     materialized: bool,
 }
@@ -39,8 +37,7 @@ impl SortOp {
             base: OperatorBase::new(schema),
             order_by,
             input,
-            sorted_rows: Vec::new(),
-            position: 0,
+            sorted_iter: Vec::new().into_iter(),
             materialized: false,
         }
     }
@@ -57,7 +54,8 @@ impl SortOp {
         let order_by = &self.order_by;
         rows.sort_by(|a, b| compare_rows(a, b, order_by));
 
-        self.sorted_rows = rows;
+        // Convert to iterator for zero-copy consumption
+        self.sorted_iter = rows.into_iter();
         self.materialized = true;
         Ok(())
     }
@@ -66,8 +64,7 @@ impl SortOp {
 impl Operator for SortOp {
     fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
         self.input.open(ctx)?;
-        self.sorted_rows.clear();
-        self.position = 0;
+        self.sorted_iter = Vec::new().into_iter();
         self.materialized = false;
         self.base.set_open();
         Ok(())
@@ -79,20 +76,22 @@ impl Operator for SortOp {
             self.materialize_and_sort()?;
         }
 
-        if self.position >= self.sorted_rows.len() {
-            self.base.set_finished();
-            return Ok(None);
+        // Iterator yields owned rows without cloning
+        match self.sorted_iter.next() {
+            Some(row) => {
+                self.base.inc_rows_produced();
+                Ok(Some(row))
+            }
+            None => {
+                self.base.set_finished();
+                Ok(None)
+            }
         }
-
-        let row = self.sorted_rows[self.position].clone();
-        self.position += 1;
-        self.base.inc_rows_produced();
-        Ok(Some(row))
     }
 
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
-        self.sorted_rows.clear();
+        self.sorted_iter = Vec::new().into_iter();
         self.base.set_closed();
         Ok(())
     }
