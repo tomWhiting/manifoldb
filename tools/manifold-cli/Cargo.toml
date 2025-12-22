@@ -1,0 +1,43 @@
+[package]
+name = "manifold-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for ManifoldDB"
+
+[[bin]]
+name = "manifold"
+path = "src/main.rs"
+
+[dependencies]
+# ManifoldDB
+manifoldb = { workspace = true }
+
+# CLI parsing
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+
+# REPL
+rustyline = { version = "14", features = ["derive"] }
+
+# Output formatting
+tabled = "0.17"
+
+# Serialization for import/export
+serde = { workspace = true }
+serde_json = { workspace = true }
+csv = "1.3"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = "1"
+
+# Misc
+dirs = "6"
+humantime = "2"
+hex = "0.4"
+
+[lints]
+workspace = true
