@@ -189,24 +189,58 @@ impl BinaryEmbedding {
 
     /// Get a specific bit by index.
     ///
-    /// # Panics
+    /// Returns `None` if `index >= dimension`.
     ///
-    /// Panics if `index >= dimension`.
+    /// # Example
+    ///
+    /// ```
+    /// use manifoldb_vector::types::BinaryEmbedding;
+    ///
+    /// let embedding = BinaryEmbedding::new(vec![0b0000_0101u64], 8).unwrap();
+    /// assert_eq!(embedding.try_get_bit(0), Some(true));
+    /// assert_eq!(embedding.try_get_bit(1), Some(false));
+    /// assert_eq!(embedding.try_get_bit(2), Some(true));
+    /// assert_eq!(embedding.try_get_bit(100), None); // Out of bounds
+    /// ```
     #[must_use]
-    pub fn get_bit(&self, index: usize) -> bool {
-        assert!(index < self.dimension, "bit index out of bounds");
+    pub fn try_get_bit(&self, index: usize) -> Option<bool> {
+        if index >= self.dimension {
+            return None;
+        }
         let word_idx = index / 64;
         let bit_idx = index % 64;
-        (self.data[word_idx] >> bit_idx) & 1 == 1
+        Some((self.data[word_idx] >> bit_idx) & 1 == 1)
+    }
+
+    /// Get a specific bit by index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= dimension`. Use [`try_get_bit`](Self::try_get_bit)
+    /// for a non-panicking alternative.
+    #[must_use]
+    pub fn get_bit(&self, index: usize) -> bool {
+        self.try_get_bit(index).expect("bit index out of bounds")
     }
 
     /// Set a specific bit by index.
     ///
-    /// # Panics
+    /// Returns `Err` if `index >= dimension`.
     ///
-    /// Panics if `index >= dimension`.
-    pub fn set_bit(&mut self, index: usize, value: bool) {
-        assert!(index < self.dimension, "bit index out of bounds");
+    /// # Example
+    ///
+    /// ```
+    /// use manifoldb_vector::types::BinaryEmbedding;
+    ///
+    /// let mut embedding = BinaryEmbedding::zeros(8).unwrap();
+    /// assert!(embedding.try_set_bit(0, true).is_ok());
+    /// assert!(embedding.get_bit(0));
+    /// assert!(embedding.try_set_bit(100, true).is_err()); // Out of bounds
+    /// ```
+    pub fn try_set_bit(&mut self, index: usize, value: bool) -> Result<(), VectorError> {
+        if index >= self.dimension {
+            return Err(VectorError::IndexOutOfBounds { index, max: self.dimension });
+        }
         let word_idx = index / 64;
         let bit_idx = index % 64;
         if value {
@@ -214,6 +248,17 @@ impl BinaryEmbedding {
         } else {
             self.data[word_idx] &= !(1u64 << bit_idx);
         }
+        Ok(())
+    }
+
+    /// Set a specific bit by index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index >= dimension`. Use [`try_set_bit`](Self::try_set_bit)
+    /// for a non-panicking alternative.
+    pub fn set_bit(&mut self, index: usize, value: bool) {
+        self.try_set_bit(index, value).expect("bit index out of bounds");
     }
 
     /// Count the number of 1-bits in this embedding.
@@ -525,5 +570,94 @@ mod tests {
         let restored = BinaryEmbedding::from_bytes(&bytes).unwrap();
 
         assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_try_get_bit_valid() {
+        let embedding = BinaryEmbedding::new(vec![0b0000_0101u64], 8).unwrap();
+        assert_eq!(embedding.try_get_bit(0), Some(true));
+        assert_eq!(embedding.try_get_bit(1), Some(false));
+        assert_eq!(embedding.try_get_bit(2), Some(true));
+        assert_eq!(embedding.try_get_bit(7), Some(false));
+    }
+
+    #[test]
+    fn test_try_get_bit_out_of_bounds() {
+        let embedding = BinaryEmbedding::new(vec![0b1111_1111u64], 8).unwrap();
+        assert_eq!(embedding.try_get_bit(8), None);
+        assert_eq!(embedding.try_get_bit(100), None);
+        assert_eq!(embedding.try_get_bit(usize::MAX), None);
+    }
+
+    #[test]
+    fn test_try_set_bit_valid() {
+        let mut embedding = BinaryEmbedding::zeros(8).unwrap();
+
+        assert!(embedding.try_set_bit(0, true).is_ok());
+        assert!(embedding.get_bit(0));
+
+        assert!(embedding.try_set_bit(7, true).is_ok());
+        assert!(embedding.get_bit(7));
+
+        assert!(embedding.try_set_bit(0, false).is_ok());
+        assert!(!embedding.get_bit(0));
+    }
+
+    #[test]
+    fn test_try_set_bit_out_of_bounds() {
+        let mut embedding = BinaryEmbedding::zeros(8).unwrap();
+
+        let result = embedding.try_set_bit(8, true);
+        assert!(result.is_err());
+
+        let result = embedding.try_set_bit(100, true);
+        assert!(result.is_err());
+
+        let result = embedding.try_set_bit(usize::MAX, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_edge_case_single_bit() {
+        let embedding = BinaryEmbedding::new(vec![1u64], 1).unwrap();
+        assert_eq!(embedding.dimension(), 1);
+        assert!(embedding.get_bit(0));
+        assert_eq!(embedding.count_ones(), 1);
+    }
+
+    #[test]
+    fn test_edge_case_max_single_word() {
+        let embedding = BinaryEmbedding::ones(64).unwrap();
+        assert_eq!(embedding.dimension(), 64);
+        assert_eq!(embedding.count_ones(), 64);
+        for i in 0..64 {
+            assert!(embedding.get_bit(i));
+        }
+    }
+
+    #[test]
+    fn test_edge_case_boundary_bits() {
+        // Test bits at word boundaries (63, 64, 127, 128)
+        let mut embedding = BinaryEmbedding::zeros(256).unwrap();
+
+        // Set bits at boundaries
+        embedding.try_set_bit(63, true).unwrap();
+        embedding.try_set_bit(64, true).unwrap();
+        embedding.try_set_bit(127, true).unwrap();
+        embedding.try_set_bit(128, true).unwrap();
+        embedding.try_set_bit(255, true).unwrap();
+
+        assert!(embedding.get_bit(63));
+        assert!(embedding.get_bit(64));
+        assert!(embedding.get_bit(127));
+        assert!(embedding.get_bit(128));
+        assert!(embedding.get_bit(255));
+
+        // Check that neighboring bits are not affected
+        assert!(!embedding.get_bit(62));
+        assert!(!embedding.get_bit(65));
+        assert!(!embedding.get_bit(126));
+        assert!(!embedding.get_bit(129));
+        assert!(!embedding.get_bit(254));
     }
 }
