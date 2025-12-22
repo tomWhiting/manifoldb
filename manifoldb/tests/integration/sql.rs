@@ -861,3 +861,326 @@ fn test_select_distinct_star() {
     // All rows are distinct because 'id' column is unique
     assert_eq!(result.len(), 3);
 }
+
+// ============================================================================
+// Vector Distance Query Tests
+// ============================================================================
+
+#[test]
+fn test_vector_distance_euclidean() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert documents with vector embeddings
+    // Using simple vectors where distance can be calculated manually
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc1', $1)",
+        &[Value::Vector(vec![1.0, 0.0, 0.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc2', $1)",
+        &[Value::Vector(vec![0.0, 1.0, 0.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc3', $1)",
+        &[Value::Vector(vec![0.0, 0.0, 1.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    // Query vector distance using Euclidean distance operator <->
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <-> $1 as distance FROM documents",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 3);
+
+    // Find the distance column index
+    let dist_idx = result.column_index("distance").expect("distance column not found");
+
+    // doc1 should have distance 0 (same vector)
+    // doc2 and doc3 should have distance sqrt(2) ≈ 1.414
+    let mut has_zero_distance = false;
+    for row in result.rows() {
+        if let Some(Value::Float(dist)) = row.get(dist_idx) {
+            if *dist < 0.001 {
+                has_zero_distance = true;
+            }
+        }
+    }
+    assert!(has_zero_distance, "Should have one document with zero distance");
+}
+
+#[test]
+fn test_vector_distance_order_by() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert documents at varying distances from query
+    // Query vector: [1, 0, 0]
+    // doc1: [1, 0, 0] -> distance 0
+    // doc2: [0.8, 0.2, 0] -> distance sqrt((0.2)^2 + (0.2)^2) ≈ 0.28
+    // doc3: [0.5, 0.5, 0] -> distance sqrt((0.5)^2 + (0.5)^2) ≈ 0.71
+    // doc4: [0, 1, 0] -> distance sqrt(2) ≈ 1.41
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc1', $1)",
+        &[Value::Vector(vec![1.0, 0.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc2', $1)",
+        &[Value::Vector(vec![0.8, 0.2, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc3', $1)",
+        &[Value::Vector(vec![0.5, 0.5, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('doc4', $1)",
+        &[Value::Vector(vec![0.0, 1.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    // Query with ORDER BY distance
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <-> $1 as distance FROM documents ORDER BY embedding <-> $1",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 4);
+
+    // Verify order: doc1, doc2, doc3, doc4
+    let title_idx = result.column_index("title").expect("title column not found");
+
+    // First result should be doc1 (closest)
+    assert_eq!(
+        result.rows()[0].get(title_idx),
+        Some(&Value::String("doc1".to_string())),
+        "First result should be doc1 (closest)"
+    );
+
+    // Last result should be doc4 (farthest)
+    assert_eq!(
+        result.rows()[3].get(title_idx),
+        Some(&Value::String("doc4".to_string())),
+        "Last result should be doc4 (farthest)"
+    );
+}
+
+#[test]
+fn test_vector_distance_with_limit() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert 5 documents
+    for i in 1..=5 {
+        let v = i as f32 / 5.0;
+        db.execute_with_params(
+            &format!("INSERT INTO documents (title, embedding) VALUES ('doc{}', $1)", i),
+            &[Value::Vector(vec![v, 1.0 - v, 0.0])],
+        )
+        .expect("insert failed");
+    }
+
+    // Query top 3 closest to [1, 0, 0]
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <-> $1 as distance FROM documents ORDER BY embedding <-> $1 LIMIT 3",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 3, "Expected 3 results with LIMIT 3");
+}
+
+#[test]
+fn test_vector_distance_cosine() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert documents with different cosine similarities
+    // doc1: same direction as query
+    // doc2: opposite direction
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('same_dir', $1)",
+        &[Value::Vector(vec![2.0, 0.0, 0.0])], // Same direction, different magnitude
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('opposite', $1)",
+        &[Value::Vector(vec![-1.0, 0.0, 0.0])], // Opposite direction
+    )
+    .expect("insert failed");
+
+    // Query using cosine distance operator <=>
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <=> $1 as distance FROM documents",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    let title_idx = result.column_index("title").expect("title column not found");
+    let dist_idx = result.column_index("distance").expect("distance column not found");
+
+    // Find the row with same_dir - should have distance ~0 (cosine distance)
+    for row in result.rows() {
+        if let Some(Value::String(title)) = row.get(title_idx) {
+            if let Some(Value::Float(dist)) = row.get(dist_idx) {
+                if title == "same_dir" {
+                    assert!(
+                        *dist < 0.001,
+                        "Same direction should have cosine distance ~0, got {}",
+                        dist
+                    );
+                } else if title == "opposite" {
+                    assert!(
+                        (*dist - 2.0).abs() < 0.001,
+                        "Opposite direction should have cosine distance ~2, got {}",
+                        dist
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_vector_distance_inner_product() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert documents with known inner products
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('high_dot', $1)",
+        &[Value::Vector(vec![2.0, 2.0])], // Dot with [1,1] = 4
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('low_dot', $1)",
+        &[Value::Vector(vec![0.5, 0.5])], // Dot with [1,1] = 1
+    )
+    .expect("insert failed");
+
+    // Query using inner product operator <#>
+    // Note: inner product distance is negated for ordering
+    let query_vector = Value::Vector(vec![1.0, 1.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <#> $1 as distance FROM documents ORDER BY embedding <#> $1",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    let title_idx = result.column_index("title").expect("title column not found");
+
+    // high_dot should be first (lower distance because it's negated inner product)
+    assert_eq!(
+        result.rows()[0].get(title_idx),
+        Some(&Value::String("high_dot".to_string())),
+        "Higher inner product should come first"
+    );
+}
+
+#[test]
+fn test_vector_distance_with_filter() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert documents with category and embedding
+    db.execute_with_params(
+        "INSERT INTO documents (title, category, embedding) VALUES ('tech1', 'Technology', $1)",
+        &[Value::Vector(vec![1.0, 0.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, category, embedding) VALUES ('tech2', 'Technology', $1)",
+        &[Value::Vector(vec![0.8, 0.2, 0.0])],
+    )
+    .expect("insert failed");
+
+    db.execute_with_params(
+        "INSERT INTO documents (title, category, embedding) VALUES ('sports1', 'Sports', $1)",
+        &[Value::Vector(vec![0.5, 0.5, 0.0])],
+    )
+    .expect("insert failed");
+
+    // Query with WHERE filter and ORDER BY distance
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <-> $1 as distance FROM documents WHERE category = 'Technology' ORDER BY embedding <-> $1",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    // Should only have 2 Technology documents
+    assert_eq!(result.len(), 2);
+
+    let title_idx = result.column_index("title").expect("title column not found");
+
+    // First should be tech1 (closest to query)
+    assert_eq!(result.rows()[0].get(title_idx), Some(&Value::String("tech1".to_string())));
+}
+
+#[test]
+fn test_vector_distance_null_handling() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert document with embedding
+    db.execute_with_params(
+        "INSERT INTO documents (title, embedding) VALUES ('with_embedding', $1)",
+        &[Value::Vector(vec![1.0, 0.0, 0.0])],
+    )
+    .expect("insert failed");
+
+    // Insert document without embedding (NULL)
+    db.execute("INSERT INTO documents (title) VALUES ('no_embedding')").expect("insert failed");
+
+    // Query all documents
+    let query_vector = Value::Vector(vec![1.0, 0.0, 0.0]);
+    let result = db
+        .query_with_params(
+            "SELECT title, embedding <-> $1 as distance FROM documents",
+            &[query_vector],
+        )
+        .expect("query failed");
+
+    // Should return both documents
+    assert_eq!(result.len(), 2);
+
+    // The document without embedding should have NULL distance
+    let title_idx = result.column_index("title").expect("title column not found");
+    let dist_idx = result.column_index("distance").expect("distance column not found");
+
+    for row in result.rows() {
+        if let Some(Value::String(title)) = row.get(title_idx) {
+            if title == "no_embedding" {
+                assert_eq!(
+                    row.get(dist_idx),
+                    Some(&Value::Null),
+                    "Document without embedding should have NULL distance"
+                );
+            }
+        }
+    }
+}

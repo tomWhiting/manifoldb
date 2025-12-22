@@ -7,19 +7,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use manifoldb_core::{Entity, Value};
+use manifoldb_query::ast::DistanceMetric;
 use manifoldb_query::ast::Literal;
 use manifoldb_query::exec::operators::{
-    HashAggregateOp, HashJoinOp, NestedLoopJoinOp, SetOpOp, UnionOp, ValuesOp,
+    BruteForceSearchOp, HashAggregateOp, HashJoinOp, NestedLoopJoinOp, SetOpOp, UnionOp, ValuesOp,
 };
-use manifoldb_query::plan::logical::{ExpandNode, PathScanNode};
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
-use manifoldb_query::ExtendedParser;
+use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::logical::{
     CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, JoinType, LogicalExpr,
     SetOpNode, UnionNode,
 };
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
+use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
 
 use super::graph_accessor;
@@ -218,6 +219,16 @@ fn execute_physical_plan<T: Transaction>(
         LogicalPlan::PathScan { node, input } => {
             // Execute graph path scan
             execute_path_scan(tx, node, input, ctx)
+        }
+
+        LogicalPlan::AnnSearch { node, input } => {
+            // Execute ANN (approximate nearest neighbor) search using BruteForceSearchOp
+            execute_ann_search(tx, node, input, ctx)
+        }
+
+        LogicalPlan::VectorDistance { node, input } => {
+            // Execute vector distance computation
+            execute_vector_distance(tx, node, input, ctx)
         }
 
         _ => {
@@ -524,6 +535,139 @@ fn execute_path_scan<T: Transaction>(
     }
 
     Ok(current_result)
+}
+
+/// Execute an ANN (approximate nearest neighbor) search.
+///
+/// Uses `BruteForceSearchOp` for exact k-NN search when no HNSW index is available.
+fn execute_ann_search<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &AnnSearchNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute the input plan to get entities
+    let entities = execute_logical_plan(tx, input, ctx)?;
+
+    // Collect all columns from entities to build the schema for the input operator
+    let columns = collect_all_columns(&entities);
+
+    // Convert entities to rows for the operator
+    let scan = StorageScan::new(entities, columns.clone());
+    let rows: Vec<Vec<Value>> = scan.collect_values();
+
+    // Create a ValuesOp as input to the vector search operator
+    let input_op: Box<dyn Operator> = Box::new(ValuesOp::with_columns(columns, rows));
+
+    // Create the BruteForceSearchOp for k-NN search
+    let mut search_op = BruteForceSearchOp::new(
+        node.vector_column.clone(),
+        node.query_vector.clone(),
+        node.metric,
+        node.k,
+        node.include_distance,
+        node.distance_alias.clone(),
+        input_op,
+    );
+
+    // Execute the search operator
+    search_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = search_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = search_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    search_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Execute a vector distance computation.
+///
+/// Computes the distance between vectors and adds a distance column to the result.
+fn execute_vector_distance<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &VectorDistanceNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute the input plan to get entities
+    let entities = execute_logical_plan(tx, input, ctx)?;
+
+    // Collect all columns from entities
+    let mut columns = collect_all_columns(&entities);
+
+    // Add distance column to the schema
+    let distance_col = node.alias.clone().unwrap_or_else(|| "distance".to_string());
+    columns.push(distance_col.clone());
+
+    let schema = Arc::new(Schema::new(columns.clone()));
+    let mut result_rows = Vec::new();
+
+    for entity in &entities {
+        // Evaluate both vector expressions for this entity
+        let left_val = evaluate_expr(&node.left, entity, ctx);
+        let right_val = evaluate_expr(&node.right, entity, ctx);
+
+        // Compute the distance
+        let distance = compute_vector_distance(&left_val, &right_val, &node.metric);
+
+        // Build the row with entity properties + distance
+        let mut values: Vec<Value> = columns[..columns.len() - 1]
+            .iter()
+            .map(|col| {
+                if col == "id" {
+                    Value::Int(entity.id.as_u64() as i64)
+                } else {
+                    entity.get_property(col).cloned().unwrap_or(Value::Null)
+                }
+            })
+            .collect();
+        values.push(distance);
+
+        result_rows.push(Row::new(Arc::clone(&schema), values));
+    }
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Compute vector distance using the specified metric.
+fn compute_vector_distance(left: &Value, right: &Value, metric: &DistanceMetric) -> Value {
+    match (left, right) {
+        (Value::Vector(a), Value::Vector(b)) if a.len() == b.len() => {
+            let dist = match metric {
+                DistanceMetric::Euclidean => {
+                    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f32>().sqrt()
+                }
+                DistanceMetric::Cosine => {
+                    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    if norm_a == 0.0 || norm_b == 0.0 {
+                        f32::MAX
+                    } else {
+                        1.0 - (dot / (norm_a * norm_b))
+                    }
+                }
+                DistanceMetric::InnerProduct => {
+                    // Negative inner product for distance ordering
+                    -a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>()
+                }
+                DistanceMetric::Manhattan => {
+                    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum()
+                }
+                DistanceMetric::Hamming => {
+                    a.iter().zip(b.iter()).filter(|(x, y)| (*x - *y).abs() > f32::EPSILON).count()
+                        as f32
+                }
+            };
+            Value::Float(f64::from(dist))
+        }
+        _ => Value::Null,
+    }
 }
 
 /// Execute a projection over a graph traversal result.
@@ -895,13 +1039,17 @@ fn execute_logical_plan<T: Transaction>(
             "Graph path scan queries not yet supported in entity execution".to_string(),
         )),
 
-        LogicalPlan::AnnSearch { .. } => Err(Error::Execution(
-            "ANN search queries not yet supported in entity execution".to_string(),
-        )),
+        LogicalPlan::AnnSearch { input, .. } => {
+            // ANN search in entity context: just execute the input
+            // The actual k-NN sorting is handled at the physical plan level
+            execute_logical_plan(tx, input, ctx)
+        }
 
-        LogicalPlan::VectorDistance { .. } => Err(Error::Execution(
-            "Vector distance queries not yet supported in entity execution".to_string(),
-        )),
+        LogicalPlan::VectorDistance { input, .. } => {
+            // Vector distance in entity context: just execute the input
+            // Distance computation happens in expression evaluation during projection/sorting
+            execute_logical_plan(tx, input, ctx)
+        }
 
         LogicalPlan::Insert { .. } | LogicalPlan::Update { .. } | LogicalPlan::Delete { .. } => {
             Err(Error::Execution(
@@ -1667,6 +1815,36 @@ fn evaluate_binary_op(op: &manifoldb_query::ast::BinaryOp, lval: &Value, rval: &
             (Value::Float(a), Value::Float(b)) if *b != 0.0 => Value::Float(a / b),
             (Value::Int(a), Value::Float(b)) if *b != 0.0 => Value::Float(*a as f64 / b),
             (Value::Float(a), Value::Int(b)) if *b != 0 => Value::Float(a / *b as f64),
+            _ => Value::Null,
+        },
+        // Vector distance operators
+        BinaryOp::EuclideanDistance => match (lval, rval) {
+            (Value::Vector(a), Value::Vector(b)) if a.len() == b.len() => {
+                let dist: f32 =
+                    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f32>().sqrt();
+                Value::Float(f64::from(dist))
+            }
+            _ => Value::Null,
+        },
+        BinaryOp::CosineDistance => match (lval, rval) {
+            (Value::Vector(a), Value::Vector(b)) if a.len() == b.len() => {
+                let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm_a == 0.0 || norm_b == 0.0 {
+                    Value::Float(f64::MAX)
+                } else {
+                    Value::Float(f64::from(1.0 - (dot / (norm_a * norm_b))))
+                }
+            }
+            _ => Value::Null,
+        },
+        BinaryOp::InnerProduct => match (lval, rval) {
+            (Value::Vector(a), Value::Vector(b)) if a.len() == b.len() => {
+                // Negative inner product for distance ordering (higher inner product = more similar)
+                let prod: f32 = -a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>();
+                Value::Float(f64::from(prod))
+            }
             _ => Value::Null,
         },
         _ => Value::Null,

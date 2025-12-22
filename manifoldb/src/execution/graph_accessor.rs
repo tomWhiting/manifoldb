@@ -49,13 +49,17 @@ pub fn execute_expand_operation<T: Transaction>(
         match &expand.length {
             ExpandLength::Single => {
                 // Single hop expansion using DatabaseTransaction's edge methods
-                let neighbors = get_single_hop_neighbors(tx, src_id, &expand.direction, &edge_types)?;
+                let neighbors =
+                    get_single_hop_neighbors(tx, src_id, &expand.direction, &edge_types)?;
 
                 for (neighbor_id, edge) in neighbors {
                     // Apply node label filter if specified
                     if !expand.node_labels.is_empty() {
-                        if let Some(entity) = tx.get_entity(neighbor_id).map_err(Error::Transaction)? {
-                            let has_label = expand.node_labels.iter().any(|label| entity.has_label(label));
+                        if let Some(entity) =
+                            tx.get_entity(neighbor_id).map_err(Error::Transaction)?
+                        {
+                            let has_label =
+                                expand.node_labels.iter().any(|label| entity.has_label(label));
                             if !has_label {
                                 continue;
                             }
@@ -97,8 +101,11 @@ pub fn execute_expand_operation<T: Transaction>(
                 for (neighbor_id, _depth) in traversal_results {
                     // Apply node label filter if specified
                     if !expand.node_labels.is_empty() {
-                        if let Some(entity) = tx.get_entity(neighbor_id).map_err(Error::Transaction)? {
-                            let has_label = expand.node_labels.iter().any(|label| entity.has_label(label));
+                        if let Some(entity) =
+                            tx.get_entity(neighbor_id).map_err(Error::Transaction)?
+                        {
+                            let has_label =
+                                expand.node_labels.iter().any(|label| entity.has_label(label));
                             if !has_label {
                                 continue;
                             }
@@ -140,7 +147,9 @@ fn get_single_hop_neighbors<T: Transaction>(
         let outgoing = tx.get_outgoing_edges(node).map_err(Error::Transaction)?;
         for edge in outgoing {
             // Filter by edge type if specified
-            if edge_types.is_empty() || edge_types.iter().any(|et| et.as_str() == edge.edge_type.as_str()) {
+            if edge_types.is_empty()
+                || edge_types.iter().any(|et| et.as_str() == edge.edge_type.as_str())
+            {
                 results.push((edge.target, edge));
             }
         }
@@ -151,7 +160,9 @@ fn get_single_hop_neighbors<T: Transaction>(
         let incoming = tx.get_incoming_edges(node).map_err(Error::Transaction)?;
         for edge in incoming {
             // Filter by edge type if specified
-            if edge_types.is_empty() || edge_types.iter().any(|et| et.as_str() == edge.edge_type.as_str()) {
+            if edge_types.is_empty()
+                || edge_types.iter().any(|et| et.as_str() == edge.edge_type.as_str())
+            {
                 results.push((edge.source, edge));
             }
         }
@@ -226,10 +237,7 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
     let id_col_idx = columns
         .iter()
         .position(|c| {
-            *c == src_var
-                || *c == format!("{}.id", src_var)
-                || *c == "id"
-                || c.ends_with(".id")
+            *c == src_var || *c == format!("{}.id", src_var) || *c == "id" || c.ends_with(".id")
         })
         .unwrap_or(0);
 

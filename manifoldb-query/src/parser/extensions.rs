@@ -177,20 +177,186 @@ impl ExtendedParser {
     }
 
     /// Pre-processes vector operators to temporary function calls.
+    ///
+    /// Converts `a <-> b` to `__VEC_EUCLIDEAN__(a, b)` which sqlparser can parse.
     fn preprocess_vector_ops(input: &str) -> String {
         // Only allocate if we find operators to replace
         if !input.contains("<->") && !input.contains("<=>") && !input.contains("<#>") {
             return input.to_string();
         }
 
-        // Pre-allocate with extra capacity for replacement markers
-        let mut result = String::with_capacity(input.len() + 64);
-        result.push_str(input);
+        let mut result = input.to_string();
+        result = Self::replace_vector_op(&result, "<->", "__VEC_EUCLIDEAN__");
+        result = Self::replace_vector_op(&result, "<=>", "__VEC_COSINE__");
+        result = Self::replace_vector_op(&result, "<#>", "__VEC_INNER__");
+        result
+    }
 
-        // Replace <-> with __vec_euclidean__ function call marker
-        let temp = result.replace("<->", " __VEC_EUCLIDEAN__ ");
-        let temp = temp.replace("<=>", " __VEC_COSINE__ ");
-        temp.replace("<#>", " __VEC_INNER__ ")
+    /// Replaces a vector operator with a function call.
+    ///
+    /// Converts `expr1 <op> expr2` to `__FUNC__(expr1, expr2)`.
+    fn replace_vector_op(input: &str, op: &str, func_name: &str) -> String {
+        let chars: Vec<char> = input.chars().collect();
+        let op_chars: Vec<char> = op.chars().collect();
+
+        // Find the operator position
+        let op_pos = Self::find_operator(&chars, &op_chars);
+        if op_pos.is_none() {
+            return input.to_string();
+        }
+        let op_pos = op_pos.unwrap();
+
+        // Find the left operand (go backwards to find start)
+        let left_end = op_pos;
+        let left_start = Self::find_expr_start(&chars, left_end);
+
+        // Find the right operand (go forwards to find end)
+        let right_start = op_pos + op_chars.len();
+        let right_end = Self::find_expr_end(&chars, right_start);
+
+        // Build the result
+        let mut result = String::with_capacity(input.len() + 64);
+
+        // Add everything before the left operand
+        result.extend(&chars[..left_start]);
+
+        // Add the function call
+        result.push_str(func_name);
+        result.push('(');
+        let left_expr: String = chars[left_start..left_end].iter().collect();
+        result.push_str(left_expr.trim());
+        result.push_str(", ");
+        let right_expr: String = chars[right_start..right_end].iter().collect();
+        result.push_str(right_expr.trim());
+        result.push(')');
+
+        // Add everything after the right operand
+        result.extend(&chars[right_end..]);
+
+        // Recursively process for any remaining operators
+        Self::replace_vector_op(&result, op, func_name)
+    }
+
+    /// Finds the position of an operator in the character array.
+    fn find_operator(chars: &[char], op_chars: &[char]) -> Option<usize> {
+        (0..chars.len()).find(|&i| {
+            i + op_chars.len() <= chars.len() && chars[i..i + op_chars.len()] == op_chars[..]
+        })
+    }
+
+    /// Finds the start of an expression going backwards from `end`.
+    fn find_expr_start(chars: &[char], end: usize) -> usize {
+        let mut pos = end;
+        let mut paren_depth = 0;
+
+        // Skip trailing whitespace before the operator
+        while pos > 0 && chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
+
+        // Go backwards to find the start of the expression
+        while pos > 0 {
+            let c = chars[pos - 1];
+            match c {
+                ')' => {
+                    paren_depth += 1;
+                    pos -= 1;
+                }
+                '(' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                        pos -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                ']' => {
+                    // Handle array subscripts - skip to matching '['
+                    pos -= 1;
+                    while pos > 0 && chars[pos - 1] != '[' {
+                        pos -= 1;
+                    }
+                    pos = pos.saturating_sub(1);
+                }
+                _ if c.is_alphanumeric() || c == '_' || c == '.' || c == '$' => {
+                    pos -= 1;
+                }
+                _ if paren_depth > 0 => {
+                    pos -= 1;
+                }
+                ',' | ';' | '=' | '>' | '<' | '+' | '-' | '*' | '/' => {
+                    break;
+                }
+                _ if c.is_whitespace() => {
+                    // At a space, we need to check if this separates tokens
+                    // Stop here - the expression starts after this whitespace
+                    break;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+
+        pos
+    }
+
+    /// Finds the end of an expression going forwards from `start`.
+    fn find_expr_end(chars: &[char], start: usize) -> usize {
+        let mut pos = start;
+        let mut paren_depth = 0;
+
+        // Skip leading whitespace after the operator
+        while pos < chars.len() && chars[pos].is_whitespace() {
+            pos += 1;
+        }
+
+        // Go forwards to find the end of the expression
+        while pos < chars.len() {
+            let c = chars[pos];
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    pos += 1;
+                }
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                        pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                '[' => {
+                    // Handle array subscripts
+                    pos += 1;
+                    while pos < chars.len() && chars[pos] != ']' {
+                        pos += 1;
+                    }
+                    if pos < chars.len() {
+                        pos += 1;
+                    }
+                }
+                _ if c.is_alphanumeric() || c == '_' || c == '.' || c == '$' => {
+                    pos += 1;
+                }
+                _ if paren_depth > 0 => {
+                    pos += 1;
+                }
+                _ if c.is_whitespace() => {
+                    // At a space, the expression ends here
+                    break;
+                }
+                ',' | ';' | '<' | '>' | '=' | '+' | '-' | '*' | '/' => {
+                    break;
+                }
+                _ => {
+                    break;
+                }
+            }
+        }
+
+        pos
     }
 
     /// Restores vector operators from function call markers.
@@ -238,7 +404,10 @@ impl ExtendedParser {
     }
 
     /// Restores vector operators in an expression.
+    ///
+    /// Converts function calls like `__VEC_EUCLIDEAN__(a, b)` back to `a <-> b`.
     fn restore_vector_ops_in_expr(expr: &mut Expr) {
+        // First, recursively process child expressions
         match expr {
             Expr::BinaryOp { left, right, .. } => {
                 Self::restore_vector_ops_in_expr(left);
@@ -248,6 +417,7 @@ impl ExtendedParser {
                 Self::restore_vector_ops_in_expr(operand);
             }
             Expr::Function(func) => {
+                // Process function arguments first
                 for arg in &mut func.args {
                     Self::restore_vector_ops_in_expr(arg);
                 }
@@ -264,49 +434,44 @@ impl ExtendedParser {
                     Self::restore_vector_ops_in_expr(else_result);
                 }
             }
-            Expr::Column(name) => {
-                // Check if this is a vector operator marker
-                if let Some(ident) = name.name() {
-                    // Vector operator markers shouldn't appear as columns after preprocessing,
-                    // but if they do, they'll be handled by convert_vector_markers below
-                    if !matches!(
-                        ident.name.as_str(),
-                        "__VEC_EUCLIDEAN__" | "__VEC_COSINE__" | "__VEC_INNER__"
-                    ) {
-                        // Normal column reference - no action needed
-                    }
-                }
-            }
             _ => {}
         }
 
-        // Check for marker identifiers that became binary operations
-        // The preprocessing turns `a <-> b` into `a __VEC_EUCLIDEAN__ b`
-        // which sqlparser might parse as identifier comparisons
-        Self::convert_vector_markers(expr);
+        // Now check if this expression is a vector function call and convert it
+        Self::convert_vector_function(expr);
     }
 
-    /// Converts vector operator markers to proper binary operators.
-    fn convert_vector_markers(expr: &mut Expr) {
-        // We need to find patterns like: expr = Column("__VEC_EUCLIDEAN__")
-        // and transform them into proper vector operations
+    /// Converts vector function calls to binary operators.
+    ///
+    /// Transforms `__VEC_EUCLIDEAN__(a, b)` to `Expr::BinaryOp { left: a, op: EuclideanDistance, right: b }`.
+    fn convert_vector_function(expr: &mut Expr) {
+        let replacement = if let Expr::Function(func) = expr {
+            let func_name = func.name.name().map(|id| id.name.as_str()).unwrap_or("");
+            let op = match func_name {
+                "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
+                "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
+                "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
+                _ => None,
+            };
 
-        // This is a simplified approach - in practice, the preprocessing
-        // makes this unnecessary for most cases
-        if let Expr::Column(name) = expr {
-            if let Some(ident) = name.name() {
-                let op = match ident.name.as_str() {
-                    "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
-                    "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
-                    "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
-                    _ => None,
-                };
-
-                if op.is_some() {
-                    // This marker shouldn't appear as a standalone column
-                    // Log a warning in a real implementation
+            if let Some(op) = op {
+                if func.args.len() == 2 {
+                    let mut args = std::mem::take(&mut func.args);
+                    let right = args.pop().expect("checked len");
+                    let left = args.pop().expect("checked len");
+                    Some(Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) })
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        if let Some(new_expr) = replacement {
+            *expr = new_expr;
         }
     }
 
