@@ -28,6 +28,8 @@ pub enum Statement {
     DropTable(DropTableStatement),
     /// DROP INDEX statement.
     DropIndex(DropIndexStatement),
+    /// MATCH statement (Cypher-style graph query).
+    Match(Box<MatchStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
 }
@@ -118,6 +120,160 @@ impl SelectStatement {
     pub fn offset(mut self, offset: Expr) -> Self {
         self.offset = Some(offset);
         self
+    }
+}
+
+/// A standalone MATCH statement (Cypher-style graph query).
+///
+/// This provides pure Cypher-like syntax for graph pattern matching:
+///
+/// ```text
+/// MATCH (a:User)-[:FOLLOWS]->(b:User)
+/// WHERE a.name = 'Alice'
+/// RETURN b.name, b.email
+/// ORDER BY b.name
+/// LIMIT 10;
+/// ```
+///
+/// Internally, this is converted to a SELECT statement during planning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchStatement {
+    /// The graph pattern to match.
+    pub pattern: GraphPattern,
+    /// Optional WHERE clause.
+    pub where_clause: Option<Expr>,
+    /// The RETURN clause (required in Cypher).
+    pub return_clause: Vec<ReturnItem>,
+    /// Whether RETURN DISTINCT is specified.
+    pub distinct: bool,
+    /// Optional ORDER BY clause.
+    pub order_by: Vec<OrderByExpr>,
+    /// Optional SKIP clause (equivalent to OFFSET).
+    pub skip: Option<Expr>,
+    /// Optional LIMIT clause.
+    pub limit: Option<Expr>,
+}
+
+impl MatchStatement {
+    /// Creates a new MATCH statement with a pattern and return items.
+    #[must_use]
+    pub const fn new(pattern: GraphPattern, return_clause: Vec<ReturnItem>) -> Self {
+        Self {
+            pattern,
+            where_clause: None,
+            return_clause,
+            distinct: false,
+            order_by: vec![],
+            skip: None,
+            limit: None,
+        }
+    }
+
+    /// Sets the WHERE clause.
+    #[must_use]
+    pub fn where_clause(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Sets DISTINCT on the RETURN clause.
+    #[must_use]
+    pub const fn distinct(mut self) -> Self {
+        self.distinct = true;
+        self
+    }
+
+    /// Sets the ORDER BY clause.
+    #[must_use]
+    pub fn order_by(mut self, orders: Vec<OrderByExpr>) -> Self {
+        self.order_by = orders;
+        self
+    }
+
+    /// Sets the SKIP clause.
+    #[must_use]
+    pub fn skip(mut self, skip: Expr) -> Self {
+        self.skip = Some(skip);
+        self
+    }
+
+    /// Sets the LIMIT clause.
+    #[must_use]
+    pub fn limit(mut self, limit: Expr) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Converts this MATCH statement to an equivalent SELECT statement.
+    ///
+    /// This is used during planning to leverage the existing SELECT infrastructure.
+    #[must_use]
+    pub fn to_select(&self) -> SelectStatement {
+        // Convert return items to select items
+        let projection: Vec<SelectItem> = self
+            .return_clause
+            .iter()
+            .map(|item| match item {
+                ReturnItem::Wildcard => SelectItem::Wildcard,
+                ReturnItem::Expr { expr, alias } => {
+                    SelectItem::Expr { expr: expr.clone(), alias: alias.clone() }
+                }
+            })
+            .collect();
+
+        SelectStatement {
+            distinct: self.distinct,
+            projection,
+            from: vec![], // Graph patterns don't need a FROM clause
+            match_clause: Some(self.pattern.clone()),
+            where_clause: self.where_clause.clone(),
+            group_by: vec![],
+            having: None,
+            order_by: self.order_by.clone(),
+            limit: self.limit.clone(),
+            offset: self.skip.clone(), // Cypher SKIP = SQL OFFSET
+            set_op: None,
+        }
+    }
+}
+
+/// An item in a RETURN clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReturnItem {
+    /// A wildcard (*) - return all bound variables.
+    Wildcard,
+    /// An expression, optionally aliased.
+    Expr {
+        /// The expression to return.
+        expr: Expr,
+        /// Optional alias (AS name).
+        alias: Option<Identifier>,
+    },
+}
+
+impl ReturnItem {
+    /// Creates a wildcard return item.
+    #[must_use]
+    pub const fn wildcard() -> Self {
+        Self::Wildcard
+    }
+
+    /// Creates an unaliased expression return item.
+    #[must_use]
+    pub const fn expr(expr: Expr) -> Self {
+        Self::Expr { expr, alias: None }
+    }
+
+    /// Creates an aliased expression return item.
+    #[must_use]
+    pub fn aliased(expr: Expr, alias: impl Into<Identifier>) -> Self {
+        Self::Expr { expr, alias: Some(alias.into()) }
+    }
+}
+
+impl From<Expr> for ReturnItem {
+    fn from(expr: Expr) -> Self {
+        Self::expr(expr)
     }
 }
 

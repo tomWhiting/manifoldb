@@ -47,8 +47,9 @@
 
 use crate::ast::{
     BinaryOp, DistanceMetric, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
-    Identifier, NodePattern, ParameterRef, PathPattern, PropertyCondition, QualifiedName,
-    SelectStatement, ShortestPathPattern, Statement, WeightSpec,
+    Identifier, MatchStatement, NodePattern, OrderByExpr, ParameterRef, PathPattern,
+    PropertyCondition, QualifiedName, ReturnItem, SelectStatement, ShortestPathPattern, Statement,
+    WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -60,10 +61,11 @@ impl ExtendedParser {
     /// Parses an extended SQL query with graph and vector syntax.
     ///
     /// This function handles:
-    /// 1. Pre-processing to convert custom operators to function calls
-    /// 2. Standard SQL parsing
-    /// 3. Post-processing to extract MATCH clauses
-    /// 4. Restoration of vector operators from function calls
+    /// 1. Cypher-style standalone MATCH statements (MATCH ... RETURN)
+    /// 2. Pre-processing to convert custom operators to function calls
+    /// 3. Standard SQL parsing
+    /// 4. Post-processing to extract MATCH clauses
+    /// 5. Restoration of vector operators from function calls
     ///
     /// # Errors
     ///
@@ -71,6 +73,11 @@ impl ExtendedParser {
     pub fn parse(input: &str) -> ParseResult<Vec<Statement>> {
         if input.trim().is_empty() {
             return Err(ParseError::EmptyQuery);
+        }
+
+        // Check for standalone MATCH statement (Cypher-style)
+        if Self::is_standalone_match(input) {
+            return Self::parse_standalone_match(input);
         }
 
         // Step 1: Extract MATCH clauses (they're not valid SQL)
@@ -91,6 +98,458 @@ impl ExtendedParser {
         }
 
         Ok(statements)
+    }
+
+    /// Checks if the input is a standalone MATCH statement (Cypher-style).
+    ///
+    /// A standalone MATCH statement starts with MATCH and contains RETURN.
+    fn is_standalone_match(input: &str) -> bool {
+        let trimmed = input.trim();
+        let upper = trimmed.to_uppercase();
+
+        // Must start with MATCH (not SELECT ... MATCH)
+        if !upper.starts_with("MATCH") {
+            return false;
+        }
+
+        // Must contain RETURN keyword
+        upper.contains("RETURN")
+    }
+
+    /// Parses a standalone MATCH statement (Cypher-style).
+    ///
+    /// Syntax:
+    /// ```text
+    /// MATCH <pattern>
+    /// [WHERE <condition>]
+    /// RETURN [DISTINCT] <return_items>
+    /// [ORDER BY <expressions>]
+    /// [SKIP <number>]
+    /// [LIMIT <number>]
+    /// ```
+    fn parse_standalone_match(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Find MATCH keyword (should be at start)
+        if !upper.starts_with("MATCH") {
+            return Err(ParseError::InvalidPattern("expected MATCH keyword".to_string()));
+        }
+
+        // Skip "MATCH" keyword
+        let after_match = input[5..].trim_start();
+
+        // Find WHERE, RETURN, ORDER BY, SKIP, LIMIT positions
+        let upper_after_match = after_match.to_uppercase();
+
+        // Find RETURN (required)
+        let return_pos = Self::find_keyword_pos(&upper_after_match, "RETURN").ok_or_else(|| {
+            ParseError::InvalidPattern("MATCH requires RETURN clause".to_string())
+        })?;
+
+        // Find WHERE (optional, must be before RETURN)
+        let where_pos = Self::find_keyword_pos(&upper_after_match[..return_pos], "WHERE");
+
+        // Parse the graph pattern (everything between MATCH and WHERE/RETURN)
+        let pattern_end = where_pos.unwrap_or(return_pos);
+        let pattern_str = after_match[..pattern_end].trim();
+        let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+        // Parse WHERE clause if present
+        let where_clause = if let Some(wp) = where_pos {
+            let where_content = &after_match[wp + 5..return_pos]; // +5 for "WHERE"
+            Some(Self::parse_where_expression(where_content.trim())?)
+        } else {
+            None
+        };
+
+        // Parse after RETURN
+        let after_return = after_match[return_pos + 6..].trim_start(); // +6 for "RETURN"
+        let upper_after_return = after_return.to_uppercase();
+
+        // Check for DISTINCT
+        let (distinct, return_content_start) = if upper_after_return.starts_with("DISTINCT") {
+            (true, 8) // "DISTINCT" is 8 chars
+        } else {
+            (false, 0)
+        };
+
+        let return_and_rest = after_return[return_content_start..].trim_start();
+        let upper_return_rest = return_and_rest.to_uppercase();
+
+        // Find ORDER BY, SKIP, LIMIT positions relative to RETURN items
+        let order_by_pos = Self::find_keyword_pos(&upper_return_rest, "ORDER BY");
+        let skip_pos = Self::find_keyword_pos(&upper_return_rest, "SKIP");
+        let limit_pos = Self::find_keyword_pos(&upper_return_rest, "LIMIT");
+
+        // The return items end at the first of ORDER BY, SKIP, LIMIT, or end of string
+        let return_items_end = [order_by_pos, skip_pos, limit_pos]
+            .iter()
+            .filter_map(|&p| p)
+            .min()
+            .unwrap_or(return_and_rest.len());
+
+        // Parse return items
+        let return_items_str = return_and_rest[..return_items_end].trim();
+        let return_items = Self::parse_return_items(return_items_str)?;
+
+        // Parse ORDER BY
+        let order_by = if let Some(obp) = order_by_pos {
+            let order_end = [skip_pos, limit_pos]
+                .iter()
+                .filter_map(|&p| p)
+                .min()
+                .unwrap_or(return_and_rest.len());
+
+            if order_end > obp + 8 {
+                let order_content = &return_and_rest[obp + 8..order_end]; // +8 for "ORDER BY"
+                Self::parse_order_by(order_content.trim())?
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // Parse SKIP
+        let skip = if let Some(sp) = skip_pos {
+            let skip_end = limit_pos.unwrap_or(return_and_rest.len());
+            if skip_end > sp + 4 {
+                let skip_content = &return_and_rest[sp + 4..skip_end]; // +4 for "SKIP"
+                Some(Self::parse_limit_expr(skip_content.trim())?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Parse LIMIT
+        let limit = if let Some(lp) = limit_pos {
+            let limit_content = &return_and_rest[lp + 5..]; // +5 for "LIMIT"
+            let limit_end = limit_content.find(';').unwrap_or(limit_content.len());
+            let limit_str = limit_content[..limit_end].trim();
+            if !limit_str.is_empty() {
+                Some(Self::parse_limit_expr(limit_str)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Build the MatchStatement
+        let match_stmt = MatchStatement {
+            pattern,
+            where_clause,
+            return_clause: return_items,
+            distinct,
+            order_by,
+            skip,
+            limit,
+        };
+
+        Ok(vec![Statement::Match(Box::new(match_stmt))])
+    }
+
+    /// Finds the position of a keyword in a string (case-insensitive, word boundary).
+    fn find_keyword_pos(input: &str, keyword: &str) -> Option<usize> {
+        let mut search_from = 0;
+
+        while let Some(pos) = input[search_from..].find(keyword) {
+            let absolute_pos = search_from + pos;
+
+            // Check word boundaries
+            let before_ok =
+                absolute_pos == 0 || !input.as_bytes()[absolute_pos - 1].is_ascii_alphanumeric();
+            let after_ok = absolute_pos + keyword.len() >= input.len()
+                || !input.as_bytes()[absolute_pos + keyword.len()].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                return Some(absolute_pos);
+            }
+
+            search_from = absolute_pos + keyword.len();
+        }
+
+        None
+    }
+
+    /// Parses a WHERE expression for standalone MATCH.
+    fn parse_where_expression(input: &str) -> ParseResult<Expr> {
+        // For simple expressions, try to parse them directly
+        // This is a simplified parser - complex expressions go through SQL parser
+        Self::parse_simple_expression(input)
+    }
+
+    /// Parses a simple expression (for WHERE and RETURN clauses).
+    fn parse_simple_expression(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("empty expression".to_string()));
+        }
+
+        // Check for AND/OR at the top level
+        if let Some(and_pos) = Self::find_top_level_keyword(input, " AND ") {
+            let left = Self::parse_simple_expression(&input[..and_pos])?;
+            let right = Self::parse_simple_expression(&input[and_pos + 5..])?;
+            return Ok(Expr::BinaryOp {
+                left: Box::new(left),
+                op: crate::ast::BinaryOp::And,
+                right: Box::new(right),
+            });
+        }
+
+        if let Some(or_pos) = Self::find_top_level_keyword(input, " OR ") {
+            let left = Self::parse_simple_expression(&input[..or_pos])?;
+            let right = Self::parse_simple_expression(&input[or_pos + 4..])?;
+            return Ok(Expr::BinaryOp {
+                left: Box::new(left),
+                op: crate::ast::BinaryOp::Or,
+                right: Box::new(right),
+            });
+        }
+
+        // Check for comparison operators
+        let comparisons = [
+            ("<>", crate::ast::BinaryOp::NotEq),
+            ("!=", crate::ast::BinaryOp::NotEq),
+            ("<=", crate::ast::BinaryOp::LtEq),
+            (">=", crate::ast::BinaryOp::GtEq),
+            ("<", crate::ast::BinaryOp::Lt),
+            (">", crate::ast::BinaryOp::Gt),
+            ("=", crate::ast::BinaryOp::Eq),
+        ];
+
+        for (op_str, op) in &comparisons {
+            if let Some(pos) = Self::find_top_level_operator(input, op_str) {
+                let left = Self::parse_simple_expression(&input[..pos])?;
+                let right = Self::parse_simple_expression(&input[pos + op_str.len()..])?;
+                return Ok(Expr::BinaryOp {
+                    left: Box::new(left),
+                    op: *op,
+                    right: Box::new(right),
+                });
+            }
+        }
+
+        // Parse as a simple value or column reference
+        Ok(Self::parse_property_value(input))
+    }
+
+    /// Finds a keyword at the top level (not inside parentheses).
+    fn find_top_level_keyword(input: &str, keyword: &str) -> Option<usize> {
+        let upper = input.to_uppercase();
+        let keyword_upper = keyword.to_uppercase();
+        let mut depth: i32 = 0;
+        let mut i = 0;
+        let bytes = input.as_bytes();
+
+        while i < input.len() {
+            if bytes[i] == b'(' {
+                depth += 1;
+            } else if bytes[i] == b')' {
+                depth = depth.saturating_sub(1);
+            } else if depth == 0 && upper[i..].starts_with(&keyword_upper) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Finds an operator at the top level (not inside parentheses or strings).
+    fn find_top_level_operator(input: &str, op: &str) -> Option<usize> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut string_char = '"';
+        let bytes = input.as_bytes();
+        let op_bytes = op.as_bytes();
+
+        if op.len() > input.len() {
+            return None;
+        }
+
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+
+            if in_string {
+                if c == string_char as u8 {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            match c {
+                b'\'' | b'"' => {
+                    in_string = true;
+                    string_char = c as char;
+                }
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                _ if depth == 0 && i + op.len() <= bytes.len() => {
+                    if &bytes[i..i + op.len()] == op_bytes {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// Parses return items from a RETURN clause.
+    fn parse_return_items(input: &str) -> ParseResult<Vec<ReturnItem>> {
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("empty RETURN clause".to_string()));
+        }
+
+        // Check for wildcard
+        if input == "*" {
+            return Ok(vec![ReturnItem::Wildcard]);
+        }
+
+        // Split by comma (respecting parentheses)
+        let mut items = Vec::new();
+        let mut current = String::new();
+        let mut depth: i32 = 0;
+
+        for c in input.chars() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    current.push(c);
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    current.push(c);
+                }
+                ',' if depth == 0 => {
+                    if !current.trim().is_empty() {
+                        items.push(Self::parse_return_item(current.trim())?);
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        if !current.trim().is_empty() {
+            items.push(Self::parse_return_item(current.trim())?);
+        }
+
+        if items.is_empty() {
+            return Err(ParseError::InvalidPattern("empty RETURN clause".to_string()));
+        }
+
+        Ok(items)
+    }
+
+    /// Parses a single return item.
+    fn parse_return_item(input: &str) -> ParseResult<ReturnItem> {
+        let input = input.trim();
+
+        if input == "*" {
+            return Ok(ReturnItem::Wildcard);
+        }
+
+        // Check for AS alias
+        let upper = input.to_uppercase();
+        if let Some(as_pos) = Self::find_top_level_keyword(&upper, " AS ") {
+            let expr_str = &input[..as_pos];
+            let alias_str = &input[as_pos + 4..]; // +4 for " AS "
+            let expr = Self::parse_simple_expression(expr_str.trim())?;
+            let alias = Identifier::new(alias_str.trim());
+            return Ok(ReturnItem::Expr { expr, alias: Some(alias) });
+        }
+
+        // Just an expression
+        let expr = Self::parse_simple_expression(input)?;
+        Ok(ReturnItem::Expr { expr, alias: None })
+    }
+
+    /// Parses an ORDER BY clause.
+    fn parse_order_by(input: &str) -> ParseResult<Vec<OrderByExpr>> {
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut orders = Vec::new();
+        let mut current = String::new();
+        let mut depth: i32 = 0;
+
+        for c in input.chars() {
+            match c {
+                '(' => {
+                    depth += 1;
+                    current.push(c);
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    current.push(c);
+                }
+                ',' if depth == 0 => {
+                    if !current.trim().is_empty() {
+                        orders.push(Self::parse_order_item(current.trim())?);
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        if !current.trim().is_empty() {
+            orders.push(Self::parse_order_item(current.trim())?);
+        }
+
+        Ok(orders)
+    }
+
+    /// Parses a single ORDER BY item.
+    fn parse_order_item(input: &str) -> ParseResult<OrderByExpr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Check for ASC/DESC at the end
+        let (expr_str, asc) = if upper.ends_with(" DESC") {
+            (&input[..input.len() - 5], false)
+        } else if upper.ends_with(" ASC") {
+            (&input[..input.len() - 4], true)
+        } else {
+            (input, true) // Default to ASC
+        };
+
+        let expr = Self::parse_simple_expression(expr_str.trim())?;
+
+        Ok(OrderByExpr { expr: Box::new(expr), asc, nulls_first: None })
+    }
+
+    /// Parses a LIMIT/SKIP expression (must be an integer).
+    fn parse_limit_expr(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+
+        // Try to parse as integer
+        if let Ok(n) = input.parse::<i64>() {
+            return Ok(Expr::integer(n));
+        }
+
+        // Try as parameter
+        if let Some(rest) = input.strip_prefix('$') {
+            if let Ok(n) = rest.parse::<u32>() {
+                return Ok(Expr::Parameter(ParameterRef::Positional(n)));
+            }
+            return Ok(Expr::Parameter(ParameterRef::Named(rest.to_string())));
+        }
+
+        Err(ParseError::InvalidPattern(format!("invalid LIMIT/SKIP value: {input}")))
     }
 
     /// Parses a single extended SQL statement.

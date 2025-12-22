@@ -989,3 +989,198 @@ mod ast_builders {
         assert_eq!(quoted.to_string(), "\"Column\"");
     }
 }
+
+// ============================================================================
+// Standalone MATCH Statement Tests (Cypher-style)
+// ============================================================================
+
+mod standalone_match {
+    use super::*;
+    use manifoldb_query::ast::{ReturnItem, Statement};
+
+    #[test]
+    fn parse_simple_match_return() {
+        let stmts =
+            ExtendedParser::parse("MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a, b").unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Check pattern
+            assert_eq!(match_stmt.pattern.paths.len(), 1);
+            assert_eq!(match_stmt.pattern.paths[0].start.labels[0].name, "User");
+
+            // Check return clause
+            assert_eq!(match_stmt.return_clause.len(), 2);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_with_where() {
+        let stmts = ExtendedParser::parse(
+            "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE a.name = 'Alice' RETURN b.name",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert!(match_stmt.where_clause.is_some());
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_return_distinct() {
+        let stmts = ExtendedParser::parse("MATCH (a)-[:FOLLOWS]->(b) RETURN DISTINCT b").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert!(match_stmt.distinct);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_with_order_by() {
+        let stmts =
+            ExtendedParser::parse("MATCH (a)-[:FOLLOWS]->(b) RETURN b.name ORDER BY b.name DESC")
+                .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.order_by.len(), 1);
+            assert!(!match_stmt.order_by[0].asc); // DESC
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_with_skip_limit() {
+        let stmts =
+            ExtendedParser::parse("MATCH (a)-[:FOLLOWS]->(b) RETURN b SKIP 10 LIMIT 20").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert!(match_stmt.skip.is_some());
+            assert!(match_stmt.limit.is_some());
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_return_wildcard() {
+        let stmts = ExtendedParser::parse("MATCH (a)-[:KNOWS]->(b) RETURN *").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.return_clause.len(), 1);
+            assert!(matches!(match_stmt.return_clause[0], ReturnItem::Wildcard));
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_return_with_alias() {
+        let stmts = ExtendedParser::parse("MATCH (a)-[:FOLLOWS]->(b) RETURN b.name AS friend_name")
+            .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            if let ReturnItem::Expr { alias, .. } = &match_stmt.return_clause[0] {
+                assert!(alias.is_some());
+                assert_eq!(alias.as_ref().unwrap().name, "friend_name");
+            } else {
+                panic!("expected expression return item");
+            }
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_variable_length() {
+        let stmts =
+            ExtendedParser::parse("MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let edge = &match_stmt.pattern.paths[0].steps[0].0;
+            assert_eq!(edge.length, EdgeLength::Range { min: Some(1), max: Some(3) });
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_complex_pattern() {
+        let stmts = ExtendedParser::parse(
+            "MATCH (a:User)-[:WORKS_ON]->(p:Project)<-[:WORKS_ON]-(b:User) WHERE a.name = 'Alice' AND a <> b RETURN b.name, p.name",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Check pattern has multiple steps
+            assert_eq!(match_stmt.pattern.paths[0].steps.len(), 2);
+
+            // Check return clause has 2 items
+            assert_eq!(match_stmt.return_clause.len(), 2);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_converts_to_select() {
+        let stmts = ExtendedParser::parse(
+            "MATCH (a)-[:FOLLOWS]->(b) WHERE a.id = 1 RETURN b.name ORDER BY b.name LIMIT 10",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Convert to SELECT
+            let select = match_stmt.to_select();
+
+            // Verify the SELECT has all the parts
+            assert!(select.match_clause.is_some());
+            assert!(select.where_clause.is_some());
+            assert!(!select.order_by.is_empty());
+            assert!(select.limit.is_some());
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_multiple_paths() {
+        let stmts = ExtendedParser::parse("MATCH (a)-[:R1]->(b), (b)-[:R2]->(c) RETURN c").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.paths.len(), 2);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_full_syntax() {
+        // Test full Cypher-style syntax as described in the task
+        let stmts = ExtendedParser::parse(
+            r#"MATCH (a:User)-[:FOLLOWS]->(b:User)
+               WHERE a.name = 'Alice'
+               RETURN b.name"#,
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Pattern check
+            assert_eq!(match_stmt.pattern.paths.len(), 1);
+
+            // WHERE check
+            assert!(match_stmt.where_clause.is_some());
+
+            // RETURN check
+            assert_eq!(match_stmt.return_clause.len(), 1);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+}

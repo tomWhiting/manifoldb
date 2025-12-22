@@ -24,9 +24,9 @@ pub use pattern::{
 pub use statement::{
     Assignment, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CreateIndexStatement,
     CreateTableStatement, DataType, DeleteStatement, DropIndexStatement, DropTableStatement,
-    IndexColumn, InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, OnConflict,
-    SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias, TableConstraint,
-    TableRef, UpdateStatement,
+    IndexColumn, InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType,
+    MatchStatement, OnConflict, ReturnItem, SelectItem, SelectStatement, SetOperation, SetOperator,
+    Statement, TableAlias, TableConstraint, TableRef, UpdateStatement,
 };
 pub use vector::{
     DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,
