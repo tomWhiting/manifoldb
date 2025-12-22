@@ -360,8 +360,7 @@ impl SortMergeAggregateOp {
                     // Compute key into reusable buffer
                     self.compute_group_key_into(&row, key_buffer)?;
 
-                    if self.current_key.as_deref() == Some(key_buffer.as_slice())
-                    {
+                    if self.current_key.as_deref() == Some(key_buffer.as_slice()) {
                         // Same group, accumulate
                         self.update_accumulators(&row)?;
                     } else if self.current_key.is_some() {
