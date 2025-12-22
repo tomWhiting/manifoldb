@@ -43,6 +43,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
 
@@ -50,6 +51,7 @@ use crate::cache::{extract_cache_hint, CacheHint, CacheMetrics, QueryCache, Quer
 use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
 use crate::execution::{execute_query, execute_statement, extract_tables_from_sql};
+use crate::metrics::{CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot};
 use crate::transaction::{DatabaseTransaction, TransactionManager};
 
 /// The main `ManifoldDB` database handle.
@@ -118,6 +120,8 @@ pub struct Database {
     config: Config,
     /// Query result cache.
     query_cache: QueryCache,
+    /// Database metrics.
+    db_metrics: Arc<DatabaseMetrics>,
 }
 
 impl Database {
@@ -189,8 +193,9 @@ impl Database {
 
         let manager = TransactionManager::with_config(engine, config.transaction_config());
         let query_cache = QueryCache::new(config.query_cache_config.clone());
+        let db_metrics = Arc::new(DatabaseMetrics::new());
 
-        Ok(Self { manager, config, query_cache })
+        Ok(Self { manager, config, query_cache, db_metrics })
     }
 
     /// Returns a builder for creating a database with custom configuration.
@@ -324,22 +329,40 @@ impl Database {
     /// )?;
     /// ```
     pub fn execute_with_params(&self, sql: &str, params: &[manifoldb_core::Value]) -> Result<u64> {
+        let start = Instant::now();
+
         // Extract tables that will be modified for cache invalidation
         let affected_tables = extract_tables_from_sql(sql);
 
         // Start a write transaction
         let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
 
         // Execute the statement
-        let count = execute_statement(&mut tx, sql, params)?;
+        let result = execute_statement(&mut tx, sql, params);
 
-        // Commit the transaction
-        tx.commit().map_err(Error::Transaction)?;
+        match result {
+            Ok(count) => {
+                // Commit the transaction
+                let commit_start = Instant::now();
+                tx.commit().map_err(Error::Transaction)?;
+                self.db_metrics.record_commit(commit_start.elapsed());
 
-        // Invalidate cache entries for affected tables
-        self.query_cache.invalidate_tables(&affected_tables);
+                // Record successful query
+                self.db_metrics.record_query(start.elapsed(), true);
 
-        Ok(count)
+                // Invalidate cache entries for affected tables
+                self.query_cache.invalidate_tables(&affected_tables);
+
+                Ok(count)
+            }
+            Err(e) => {
+                // Record failed query and rollback
+                self.db_metrics.record_query(start.elapsed(), false);
+                self.db_metrics.record_rollback();
+                Err(e)
+            }
+        }
     }
 
     /// Execute a SQL query and return results.
@@ -440,23 +463,37 @@ impl Database {
             }
         }
 
+        let start = Instant::now();
+
         // Start a read transaction
         let tx = self.begin_read()?;
 
         // Execute the query
-        let result_set = execute_query(&tx, &clean_sql, params)?;
+        let result = execute_query(&tx, &clean_sql, params);
 
-        // Convert the ResultSet to our QueryResult
-        let result = QueryResult::from_result_set(result_set);
+        match result {
+            Ok(result_set) => {
+                // Record successful query
+                self.db_metrics.record_query(start.elapsed(), true);
 
-        // Cache the result if caching is enabled
-        if use_cache {
-            let cache_key = QueryCacheKey::new(&clean_sql, params);
-            let accessed_tables = extract_tables_from_sql(&clean_sql);
-            self.query_cache.insert(cache_key, result.clone(), accessed_tables);
+                // Convert the ResultSet to our QueryResult
+                let result = QueryResult::from_result_set(result_set);
+
+                // Cache the result if caching is enabled
+                if use_cache {
+                    let cache_key = QueryCacheKey::new(&clean_sql, params);
+                    let accessed_tables = extract_tables_from_sql(&clean_sql);
+                    self.query_cache.insert(cache_key, result.clone(), accessed_tables);
+                }
+
+                Ok(result)
+            }
+            Err(e) => {
+                // Record failed query
+                self.db_metrics.record_query(start.elapsed(), false);
+                Err(e)
+            }
         }
-
-        Ok(result)
     }
 
     /// Flush any buffered data to durable storage.
@@ -520,6 +557,63 @@ impl Database {
     /// execute methods.
     pub fn invalidate_cache_for_tables(&self, tables: &[String]) {
         self.query_cache.invalidate_tables(tables);
+    }
+
+    /// Get a snapshot of all database metrics.
+    ///
+    /// Returns a point-in-time snapshot of query, transaction, vector search,
+    /// storage, and cache metrics.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Perform some operations
+    /// db.execute("INSERT INTO users (name) VALUES ('Alice')")?;
+    /// db.query("SELECT * FROM users")?;
+    ///
+    /// // Get metrics snapshot
+    /// let snapshot = db.metrics();
+    /// println!("{}", snapshot);  // Pretty-printed summary
+    ///
+    /// // Access specific metrics
+    /// println!("Queries executed: {}", snapshot.queries.total_queries);
+    /// println!("Cache hit rate: {:?}", snapshot.cache.as_ref().and_then(|c| c.hit_rate()));
+    /// println!("Transactions committed: {}", snapshot.transactions.commits);
+    /// ```
+    #[must_use]
+    pub fn metrics(&self) -> MetricsSnapshot {
+        let mut snapshot = self.db_metrics.snapshot();
+
+        // Include cache metrics from the query cache
+        let cache_snapshot = self.query_cache.metrics().snapshot();
+        snapshot.cache = Some(CacheMetricsSnapshot::from_cache_snapshot(cache_snapshot));
+
+        snapshot
+    }
+
+    /// Get access to the raw metrics instance.
+    ///
+    /// This is useful for custom metric collection or integration with
+    /// external monitoring systems.
+    #[must_use]
+    pub fn raw_metrics(&self) -> Arc<DatabaseMetrics> {
+        Arc::clone(&self.db_metrics)
+    }
+
+    /// Reset all collected metrics.
+    ///
+    /// This is useful for benchmarking or when you want to collect
+    /// metrics for a specific time window.
+    ///
+    /// Note: Storage size metrics are not reset as they represent
+    /// current state rather than accumulated values.
+    pub fn reset_metrics(&self) {
+        self.db_metrics.reset();
+        self.query_cache.metrics().reset();
     }
 }
 

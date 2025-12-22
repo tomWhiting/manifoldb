@@ -48,6 +48,9 @@ sqlparser = "0.52"
 proptest = "1"
 criterion = "0.5"
 
+# Metrics and observability
+metrics = "0.24"
+
 # Workspace-wide lints
 [workspace.lints.rust]
 unsafe_code = "deny"

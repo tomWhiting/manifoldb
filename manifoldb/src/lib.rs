@@ -152,6 +152,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod execution;
+pub mod metrics;
 pub mod schema;
 pub mod transaction;
 pub mod vector;
@@ -160,6 +161,11 @@ pub mod vector;
 pub use config::{Config, DatabaseBuilder};
 pub use database::{Database, FromValue, QueryParams, QueryResult, QueryRow};
 pub use error::{Error, Result};
+pub use metrics::{
+    CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot, QueryMetrics, QueryMetricsSnapshot,
+    StorageMetrics, StorageMetricsSnapshot, TransactionMetrics, TransactionMetricsSnapshot,
+    VectorMetrics, VectorMetricsSnapshot,
+};
 pub use transaction::{
     DatabaseTransaction, TransactionManager, TransactionManagerConfig, VectorSyncStrategy,
 };

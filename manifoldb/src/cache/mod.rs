@@ -28,5 +28,5 @@ mod metrics;
 mod query_cache;
 
 pub use hints::{extract_cache_hint, CacheHint};
-pub use metrics::CacheMetrics;
+pub use metrics::{CacheMetrics, MetricsSnapshot};
 pub use query_cache::{CacheConfig, CacheEntry, QueryCache, QueryCacheKey};
