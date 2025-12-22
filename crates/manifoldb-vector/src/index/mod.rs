@@ -53,6 +53,7 @@
 mod config;
 mod graph;
 mod hnsw;
+mod manager;
 mod persistence;
 pub mod registry;
 mod traits;
@@ -63,6 +64,7 @@ pub use graph::{
     Candidate, HnswGraph, HnswNode,
 };
 pub use hnsw::HnswIndex;
+pub use manager::{HnswIndexManager, RecoveryStatus};
 pub use persistence::{
     clear_index_tx, delete_node, delete_node_tx, load_graph, load_graph_tx, load_metadata,
     load_metadata_tx, load_node, load_node_tx, save_graph, save_graph_tx, save_metadata,

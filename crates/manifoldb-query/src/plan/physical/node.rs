@@ -929,6 +929,11 @@ pub struct HnswSearchNode {
     pub include_distance: bool,
     /// Distance column alias.
     pub distance_alias: Option<String>,
+    /// Name of the HNSW index to use for the search.
+    /// Format: `{collection}_{vector_name}_hnsw`
+    pub index_name: Option<String>,
+    /// Collection name for named vector lookup.
+    pub collection_name: Option<String>,
     /// Estimated cost.
     pub cost: Cost,
 }
@@ -951,6 +956,35 @@ impl HnswSearchNode {
             filter: None,
             include_distance: true,
             distance_alias: None,
+            index_name: None,
+            collection_name: None,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Creates a new HNSW search node for a named vector in a collection.
+    #[must_use]
+    pub fn for_named_vector(
+        collection_name: impl Into<String>,
+        vector_name: impl Into<String>,
+        query_vector: LogicalExpr,
+        metric: DistanceMetric,
+        k: usize,
+    ) -> Self {
+        let collection = collection_name.into();
+        let vector = vector_name.into();
+        let index_name = format!("{collection}_{vector}_hnsw");
+        Self {
+            vector_column: vector,
+            query_vector,
+            metric,
+            k,
+            ef_search: k * 10,
+            filter: None,
+            include_distance: true,
+            distance_alias: None,
+            index_name: Some(index_name),
+            collection_name: Some(collection),
             cost: Cost::default(),
         }
     }
@@ -981,6 +1015,42 @@ impl HnswSearchNode {
     pub fn with_distance_alias(mut self, alias: impl Into<String>) -> Self {
         self.distance_alias = Some(alias.into());
         self
+    }
+
+    /// Sets the HNSW index name to use for this search.
+    #[must_use]
+    pub fn with_index_name(mut self, name: impl Into<String>) -> Self {
+        self.index_name = Some(name.into());
+        self
+    }
+
+    /// Sets the collection name for named vector lookup.
+    #[must_use]
+    pub fn with_collection_name(mut self, name: impl Into<String>) -> Self {
+        self.collection_name = Some(name.into());
+        self
+    }
+
+    /// Sets both collection and generates the index name.
+    #[must_use]
+    pub fn with_collection(mut self, collection: impl Into<String>) -> Self {
+        let collection_name = collection.into();
+        let index_name = format!("{}_{}_hnsw", collection_name, self.vector_column);
+        self.collection_name = Some(collection_name);
+        self.index_name = Some(index_name);
+        self
+    }
+
+    /// Returns the index name if configured.
+    #[must_use]
+    pub fn index_name(&self) -> Option<&str> {
+        self.index_name.as_deref()
+    }
+
+    /// Returns the collection name if configured.
+    #[must_use]
+    pub fn collection_name(&self) -> Option<&str> {
+        self.collection_name.as_deref()
     }
 
     /// Sets the cost estimate.

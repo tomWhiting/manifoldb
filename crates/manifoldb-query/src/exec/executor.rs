@@ -280,7 +280,8 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         // Vector operations
         PhysicalPlan::HnswSearch { node, input } => {
             let input_op = build_operator_tree(input)?;
-            Ok(Box::new(HnswSearchOp::new(
+            Ok(Box::new(HnswSearchOp::with_index(
+                node.index_name.clone(),
                 node.vector_column.clone(),
                 node.query_vector.clone(),
                 node.metric,

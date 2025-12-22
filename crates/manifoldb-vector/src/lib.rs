@@ -80,7 +80,9 @@ pub mod types;
 // Re-export commonly used types
 pub use distance::{chebyshev_distance, manhattan_distance, CachedNorm, DistanceMetric};
 pub use error::VectorError;
-pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
+pub use index::{
+    HnswConfig, HnswIndex, HnswIndexManager, RecoveryStatus, SearchResult, VectorIndex,
+};
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
 pub use quantization::{KMeans, KMeansConfig, PQCode, PQConfig, ProductQuantizer};
 pub use store::{PointStore, SparseVectorStore, VectorStore};
