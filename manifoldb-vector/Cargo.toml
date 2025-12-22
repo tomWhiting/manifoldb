@@ -7,6 +7,13 @@ authors.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["simd"]
+# Enable SIMD-optimized distance calculations (recommended for production)
+simd = []
+# Fallback to scalar implementations (for debugging or platforms without SIMD)
+scalar = []
+
 [dependencies]
 manifoldb-core = { workspace = true }
 manifoldb-storage = { workspace = true }
@@ -14,9 +21,17 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 bincode = { workspace = true }
 
+# SIMD support - portable across x86 (SSE/AVX), ARM (NEON), and WASM
+wide = "0.7"
+
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+rand = "0.8"
+
+[[bench]]
+name = "distance"
+harness = false
 
 [lints]
 workspace = true

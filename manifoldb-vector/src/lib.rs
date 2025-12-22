@@ -77,7 +77,7 @@ pub mod store;
 pub mod types;
 
 // Re-export commonly used types
-pub use distance::DistanceMetric;
+pub use distance::{CachedNorm, DistanceMetric};
 pub use error::VectorError;
 pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
