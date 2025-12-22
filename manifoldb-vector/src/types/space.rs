@@ -172,6 +172,8 @@ impl EmbeddingSpace {
             DistanceMetric::Euclidean => 0,
             DistanceMetric::Cosine => 1,
             DistanceMetric::DotProduct => 2,
+            DistanceMetric::Manhattan => 3,
+            DistanceMetric::Chebyshev => 4,
         });
 
         Ok(bytes)
@@ -227,6 +229,8 @@ impl EmbeddingSpace {
             0 => DistanceMetric::Euclidean,
             1 => DistanceMetric::Cosine,
             2 => DistanceMetric::DotProduct,
+            3 => DistanceMetric::Manhattan,
+            4 => DistanceMetric::Chebyshev,
             _ => {
                 return Err(VectorError::Encoding(format!(
                     "unknown distance metric: {}",
@@ -503,6 +507,8 @@ impl MultiVectorEmbeddingSpace {
             DistanceMetric::Euclidean => 0,
             DistanceMetric::Cosine => 1,
             DistanceMetric::DotProduct => 2,
+            DistanceMetric::Manhattan => 3,
+            DistanceMetric::Chebyshev => 4,
         });
 
         Ok(bytes)
@@ -564,9 +570,183 @@ impl MultiVectorEmbeddingSpace {
             0 => DistanceMetric::Euclidean,
             1 => DistanceMetric::Cosine,
             2 => DistanceMetric::DotProduct,
+            3 => DistanceMetric::Manhattan,
+            4 => DistanceMetric::Chebyshev,
             _ => {
                 return Err(VectorError::Encoding(format!(
                     "unknown distance metric: {}",
+                    metric_byte
+                )))
+            }
+        };
+
+        Ok(Self { name, dimension, distance_metric })
+    }
+}
+
+/// Metadata about a binary embedding space.
+///
+/// A binary embedding space stores bit-packed embeddings for Hamming distance
+/// and related binary metrics. This is useful for:
+/// - Binary quantized embeddings (sign bits of float vectors)
+/// - Binary hashing outputs (SimHash, MinHash)
+/// - Specialized binary embedding models
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_vector::types::{EmbeddingName, BinaryEmbeddingSpace};
+/// use manifoldb_vector::distance::binary::BinaryDistanceMetric;
+///
+/// let name = EmbeddingName::new("binary_embedding").unwrap();
+/// let space = BinaryEmbeddingSpace::new(name, 1024, BinaryDistanceMetric::Hamming);
+///
+/// assert_eq!(space.dimension(), 1024);  // Number of bits
+/// assert_eq!(space.distance_metric(), BinaryDistanceMetric::Hamming);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryEmbeddingSpace {
+    name: EmbeddingName,
+    /// The number of bits in embeddings in this space.
+    dimension: usize,
+    /// The distance metric used for similarity search.
+    distance_metric: crate::distance::binary::BinaryDistanceMetric,
+}
+
+impl BinaryEmbeddingSpace {
+    /// Create a new binary embedding space.
+    #[must_use]
+    pub const fn new(
+        name: EmbeddingName,
+        dimension: usize,
+        distance_metric: crate::distance::binary::BinaryDistanceMetric,
+    ) -> Self {
+        Self { name, dimension, distance_metric }
+    }
+
+    /// Get the name of the embedding space.
+    #[must_use]
+    pub fn name(&self) -> &EmbeddingName {
+        &self.name
+    }
+
+    /// Get the dimension (number of bits) of embeddings in this space.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Get the distance metric used for similarity search.
+    #[must_use]
+    pub fn distance_metric(&self) -> crate::distance::binary::BinaryDistanceMetric {
+        self.distance_metric
+    }
+
+    /// Encode the binary embedding space to bytes.
+    ///
+    /// Format:
+    /// - 1 byte: version (4 for binary)
+    /// - 2 bytes: name length (big-endian u16)
+    /// - N bytes: name (UTF-8)
+    /// - 4 bytes: dimension (big-endian u32)
+    /// - 1 byte: distance metric
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name length exceeds u16::MAX or the dimension exceeds u32::MAX.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, VectorError> {
+        let name_bytes = self.name.as_str().as_bytes();
+        let mut bytes = Vec::with_capacity(8 + name_bytes.len());
+
+        // Version (4 for binary spaces)
+        bytes.push(4);
+
+        // Name length and name
+        let name_len = u16::try_from(name_bytes.len()).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding name too long: {} bytes exceeds maximum of {}",
+                name_bytes.len(),
+                u16::MAX
+            ))
+        })?;
+        bytes.extend_from_slice(&name_len.to_be_bytes());
+        bytes.extend_from_slice(name_bytes);
+
+        // Dimension
+        let dim = u32::try_from(self.dimension).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding dimension too large: {} exceeds maximum of {}",
+                self.dimension,
+                u32::MAX
+            ))
+        })?;
+        bytes.extend_from_slice(&dim.to_be_bytes());
+
+        // Distance metric
+        use crate::distance::binary::BinaryDistanceMetric;
+        bytes.push(match self.distance_metric {
+            BinaryDistanceMetric::Hamming => 0,
+            BinaryDistanceMetric::HammingNormalized => 1,
+            BinaryDistanceMetric::Jaccard => 2,
+        });
+
+        Ok(bytes)
+    }
+
+    /// Decode a binary embedding space from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are invalid or truncated.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, VectorError> {
+        if bytes.is_empty() {
+            return Err(VectorError::Encoding("empty binary embedding space data".to_string()));
+        }
+
+        let version = bytes[0];
+        if version != 4 {
+            return Err(VectorError::Encoding(format!(
+                "unsupported binary embedding space version: {} (expected 4)",
+                version
+            )));
+        }
+
+        if bytes.len() < 3 {
+            return Err(VectorError::Encoding("truncated binary embedding space data".to_string()));
+        }
+
+        // Name length
+        let name_len = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
+
+        if bytes.len() < 3 + name_len + 5 {
+            return Err(VectorError::Encoding("truncated binary embedding space data".to_string()));
+        }
+
+        // Name
+        let name_bytes = &bytes[3..3 + name_len];
+        let name_str = std::str::from_utf8(name_bytes)
+            .map_err(|e| VectorError::Encoding(format!("invalid UTF-8 in name: {}", e)))?;
+        let name = EmbeddingName::new(name_str)?;
+
+        // Dimension
+        let dim_offset = 3 + name_len;
+        let dimension = u32::from_be_bytes([
+            bytes[dim_offset],
+            bytes[dim_offset + 1],
+            bytes[dim_offset + 2],
+            bytes[dim_offset + 3],
+        ]) as usize;
+
+        // Distance metric
+        use crate::distance::binary::BinaryDistanceMetric;
+        let metric_byte = bytes[dim_offset + 4];
+        let distance_metric = match metric_byte {
+            0 => BinaryDistanceMetric::Hamming,
+            1 => BinaryDistanceMetric::HammingNormalized,
+            2 => BinaryDistanceMetric::Jaccard,
+            _ => {
+                return Err(VectorError::Encoding(format!(
+                    "unknown binary distance metric: {}",
                     metric_byte
                 )))
             }
@@ -625,9 +805,13 @@ mod tests {
 
     #[test]
     fn embedding_space_different_metrics() {
-        for metric in
-            [DistanceMetric::Euclidean, DistanceMetric::Cosine, DistanceMetric::DotProduct]
-        {
+        for metric in [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Cosine,
+            DistanceMetric::DotProduct,
+            DistanceMetric::Manhattan,
+            DistanceMetric::Chebyshev,
+        ] {
             let name = EmbeddingName::new("test").unwrap();
             let space = EmbeddingSpace::new(name, 128, metric);
 
@@ -714,9 +898,13 @@ mod tests {
 
     #[test]
     fn multi_vector_embedding_space_different_metrics() {
-        for metric in
-            [DistanceMetric::Euclidean, DistanceMetric::Cosine, DistanceMetric::DotProduct]
-        {
+        for metric in [
+            DistanceMetric::Euclidean,
+            DistanceMetric::Cosine,
+            DistanceMetric::DotProduct,
+            DistanceMetric::Manhattan,
+            DistanceMetric::Chebyshev,
+        ] {
             let name = EmbeddingName::new("test").unwrap();
             let space = MultiVectorEmbeddingSpace::new(name, 128, metric);
 
@@ -737,6 +925,53 @@ mod tests {
     fn multi_vector_embedding_space_from_wrong_version_fails() {
         // Version 1 is for dense spaces, not multi-vector
         let result = MultiVectorEmbeddingSpace::from_bytes(&[1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binary_embedding_space_roundtrip() {
+        use crate::distance::binary::BinaryDistanceMetric;
+
+        let name = EmbeddingName::new("binary_space").unwrap();
+        let space = BinaryEmbeddingSpace::new(name, 1024, BinaryDistanceMetric::Hamming);
+
+        let bytes = space.to_bytes().unwrap();
+        let restored = BinaryEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+        assert_eq!(space.name().as_str(), restored.name().as_str());
+        assert_eq!(space.dimension(), restored.dimension());
+        assert_eq!(space.distance_metric(), restored.distance_metric());
+    }
+
+    #[test]
+    fn binary_embedding_space_different_metrics() {
+        use crate::distance::binary::BinaryDistanceMetric;
+
+        for metric in [
+            BinaryDistanceMetric::Hamming,
+            BinaryDistanceMetric::HammingNormalized,
+            BinaryDistanceMetric::Jaccard,
+        ] {
+            let name = EmbeddingName::new("test").unwrap();
+            let space = BinaryEmbeddingSpace::new(name, 512, metric);
+
+            let bytes = space.to_bytes().unwrap();
+            let restored = BinaryEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+            assert_eq!(space.distance_metric(), restored.distance_metric());
+        }
+    }
+
+    #[test]
+    fn binary_embedding_space_from_empty_bytes_fails() {
+        let result = BinaryEmbeddingSpace::from_bytes(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn binary_embedding_space_from_wrong_version_fails() {
+        // Version 1 is for dense spaces, not binary
+        let result = BinaryEmbeddingSpace::from_bytes(&[1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert!(result.is_err());
     }
 }

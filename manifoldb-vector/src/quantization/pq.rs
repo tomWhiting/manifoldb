@@ -444,6 +444,10 @@ impl ProductQuantizer {
                 let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
                 -dot
             }
+            DistanceMetric::Manhattan => a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum(),
+            DistanceMetric::Chebyshev => {
+                a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+            }
         }
     }
 
@@ -463,6 +467,8 @@ impl ProductQuantizer {
             DistanceMetric::Euclidean => 0,
             DistanceMetric::Cosine => 1,
             DistanceMetric::DotProduct => 2,
+            DistanceMetric::Manhattan => 3,
+            DistanceMetric::Chebyshev => 4,
         });
 
         // Codebooks
@@ -500,6 +506,8 @@ impl ProductQuantizer {
             0 => DistanceMetric::Euclidean,
             1 => DistanceMetric::Cosine,
             2 => DistanceMetric::DotProduct,
+            3 => DistanceMetric::Manhattan,
+            4 => DistanceMetric::Chebyshev,
             m => return Err(VectorError::Encoding(format!("unknown metric: {}", m))),
         };
 

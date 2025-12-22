@@ -560,6 +560,8 @@ fn vector_benchmarks(c: &mut Criterion) {
             DistanceMetric::Cosine => "cosine",
             DistanceMetric::Euclidean => "euclidean",
             DistanceMetric::DotProduct => "dot_product",
+            DistanceMetric::Manhattan => "manhattan",
+            DistanceMetric::Chebyshev => "chebyshev",
         };
         group.bench_with_input(BenchmarkId::new("metric", name), &metric, |b, &metric| {
             let mut rng = Rng::new(42);

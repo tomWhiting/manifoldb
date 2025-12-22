@@ -14,11 +14,24 @@
 //! The SIMD implementations process 8 floats at a time using `f32x8` vectors,
 //! with a scalar fallback for the remainder.
 //!
+//! # Distance Metrics
+//!
+//! - **Euclidean (L2)**: Standard Euclidean distance
+//! - **Cosine**: Angular distance (1 - cosine similarity)
+//! - **Dot Product**: Inner product (negated for distance)
+//! - **Manhattan (L1)**: Sum of absolute differences
+//! - **Chebyshev (L∞)**: Maximum absolute difference
+//!
 //! # Sparse Vectors
 //!
 //! The [`sparse`] module provides efficient distance calculations for sparse vectors,
 //! represented as sorted `(index, value)` pairs. These are optimized for vectors
 //! with few non-zero elements, such as SPLADE embeddings.
+//!
+//! # Binary Vectors
+//!
+//! The [`binary`] module provides efficient distance calculations for bit-packed
+//! binary vectors, using hardware popcount instructions for Hamming distance.
 //!
 //! # Performance
 //!
@@ -29,6 +42,8 @@
 //!
 //! - `simd` (default): Enable SIMD-optimized distance calculations
 //! - `scalar`: Force scalar implementations (useful for debugging)
+
+pub mod binary;
 
 #[cfg(not(feature = "scalar"))]
 mod simd;
@@ -41,14 +56,16 @@ pub mod sparse;
 // Re-export the appropriate implementation
 #[cfg(not(feature = "scalar"))]
 pub use simd::{
-    cosine_distance, cosine_similarity, cosine_similarity_with_norms, dot_product,
-    euclidean_distance, euclidean_distance_squared, l2_norm, sum_of_squares, CachedNorm,
+    chebyshev_distance, cosine_distance, cosine_similarity, cosine_similarity_with_norms,
+    dot_product, euclidean_distance, euclidean_distance_squared, l2_norm, manhattan_distance,
+    sum_of_squares, CachedNorm,
 };
 
 #[cfg(feature = "scalar")]
 pub use scalar::{
-    cosine_distance, cosine_similarity, cosine_similarity_with_norms, dot_product,
-    euclidean_distance, euclidean_distance_squared, l2_norm, sum_of_squares, CachedNorm,
+    chebyshev_distance, cosine_distance, cosine_similarity, cosine_similarity_with_norms,
+    dot_product, euclidean_distance, euclidean_distance_squared, l2_norm, manhattan_distance,
+    sum_of_squares, CachedNorm,
 };
 
 /// Distance metric for comparing vectors.
@@ -60,6 +77,10 @@ pub enum DistanceMetric {
     Cosine,
     /// Dot product (negative, for max similarity).
     DotProduct,
+    /// Manhattan (L1) distance - sum of absolute differences.
+    Manhattan,
+    /// Chebyshev (L∞) distance - maximum absolute difference.
+    Chebyshev,
 }
 
 impl DistanceMetric {
@@ -71,10 +92,15 @@ impl DistanceMetric {
             Self::Euclidean => euclidean_distance(a, b),
             Self::Cosine => cosine_distance(a, b),
             Self::DotProduct => -dot_product(a, b),
+            Self::Manhattan => manhattan_distance(a, b),
+            Self::Chebyshev => chebyshev_distance(a, b),
         }
     }
 
     /// Calculate distance using cached norms (more efficient for repeated queries).
+    ///
+    /// Note: Norms are only used for Cosine distance. For other metrics, the norms
+    /// are ignored and the standard calculation is performed.
     #[inline]
     #[must_use]
     pub fn calculate_with_norms(&self, a: &[f32], b: &[f32], norm_a: f32, norm_b: f32) -> f32 {
@@ -84,6 +110,8 @@ impl DistanceMetric {
                 cosine_similarity_with_norms(a, b, norm_a, norm_b).map_or(1.0, |s| 1.0 - s)
             }
             Self::DotProduct => -dot_product(a, b),
+            Self::Manhattan => manhattan_distance(a, b),
+            Self::Chebyshev => chebyshev_distance(a, b),
         }
     }
 }
@@ -193,6 +221,28 @@ mod tests {
         assert_near(DistanceMetric::Cosine.calculate(&c, &d), 0.0, EPSILON);
 
         assert_near(DistanceMetric::DotProduct.calculate(&a, &b), 0.0, EPSILON);
+
+        // Manhattan distance: |3-0| + |4-0| = 7
+        assert_near(DistanceMetric::Manhattan.calculate(&a, &b), 7.0, EPSILON);
+
+        // Chebyshev distance: max(|3-0|, |4-0|) = 4
+        assert_near(DistanceMetric::Chebyshev.calculate(&a, &b), 4.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_metric() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [4.0, 6.0, 9.0];
+        // |1-4| + |2-6| + |3-9| = 3 + 4 + 6 = 13
+        assert_near(DistanceMetric::Manhattan.calculate(&a, &b), 13.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_metric() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [4.0, 6.0, 9.0];
+        // max(|1-4|, |2-6|, |3-9|) = max(3, 4, 6) = 6
+        assert_near(DistanceMetric::Chebyshev.calculate(&a, &b), 6.0, EPSILON);
     }
 
     #[test]

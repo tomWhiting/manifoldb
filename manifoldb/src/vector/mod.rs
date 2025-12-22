@@ -881,6 +881,10 @@ fn compute_distance_embeddings(a: &Embedding, b: &Embedding, metric: DistanceMet
             }
         }
         DistanceMetric::DotProduct => -a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>(),
+        DistanceMetric::Manhattan => a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum(),
+        DistanceMetric::Chebyshev => {
+            a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        }
     }
 }
 

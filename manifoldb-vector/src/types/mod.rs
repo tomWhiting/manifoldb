@@ -5,17 +5,24 @@
 //! - [`Embedding`] - A validated dense vector embedding with dimension checks
 //! - [`SparseEmbedding`] - A sparse vector embedding (index, value pairs)
 //! - [`MultiVectorEmbedding`] - A multi-vector embedding (ColBERT-style token embeddings)
+//! - [`BinaryEmbedding`] - A binary vector embedding (bit-packed for Hamming distance)
 //! - [`EmbeddingName`] - A named embedding space identifier
 //! - [`EmbeddingSpace`] - Metadata about an embedding space (dimension, distance metric)
 //! - [`SparseEmbeddingSpace`] - Metadata about a sparse embedding space
 //! - [`MultiVectorEmbeddingSpace`] - Metadata about a multi-vector embedding space
+//! - [`BinaryEmbeddingSpace`] - Metadata about a binary embedding space
 
+mod binary;
 mod embedding;
 mod multi;
 mod space;
 mod sparse;
 
+pub use binary::BinaryEmbedding;
 pub use embedding::Embedding;
 pub use multi::MultiVectorEmbedding;
-pub use space::{EmbeddingName, EmbeddingSpace, MultiVectorEmbeddingSpace, SparseEmbeddingSpace};
+pub use space::{
+    BinaryEmbeddingSpace, EmbeddingName, EmbeddingSpace, MultiVectorEmbeddingSpace,
+    SparseEmbeddingSpace,
+};
 pub use sparse::SparseEmbedding;

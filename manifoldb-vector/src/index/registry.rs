@@ -73,6 +73,10 @@ pub enum DistanceMetricSerde {
     Cosine,
     /// Dot product (negated for distance).
     DotProduct,
+    /// Manhattan (L1) distance.
+    Manhattan,
+    /// Chebyshev (L∞) distance.
+    Chebyshev,
 }
 
 impl From<DistanceMetric> for DistanceMetricSerde {
@@ -81,6 +85,8 @@ impl From<DistanceMetric> for DistanceMetricSerde {
             DistanceMetric::Euclidean => Self::Euclidean,
             DistanceMetric::Cosine => Self::Cosine,
             DistanceMetric::DotProduct => Self::DotProduct,
+            DistanceMetric::Manhattan => Self::Manhattan,
+            DistanceMetric::Chebyshev => Self::Chebyshev,
         }
     }
 }
@@ -91,6 +97,8 @@ impl From<DistanceMetricSerde> for DistanceMetric {
             DistanceMetricSerde::Euclidean => Self::Euclidean,
             DistanceMetricSerde::Cosine => Self::Cosine,
             DistanceMetricSerde::DotProduct => Self::DotProduct,
+            DistanceMetricSerde::Manhattan => Self::Manhattan,
+            DistanceMetricSerde::Chebyshev => Self::Chebyshev,
         }
     }
 }

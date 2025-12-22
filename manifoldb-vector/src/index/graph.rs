@@ -130,6 +130,8 @@ impl HnswGraph {
             DistanceMetric::Euclidean => crate::distance::euclidean_distance(a, b),
             DistanceMetric::Cosine => crate::distance::cosine_distance(a, b),
             DistanceMetric::DotProduct => -crate::distance::dot_product(a, b), // Negate for min-distance
+            DistanceMetric::Manhattan => crate::distance::manhattan_distance(a, b),
+            DistanceMetric::Chebyshev => crate::distance::chebyshev_distance(a, b),
         }
     }
 

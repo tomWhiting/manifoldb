@@ -135,6 +135,89 @@ pub fn l2_norm(v: &[f32]) -> f32 {
     sum_of_squares(v).sqrt()
 }
 
+/// Calculate the Manhattan (L1) distance between two vectors.
+///
+/// Manhattan distance is the sum of absolute differences between corresponding elements.
+/// Also known as taxicab distance or city block distance.
+///
+/// # Panics
+///
+/// Debug-panics if vectors have different lengths.
+#[inline]
+#[must_use]
+pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+
+    let len = a.len();
+    let simd_len = len - (len % SIMD_WIDTH);
+
+    let mut sum = f32x8::ZERO;
+
+    // Process 8 elements at a time
+    for i in (0..simd_len).step_by(SIMD_WIDTH) {
+        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
+        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let diff = va - vb;
+        sum += diff.abs();
+    }
+
+    // Horizontal sum of SIMD register
+    let mut result = horizontal_sum(sum);
+
+    // Handle remaining elements
+    for i in simd_len..len {
+        result += (a[i] - b[i]).abs();
+    }
+
+    result
+}
+
+/// Calculate the Chebyshev (L∞) distance between two vectors.
+///
+/// Chebyshev distance is the maximum absolute difference between corresponding elements.
+/// Also known as chessboard distance or L-infinity norm.
+///
+/// # Panics
+///
+/// Debug-panics if vectors have different lengths.
+#[inline]
+#[must_use]
+pub fn chebyshev_distance(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+
+    let len = a.len();
+    let simd_len = len - (len % SIMD_WIDTH);
+
+    let mut max_simd = f32x8::ZERO;
+
+    // Process 8 elements at a time
+    for i in (0..simd_len).step_by(SIMD_WIDTH) {
+        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
+        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let diff = (va - vb).abs();
+        max_simd = max_simd.max(diff);
+    }
+
+    // Horizontal max of SIMD register
+    let mut result = horizontal_max(max_simd);
+
+    // Handle remaining elements
+    for i in simd_len..len {
+        result = result.max((a[i] - b[i]).abs());
+    }
+
+    result
+}
+
+/// Horizontal max of an f32x8 SIMD register.
+///
+/// This finds the maximum of all 8 f32 values in the register.
+#[inline]
+fn horizontal_max(v: f32x8) -> f32 {
+    let arr: [f32; 8] = v.to_array();
+    arr.iter().copied().fold(f32::MIN, f32::max)
+}
+
 /// Calculate the cosine similarity between two vectors.
 ///
 /// Returns a value in the range [-1, 1] where:
@@ -420,5 +503,91 @@ mod tests {
     fn test_horizontal_sum() {
         let v = f32x8::new([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         assert_near(horizontal_sum(v), 36.0, EPSILON);
+    }
+
+    #[test]
+    fn test_horizontal_max() {
+        let v = f32x8::new([1.0, 8.0, 3.0, 4.0, 5.0, 6.0, 7.0, 2.0]);
+        assert_near(horizontal_max(v), 8.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_small() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_near(manhattan_distance(&a, &b), 7.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_simd_aligned() {
+        // 8 elements - exactly one SIMD iteration
+        let a = [0.0; 8];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        // Sum of 1..8 = 36
+        assert_near(manhattan_distance(&a, &b), 36.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_mixed() {
+        // 10 elements - one SIMD iteration + 2 remainder
+        let a = [0.0; 10];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        // Sum of 1..10 = 55
+        assert_near(manhattan_distance(&a, &b), 55.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_large() {
+        // 1536-dim vectors
+        let a: Vec<f32> = (0..1536).map(|i| i as f32).collect();
+        let b: Vec<f32> = (0..1536).map(|i| (i + 1) as f32).collect();
+
+        let dist = manhattan_distance(&a, &b);
+        // All differences are 1, so sum = 1536
+        assert_near(dist, 1536.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_small() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_near(chebyshev_distance(&a, &b), 4.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_simd_aligned() {
+        // 8 elements - exactly one SIMD iteration
+        let a = [0.0; 8];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        // Max of 1..8 = 8
+        assert_near(chebyshev_distance(&a, &b), 8.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_mixed() {
+        // 10 elements - one SIMD iteration + 2 remainder
+        let a = [0.0; 10];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        // Max of 1..10 = 10
+        assert_near(chebyshev_distance(&a, &b), 10.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_max_in_remainder() {
+        // 10 elements - max is in the remainder portion
+        let a = [0.0; 10];
+        let b = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 100.0, 10.0];
+        assert_near(chebyshev_distance(&a, &b), 100.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_large() {
+        // 1536-dim vectors
+        let a: Vec<f32> = (0..1536).map(|_| 0.0).collect();
+        let mut b: Vec<f32> = (0..1536).map(|i| i as f32 * 0.001).collect();
+        b[1000] = 999.0; // Set a large value in the middle
+
+        let dist = chebyshev_distance(&a, &b);
+        assert_near(dist, 999.0, EPSILON);
     }
 }

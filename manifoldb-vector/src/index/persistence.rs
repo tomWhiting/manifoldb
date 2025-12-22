@@ -110,6 +110,8 @@ impl IndexMetadata {
             DistanceMetric::Euclidean => 0,
             DistanceMetric::Cosine => 1,
             DistanceMetric::DotProduct => 2,
+            DistanceMetric::Manhattan => 3,
+            DistanceMetric::Chebyshev => 4,
         });
 
         // Entry point (1 byte flag + 8 bytes if present)
@@ -179,6 +181,8 @@ impl IndexMetadata {
             0 => DistanceMetric::Euclidean,
             1 => DistanceMetric::Cosine,
             2 => DistanceMetric::DotProduct,
+            3 => DistanceMetric::Manhattan,
+            4 => DistanceMetric::Chebyshev,
             b => return Err(VectorError::Encoding(format!("unknown distance metric: {b}"))),
         };
         pos += 1;

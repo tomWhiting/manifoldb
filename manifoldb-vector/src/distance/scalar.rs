@@ -59,6 +59,36 @@ pub fn l2_norm(v: &[f32]) -> f32 {
     sum_of_squares(v).sqrt()
 }
 
+/// Calculate the Manhattan (L1) distance between two vectors.
+///
+/// Manhattan distance is the sum of absolute differences between corresponding elements.
+/// Also known as taxicab distance or city block distance.
+///
+/// # Panics
+///
+/// Debug-panics if vectors have different lengths.
+#[inline]
+#[must_use]
+pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum()
+}
+
+/// Calculate the Chebyshev (L∞) distance between two vectors.
+///
+/// Chebyshev distance is the maximum absolute difference between corresponding elements.
+/// Also known as chessboard distance or L-infinity norm.
+///
+/// # Panics
+///
+/// Debug-panics if vectors have different lengths.
+#[inline]
+#[must_use]
+pub fn chebyshev_distance(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+}
+
 /// Calculate the cosine similarity between two vectors.
 ///
 /// Returns a value in the range [-1, 1] where:
@@ -195,5 +225,41 @@ mod tests {
         let a = [1.0, 2.0, 3.0];
         let b = [4.0, 5.0, 6.0];
         assert_near(dot_product(&a, &b), 32.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_near(manhattan_distance(&a, &b), 7.0, EPSILON);
+    }
+
+    #[test]
+    fn test_manhattan_distance_negative() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [-1.0, -2.0, -3.0];
+        // |1-(-1)| + |2-(-2)| + |3-(-3)| = 2 + 4 + 6 = 12
+        assert_near(manhattan_distance(&a, &b), 12.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance() {
+        let a = [0.0, 0.0];
+        let b = [3.0, 4.0];
+        assert_near(chebyshev_distance(&a, &b), 4.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_negative() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [-1.0, -2.0, -10.0];
+        // max(|1-(-1)|, |2-(-2)|, |3-(-10)|) = max(2, 4, 13) = 13
+        assert_near(chebyshev_distance(&a, &b), 13.0, EPSILON);
+    }
+
+    #[test]
+    fn test_chebyshev_distance_identical() {
+        let a = [1.0, 2.0, 3.0];
+        assert_near(chebyshev_distance(&a, &a), 0.0, EPSILON);
     }
 }

@@ -244,10 +244,13 @@ impl VectorOperator for ExactKnn {
 
 /// Compute distance between two vectors using the specified metric.
 fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
+    use crate::distance::{chebyshev_distance, manhattan_distance};
     match metric {
         DistanceMetric::Euclidean => euclidean_distance(a, b),
         DistanceMetric::Cosine => cosine_distance(a, b),
         DistanceMetric::DotProduct => -dot_product(a, b), // Negate for min-distance
+        DistanceMetric::Manhattan => manhattan_distance(a, b),
+        DistanceMetric::Chebyshev => chebyshev_distance(a, b),
     }
 }
 
