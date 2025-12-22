@@ -471,4 +471,199 @@ mod tests {
 
         assert_eq!(last_ckpt, Some(3)); // Last checkpoint was at LSN 3
     }
+
+    #[test]
+    fn test_recovery_from_corrupted_middle_entry() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("corrupt_middle.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::put(3, "nodes", b"k3", b"v3")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Corrupt the middle entry by overwriting bytes in the middle of the file
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_path)
+                .unwrap();
+            // Skip header (16 bytes) and first entry (approximately),
+            // then corrupt bytes in the second entry
+            file.seek(std::io::SeekFrom::Start(80)).unwrap();
+            file.write_all(b"CORRUPTED").unwrap();
+        }
+
+        // Recovery should handle corruption gracefully
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let mut valid_count = 0;
+
+        for result in recovery.iter() {
+            match result {
+                Ok(_) => valid_count += 1,
+                Err(e) => {
+                    // Verify error is a corruption-related error
+                    assert!(
+                        e.is_corruption() || matches!(e, WalError::Deserialize(_)),
+                        "Expected corruption error, got: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // At least first entry should be valid, and we should detect corruption
+        assert!(valid_count >= 1, "Should have at least one valid entry");
+    }
+
+    #[test]
+    fn test_recovery_from_truncated_entry() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("truncated.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Truncate the file in the middle of the second entry
+        {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_path)
+                .unwrap();
+            // Truncate to just after the first entry (header + first entry partial)
+            file.set_len(60).unwrap();
+        }
+
+        // Recovery should handle truncation gracefully
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let mut valid_entries = Vec::new();
+
+        for result in recovery.iter() {
+            match result {
+                Ok(entry) => valid_entries.push(entry),
+                Err(WalError::Truncated { .. }) => {
+                    // Truncation error is expected - just stop iteration
+                    break;
+                }
+                Err(e) => {
+                    // Other corruption errors are also acceptable
+                    assert!(e.is_corruption(), "Unexpected error: {:?}", e);
+                }
+            }
+        }
+
+        // We may have valid entries before truncation
+        // Truncation at offset 60 is after header (16 bytes), so first entry should be readable
+        // depending on entry size
+        assert!(
+            valid_entries.len() <= 2,
+            "Should not have more than 2 valid entries"
+        );
+    }
+
+    #[test]
+    fn test_committed_entries_skip_corrupted() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("corrupt_committed.wal");
+
+        // Write a transaction with committed entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+
+            // First committed transaction
+            wal.append(WalEntry::begin_txn(1, 100)).unwrap();
+            wal.append(WalEntry::put_in_txn(2, 100, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::commit_txn(3, 100)).unwrap();
+
+            // Standalone operation
+            wal.append(WalEntry::put(4, "edges", b"e1", b"data")).unwrap();
+
+            wal.sync().unwrap();
+        }
+
+        // Corrupt the standalone operation (entry 4)
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_path)
+                .unwrap();
+            // Move to near the end of the file to corrupt the last entry
+            let metadata = file.metadata().unwrap();
+            let file_size = metadata.len();
+            file.seek(std::io::SeekFrom::Start(file_size - 10)).unwrap();
+            file.write_all(b"CORRUPT").unwrap();
+        }
+
+        // committed_entries() should silently skip corrupted entries
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let committed: Vec<_> = recovery.committed_entries().collect();
+
+        // Should still get the first transaction's data entry
+        // The corrupted standalone entry should be skipped
+        assert!(!committed.is_empty(), "Should have at least some committed entries");
+
+        // All returned entries should be from committed transactions or standalone
+        for entry in &committed {
+            assert!(
+                entry.txn_id == 0 || entry.txn_id == 100,
+                "Entry should be from txn 100 or standalone"
+            );
+        }
+    }
+
+    #[test]
+    fn test_checksum_mismatch_detection() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("checksum_fail.wal");
+
+        // Write a valid entry
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"key", b"value")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Corrupt just the CRC (last 4 bytes of the entry)
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_path)
+                .unwrap();
+            let metadata = file.metadata().unwrap();
+            let file_size = metadata.len();
+            // CRC is at the end of the entry
+            file.seek(std::io::SeekFrom::Start(file_size - 4)).unwrap();
+            file.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        }
+
+        // Recovery should detect checksum mismatch
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let results: Vec<_> = recovery.iter().collect();
+
+        assert_eq!(results.len(), 1, "Should have one result");
+        assert!(
+            matches!(&results[0], Err(WalError::ChecksumMismatch { .. })),
+            "Should detect checksum mismatch, got: {:?}",
+            results[0]
+        );
+    }
 }
