@@ -78,6 +78,18 @@ pub mod names {
 
     /// Table for storing metadata (counters, schema info, etc.).
     pub const METADATA: &str = "metadata";
+
+    /// Table for storing HNSW index registry (maps index name to configuration).
+    pub const HNSW_REGISTRY: &str = "hnsw_registry";
+}
+
+/// Generate an HNSW index table name from the index name.
+///
+/// HNSW indexes use a naming convention: `hnsw_{index_name}`
+/// This allows multiple HNSW indexes to coexist in the same database.
+#[must_use]
+pub fn hnsw_table_name(index_name: &str) -> String {
+    format!("hnsw_{index_name}")
 }
 
 #[cfg(test)]

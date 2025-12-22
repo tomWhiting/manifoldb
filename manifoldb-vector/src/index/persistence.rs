@@ -474,6 +474,232 @@ pub fn save_graph<E: StorageEngine>(
     Ok(())
 }
 
+// =============================================================================
+// Transaction-aware persistence functions
+// =============================================================================
+// These functions accept an existing transaction reference, allowing HNSW
+// operations to be batched within a larger transaction (e.g., during DML).
+
+/// Save index metadata within an existing transaction.
+pub fn save_metadata_tx<T: Transaction>(
+    tx: &mut T,
+    table: &str,
+    metadata: &IndexMetadata,
+) -> Result<(), VectorError> {
+    tx.put(table, &encode_meta_key(), &metadata.to_bytes())?;
+    Ok(())
+}
+
+/// Load index metadata within an existing transaction.
+pub fn load_metadata_tx<T: Transaction>(
+    tx: &T,
+    table: &str,
+) -> Result<Option<IndexMetadata>, VectorError> {
+    match tx.get(table, &encode_meta_key())? {
+        Some(bytes) => Ok(Some(IndexMetadata::from_bytes(&bytes)?)),
+        None => Ok(None),
+    }
+}
+
+/// Save a single node within an existing transaction.
+pub fn save_node_tx<T: Transaction>(
+    tx: &mut T,
+    table: &str,
+    node: &HnswNode,
+) -> Result<(), VectorError> {
+    // Save node data
+    let node_data = NodeData { embedding: node.embedding.clone(), max_layer: node.max_layer };
+    tx.put(table, &encode_node_key(node.entity_id), &node_data.to_bytes())?;
+
+    // Save connections for each layer
+    for (layer, neighbors) in node.connections.iter().enumerate() {
+        let key = encode_connections_key(node.entity_id, layer);
+        tx.put(table, &key, &serialize_connections(neighbors))?;
+    }
+
+    Ok(())
+}
+
+/// Load a single node within an existing transaction.
+pub fn load_node_tx<T: Transaction>(
+    tx: &T,
+    table: &str,
+    entity_id: EntityId,
+) -> Result<Option<HnswNode>, VectorError> {
+    // Load node data
+    let node_data = match tx.get(table, &encode_node_key(entity_id))? {
+        Some(bytes) => NodeData::from_bytes(&bytes)?,
+        None => return Ok(None),
+    };
+
+    // Load connections for each layer
+    let mut connections = Vec::with_capacity(node_data.max_layer + 1);
+    for layer in 0..=node_data.max_layer {
+        let key = encode_connections_key(entity_id, layer);
+        let neighbors = match tx.get(table, &key)? {
+            Some(bytes) => deserialize_connections(&bytes)?,
+            None => Vec::new(),
+        };
+        connections.push(neighbors);
+    }
+
+    Ok(Some(HnswNode {
+        entity_id,
+        embedding: node_data.embedding,
+        max_layer: node_data.max_layer,
+        connections,
+    }))
+}
+
+/// Delete a node within an existing transaction.
+pub fn delete_node_tx<T: Transaction>(
+    tx: &mut T,
+    table: &str,
+    entity_id: EntityId,
+    max_layer: usize,
+) -> Result<bool, VectorError> {
+    // Delete node data
+    let existed = tx.delete(table, &encode_node_key(entity_id))?;
+
+    // Delete connections for each layer
+    for layer in 0..=max_layer {
+        let key = encode_connections_key(entity_id, layer);
+        tx.delete(table, &key)?;
+    }
+
+    Ok(existed)
+}
+
+/// Update the connections for a node at a specific layer within an existing transaction.
+pub fn update_connections_tx<T: Transaction>(
+    tx: &mut T,
+    table: &str,
+    entity_id: EntityId,
+    layer: usize,
+    neighbors: &[EntityId],
+) -> Result<(), VectorError> {
+    let key = encode_connections_key(entity_id, layer);
+    tx.put(table, &key, &serialize_connections(neighbors))?;
+    Ok(())
+}
+
+/// Load the entire graph within an existing transaction.
+pub fn load_graph_tx<T: Transaction>(
+    tx: &T,
+    table: &str,
+    metadata: &IndexMetadata,
+) -> Result<HnswGraph, VectorError> {
+    let mut graph = HnswGraph::new(metadata.dimension, metadata.distance_metric);
+    graph.entry_point = metadata.entry_point;
+    graph.max_layer = metadata.max_layer;
+
+    // Scan for all node keys
+    let node_prefix = [PREFIX_HNSW_NODE];
+    let node_end = [PREFIX_HNSW_NODE + 1];
+
+    let mut cursor = tx.range(
+        table,
+        std::ops::Bound::Included(&node_prefix[..]),
+        std::ops::Bound::Excluded(&node_end[..]),
+    )?;
+
+    // First pass: collect entity IDs
+    let mut entity_ids = Vec::new();
+    while let Some((key, _)) = cursor.next()? {
+        if let Some(entity_id) = decode_node_key(&key) {
+            entity_ids.push(entity_id);
+        }
+    }
+
+    // Second pass: load full nodes
+    for entity_id in entity_ids {
+        if let Some(node) = load_node_tx(tx, table, entity_id)? {
+            graph.nodes.insert(entity_id, node);
+        }
+    }
+
+    Ok(graph)
+}
+
+/// Save the entire graph within an existing transaction.
+pub fn save_graph_tx<T: Transaction>(
+    tx: &mut T,
+    table: &str,
+    graph: &HnswGraph,
+    config: &HnswConfig,
+) -> Result<(), VectorError> {
+    // Save metadata
+    let metadata = IndexMetadata {
+        dimension: graph.dimension,
+        distance_metric: graph.distance_metric,
+        entry_point: graph.entry_point,
+        max_layer: graph.max_layer,
+        m: config.m,
+        m_max0: config.m_max0,
+        ef_construction: config.ef_construction,
+        ef_search: config.ef_search,
+        ml_bits: config.ml.to_bits(),
+    };
+    save_metadata_tx(tx, table, &metadata)?;
+
+    // Save all nodes
+    for node in graph.nodes.values() {
+        save_node_tx(tx, table, node)?;
+    }
+
+    Ok(())
+}
+
+/// Clear all index data within an existing transaction.
+///
+/// This removes all keys for the given index table.
+pub fn clear_index_tx<T: Transaction>(tx: &mut T, table: &str) -> Result<(), VectorError> {
+    // Delete metadata
+    let _ = tx.delete(table, &encode_meta_key());
+
+    // Find and delete all node and connection keys
+    let node_prefix = [PREFIX_HNSW_NODE];
+    let connection_prefix = [PREFIX_HNSW_CONNECTIONS];
+
+    // We need to collect keys first since we can't mutate while iterating
+    let mut keys_to_delete = Vec::new();
+
+    // Collect node keys
+    {
+        let node_end = [PREFIX_HNSW_NODE + 1];
+        let mut cursor = tx.range(
+            table,
+            std::ops::Bound::Included(&node_prefix[..]),
+            std::ops::Bound::Excluded(&node_end[..]),
+        )?;
+
+        while let Some((key, _)) = cursor.next()? {
+            keys_to_delete.push(key.clone());
+        }
+    }
+
+    // Collect connection keys
+    {
+        let connection_end = [PREFIX_HNSW_CONNECTIONS + 1];
+        let mut cursor = tx.range(
+            table,
+            std::ops::Bound::Included(&connection_prefix[..]),
+            std::ops::Bound::Excluded(&connection_end[..]),
+        )?;
+
+        while let Some((key, _)) = cursor.next()? {
+            keys_to_delete.push(key.clone());
+        }
+    }
+
+    // Delete all collected keys
+    for key in keys_to_delete {
+        tx.delete(table, &key)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

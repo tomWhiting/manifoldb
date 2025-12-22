@@ -461,6 +461,23 @@ impl<T: Transaction> DatabaseTransaction<T> {
     }
 
     // ========================================================================
+    // Low-Level Storage Access
+    // ========================================================================
+
+    /// Get a mutable reference to the underlying storage transaction for direct access.
+    ///
+    /// This is useful for advanced operations like vector index maintenance that
+    /// need low-level access to the storage layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction is read-only or has already been
+    /// committed/rolled back.
+    pub fn storage_mut_ref(&mut self) -> Result<&mut T, TransactionError> {
+        self.storage_mut()
+    }
+
+    // ========================================================================
     // Transaction Lifecycle
     // ========================================================================
 

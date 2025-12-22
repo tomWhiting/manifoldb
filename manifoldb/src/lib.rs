@@ -152,6 +152,7 @@ pub mod error;
 pub mod execution;
 pub mod schema;
 pub mod transaction;
+pub mod vector;
 
 // Public API re-exports
 pub use config::{Config, DatabaseBuilder};

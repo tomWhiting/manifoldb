@@ -54,6 +54,7 @@ mod config;
 mod graph;
 mod hnsw;
 mod persistence;
+pub mod registry;
 mod traits;
 
 pub use config::HnswConfig;
@@ -62,4 +63,12 @@ pub use graph::{
     HnswNode,
 };
 pub use hnsw::HnswIndex;
+pub use persistence::{
+    clear_index_tx, delete_node, delete_node_tx, load_graph, load_graph_tx, load_metadata,
+    load_metadata_tx, load_node, load_node_tx, save_graph, save_graph_tx, save_metadata,
+    save_metadata_tx, save_node, save_node_tx, table_name as hnsw_table_name, update_connections,
+    update_connections_tx, IndexMetadata, NodeData, PREFIX_HNSW_CONNECTIONS, PREFIX_HNSW_META,
+    PREFIX_HNSW_NODE,
+};
+pub use registry::{EmbeddingLookup, HnswIndexEntry, HnswRegistry, HNSW_REGISTRY_TABLE};
 pub use traits::{SearchResult, VectorIndex};

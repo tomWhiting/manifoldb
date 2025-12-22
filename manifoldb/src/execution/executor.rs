@@ -1094,6 +1094,10 @@ fn execute_insert<T: Transaction>(
             }
 
             tx.put_entity(&entity).map_err(Error::Transaction)?;
+
+            // Update HNSW indexes for this entity (silently ignore errors for now)
+            let _ = crate::vector::update_entity_in_indexes(tx, &entity, None);
+
             count += 1;
         }
     }
@@ -1114,7 +1118,7 @@ fn execute_update<T: Transaction>(
 
     let mut count = 0;
 
-    for mut entity in entities {
+    for entity in entities {
         // Check if entity matches filter
         let matches = match filter {
             Some(pred) => evaluate_predicate(pred, &entity, ctx),
@@ -1122,13 +1126,21 @@ fn execute_update<T: Transaction>(
         };
 
         if matches {
+            // Clone the old entity before modifying
+            let old_entity = entity.clone();
+            let mut updated_entity = entity;
+
             // Apply assignments
             for (col, expr) in assignments {
-                let value = evaluate_expr(expr, &entity, ctx);
-                entity.set_property(col, value);
+                let value = evaluate_expr(expr, &updated_entity, ctx);
+                updated_entity.set_property(col, value);
             }
 
-            tx.put_entity(&entity).map_err(Error::Transaction)?;
+            tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
+
+            // Update HNSW indexes for this entity (silently ignore errors for now)
+            let _ = crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity));
+
             count += 1;
         }
     }
@@ -1151,11 +1163,14 @@ fn execute_delete<T: Transaction>(
     for entity in entities {
         // Check if entity matches filter
         let matches = match filter {
-            Some(pred) => evaluate_predicate(&pred, &entity, ctx),
+            Some(pred) => evaluate_predicate(pred, &entity, ctx),
             None => true,
         };
 
         if matches {
+            // Remove from HNSW indexes before deleting (silently ignore errors for now)
+            let _ = crate::vector::remove_entity_from_indexes(tx, &entity);
+
             tx.delete_entity(entity.id).map_err(Error::Transaction)?;
             count += 1;
         }
@@ -1604,10 +1619,85 @@ fn execute_create_index<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     node: &CreateIndexNode,
 ) -> Result<u64> {
+    // Store schema metadata
     SchemaManager::create_index(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
-    // Note: Actually building the index would require additional implementation
-    // For now, we just store the index metadata
+
+    // Check if this is an HNSW index
+    if let Some(using) = &node.using {
+        if using.eq_ignore_ascii_case("hnsw") {
+            build_hnsw_index(tx, node)?;
+        }
+    }
+
     Ok(0)
+}
+
+/// Build an HNSW index from the CREATE INDEX node.
+fn build_hnsw_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateIndexNode,
+) -> Result<()> {
+    use crate::vector::HnswIndexBuilder;
+    use manifoldb_vector::distance::DistanceMetric;
+
+    // Extract the column name from the first index column
+    let column_name =
+        node.columns.first().map(|c| extract_column_name_from_expr(&c.expr)).ok_or_else(|| {
+            Error::Execution("HNSW index requires exactly one column".to_string())
+        })?;
+
+    // Parse options from WITH clause
+    let mut builder = HnswIndexBuilder::new(&node.name, &node.table, column_name);
+
+    for (key, value) in &node.with {
+        let key_lower = key.to_lowercase();
+        match key_lower.as_str() {
+            "m" => {
+                if let Ok(m) = value.parse::<usize>() {
+                    builder = builder.m(m);
+                }
+            }
+            "ef_construction" => {
+                if let Ok(ef) = value.parse::<usize>() {
+                    builder = builder.ef_construction(ef);
+                }
+            }
+            "ef_search" => {
+                if let Ok(ef) = value.parse::<usize>() {
+                    builder = builder.ef_search(ef);
+                }
+            }
+            "dimension" | "dimensions" => {
+                if let Ok(dim) = value.parse::<usize>() {
+                    builder = builder.dimension(dim);
+                }
+            }
+            "distance" | "metric" | "distance_metric" => {
+                let metric = match value.to_lowercase().as_str() {
+                    "euclidean" | "l2" => DistanceMetric::Euclidean,
+                    "cosine" => DistanceMetric::Cosine,
+                    "dot" | "inner_product" | "ip" => DistanceMetric::DotProduct,
+                    _ => DistanceMetric::Cosine, // Default
+                };
+                builder = builder.distance_metric(metric);
+            }
+            _ => {
+                // Ignore unknown options
+            }
+        }
+    }
+
+    builder.build(tx).map_err(|e| Error::Execution(e.to_string()))
+}
+
+/// Extract column name from an index column expression.
+fn extract_column_name_from_expr(expr: &manifoldb_query::ast::Expr) -> String {
+    match expr {
+        manifoldb_query::ast::Expr::Column(qn) => {
+            qn.parts.last().map(|p| p.name.clone()).unwrap_or_default()
+        }
+        _ => format!("{expr:?}"),
+    }
 }
 
 /// Execute a DROP INDEX statement.
@@ -1616,6 +1706,10 @@ fn execute_drop_index<T: Transaction>(
     node: &DropIndexNode,
 ) -> Result<u64> {
     for index_name in &node.names {
+        // Check if this is an HNSW index and drop it
+        let _ = crate::vector::drop_index(tx, index_name, true);
+
+        // Drop from schema manager
         SchemaManager::drop_index(tx, index_name, node.if_exists)
             .map_err(|e| Error::Execution(e.to_string()))?;
     }
