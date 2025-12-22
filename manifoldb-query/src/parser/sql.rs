@@ -53,20 +53,20 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
     match stmt {
         sp::Statement::Query(query) => {
             let select = convert_query(*query)?;
-            Ok(Statement::Select(select))
+            Ok(Statement::Select(Box::new(select)))
         }
         sp::Statement::Insert(insert) => {
             let insert_stmt = convert_insert(insert)?;
-            Ok(Statement::Insert(insert_stmt))
+            Ok(Statement::Insert(Box::new(insert_stmt)))
         }
         sp::Statement::Update { table, assignments, from, selection, returning } => {
             let from_vec = from.map(|t| vec![t]);
             let update_stmt = convert_update(table, assignments, from_vec, selection, returning)?;
-            Ok(Statement::Update(update_stmt))
+            Ok(Statement::Update(Box::new(update_stmt)))
         }
         sp::Statement::Delete(delete) => {
             let delete_stmt = convert_delete(delete)?;
-            Ok(Statement::Delete(delete_stmt))
+            Ok(Statement::Delete(Box::new(delete_stmt)))
         }
         sp::Statement::CreateTable(create) => {
             let create_stmt = convert_create_table(create)?;
@@ -74,7 +74,7 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         }
         sp::Statement::CreateIndex(create) => {
             let create_stmt = convert_create_index(create)?;
-            Ok(Statement::CreateIndex(create_stmt))
+            Ok(Statement::CreateIndex(Box::new(create_stmt)))
         }
         sp::Statement::Drop { object_type, if_exists, names, cascade, .. } => match object_type {
             sp::ObjectType::Table => {

@@ -28,18 +28,21 @@ use super::cost::Cost;
 ///
 /// This is a tree structure where each node represents a concrete
 /// execution operator with a specific algorithm choice.
+///
+/// Large node types are boxed to reduce enum size overhead. This improves
+/// memory efficiency when many `PhysicalPlan` instances are created during
+/// query optimization and execution.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
 pub enum PhysicalPlan {
     // ========== Scan Operations ==========
-    /// Full table scan (reads all rows).
-    FullScan(FullScanNode),
+    /// Full table scan (boxed - 136 bytes unboxed).
+    FullScan(Box<FullScanNode>),
 
-    /// Index point lookup.
-    IndexScan(IndexScanNode),
+    /// Index point lookup (boxed - 136 bytes unboxed).
+    IndexScan(Box<IndexScanNode>),
 
-    /// Index range scan.
-    IndexRangeScan(IndexRangeScanNode),
+    /// Index range scan (boxed - 216 bytes unboxed).
+    IndexRangeScan(Box<IndexRangeScanNode>),
 
     /// Values source (inline data).
     Values {
@@ -98,18 +101,18 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
 
-    /// Hash-based aggregation.
+    /// Hash-based aggregation (boxed node - 112 bytes unboxed).
     HashAggregate {
         /// Aggregation configuration.
-        node: HashAggregateNode,
+        node: Box<HashAggregateNode>,
         /// Input plan.
         input: Box<PhysicalPlan>,
     },
 
-    /// Sort-merge based aggregation.
+    /// Sort-merge based aggregation (boxed node - 112 bytes unboxed).
     SortMergeAggregate {
         /// Aggregation configuration.
-        node: SortMergeAggregateNode,
+        node: Box<SortMergeAggregateNode>,
         /// Input plan.
         input: Box<PhysicalPlan>,
     },
@@ -125,20 +128,20 @@ pub enum PhysicalPlan {
         right: Box<PhysicalPlan>,
     },
 
-    /// Hash join.
+    /// Hash join (boxed node - 120 bytes unboxed).
     HashJoin {
         /// Join configuration.
-        node: HashJoinNode,
+        node: Box<HashJoinNode>,
         /// Build side input.
         build: Box<PhysicalPlan>,
         /// Probe side input.
         probe: Box<PhysicalPlan>,
     },
 
-    /// Sort-merge join.
+    /// Sort-merge join (boxed node - 120 bytes unboxed).
     MergeJoin {
         /// Join configuration.
-        node: MergeJoinNode,
+        node: Box<MergeJoinNode>,
         /// Left input (must be sorted).
         left: Box<PhysicalPlan>,
         /// Right input (must be sorted).
@@ -169,35 +172,35 @@ pub enum PhysicalPlan {
     },
 
     // ========== Vector Operations ==========
-    /// HNSW-based approximate nearest neighbor search.
+    /// HNSW-based approximate nearest neighbor search (boxed node - 184 bytes unboxed).
     HnswSearch {
         /// HNSW search configuration.
-        node: HnswSearchNode,
+        node: Box<HnswSearchNode>,
         /// Input plan (source table).
         input: Box<PhysicalPlan>,
     },
 
-    /// Brute-force vector search.
+    /// Brute-force vector search (boxed node - 176 bytes unboxed).
     BruteForceSearch {
         /// Brute-force search configuration.
-        node: BruteForceSearchNode,
+        node: Box<BruteForceSearchNode>,
         /// Input plan (source table).
         input: Box<PhysicalPlan>,
     },
 
     // ========== Graph Operations ==========
-    /// Graph edge expansion.
+    /// Graph edge expansion (boxed node - 264 bytes unboxed).
     GraphExpand {
         /// Expand configuration.
-        node: GraphExpandExecNode,
+        node: Box<GraphExpandExecNode>,
         /// Input plan (source nodes).
         input: Box<PhysicalPlan>,
     },
 
-    /// Graph path scan (multi-hop pattern).
+    /// Graph path scan (boxed node - 96 bytes unboxed).
     GraphPathScan {
         /// Path scan configuration.
-        node: GraphPathScanExecNode,
+        node: Box<GraphPathScanExecNode>,
         /// Input plan (starting nodes).
         input: Box<PhysicalPlan>,
     },
@@ -1677,7 +1680,7 @@ mod tests {
     fn physical_plan_tree() {
         let plan = PhysicalPlan::Filter {
             node: FilterExecNode::new(LogicalExpr::column("age").gt(LogicalExpr::integer(21))),
-            input: Box::new(PhysicalPlan::FullScan(FullScanNode::new("users"))),
+            input: Box::new(PhysicalPlan::FullScan(Box::new(FullScanNode::new("users")))),
         };
 
         assert_eq!(plan.node_type(), "Filter");
@@ -1696,7 +1699,7 @@ mod tests {
                 node: FilterExecNode::new(
                     LogicalExpr::column("active").eq(LogicalExpr::boolean(true)),
                 ),
-                input: Box::new(PhysicalPlan::FullScan(FullScanNode::new("users"))),
+                input: Box::new(PhysicalPlan::FullScan(Box::new(FullScanNode::new("users")))),
             }),
         };
 
@@ -1722,9 +1725,9 @@ mod tests {
         let plan = PhysicalPlan::Filter {
             node: FilterExecNode::new(LogicalExpr::column("a").eq(LogicalExpr::integer(1)))
                 .with_cost(Cost::new(10.0, 100)),
-            input: Box::new(PhysicalPlan::FullScan(
+            input: Box::new(PhysicalPlan::FullScan(Box::new(
                 FullScanNode::new("t").with_cost(Cost::new(100.0, 1000)),
-            )),
+            ))),
         };
 
         let total = plan.total_cost();

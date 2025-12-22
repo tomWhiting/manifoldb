@@ -312,10 +312,10 @@ mod tests {
     #[test]
     fn valid_aggregate() {
         let plan = LogicalPlan::Aggregate {
-            node: AggregateNode::new(
+            node: Box::new(AggregateNode::new(
                 vec![LogicalExpr::column("category")],
                 vec![LogicalExpr::count(LogicalExpr::wildcard(), false)],
-            ),
+            )),
             input: Box::new(LogicalPlan::scan("products")),
         };
         assert!(validate_plan(&plan).is_ok());
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn invalid_empty_aggregate() {
         let plan = LogicalPlan::Aggregate {
-            node: AggregateNode::new(vec![], vec![]),
+            node: Box::new(AggregateNode::new(vec![], vec![])),
             input: Box::new(LogicalPlan::scan("products")),
         };
         assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidAggregation(_))));
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn invalid_ann_search_k_zero() {
         let plan = LogicalPlan::AnnSearch {
-            node: AnnSearchNode::euclidean("embedding", LogicalExpr::param(1), 0),
+            node: Box::new(AnnSearchNode::euclidean("embedding", LogicalExpr::param(1), 0)),
             input: Box::new(LogicalPlan::scan("documents")),
         };
         assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidVectorOp(_))));
