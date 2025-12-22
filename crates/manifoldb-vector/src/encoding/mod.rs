@@ -5,14 +5,25 @@
 //!
 //! # Key Prefixes
 //!
+//! ## Embedding spaces (entity-based)
 //! - `0x10` - Embedding space metadata: `[0x10][space_name_hash]`
 //! - `0x11` - Entity embedding: `[0x11][space_name_hash][entity_id]`
 //! - `0x12` - Sparse embedding space metadata: `[0x12][space_name_hash]`
 //! - `0x13` - Sparse entity embedding: `[0x13][space_name_hash][entity_id]`
+//! - `0x14` - Multi-vector space metadata: `[0x14][space_name_hash]`
+//! - `0x15` - Multi-vector embedding: `[0x15][space_name_hash][entity_id]`
+//!
+//! ## Point collections (Qdrant-style)
+//! - `0x20` - Collection metadata: `[0x20][collection_name_hash]`
+//! - `0x21` - Point payload: `[0x21][collection_name_hash][point_id]`
+//! - `0x22` - Dense vector: `[0x22][collection_name_hash][point_id][vector_name_hash]`
+//! - `0x23` - Sparse vector: `[0x23][collection_name_hash][point_id][vector_name_hash]`
+//! - `0x24` - Multi-vector: `[0x24][collection_name_hash][point_id][vector_name_hash]`
 //!
 //! All numeric values are encoded in big-endian format to preserve sort order.
 
 mod keys;
+mod point_keys;
 
 pub use keys::{
     // Dense embeddings
@@ -38,4 +49,41 @@ pub use keys::{
     PREFIX_MULTI_VECTOR_SPACE,
     PREFIX_SPARSE_EMBEDDING,
     PREFIX_SPARSE_EMBEDDING_SPACE,
+};
+
+pub use point_keys::{
+    // Collection keys
+    decode_collection_key,
+    // Dense vector keys
+    decode_dense_vector_key,
+    // Multi-vector keys
+    decode_multi_vector_key,
+    // Point payload keys
+    decode_point_payload_key,
+    decode_point_payload_point_id,
+    // Sparse vector keys
+    decode_sparse_vector_key,
+    encode_collection_key,
+    encode_collection_prefix,
+    encode_dense_vector_collection_prefix,
+    encode_dense_vector_key,
+    encode_dense_vector_point_prefix,
+    encode_multi_vector_collection_prefix,
+    encode_multi_vector_key,
+    encode_multi_vector_point_prefix,
+    encode_point_payload_key,
+    encode_point_payload_prefix,
+    encode_sparse_vector_collection_prefix,
+    encode_sparse_vector_key,
+    encode_sparse_vector_point_prefix,
+    CollectionKey,
+    DenseVectorKey,
+    MultiVectorKey,
+    PointPayloadKey,
+    SparseVectorKey,
+    PREFIX_COLLECTION,
+    PREFIX_POINT_DENSE_VECTOR,
+    PREFIX_POINT_MULTI_VECTOR,
+    PREFIX_POINT_PAYLOAD,
+    PREFIX_POINT_SPARSE_VECTOR,
 };

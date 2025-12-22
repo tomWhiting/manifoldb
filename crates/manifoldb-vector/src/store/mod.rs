@@ -4,6 +4,8 @@
 //!
 //! # Overview
 //!
+//! ## Entity-based embedding stores
+//!
 //! The [`VectorStore`] manages dense embeddings organized into named embedding spaces.
 //! The [`SparseVectorStore`] manages sparse embeddings for high-dimensional vectors
 //! with few non-zero elements (e.g., SPLADE embeddings).
@@ -13,7 +15,13 @@
 //! Each entity can have embeddings in multiple spaces (e.g., `text_embedding`,
 //! `image_embedding`), and each space has a fixed dimension and distance metric.
 //!
-//! # Example
+//! ## Point collections (Qdrant-style)
+//!
+//! The [`PointStore`] manages points with multiple named vectors and JSON payloads.
+//! Points are organized into collections, and each point can have any combination
+//! of dense, sparse, or multi-vectors.
+//!
+//! # Example (Entity embeddings)
 //!
 //! ```ignore
 //! use manifoldb_vector::store::VectorStore;
@@ -36,11 +44,42 @@
 //! // Retrieve it
 //! let retrieved = store.get(EntityId::new(1), &name)?;
 //! ```
+//!
+//! # Example (Point collections)
+//!
+//! ```ignore
+//! use manifoldb_vector::store::PointStore;
+//! use manifoldb_vector::types::{CollectionName, CollectionSchema, VectorConfig, Payload, NamedVector};
+//! use manifoldb_core::PointId;
+//! use std::collections::HashMap;
+//!
+//! // Create a point store
+//! let store = PointStore::new(engine);
+//!
+//! // Create a collection with schema
+//! let name = CollectionName::new("documents")?;
+//! let schema = CollectionSchema::new()
+//!     .with_vector("dense", VectorConfig::dense(384))
+//!     .with_vector("sparse", VectorConfig::sparse(30522));
+//! store.create_collection(&name, schema)?;
+//!
+//! // Insert a point
+//! let mut payload = Payload::new();
+//! payload.insert("title", "Hello World".into());
+//!
+//! let mut vectors = HashMap::new();
+//! vectors.insert("dense".to_string(), NamedVector::Dense(vec![0.1; 384]));
+//! vectors.insert("sparse".to_string(), NamedVector::Sparse(vec![(100, 0.5)]));
+//!
+//! store.upsert_point(&name, PointId::new(1), payload, vectors)?;
+//! ```
 
 mod multi_vector_store;
+mod point_store;
 mod sparse_store;
 mod vector_store;
 
 pub use multi_vector_store::MultiVectorStore;
+pub use point_store::PointStore;
 pub use sparse_store::SparseVectorStore;
 pub use vector_store::VectorStore;

@@ -83,8 +83,9 @@ pub use error::VectorError;
 pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
 pub use quantization::{KMeans, KMeansConfig, PQCode, PQConfig, ProductQuantizer};
-pub use store::{SparseVectorStore, VectorStore};
+pub use store::{PointStore, SparseVectorStore, VectorStore};
 pub use types::{
-    BinaryEmbedding, BinaryEmbeddingSpace, Embedding, EmbeddingName, EmbeddingSpace,
-    SparseEmbedding, SparseEmbeddingSpace,
+    BinaryEmbedding, BinaryEmbeddingSpace, Collection, CollectionName, CollectionSchema, Embedding,
+    EmbeddingName, EmbeddingSpace, NamedVector, Payload, SparseEmbedding, SparseEmbeddingSpace,
+    VectorConfig, VectorName, VectorType,
 };
