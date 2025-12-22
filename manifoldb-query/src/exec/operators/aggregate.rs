@@ -33,6 +33,8 @@ pub struct HashAggregateOp {
     position: usize,
     /// Whether aggregation is complete.
     aggregated: bool,
+    /// Reusable buffer for computing group keys.
+    key_buffer: Vec<u8>,
 }
 
 impl HashAggregateOp {
@@ -64,17 +66,8 @@ impl HashAggregateOp {
             results: Vec::new(),
             position: 0,
             aggregated: false,
+            key_buffer: Vec::with_capacity(64), // Pre-allocate for typical key sizes
         }
-    }
-
-    /// Computes the group key for a row.
-    fn compute_group_key(&self, row: &Row) -> OperatorResult<Vec<u8>> {
-        let mut key = Vec::new();
-        for expr in &self.group_by {
-            let value = evaluate_expr(expr, row)?;
-            encode_value(&value, &mut key);
-        }
-        Ok(key)
     }
 
     /// Computes the group key values for a row.
@@ -84,14 +77,26 @@ impl HashAggregateOp {
 
     /// Aggregates all input rows.
     fn aggregate_all(&mut self) -> OperatorResult<()> {
-        while let Some(row) = self.input.next()? {
-            let key = self.compute_group_key(&row)?;
-            let group_values = self.compute_group_values(&row)?;
+        // Use a local buffer to work around borrow checker issues
+        let mut key_buffer = std::mem::take(&mut self.key_buffer);
 
-            let state = self
-                .groups
-                .entry(key)
-                .or_insert_with(|| GroupState::new(group_values, self.aggregates.len()));
+        while let Some(row) = self.input.next()? {
+            // Compute key into reusable buffer (avoids allocation per row)
+            key_buffer.clear();
+            for expr in &self.group_by {
+                let value = evaluate_expr(expr, &row)?;
+                encode_value(&value, &mut key_buffer);
+            }
+
+            // Only clone the key when inserting a new group
+            let state = if let Some(state) = self.groups.get_mut(&key_buffer) {
+                state
+            } else {
+                let group_values = self.compute_group_values(&row)?;
+                self.groups
+                    .entry(key_buffer.clone())
+                    .or_insert_with(|| GroupState::new(group_values, self.aggregates.len()))
+            };
 
             // Update each aggregate
             for (i, agg_expr) in self.aggregates.iter().enumerate() {
@@ -102,6 +107,9 @@ impl HashAggregateOp {
                 }
             }
         }
+
+        // Restore the buffer for potential reuse
+        self.key_buffer = key_buffer;
 
         // Build result rows
         let schema = self.base.schema();
@@ -216,6 +224,8 @@ pub struct SortMergeAggregateOp {
     pending_row: Option<Row>,
     /// Whether we've finished.
     finished: bool,
+    /// Reusable buffer for computing group keys.
+    key_buffer: Vec<u8>,
 }
 
 impl SortMergeAggregateOp {
@@ -247,16 +257,18 @@ impl SortMergeAggregateOp {
             accumulators: Vec::new(),
             pending_row: None,
             finished: false,
+            key_buffer: Vec::with_capacity(64), // Pre-allocate for typical key sizes
         }
     }
 
-    fn compute_group_key(&self, row: &Row) -> OperatorResult<Vec<u8>> {
-        let mut key = Vec::new();
+    /// Computes the group key for a row into the provided buffer.
+    fn compute_group_key_into(&self, row: &Row, buf: &mut Vec<u8>) -> OperatorResult<()> {
+        buf.clear();
         for expr in &self.group_by {
             let value = evaluate_expr(expr, row)?;
-            encode_value(&value, &mut key);
+            encode_value(&value, buf);
         }
-        Ok(key)
+        Ok(())
     }
 
     fn compute_group_values(&self, row: &Row) -> OperatorResult<Vec<Value>> {
@@ -304,6 +316,39 @@ impl Operator for SortMergeAggregateOp {
             return Ok(None);
         }
 
+        // Take the key buffer to avoid borrow checker issues
+        let mut key_buffer = std::mem::take(&mut self.key_buffer);
+
+        let result = self.next_inner(&mut key_buffer);
+
+        // Restore the buffer
+        self.key_buffer = key_buffer;
+
+        result
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        self.input.close()?;
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "SortMergeAggregate"
+    }
+}
+
+impl SortMergeAggregateOp {
+    /// Inner implementation of next() that uses a reusable key buffer.
+    fn next_inner(&mut self, key_buffer: &mut Vec<u8>) -> OperatorResult<Option<Row>> {
         loop {
             // Get next row
             let row =
@@ -311,9 +356,11 @@ impl Operator for SortMergeAggregateOp {
 
             match row {
                 Some(row) => {
-                    let key = self.compute_group_key(&row)?;
+                    // Compute key into reusable buffer
+                    self.compute_group_key_into(&row, key_buffer)?;
 
-                    if self.current_key.as_ref() == Some(&key) {
+                    if self.current_key.as_deref() == Some(key_buffer.as_slice())
+                    {
                         // Same group, accumulate
                         self.update_accumulators(&row)?;
                     } else if self.current_key.is_some() {
@@ -321,8 +368,8 @@ impl Operator for SortMergeAggregateOp {
                         self.pending_row = Some(row.clone());
                         let result = self.build_result();
 
-                        // Start new group
-                        self.current_key = Some(self.compute_group_key(&row)?);
+                        // Start new group - only clone the key when starting a new group
+                        self.current_key = Some(key_buffer.clone());
                         self.current_values = self.compute_group_values(&row)?;
                         self.init_accumulators();
                         self.update_accumulators(&row)?;
@@ -338,8 +385,8 @@ impl Operator for SortMergeAggregateOp {
                         self.base.inc_rows_produced();
                         return Ok(Some(result));
                     } else {
-                        // First group
-                        self.current_key = Some(key);
+                        // First group - only clone the key here
+                        self.current_key = Some(key_buffer.clone());
                         self.current_values = self.compute_group_values(&row)?;
                         self.init_accumulators();
                         self.update_accumulators(&row)?;
@@ -367,24 +414,6 @@ impl Operator for SortMergeAggregateOp {
                 }
             }
         }
-    }
-
-    fn close(&mut self) -> OperatorResult<()> {
-        self.input.close()?;
-        self.base.set_closed();
-        Ok(())
-    }
-
-    fn schema(&self) -> Arc<Schema> {
-        self.base.schema()
-    }
-
-    fn state(&self) -> OperatorState {
-        self.base.state()
-    }
-
-    fn name(&self) -> &'static str {
-        "SortMergeAggregate"
     }
 }
 
