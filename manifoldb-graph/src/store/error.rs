@@ -48,8 +48,11 @@ impl From<CoreError> for GraphError {
     fn from(err: CoreError) -> Self {
         match err {
             CoreError::Encoding(msg) => Self::Encoding(msg),
-            CoreError::TypeMismatch { expected, actual } => {
-                Self::Encoding(format!("type mismatch: expected {expected}, got {actual}"))
+            CoreError::TypeMismatch { expected, actual, value } => {
+                let value_info = value.map(|v| format!(" (value: {v})")).unwrap_or_default();
+                Self::Encoding(format!(
+                    "type mismatch: expected {expected}, got {actual}{value_info}"
+                ))
             }
             CoreError::Validation(msg) => Self::Internal(msg),
         }

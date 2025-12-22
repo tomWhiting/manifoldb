@@ -53,8 +53,13 @@ pub enum PlanError {
     InvalidVectorOp(String),
 
     /// Type mismatch.
-    #[error("type mismatch: {0}")]
-    TypeMismatch(String),
+    #[error("type mismatch: expected {expected}, got {actual}")]
+    TypeMismatch {
+        /// The expected type or value.
+        expected: String,
+        /// The actual type or value.
+        actual: String,
+    },
 
     /// Unsupported operation.
     #[error("unsupported operation: {0}")]
@@ -93,12 +98,10 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 let first_len = node.rows[0].len();
                 for (i, row) in node.rows.iter().enumerate().skip(1) {
                     if row.len() != first_len {
-                        return Err(PlanError::TypeMismatch(format!(
-                            "VALUES row {} has {} columns, expected {}",
-                            i + 1,
-                            row.len(),
-                            first_len
-                        )));
+                        return Err(PlanError::TypeMismatch {
+                            expected: format!("{} columns", first_len),
+                            actual: format!("{} columns in VALUES row {}", row.len(), i + 1),
+                        });
                     }
                 }
             }
@@ -369,7 +372,10 @@ mod tests {
             vec![LogicalExpr::integer(1), LogicalExpr::string("a")],
             vec![LogicalExpr::integer(2)], // Wrong length
         ]));
-        assert!(matches!(validate_plan(&plan), Err(PlanError::TypeMismatch(_))));
+        assert!(matches!(
+            validate_plan(&plan),
+            Err(PlanError::TypeMismatch { expected: _, actual: _ })
+        ));
     }
 
     #[test]
