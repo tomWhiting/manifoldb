@@ -55,5 +55,5 @@ pub mod types;
 
 // Re-export commonly used types
 pub use error::CoreError;
-pub use transaction::{TransactionError, TransactionResult};
+pub use transaction::{DeleteResult, TransactionError, TransactionResult};
 pub use types::{Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property, Value};

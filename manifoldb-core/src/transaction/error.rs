@@ -39,6 +39,10 @@ pub enum TransactionError {
     #[error("constraint violation: {0}")]
     ConstraintViolation(String),
 
+    /// A referential integrity violation occurred (e.g., deleting entity with connected edges).
+    #[error("referential integrity violation: {0}")]
+    ReferentialIntegrity(String),
+
     /// The transaction manager is not properly initialized.
     #[error("transaction manager not initialized: {0}")]
     NotInitialized(String),
