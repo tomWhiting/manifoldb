@@ -141,10 +141,10 @@ impl WeightConfig {
             Self::Property { name, default_weight } => match edge.get_property(name) {
                 Some(Value::Float(f)) => Ok(*f),
                 Some(Value::Int(i)) => Ok(*i as f64),
-                Some(other) => Err(GraphError::Internal(format!(
-                    "edge {} has non-numeric weight property '{}': {:?}",
-                    edge.id, name, other
-                ))),
+                Some(other) => Err(GraphError::InvalidWeight {
+                    edge_id: edge.id,
+                    message: format!("non-numeric weight property '{}': {:?}", name, other),
+                }),
                 None => Ok(*default_weight),
             },
         }
@@ -359,12 +359,13 @@ impl Dijkstra {
             for (neighbor, edge_id, weight) in neighbors {
                 // Check for negative weights
                 if weight < 0.0 {
-                    return Err(GraphError::Internal(format!(
-                        "negative edge weight detected on edge {}: {}. \
-                         Dijkstra's algorithm does not support negative weights. \
-                         Consider using Bellman-Ford algorithm instead.",
-                        edge_id, weight
-                    )));
+                    return Err(GraphError::InvalidWeight {
+                        edge_id,
+                        message: format!(
+                            "negative weight {} not supported by Dijkstra's algorithm",
+                            weight
+                        ),
+                    });
                 }
 
                 // Skip finalized nodes
@@ -559,10 +560,13 @@ impl Dijkstra {
 
             for (neighbor, edge_id, weight) in neighbors {
                 if weight < 0.0 {
-                    return Err(GraphError::Internal(format!(
-                        "negative edge weight detected on edge {}: {}",
-                        edge_id, weight
-                    )));
+                    return Err(GraphError::InvalidWeight {
+                        edge_id,
+                        message: format!(
+                            "negative weight {} not supported by Dijkstra's algorithm",
+                            weight
+                        ),
+                    });
                 }
 
                 if finalized.contains(&neighbor) {
@@ -686,10 +690,13 @@ impl SingleSourceDijkstra {
 
             for (neighbor, edge_id, weight) in neighbors {
                 if weight < 0.0 {
-                    return Err(GraphError::Internal(format!(
-                        "negative edge weight detected on edge {}: {}",
-                        edge_id, weight
-                    )));
+                    return Err(GraphError::InvalidWeight {
+                        edge_id,
+                        message: format!(
+                            "negative weight {} not supported by Dijkstra's algorithm",
+                            weight
+                        ),
+                    });
                 }
 
                 if finalized.contains(&neighbor) {
