@@ -334,7 +334,9 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         PhysicalPlan::CreateTable(_)
         | PhysicalPlan::DropTable(_)
         | PhysicalPlan::CreateIndex(_)
-        | PhysicalPlan::DropIndex(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        | PhysicalPlan::DropIndex(_)
+        | PhysicalPlan::CreateCollection(_)
+        | PhysicalPlan::DropCollection(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
     }
 }
 

@@ -293,6 +293,22 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 return Err(PlanError::Unsupported("DROP INDEX requires index name".to_string()));
             }
         }
+
+        LogicalPlan::CreateCollection(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE COLLECTION requires a name".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropCollection(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "DROP COLLECTION requires collection name".to_string(),
+                ));
+            }
+        }
     }
 
     Ok(())

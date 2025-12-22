@@ -17,7 +17,10 @@
 
 use std::fmt;
 
-use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
+use super::ddl::{
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
+    DropTableNode,
+};
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
@@ -217,6 +220,12 @@ pub enum LogicalPlan {
 
     /// DROP INDEX operation.
     DropIndex(DropIndexNode),
+
+    /// CREATE COLLECTION operation.
+    CreateCollection(CreateCollectionNode),
+
+    /// DROP COLLECTION operation.
+    DropCollection(DropCollectionNode),
 }
 
 impl LogicalPlan {
@@ -391,7 +400,9 @@ impl LogicalPlan {
             Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
-            | Self::DropIndex(_) => vec![],
+            | Self::DropIndex(_)
+            | Self::CreateCollection(_)
+            | Self::DropCollection(_) => vec![],
         }
     }
 
@@ -431,7 +442,9 @@ impl LogicalPlan {
             Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
-            | Self::DropIndex(_) => vec![],
+            | Self::DropIndex(_)
+            | Self::CreateCollection(_)
+            | Self::DropCollection(_) => vec![],
         }
     }
 
@@ -469,6 +482,8 @@ impl LogicalPlan {
             Self::DropTable(_) => "DropTable",
             Self::CreateIndex(_) => "CreateIndex",
             Self::DropIndex(_) => "DropIndex",
+            Self::CreateCollection(_) => "CreateCollection",
+            Self::DropCollection(_) => "DropCollection",
         }
     }
 
@@ -681,6 +696,22 @@ impl DisplayTree<'_> {
                 write!(f, "DropIndex: {}", node.names.join(", "))?;
                 if node.if_exists {
                     write!(f, " IF EXISTS")?;
+                }
+            }
+            LogicalPlan::CreateCollection(node) => {
+                write!(f, "CreateCollection: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                write!(f, " ({} vectors)", node.vectors.len())?;
+            }
+            LogicalPlan::DropCollection(node) => {
+                write!(f, "DropCollection: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
                 }
             }
         }

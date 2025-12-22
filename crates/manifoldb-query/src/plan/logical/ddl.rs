@@ -5,8 +5,10 @@
 //! - DROP TABLE
 //! - CREATE INDEX
 //! - DROP INDEX
+//! - CREATE COLLECTION
+//! - DROP COLLECTION
 
-use crate::ast::{ColumnDef, Expr, IndexColumn, TableConstraint};
+use crate::ast::{ColumnDef, Expr, IndexColumn, TableConstraint, VectorDef};
 
 /// A CREATE TABLE operation.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +168,65 @@ pub struct DropIndexNode {
 
 impl DropIndexNode {
     /// Creates a new DROP INDEX node.
+    #[must_use]
+    pub fn new(names: Vec<String>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+/// A CREATE COLLECTION operation for vector collections.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateCollectionNode {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The collection name.
+    pub name: String,
+    /// Named vector definitions.
+    pub vectors: Vec<VectorDef>,
+}
+
+impl CreateCollectionNode {
+    /// Creates a new CREATE COLLECTION node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, vectors: Vec<VectorDef>) -> Self {
+        Self { if_not_exists: false, name: name.into(), vectors }
+    }
+
+    /// Sets the IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn with_if_not_exists(mut self, if_not_exists: bool) -> Self {
+        self.if_not_exists = if_not_exists;
+        self
+    }
+}
+
+/// A DROP COLLECTION operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropCollectionNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The collection names to drop.
+    pub names: Vec<String>,
+    /// Whether CASCADE is specified (drops associated data and indexes).
+    pub cascade: bool,
+}
+
+impl DropCollectionNode {
+    /// Creates a new DROP COLLECTION node.
     #[must_use]
     pub fn new(names: Vec<String>) -> Self {
         Self { if_exists: false, names, cascade: false }

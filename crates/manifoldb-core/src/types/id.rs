@@ -1,20 +1,22 @@
-//! Unique identifiers for entities and edges.
+//! Unique identifiers for entities, edges, and collections.
 //!
-//! This module provides type-safe identifiers for graph nodes ([`EntityId`])
-//! and relationships ([`EdgeId`]).
+//! This module provides type-safe identifiers for graph nodes ([`EntityId`]),
+//! relationships ([`EdgeId`]), and vector collections ([`CollectionId`]).
 //!
 //! # Example
 //!
 //! ```
-//! use manifoldb_core::types::{EntityId, EdgeId};
+//! use manifoldb_core::types::{EntityId, EdgeId, CollectionId};
 //!
 //! // Create identifiers
 //! let user_id = EntityId::new(1);
 //! let edge_id = EdgeId::new(100);
+//! let collection_id = CollectionId::new(42);
 //!
 //! // Convert to raw values for storage/serialization
 //! assert_eq!(user_id.as_u64(), 1);
 //! assert_eq!(edge_id.as_u64(), 100);
+//! assert_eq!(collection_id.as_u64(), 42);
 //!
 //! // IDs are ordered and hashable
 //! let id1 = EntityId::new(1);
@@ -175,6 +177,56 @@ impl fmt::Display for PointId {
     }
 }
 
+/// Unique identifier for a collection in the database.
+///
+/// `CollectionId` wraps a `u64` and provides type safety to prevent accidentally
+/// using a collection ID where an entity or edge ID is expected.
+///
+/// Collections are named containers for entities with associated vector
+/// configurations. Each collection defines named vector spaces with their
+/// dimensions, distance metrics, and index configurations.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::CollectionId;
+///
+/// let id = CollectionId::new(42);
+/// assert_eq!(id.as_u64(), 42);
+/// println!("{}", id); // Prints: CollectionId(42)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CollectionId(u64);
+
+impl CollectionId {
+    /// Create a new `CollectionId` from a raw u64 value.
+    #[inline]
+    #[must_use]
+    pub const fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw u64 value.
+    #[inline]
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for CollectionId {
+    #[inline]
+    fn from(id: u64) -> Self {
+        Self::new(id)
+    }
+}
+
+impl fmt::Display for CollectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CollectionId({})", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +258,18 @@ mod tests {
         let p1 = PointId::new(10);
         let p2 = PointId::new(20);
         assert!(p1 < p2);
+    }
+
+    #[test]
+    fn collection_id_roundtrip() {
+        let id = CollectionId::new(42);
+        assert_eq!(id.as_u64(), 42);
+    }
+
+    #[test]
+    fn collection_ids_are_ordered() {
+        let a = CollectionId::new(1);
+        let b = CollectionId::new(2);
+        assert!(a < b);
     }
 }

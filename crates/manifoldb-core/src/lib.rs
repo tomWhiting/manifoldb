@@ -7,7 +7,7 @@
 //!
 //! The core crate defines the shared types used throughout ManifoldDB:
 //!
-//! - **Identifiers**: [`EntityId`] and [`EdgeId`] for referencing graph nodes and edges
+//! - **Identifiers**: [`EntityId`], [`EdgeId`], and [`CollectionId`] for referencing graph elements
 //! - **Graph primitives**: [`Entity`] (nodes) and [`Edge`] (relationships)
 //! - **Values**: [`Value`] enum supporting strings, numbers, vectors, and more
 //! - **Labels and types**: [`Label`] for entity categorization, [`EdgeType`] for relationships
@@ -56,4 +56,6 @@ pub mod types;
 // Re-export commonly used types
 pub use error::CoreError;
 pub use transaction::{DeleteResult, TransactionError, TransactionResult};
-pub use types::{Edge, EdgeId, EdgeType, Entity, EntityId, Label, PointId, Property, Value};
+pub use types::{
+    CollectionId, Edge, EdgeId, EdgeType, Entity, EntityId, Label, PointId, Property, Value,
+};

@@ -19,8 +19,8 @@ use std::fmt;
 
 use crate::ast::DistanceMetric;
 use crate::plan::logical::{
-    CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, ExpandDirection, ExpandLength,
-    JoinType, LogicalExpr, SetOpType, SortOrder,
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
+    DropTableNode, ExpandDirection, ExpandLength, JoinType, LogicalExpr, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -259,6 +259,12 @@ pub enum PhysicalPlan {
 
     /// DROP INDEX operation.
     DropIndex(DropIndexNode),
+
+    /// CREATE COLLECTION operation.
+    CreateCollection(CreateCollectionNode),
+
+    /// DROP COLLECTION operation.
+    DropCollection(DropCollectionNode),
 }
 
 // ============================================================================
@@ -1236,7 +1242,9 @@ impl PhysicalPlan {
             | Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
-            | Self::DropIndex(_) => vec![],
+            | Self::DropIndex(_)
+            | Self::CreateCollection(_)
+            | Self::DropCollection(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1281,7 +1289,9 @@ impl PhysicalPlan {
             | Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
-            | Self::DropIndex(_) => vec![],
+            | Self::DropIndex(_)
+            | Self::CreateCollection(_)
+            | Self::DropCollection(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1325,6 +1335,8 @@ impl PhysicalPlan {
                 | Self::DropTable(_)
                 | Self::CreateIndex(_)
                 | Self::DropIndex(_)
+                | Self::CreateCollection(_)
+                | Self::DropCollection(_)
         )
     }
 
@@ -1360,6 +1372,8 @@ impl PhysicalPlan {
             Self::DropTable(_) => "DropTable",
             Self::CreateIndex(_) => "CreateIndex",
             Self::DropIndex(_) => "DropIndex",
+            Self::CreateCollection(_) => "CreateCollection",
+            Self::DropCollection(_) => "DropCollection",
         }
     }
 
@@ -1395,7 +1409,9 @@ impl PhysicalPlan {
             Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
-            | Self::DropIndex(_) => Cost::zero(),
+            | Self::DropIndex(_)
+            | Self::CreateCollection(_)
+            | Self::DropCollection(_) => Cost::zero(),
         }
     }
 
@@ -1690,6 +1706,22 @@ impl DisplayTree<'_> {
                 write!(f, "DropIndex: {}", node.names.join(", "))?;
                 if node.if_exists {
                     write!(f, " IF EXISTS")?;
+                }
+            }
+            PhysicalPlan::CreateCollection(node) => {
+                write!(f, "CreateCollection: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                write!(f, " ({} vectors)", node.vectors.len())?;
+            }
+            PhysicalPlan::DropCollection(node) => {
+                write!(f, "DropCollection: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
                 }
             }
         }

@@ -24,10 +24,14 @@ pub enum Statement {
     CreateTable(CreateTableStatement),
     /// CREATE INDEX statement (boxed - 288 bytes unboxed).
     CreateIndex(Box<CreateIndexStatement>),
+    /// CREATE COLLECTION statement for vector collections.
+    CreateCollection(Box<CreateCollectionStatement>),
     /// DROP TABLE statement.
     DropTable(DropTableStatement),
     /// DROP INDEX statement.
     DropIndex(DropIndexStatement),
+    /// DROP COLLECTION statement.
+    DropCollection(DropCollectionStatement),
     /// MATCH statement (Cypher-style graph query).
     Match(Box<MatchStatement>),
     /// EXPLAIN statement.
@@ -926,6 +930,163 @@ pub struct DropIndexStatement {
     pub names: Vec<QualifiedName>,
     /// Whether CASCADE is specified.
     pub cascade: bool,
+}
+
+/// A CREATE COLLECTION statement for vector collections.
+///
+/// Creates a collection with named vector configurations:
+///
+/// ```sql
+/// CREATE COLLECTION documents (
+///     dense VECTOR(768) USING hnsw WITH (distance = 'cosine'),
+///     sparse SPARSE_VECTOR USING inverted,
+///     colbert MULTI_VECTOR(128) USING hnsw WITH (aggregation = 'maxsim')
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateCollectionStatement {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The collection name.
+    pub name: Identifier,
+    /// Named vector definitions.
+    pub vectors: Vec<VectorDef>,
+}
+
+impl CreateCollectionStatement {
+    /// Creates a new CREATE COLLECTION statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, vectors: Vec<VectorDef>) -> Self {
+        Self { if_not_exists: false, name: name.into(), vectors }
+    }
+
+    /// Set IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn if_not_exists(mut self) -> Self {
+        self.if_not_exists = true;
+        self
+    }
+}
+
+/// A named vector definition in a collection.
+///
+/// Defines a single named vector space with its type, index method, and options.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorDef {
+    /// The vector name (e.g., "dense", "sparse", "colbert").
+    pub name: Identifier,
+    /// The vector type.
+    pub vector_type: VectorTypeDef,
+    /// The index method (e.g., "hnsw", "inverted", "flat").
+    pub using: Option<String>,
+    /// Index and vector options (e.g., distance, aggregation, m, ef_construction).
+    pub with_options: Vec<(String, String)>,
+}
+
+impl VectorDef {
+    /// Creates a new vector definition.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, vector_type: VectorTypeDef) -> Self {
+        Self { name: name.into(), vector_type, using: None, with_options: vec![] }
+    }
+
+    /// Set the index method.
+    #[must_use]
+    pub fn using(mut self, method: impl Into<String>) -> Self {
+        self.using = Some(method.into());
+        self
+    }
+
+    /// Add a WITH option.
+    #[must_use]
+    pub fn with_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.with_options.push((key.into(), value.into()));
+        self
+    }
+}
+
+/// Vector type definition in DDL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VectorTypeDef {
+    /// Dense vector with fixed dimension: VECTOR(768).
+    Vector {
+        /// The dimension of the vector.
+        dimension: u32,
+    },
+    /// Sparse vector with optional max dimension: SPARSE_VECTOR or SPARSE_VECTOR(30522).
+    SparseVector {
+        /// Maximum vocabulary size (optional).
+        max_dimension: Option<u32>,
+    },
+    /// Multi-vector with per-token dimension: MULTI_VECTOR(128).
+    MultiVector {
+        /// The dimension of each token embedding.
+        token_dim: u32,
+    },
+    /// Binary vector with bit count: BINARY_VECTOR(1024).
+    BinaryVector {
+        /// The number of bits.
+        bits: u32,
+    },
+}
+
+impl VectorTypeDef {
+    /// Create a dense vector type.
+    #[must_use]
+    pub const fn dense(dimension: u32) -> Self {
+        Self::Vector { dimension }
+    }
+
+    /// Create a sparse vector type.
+    #[must_use]
+    pub const fn sparse(max_dimension: Option<u32>) -> Self {
+        Self::SparseVector { max_dimension }
+    }
+
+    /// Create a multi-vector type.
+    #[must_use]
+    pub const fn multi(token_dim: u32) -> Self {
+        Self::MultiVector { token_dim }
+    }
+
+    /// Create a binary vector type.
+    #[must_use]
+    pub const fn binary(bits: u32) -> Self {
+        Self::BinaryVector { bits }
+    }
+}
+
+/// A DROP COLLECTION statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropCollectionStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The collection(s) to drop.
+    pub names: Vec<Identifier>,
+    /// Whether CASCADE is specified (drops associated data and indexes).
+    pub cascade: bool,
+}
+
+impl DropCollectionStatement {
+    /// Creates a new DROP COLLECTION statement.
+    #[must_use]
+    pub fn new(names: Vec<Identifier>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Set IF EXISTS flag.
+    #[must_use]
+    pub const fn if_exists(mut self) -> Self {
+        self.if_exists = true;
+        self
+    }
+
+    /// Set CASCADE flag.
+    #[must_use]
+    pub const fn cascade(mut self) -> Self {
+        self.cascade = true;
+        self
+    }
 }
 
 #[cfg(test)]

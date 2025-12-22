@@ -121,7 +121,10 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             }
         }
 
-        LogicalPlan::Values(_) | LogicalPlan::Empty { .. } => {
+        LogicalPlan::Values(_)
+        | LogicalPlan::Empty { .. }
+        | LogicalPlan::CreateCollection(_)
+        | LogicalPlan::DropCollection(_) => {
             // These don't reference tables
         }
     }

@@ -38,7 +38,10 @@ mod validate;
 mod vector;
 
 pub use builder::PlanBuilder;
-pub use ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
+pub use ddl::{
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
+    DropTableNode,
+};
 pub use expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
 pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
 pub use node::LogicalPlan;
