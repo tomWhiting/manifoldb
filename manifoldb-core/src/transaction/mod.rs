@@ -49,5 +49,7 @@
 //! The default is synchronous for correctness; optimization can be done later.
 
 mod error;
+mod result;
 
 pub use error::{TransactionError, TransactionErrorContext, TransactionResult};
+pub use result::DeleteResult;

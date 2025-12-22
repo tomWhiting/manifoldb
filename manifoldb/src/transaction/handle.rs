@@ -1,6 +1,6 @@
 //! Database transaction handle for user operations.
 
-use manifoldb_core::{Edge, EdgeId, Entity, EntityId, TransactionError};
+use manifoldb_core::{DeleteResult, Edge, EdgeId, Entity, EntityId, TransactionError};
 use manifoldb_graph::index::IndexMaintenance;
 use manifoldb_storage::{Cursor, Transaction};
 
@@ -168,11 +168,156 @@ impl<T: Transaction> DatabaseTransaction<T> {
     ///
     /// Note: This does not automatically delete edges connected to this entity.
     /// The caller is responsible for maintaining referential integrity.
+    /// Consider using [`delete_entity_cascade`](Self::delete_entity_cascade) or
+    /// [`delete_entity_checked`](Self::delete_entity_checked) for safer deletion.
     pub fn delete_entity(&mut self, id: EntityId) -> Result<bool, TransactionError> {
         let storage = self.storage_mut()?;
         let key = id.as_u64().to_be_bytes();
 
         storage.delete(tables::NODES, &key).map_err(storage_error_to_tx_error)
+    }
+
+    /// Delete an entity and all edges connected to it (cascade delete).
+    ///
+    /// This method ensures referential integrity by deleting all edges where
+    /// the entity is either the source or target before deleting the entity itself.
+    ///
+    /// # Returns
+    ///
+    /// Returns a [`DeleteResult`] containing:
+    /// - `entity_deleted`: `true` if the entity existed and was deleted
+    /// - `edges_deleted`: Vector of edge IDs that were deleted
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let result = tx.delete_entity_cascade(entity_id)?;
+    /// println!("Entity deleted: {}", result.entity_deleted);
+    /// println!("Edges deleted: {}", result.edges_deleted_count());
+    /// tx.commit()?;
+    /// ```
+    pub fn delete_entity_cascade(
+        &mut self,
+        id: EntityId,
+    ) -> Result<DeleteResult, TransactionError> {
+        // Collect all edges connected to this entity (both incoming and outgoing)
+        let outgoing = self.get_outgoing_edges(id)?;
+        let incoming = self.get_incoming_edges(id)?;
+
+        // Collect edge IDs to delete, avoiding duplicates for self-loops
+        let mut edges_to_delete: Vec<EdgeId> = Vec::with_capacity(outgoing.len() + incoming.len());
+        for edge in &outgoing {
+            edges_to_delete.push(edge.id);
+        }
+        for edge in &incoming {
+            // Avoid duplicates (self-loops appear in both lists)
+            if edge.source != edge.target {
+                edges_to_delete.push(edge.id);
+            }
+        }
+
+        // Delete all connected edges
+        let mut deleted_edges = Vec::with_capacity(edges_to_delete.len());
+        for edge_id in edges_to_delete {
+            if self.delete_edge(edge_id)? {
+                deleted_edges.push(edge_id);
+            }
+        }
+
+        // Delete the entity itself
+        let entity_deleted = self.delete_entity(id)?;
+
+        Ok(DeleteResult::new(entity_deleted, deleted_edges))
+    }
+
+    /// Delete an entity only if it has no connected edges (checked delete).
+    ///
+    /// This method ensures referential integrity by refusing to delete an entity
+    /// that still has edges connected to it. Use this when you want to enforce
+    /// that edges are explicitly deleted before their endpoints.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if the entity was deleted, `false` if it didn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransactionError::ReferentialIntegrity`] if the entity has
+    /// connected edges (either incoming or outgoing).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // First delete all edges manually
+    /// tx.delete_edge(edge_id)?;
+    ///
+    /// // Then delete the entity (will fail if edges remain)
+    /// match tx.delete_entity_checked(entity_id) {
+    ///     Ok(deleted) => println!("Deleted: {deleted}"),
+    ///     Err(TransactionError::ReferentialIntegrity(msg)) => {
+    ///         println!("Cannot delete: {msg}");
+    ///     }
+    ///     Err(e) => return Err(e),
+    /// }
+    /// ```
+    pub fn delete_entity_checked(&mut self, id: EntityId) -> Result<bool, TransactionError> {
+        // Check if the entity has any connected edges
+        if self.has_edges(id)? {
+            return Err(TransactionError::ReferentialIntegrity(format!(
+                "cannot delete entity {}: has connected edges",
+                id.as_u64()
+            )));
+        }
+
+        self.delete_entity(id)
+    }
+
+    /// Check if an entity has any connected edges (incoming or outgoing).
+    ///
+    /// This is useful for checking referential integrity before deleting an entity.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if the entity has at least one edge where it is the source or target.
+    pub fn has_edges(&self, entity_id: EntityId) -> Result<bool, TransactionError> {
+        // Check outgoing edges first
+        if self.has_adjacent_edges(entity_id, tables::EDGES_OUT)? {
+            return Ok(true);
+        }
+
+        // Check incoming edges
+        self.has_adjacent_edges(entity_id, tables::EDGES_IN)
+    }
+
+    /// Check if an entity has any adjacent edges in the given index table.
+    fn has_adjacent_edges(
+        &self,
+        entity_id: EntityId,
+        index_table: &str,
+    ) -> Result<bool, TransactionError> {
+        use std::ops::Bound;
+
+        let storage = self.storage()?;
+
+        // Create range for this entity's edges
+        let start_key = entity_id.as_u64().to_be_bytes().to_vec();
+        let end_key = (entity_id.as_u64().wrapping_add(1)).to_be_bytes().to_vec();
+
+        let mut cursor = match storage.range(
+            index_table,
+            Bound::Included(start_key.as_slice()),
+            Bound::Excluded(end_key.as_slice()),
+        ) {
+            Ok(c) => c,
+            Err(manifoldb_storage::StorageError::TableNotFound(_)) => {
+                // Table doesn't exist, so no edges
+                return Ok(false);
+            }
+            Err(e) => return Err(storage_error_to_tx_error(e)),
+        };
+
+        // Just check if there's at least one entry
+        Ok(cursor.next().map_err(storage_error_to_tx_error)?.is_some())
     }
 
     /// Put multiple entities into the database in a single batch operation.

@@ -138,8 +138,8 @@
 
 // Re-export core types
 pub use manifoldb_core::{
-    Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property, TransactionError, TransactionResult,
-    Value,
+    DeleteResult, Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property, TransactionError,
+    TransactionResult, Value,
 };
 
 // Re-export storage types

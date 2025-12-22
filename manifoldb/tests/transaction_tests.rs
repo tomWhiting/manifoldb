@@ -1,7 +1,7 @@
 //! Integration tests for the transaction manager.
 
 use manifoldb::transaction::{TransactionManager, VectorSyncStrategy};
-use manifoldb::{EntityId, TransactionError};
+use manifoldb::{DeleteResult, EntityId, TransactionError};
 use manifoldb_storage::backends::RedbEngine;
 
 /// Create an in-memory engine for testing.
@@ -713,4 +713,407 @@ fn test_batch_entities_large() {
     let tx = manager.begin_read().expect("failed to begin read");
     let all_entities = tx.iter_entities(Some("TestEntity")).expect("failed to iter entities");
     assert_eq!(all_entities.len(), count as usize);
+}
+
+// ============================================================================
+// Cascade Delete Tests
+// ============================================================================
+
+#[test]
+fn test_has_edges_returns_false_for_isolated_entity() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create an isolated entity with no edges
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let entity = tx.create_entity().expect("failed to create entity");
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Check has_edges
+    let tx = manager.begin_read().expect("failed to begin read");
+    let has_edges = tx.has_edges(entity.id).expect("failed to check has_edges");
+    assert!(!has_edges);
+}
+
+#[test]
+fn test_has_edges_returns_true_for_outgoing_edge() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entities with an outgoing edge
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let source = tx.create_entity().expect("failed to create source");
+    let target = tx.create_entity().expect("failed to create target");
+    tx.put_entity(&source).expect("failed to put source");
+    tx.put_entity(&target).expect("failed to put target");
+    let edge = tx.create_edge(source.id, target.id, "LINKS").expect("failed to create edge");
+    tx.put_edge(&edge).expect("failed to put edge");
+    tx.commit().expect("failed to commit");
+
+    // Source should have edges
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.has_edges(source.id).expect("failed to check has_edges"));
+}
+
+#[test]
+fn test_has_edges_returns_true_for_incoming_edge() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entities with an edge
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let source = tx.create_entity().expect("failed to create source");
+    let target = tx.create_entity().expect("failed to create target");
+    tx.put_entity(&source).expect("failed to put source");
+    tx.put_entity(&target).expect("failed to put target");
+    let edge = tx.create_edge(source.id, target.id, "LINKS").expect("failed to create edge");
+    tx.put_edge(&edge).expect("failed to put edge");
+    tx.commit().expect("failed to commit");
+
+    // Target should have edges (incoming)
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.has_edges(target.id).expect("failed to check has_edges"));
+}
+
+#[test]
+fn test_delete_entity_cascade_removes_outgoing_edges() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> B, A -> C
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    let c = tx.create_entity().expect("failed to create C");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    tx.put_entity(&c).expect("failed to put C");
+
+    let edge_ab = tx.create_edge(a.id, b.id, "LINKS").expect("failed to create edge A->B");
+    let edge_ac = tx.create_edge(a.id, c.id, "LINKS").expect("failed to create edge A->C");
+    tx.put_edge(&edge_ab).expect("failed to put edge A->B");
+    tx.put_edge(&edge_ac).expect("failed to put edge A->C");
+    tx.commit().expect("failed to commit");
+
+    // Cascade delete A
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(a.id).expect("failed to cascade delete");
+    tx.commit().expect("failed to commit");
+
+    // Verify result
+    assert!(result.entity_deleted);
+    assert_eq!(result.edges_deleted_count(), 2);
+    assert!(result.edges_deleted.contains(&edge_ab.id));
+    assert!(result.edges_deleted.contains(&edge_ac.id));
+
+    // Verify entity and edges are gone
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.get_entity(a.id).expect("failed to get A").is_none());
+    assert!(tx.get_edge(edge_ab.id).expect("failed to get edge A->B").is_none());
+    assert!(tx.get_edge(edge_ac.id).expect("failed to get edge A->C").is_none());
+
+    // B and C should still exist
+    assert!(tx.get_entity(b.id).expect("failed to get B").is_some());
+    assert!(tx.get_entity(c.id).expect("failed to get C").is_some());
+}
+
+#[test]
+fn test_delete_entity_cascade_removes_incoming_edges() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> C, B -> C
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    let c = tx.create_entity().expect("failed to create C");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    tx.put_entity(&c).expect("failed to put C");
+
+    let edge_ac = tx.create_edge(a.id, c.id, "POINTS").expect("failed to create edge A->C");
+    let edge_bc = tx.create_edge(b.id, c.id, "POINTS").expect("failed to create edge B->C");
+    tx.put_edge(&edge_ac).expect("failed to put edge A->C");
+    tx.put_edge(&edge_bc).expect("failed to put edge B->C");
+    tx.commit().expect("failed to commit");
+
+    // Cascade delete C
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(c.id).expect("failed to cascade delete");
+    tx.commit().expect("failed to commit");
+
+    // Verify result
+    assert!(result.entity_deleted);
+    assert_eq!(result.edges_deleted_count(), 2);
+
+    // Verify entity and edges are gone
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.get_entity(c.id).expect("failed to get C").is_none());
+    assert!(tx.get_edge(edge_ac.id).expect("failed to get edge A->C").is_none());
+    assert!(tx.get_edge(edge_bc.id).expect("failed to get edge B->C").is_none());
+
+    // A and B should still exist with no outgoing edges
+    assert!(tx.get_entity(a.id).expect("failed to get A").is_some());
+    assert!(tx.get_entity(b.id).expect("failed to get B").is_some());
+    assert!(tx.get_outgoing_edges(a.id).expect("failed to get outgoing from A").is_empty());
+    assert!(tx.get_outgoing_edges(b.id).expect("failed to get outgoing from B").is_empty());
+}
+
+#[test]
+fn test_delete_entity_cascade_handles_self_loop() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entity with self-loop: A -> A
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    tx.put_entity(&a).expect("failed to put A");
+    let self_edge = tx.create_edge(a.id, a.id, "SELF_REF").expect("failed to create self edge");
+    tx.put_edge(&self_edge).expect("failed to put self edge");
+    tx.commit().expect("failed to commit");
+
+    // Cascade delete A
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(a.id).expect("failed to cascade delete");
+    tx.commit().expect("failed to commit");
+
+    // Verify result - self-loop should only be counted once
+    assert!(result.entity_deleted);
+    assert_eq!(result.edges_deleted_count(), 1);
+    assert!(result.edges_deleted.contains(&self_edge.id));
+
+    // Verify entity and edge are gone
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.get_entity(a.id).expect("failed to get A").is_none());
+    assert!(tx.get_edge(self_edge.id).expect("failed to get self edge").is_none());
+}
+
+#[test]
+fn test_delete_entity_cascade_nonexistent_entity() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Try to cascade delete non-existent entity
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(EntityId::new(999)).expect("failed to cascade delete");
+    tx.commit().expect("failed to commit");
+
+    // Verify result
+    assert!(!result.entity_deleted);
+    assert!(result.edges_deleted.is_empty());
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_delete_entity_cascade_isolated_entity() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create isolated entity
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let entity = tx.create_entity().expect("failed to create entity");
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Cascade delete (should work like regular delete)
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(entity.id).expect("failed to cascade delete");
+    tx.commit().expect("failed to commit");
+
+    // Verify result
+    assert!(result.entity_deleted);
+    assert!(result.edges_deleted.is_empty());
+    assert_eq!(result.edges_deleted_count(), 0);
+}
+
+// ============================================================================
+// Checked Delete Tests
+// ============================================================================
+
+#[test]
+fn test_delete_entity_checked_succeeds_for_isolated_entity() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create isolated entity
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let entity = tx.create_entity().expect("failed to create entity");
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Checked delete should succeed
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let deleted = tx.delete_entity_checked(entity.id).expect("failed to checked delete");
+    tx.commit().expect("failed to commit");
+
+    assert!(deleted);
+
+    // Verify entity is gone
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.get_entity(entity.id).expect("failed to get entity").is_none());
+}
+
+#[test]
+fn test_delete_entity_checked_fails_with_outgoing_edges() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> B
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    let edge = tx.create_edge(a.id, b.id, "LINKS").expect("failed to create edge");
+    tx.put_edge(&edge).expect("failed to put edge");
+    tx.commit().expect("failed to commit");
+
+    // Checked delete of A should fail
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_checked(a.id);
+
+    assert!(matches!(result, Err(TransactionError::ReferentialIntegrity(_))));
+    if let Err(TransactionError::ReferentialIntegrity(msg)) = result {
+        assert!(msg.contains("has connected edges"));
+    }
+}
+
+#[test]
+fn test_delete_entity_checked_fails_with_incoming_edges() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> B
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    let edge = tx.create_edge(a.id, b.id, "LINKS").expect("failed to create edge");
+    tx.put_edge(&edge).expect("failed to put edge");
+    tx.commit().expect("failed to commit");
+
+    // Checked delete of B should fail (has incoming edge)
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_checked(b.id);
+
+    assert!(matches!(result, Err(TransactionError::ReferentialIntegrity(_))));
+}
+
+#[test]
+fn test_delete_entity_checked_succeeds_after_edge_removal() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create graph: A -> B
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    let edge = tx.create_edge(a.id, b.id, "LINKS").expect("failed to create edge");
+    tx.put_edge(&edge).expect("failed to put edge");
+    tx.commit().expect("failed to commit");
+
+    // First delete the edge
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.delete_edge(edge.id).expect("failed to delete edge");
+    tx.commit().expect("failed to commit");
+
+    // Now checked delete should succeed for both entities
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let deleted_a = tx.delete_entity_checked(a.id).expect("failed to checked delete A");
+    let deleted_b = tx.delete_entity_checked(b.id).expect("failed to checked delete B");
+    tx.commit().expect("failed to commit");
+
+    assert!(deleted_a);
+    assert!(deleted_b);
+}
+
+#[test]
+fn test_delete_entity_checked_nonexistent_entity() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Checked delete of non-existent entity should return false (not error)
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let deleted = tx.delete_entity_checked(EntityId::new(999)).expect("failed to checked delete");
+
+    assert!(!deleted);
+}
+
+#[test]
+fn test_delete_result_default() {
+    let result = DeleteResult::default();
+    assert!(!result.entity_deleted);
+    assert!(result.edges_deleted.is_empty());
+    assert!(result.is_empty());
+    assert_eq!(result.edges_deleted_count(), 0);
+}
+
+#[test]
+fn test_delete_entity_cascade_complex_graph() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create a hub-and-spoke graph:
+    //     B
+    //    /|\
+    //   A-H-C  (H is the hub with edges to/from all others)
+    //    \|/
+    //     D
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let h = tx.create_entity().expect("failed to create H");
+    let a = tx.create_entity().expect("failed to create A");
+    let b = tx.create_entity().expect("failed to create B");
+    let c = tx.create_entity().expect("failed to create C");
+    let d = tx.create_entity().expect("failed to create D");
+    tx.put_entity(&h).expect("failed to put H");
+    tx.put_entity(&a).expect("failed to put A");
+    tx.put_entity(&b).expect("failed to put B");
+    tx.put_entity(&c).expect("failed to put C");
+    tx.put_entity(&d).expect("failed to put D");
+
+    // Edges from hub
+    let e_ha = tx.create_edge(h.id, a.id, "OUT").expect("failed to create H->A");
+    let e_hb = tx.create_edge(h.id, b.id, "OUT").expect("failed to create H->B");
+    tx.put_edge(&e_ha).expect("failed to put H->A");
+    tx.put_edge(&e_hb).expect("failed to put H->B");
+
+    // Edges to hub
+    let e_ch = tx.create_edge(c.id, h.id, "IN").expect("failed to create C->H");
+    let e_dh = tx.create_edge(d.id, h.id, "IN").expect("failed to create D->H");
+    tx.put_edge(&e_ch).expect("failed to put C->H");
+    tx.put_edge(&e_dh).expect("failed to put D->H");
+    tx.commit().expect("failed to commit");
+
+    // Cascade delete the hub
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let result = tx.delete_entity_cascade(h.id).expect("failed to cascade delete hub");
+    tx.commit().expect("failed to commit");
+
+    // Verify result - should have deleted 4 edges (2 outgoing, 2 incoming)
+    assert!(result.entity_deleted);
+    assert_eq!(result.edges_deleted_count(), 4);
+
+    // Verify all edges are gone
+    let tx = manager.begin_read().expect("failed to begin read");
+    assert!(tx.get_edge(e_ha.id).expect("failed to get H->A").is_none());
+    assert!(tx.get_edge(e_hb.id).expect("failed to get H->B").is_none());
+    assert!(tx.get_edge(e_ch.id).expect("failed to get C->H").is_none());
+    assert!(tx.get_edge(e_dh.id).expect("failed to get D->H").is_none());
+
+    // Verify hub is gone but other entities remain
+    assert!(tx.get_entity(h.id).expect("failed to get H").is_none());
+    assert!(tx.get_entity(a.id).expect("failed to get A").is_some());
+    assert!(tx.get_entity(b.id).expect("failed to get B").is_some());
+    assert!(tx.get_entity(c.id).expect("failed to get C").is_some());
+    assert!(tx.get_entity(d.id).expect("failed to get D").is_some());
+
+    // Verify remaining entities have no edges
+    assert!(!tx.has_edges(a.id).expect("failed to check A edges"));
+    assert!(!tx.has_edges(b.id).expect("failed to check B edges"));
+    assert!(!tx.has_edges(c.id).expect("failed to check C edges"));
+    assert!(!tx.has_edges(d.id).expect("failed to check D edges"));
 }

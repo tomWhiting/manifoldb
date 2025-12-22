@@ -491,10 +491,7 @@ mod tests {
 
         // Corrupt the middle entry by overwriting bytes in the middle of the file
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&wal_path)
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
             // Skip header (16 bytes) and first entry (approximately),
             // then corrupt bytes in the second entry
             file.seek(std::io::SeekFrom::Start(80)).unwrap();
@@ -539,10 +536,7 @@ mod tests {
 
         // Truncate the file in the middle of the second entry
         {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&wal_path)
-                .unwrap();
+            let file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
             // Truncate to just after the first entry (header + first entry partial)
             file.set_len(60).unwrap();
         }
@@ -568,10 +562,7 @@ mod tests {
         // We may have valid entries before truncation
         // Truncation at offset 60 is after header (16 bytes), so first entry should be readable
         // depending on entry size
-        assert!(
-            valid_entries.len() <= 2,
-            "Should not have more than 2 valid entries"
-        );
+        assert!(valid_entries.len() <= 2, "Should not have more than 2 valid entries");
     }
 
     #[test]
@@ -599,10 +590,7 @@ mod tests {
 
         // Corrupt the standalone operation (entry 4)
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&wal_path)
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
             // Move to near the end of the file to corrupt the last entry
             let metadata = file.metadata().unwrap();
             let file_size = metadata.len();
@@ -644,10 +632,7 @@ mod tests {
 
         // Corrupt just the CRC (last 4 bytes of the entry)
         {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&wal_path)
-                .unwrap();
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
             let metadata = file.metadata().unwrap();
             let file_size = metadata.len();
             // CRC is at the end of the entry
