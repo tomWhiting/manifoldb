@@ -12,12 +12,14 @@ pub struct EdgeType(String);
 
 impl EdgeType {
     /// Create a new edge type.
+    #[inline]
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 
     /// Get the edge type name as a string slice.
+    #[inline]
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -25,12 +27,14 @@ impl EdgeType {
 }
 
 impl From<&str> for EdgeType {
+    #[inline]
     fn from(s: &str) -> Self {
         Self::new(s)
     }
 }
 
 impl From<String> for EdgeType {
+    #[inline]
     fn from(s: String) -> Self {
         Self::new(s)
     }
@@ -77,12 +81,14 @@ impl Edge {
     }
 
     /// Get a property value by key.
+    #[inline]
     #[must_use]
     pub fn get_property(&self, key: &str) -> Option<&Value> {
         self.properties.get(key)
     }
 
     /// Set a property value.
+    #[inline]
     pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<Value>) {
         self.properties.insert(key.into(), value.into());
     }

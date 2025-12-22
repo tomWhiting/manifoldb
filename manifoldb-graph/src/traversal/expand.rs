@@ -27,6 +27,7 @@ pub struct ExpandResult {
 
 impl ExpandResult {
     /// Create a new expansion result.
+    #[inline]
     pub const fn new(node: EntityId, edge_id: EdgeId, direction: Direction) -> Self {
         Self { node, edge_id, direction }
     }

@@ -37,12 +37,14 @@ impl Schema {
     }
 
     /// Creates an empty schema.
+    #[inline]
     #[must_use]
     pub fn empty() -> Self {
         Self { columns: Vec::new(), name_to_index: HashMap::new() }
     }
 
     /// Returns the column names as string slices.
+    #[inline]
     #[must_use]
     pub fn columns(&self) -> Vec<&str> {
         self.columns.iter().map(|s| s.as_ref()).collect()
@@ -55,24 +57,28 @@ impl Schema {
     }
 
     /// Returns the number of columns.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.columns.len()
     }
 
     /// Returns true if the schema has no columns.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
     /// Gets the index for a column name.
+    #[inline]
     #[must_use]
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.name_to_index.get(name).copied()
     }
 
     /// Gets the column name at an index.
+    #[inline]
     #[must_use]
     pub fn column_at(&self, index: usize) -> Option<&str> {
         self.columns.get(index).map(|s| s.as_ref())
@@ -164,48 +170,56 @@ impl Row {
     }
 
     /// Returns the schema of this row.
+    #[inline]
     #[must_use]
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
     /// Returns the shared schema reference.
+    #[inline]
     #[must_use]
     pub fn schema_arc(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
     }
 
     /// Returns the values in this row.
+    #[inline]
     #[must_use]
     pub fn values(&self) -> &[Value] {
         &self.values
     }
 
     /// Returns the number of columns.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns true if the row has no columns.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
     /// Gets a value by column index.
+    #[inline]
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&Value> {
         self.values.get(index)
     }
 
     /// Gets a value by column name.
+    #[inline]
     #[must_use]
     pub fn get_by_name(&self, name: &str) -> Option<&Value> {
         self.schema.index_of(name).and_then(|i| self.values.get(i))
     }
 
     /// Gets a mutable value by column index.
+    #[inline]
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Value> {
         self.values.get_mut(index)
     }
@@ -213,6 +227,7 @@ impl Row {
     /// Sets a value by column index.
     ///
     /// Returns the old value if the index was valid.
+    #[inline]
     pub fn set(&mut self, index: usize, value: Value) -> Option<Value> {
         if index < self.values.len() {
             Some(std::mem::replace(&mut self.values[index], value))
@@ -309,30 +324,35 @@ impl RowBatch {
     }
 
     /// Returns the schema.
+    #[inline]
     #[must_use]
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
     /// Returns the shared schema reference.
+    #[inline]
     #[must_use]
     pub fn schema_arc(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
     }
 
     /// Returns the rows in this batch.
+    #[inline]
     #[must_use]
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
 
     /// Returns the number of rows.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
     /// Returns true if the batch is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()

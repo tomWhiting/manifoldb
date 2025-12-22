@@ -112,12 +112,14 @@ impl Embedding {
     }
 
     /// Get the dimension of the embedding.
+    #[inline]
     #[must_use]
     pub fn dimension(&self) -> usize {
         self.data.len()
     }
 
     /// Get the embedding data as a slice.
+    #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[f32] {
         &self.data
@@ -136,6 +138,7 @@ impl Embedding {
     }
 
     /// Consume the embedding and return the underlying vector.
+    #[inline]
     #[must_use]
     pub fn into_vec(self) -> Vec<f32> {
         self.data
@@ -158,6 +161,7 @@ impl Embedding {
     }
 
     /// Calculate the L2 (Euclidean) norm of the embedding.
+    #[inline]
     #[must_use]
     pub fn l2_norm(&self) -> f32 {
         self.data.iter().map(|x| x * x).sum::<f32>().sqrt()
@@ -167,12 +171,14 @@ impl Embedding {
 impl Deref for Embedding {
     type Target = [f32];
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.data
     }
 }
 
 impl AsRef<[f32]> for Embedding {
+    #[inline]
     fn as_ref(&self) -> &[f32] {
         &self.data
     }
