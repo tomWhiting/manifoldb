@@ -27,16 +27,16 @@ manifoldb-vector = { path = "manifoldb-vector" }
 manifoldb-query = { path = "manifoldb-query" }
 
 # Storage
-redb = "2"
+redb = "3.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+bincode = { version = "2", features = ["serde"] }
 base64 = "0.22"
 
 # Error handling
-thiserror = "1"
+thiserror = "2"
 
 # Async runtime (for future use)
 tokio = { version = "1", features = ["full"] }

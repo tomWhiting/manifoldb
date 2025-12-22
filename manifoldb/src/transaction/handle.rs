@@ -140,7 +140,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         match storage.get(tables::NODES, &key) {
             Ok(Some(bytes)) => {
-                let entity: Entity = bincode::deserialize(&bytes)
+                let (entity, _): (Entity, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
                     .map_err(|e| TransactionError::Serialization(e.to_string()))?;
                 Ok(Some(entity))
             }
@@ -155,7 +155,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     pub fn put_entity(&mut self, entity: &Entity) -> Result<(), TransactionError> {
         let storage = self.storage_mut()?;
         let key = entity.id.as_u64().to_be_bytes();
-        let value = bincode::serialize(entity)
+        let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
             .map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
         storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)
@@ -201,7 +201,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         for entity in entities {
             let key = entity.id.as_u64().to_be_bytes();
-            let value = bincode::serialize(entity)
+            let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
                 .map_err(|e| TransactionError::Serialization(e.to_string()))?;
             storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)?;
         }
@@ -255,7 +255,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         match storage.get(tables::EDGES, &key) {
             Ok(Some(bytes)) => {
-                let edge: Edge = bincode::deserialize(&bytes)
+                let (edge, _): (Edge, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
                     .map_err(|e| TransactionError::Serialization(e.to_string()))?;
                 Ok(Some(edge))
             }
@@ -272,7 +272,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage_mut()?;
         let key = edge.id.as_u64().to_be_bytes();
         let value =
-            bincode::serialize(edge).map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            bincode::serde::encode_to_vec(edge, bincode::config::standard()).map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
         // Store the edge data
         storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
@@ -321,7 +321,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         for edge in edges {
             let key = edge.id.as_u64().to_be_bytes();
-            let value = bincode::serialize(edge)
+            let value = bincode::serde::encode_to_vec(edge, bincode::config::standard())
                 .map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
             // Store the edge data
@@ -372,7 +372,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         // Iterate through all nodes
         while let Some((_key, value)) = cursor.next().map_err(storage_error_to_tx_error)? {
-            let entity: Entity = bincode::deserialize(&value)
+            let (entity, _): (Entity, _) = bincode::serde::decode_from_slice(&value, bincode::config::standard())
                 .map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
             // Filter by label if specified

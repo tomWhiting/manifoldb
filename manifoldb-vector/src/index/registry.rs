@@ -130,13 +130,14 @@ impl HnswIndexEntry {
 
     /// Serialize to bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>, VectorError> {
-        bincode::serialize(self)
+        bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|e| VectorError::Encoding(format!("failed to serialize index entry: {e}")))
     }
 
     /// Deserialize from bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, VectorError> {
-        bincode::deserialize(bytes)
+        bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+            .map(|(entry, _)| entry)
             .map_err(|e| VectorError::Encoding(format!("failed to deserialize index entry: {e}")))
     }
 }

@@ -296,7 +296,7 @@ impl SchemaManager {
         let schema = TableSchema::from_create_table(node);
         let key = Self::table_key(table_name);
         let value =
-            bincode::serialize(&schema).map_err(|e| SchemaError::Serialization(e.to_string()))?;
+            bincode::serde::encode_to_vec(&schema, bincode::config::standard()).map_err(|e| SchemaError::Serialization(e.to_string()))?;
 
         tx.put_metadata(&key, &value)?;
 
@@ -360,7 +360,7 @@ impl SchemaManager {
         let schema = IndexSchema::from_create_index(node);
         let key = Self::index_key(index_name);
         let value =
-            bincode::serialize(&schema).map_err(|e| SchemaError::Serialization(e.to_string()))?;
+            bincode::serde::encode_to_vec(&schema, bincode::config::standard()).map_err(|e| SchemaError::Serialization(e.to_string()))?;
 
         tx.put_metadata(&key, &value)?;
 
@@ -420,7 +420,7 @@ impl SchemaManager {
         let key = Self::table_key(name);
         match tx.get_metadata(&key)? {
             Some(bytes) => {
-                let schema: TableSchema = bincode::deserialize(&bytes)
+                let (schema, _): (TableSchema, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
                     .map_err(|e| SchemaError::Serialization(e.to_string()))?;
                 Ok(Some(schema))
             }
@@ -436,7 +436,7 @@ impl SchemaManager {
         let key = Self::index_key(name);
         match tx.get_metadata(&key)? {
             Some(bytes) => {
-                let schema: IndexSchema = bincode::deserialize(&bytes)
+                let (schema, _): (IndexSchema, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
                     .map_err(|e| SchemaError::Serialization(e.to_string()))?;
                 Ok(Some(schema))
             }
@@ -497,7 +497,7 @@ impl SchemaManager {
     ) -> Result<Vec<String>, SchemaError> {
         match tx.get_metadata(list_key)? {
             Some(bytes) => {
-                let list: Vec<String> = bincode::deserialize(&bytes)
+                let (list, _): (Vec<String>, _) = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
                     .map_err(|e| SchemaError::Serialization(e.to_string()))?;
                 Ok(list)
             }
@@ -514,7 +514,7 @@ impl SchemaManager {
         if !list.contains(&name.to_string()) {
             list.push(name.to_string());
             let value =
-                bincode::serialize(&list).map_err(|e| SchemaError::Serialization(e.to_string()))?;
+                bincode::serde::encode_to_vec(&list, bincode::config::standard()).map_err(|e| SchemaError::Serialization(e.to_string()))?;
             tx.put_metadata(list_key, &value)?;
         }
         Ok(())
@@ -528,7 +528,7 @@ impl SchemaManager {
         let mut list = Self::get_list(tx, list_key)?;
         list.retain(|n| n != name);
         let value =
-            bincode::serialize(&list).map_err(|e| SchemaError::Serialization(e.to_string()))?;
+            bincode::serde::encode_to_vec(&list, bincode::config::standard()).map_err(|e| SchemaError::Serialization(e.to_string()))?;
         tx.put_metadata(list_key, &value)?;
         Ok(())
     }

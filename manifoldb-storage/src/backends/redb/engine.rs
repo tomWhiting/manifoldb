@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use redb::Database;
+use redb::{Database, ReadableDatabase};
 
 use crate::engine::{StorageEngine, StorageError};
 

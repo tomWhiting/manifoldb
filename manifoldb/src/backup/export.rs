@@ -242,7 +242,7 @@ fn export_entities<T: Transaction, W: Write>(
     };
 
     while let Some((_key, value)) = cursor.next()? {
-        let entity: manifoldb_core::Entity = bincode::deserialize(&value)
+        let (entity, _): (manifoldb_core::Entity, _) = bincode::serde::decode_from_slice(&value, bincode::config::standard())
             .map_err(|e| BackupError::Deserialization(e.to_string()))?;
         writer.write_entity(&entity)?;
     }
@@ -264,7 +264,7 @@ fn export_edges<T: Transaction, W: Write>(
     };
 
     while let Some((_key, value)) = cursor.next()? {
-        let edge: manifoldb_core::Edge = bincode::deserialize(&value)
+        let (edge, _): (manifoldb_core::Edge, _) = bincode::serde::decode_from_slice(&value, bincode::config::standard())
             .map_err(|e| BackupError::Deserialization(e.to_string()))?;
         writer.write_edge(&edge)?;
     }
