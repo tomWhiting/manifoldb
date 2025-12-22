@@ -178,7 +178,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let len_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
-            let len = u32::from_be_bytes(len_bytes) as usize;
+            let len = usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| {
+                CoreError::Encoding("string length exceeds platform capacity".to_owned())
+            })?;
             if rest.len() < 4 + len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
@@ -193,7 +195,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let len_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
-            let len = u32::from_be_bytes(len_bytes) as usize;
+            let len = usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| {
+                CoreError::Encoding("bytes length exceeds platform capacity".to_owned())
+            })?;
             if rest.len() < 4 + len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
@@ -206,8 +210,12 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let len_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
-            let count = u32::from_be_bytes(len_bytes) as usize;
-            let byte_len = count * 4;
+            let count = usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| {
+                CoreError::Encoding("vector count exceeds platform capacity".to_owned())
+            })?;
+            let byte_len = count
+                .checked_mul(4)
+                .ok_or_else(|| CoreError::Encoding("vector byte length overflow".to_owned()))?;
             if rest.len() < 4 + byte_len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
@@ -228,9 +236,13 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let len_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
-            let count = u32::from_be_bytes(len_bytes) as usize;
+            let count = usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| {
+                CoreError::Encoding("sparse vector count exceeds platform capacity".to_owned())
+            })?;
             // Each entry is 4 bytes (u32 index) + 4 bytes (f32 value) = 8 bytes
-            let byte_len = count * 8;
+            let byte_len = count.checked_mul(8).ok_or_else(|| {
+                CoreError::Encoding("sparse vector byte length overflow".to_owned())
+            })?;
             if rest.len() < 4 + byte_len {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
             }
@@ -254,7 +266,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let count_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read count".to_owned()))?;
-            let count = u32::from_be_bytes(count_bytes) as usize;
+            let count = usize::try_from(u32::from_be_bytes(count_bytes)).map_err(|_| {
+                CoreError::Encoding("multi-vector count exceeds platform capacity".to_owned())
+            })?;
 
             let mut vecs = Vec::with_capacity(count);
             let mut pos = 4; // Position after count
@@ -266,10 +280,14 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
                 let vec_len_bytes: [u8; 4] = rest[pos..pos + 4]
                     .try_into()
                     .map_err(|_| CoreError::Encoding("failed to read vector length".to_owned()))?;
-                let vec_len = u32::from_be_bytes(vec_len_bytes) as usize;
+                let vec_len = usize::try_from(u32::from_be_bytes(vec_len_bytes)).map_err(|_| {
+                    CoreError::Encoding("vector length exceeds platform capacity".to_owned())
+                })?;
                 pos += 4;
 
-                let byte_len = vec_len * 4;
+                let byte_len = vec_len
+                    .checked_mul(4)
+                    .ok_or_else(|| CoreError::Encoding("vector byte length overflow".to_owned()))?;
                 if rest.len() < pos + byte_len {
                     return Err(CoreError::Encoding("unexpected end of input".to_owned()));
                 }
@@ -294,7 +312,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let len_bytes: [u8; 4] = rest[..4]
                 .try_into()
                 .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
-            let count = u32::from_be_bytes(len_bytes) as usize;
+            let count = usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| {
+                CoreError::Encoding("array count exceeds platform capacity".to_owned())
+            })?;
             let mut arr = Vec::with_capacity(count);
             let mut offset = 5; // tag + length bytes
             for _ in 0..count {
@@ -433,6 +453,105 @@ mod tests {
     #[test]
     fn decode_truncated_int() {
         let bytes = [tags::INT, 0, 0, 0]; // Only 4 bytes instead of 8
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_float() {
+        let bytes = [tags::FLOAT, 0, 0, 0, 0]; // Only 5 bytes instead of 9
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_string_length() {
+        let bytes = [tags::STRING, 0, 0]; // Only 2 bytes for length instead of 4
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_string_data() {
+        // String with length 10 but only 3 bytes of data
+        let bytes = [tags::STRING, 0, 0, 0, 10, b'a', b'b', b'c'];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_invalid_utf8_string() {
+        // String with invalid UTF-8 sequence
+        let bytes = [tags::STRING, 0, 0, 0, 2, 0xFF, 0xFE];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_bytes_data() {
+        // Bytes with length 10 but only 3 bytes of data
+        let bytes = [tags::BYTES, 0, 0, 0, 10, 1, 2, 3];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_vector() {
+        // Vector with count 5 but only 1 f32 worth of data
+        let bytes = [tags::VECTOR, 0, 0, 0, 5, 0, 0, 0, 0];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_sparse_vector() {
+        // SparseVector with count 2 but only 1 entry
+        let bytes = [
+            tags::SPARSE_VECTOR,
+            0,
+            0,
+            0,
+            2, // count = 2
+            0,
+            0,
+            0,
+            1, // index = 1
+            0,
+            0,
+            0,
+            0, // value = 0.0
+        ];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_multi_vector_count() {
+        // MultiVector with only 2 bytes for count
+        let bytes = [tags::MULTI_VECTOR, 0, 0];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_multi_vector_inner() {
+        // MultiVector with count 1 but missing inner vector length
+        let bytes = [tags::MULTI_VECTOR, 0, 0, 0, 1];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_array_element() {
+        // Array with count 2 but only 1 element
+        let bytes = [tags::ARRAY, 0, 0, 0, 2, tags::NULL];
+        let result = Value::decode(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_truncated_bool() {
+        let bytes = [tags::BOOL]; // Missing boolean value byte
         let result = Value::decode(&bytes);
         assert!(result.is_err());
     }

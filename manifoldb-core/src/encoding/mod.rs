@@ -44,7 +44,7 @@ mod edge;
 mod entity;
 pub mod keys;
 mod traits;
-mod value;
+pub mod value;
 
 #[cfg(test)]
 mod proptest_tests;

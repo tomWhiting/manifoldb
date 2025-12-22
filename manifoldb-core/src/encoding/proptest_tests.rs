@@ -4,6 +4,7 @@
 
 use proptest::prelude::*;
 
+use crate::encoding::value::decode_value;
 use crate::encoding::{Decoder, Encoder};
 use crate::types::{Edge, EdgeId, EdgeType, Entity, EntityId, Label, Value};
 
@@ -157,5 +158,63 @@ proptest! {
         let encoded = entity.encode().expect("encoding should succeed");
         let decoded = Entity::decode(&encoded).expect("decoding should succeed");
         prop_assert_eq!(id, decoded.id.as_u64());
+    }
+
+    /// Corrupted/arbitrary bytes should not crash, only return errors.
+    #[test]
+    fn arbitrary_bytes_dont_crash(bytes in prop::collection::vec(any::<u8>(), 0..1000)) {
+        // This should either succeed or return an error, never panic
+        let _ = Value::decode(&bytes);
+    }
+
+    /// Truncated valid encodings should return errors, not panic.
+    #[test]
+    fn truncated_encoding_returns_error(value in arb_value()) {
+        let encoded = value.encode().expect("encoding should succeed");
+        if encoded.len() > 1 {
+            // Try all possible truncations
+            for truncate_at in 1..encoded.len() {
+                let truncated = &encoded[..truncate_at];
+                // Should either succeed (if truncated is a valid prefix) or return error
+                let _ = Value::decode(truncated);
+            }
+        }
+    }
+
+    /// Mutated encodings should return errors or valid values, never panic.
+    #[test]
+    fn mutated_encoding_returns_error_or_value(
+        value in arb_value(),
+        mutation_idx in any::<usize>(),
+        mutation_val in any::<u8>()
+    ) {
+        let mut encoded = value.encode().expect("encoding should succeed");
+        if !encoded.is_empty() {
+            let idx = mutation_idx % encoded.len();
+            encoded[idx] = mutation_val;
+            // Should either succeed or return error, never panic
+            let _ = Value::decode(&encoded);
+        }
+    }
+
+    /// Test that decode_value correctly reports consumed bytes.
+    #[test]
+    fn decode_value_reports_correct_consumed(value in arb_value()) {
+        let encoded = value.encode().expect("encoding should succeed");
+        let (decoded, consumed) = decode_value(&encoded).expect("decoding should succeed");
+        prop_assert_eq!(value, decoded);
+        prop_assert_eq!(encoded.len(), consumed);
+    }
+
+    /// Large length headers shouldn't cause allocation panics.
+    #[test]
+    fn large_length_header_doesnt_panic(tag in 4u8..=9u8, len_bytes in any::<[u8; 4]>()) {
+        // Create bytes with a type tag followed by a potentially large length
+        let mut bytes = vec![tag];
+        bytes.extend_from_slice(&len_bytes);
+        // Add a small amount of trailing data
+        bytes.extend_from_slice(&[0u8; 16]);
+        // Should return an error for truncated data, not panic from OOM
+        let _ = Value::decode(&bytes);
     }
 }
