@@ -239,8 +239,8 @@ impl PlanBuilder {
         let group_by: Vec<LogicalExpr> =
             select.group_by.iter().map(|e| self.build_expr(e)).collect::<PlanResult<_>>()?;
 
-        // Extract aggregate expressions from projection
-        let mut aggregates = Vec::new();
+        // Extract aggregate expressions from projection - pre-allocate based on projection size
+        let mut aggregates = Vec::with_capacity(select.projection.len());
         for item in &select.projection {
             if let SelectItem::Expr { expr, .. } = item {
                 self.collect_aggregates(expr, &mut aggregates)?;
@@ -353,7 +353,7 @@ impl PlanBuilder {
 
     /// Builds projection expressions.
     fn build_projection(&mut self, items: &[SelectItem]) -> PlanResult<Vec<LogicalExpr>> {
-        let mut exprs = Vec::new();
+        let mut exprs = Vec::with_capacity(items.len());
 
         for item in items {
             match item {

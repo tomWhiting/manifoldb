@@ -28,7 +28,8 @@ impl IndexSelector {
     /// Returns a list of column-value pairs that could use an index.
     #[must_use]
     pub fn find_index_candidates(&self, predicate: &LogicalExpr) -> Vec<IndexCandidate> {
-        let mut candidates = Vec::new();
+        // Most predicates yield 1-4 candidates
+        let mut candidates = Vec::with_capacity(4);
         self.analyze_predicate(predicate, &mut candidates);
         candidates
     }
@@ -44,8 +45,9 @@ impl IndexSelector {
 
             // OR: can only use index if all branches use same column
             LogicalExpr::BinaryOp { left, op: BinaryOp::Or, right } => {
-                let mut left_candidates = Vec::new();
-                let mut right_candidates = Vec::new();
+                // Pre-allocate for typical OR branches
+                let mut left_candidates = Vec::with_capacity(2);
+                let mut right_candidates = Vec::with_capacity(2);
 
                 self.analyze_predicate(left, &mut left_candidates);
                 self.analyze_predicate(right, &mut right_candidates);

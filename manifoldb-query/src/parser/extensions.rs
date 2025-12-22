@@ -90,7 +90,7 @@ impl ExtendedParser {
 
     /// Extracts MATCH clauses from the SQL and returns the modified SQL.
     fn extract_match_clauses(input: &str) -> ParseResult<(String, Vec<GraphPattern>)> {
-        let mut result = String::new();
+        let mut result = String::with_capacity(input.len());
         let mut patterns = Vec::new();
         let mut remaining = input;
 
@@ -178,18 +178,19 @@ impl ExtendedParser {
 
     /// Pre-processes vector operators to temporary function calls.
     fn preprocess_vector_ops(input: &str) -> String {
-        let mut result = input.to_string();
+        // Only allocate if we find operators to replace
+        if !input.contains("<->") && !input.contains("<=>") && !input.contains("<#>") {
+            return input.to_string();
+        }
+
+        // Pre-allocate with extra capacity for replacement markers
+        let mut result = String::with_capacity(input.len() + 64);
+        result.push_str(input);
 
         // Replace <-> with __vec_euclidean__ function call marker
-        result = result.replace("<->", " __VEC_EUCLIDEAN__ ");
-
-        // Replace <=> with __vec_cosine__ function call marker
-        result = result.replace("<=>", " __VEC_COSINE__ ");
-
-        // Replace <#> with __vec_inner__ function call marker
-        result = result.replace("<#>", " __VEC_INNER__ ");
-
-        result
+        let temp = result.replace("<->", " __VEC_EUCLIDEAN__ ");
+        let temp = temp.replace("<=>", " __VEC_COSINE__ ");
+        temp.replace("<#>", " __VEC_INNER__ ")
     }
 
     /// Restores vector operators from function call markers.
@@ -332,7 +333,8 @@ impl ExtendedParser {
             return Err(ParseError::InvalidPattern("empty pattern".to_string()));
         }
 
-        let mut paths = Vec::new();
+        // Most patterns have 1-2 paths
+        let mut paths = Vec::with_capacity(2);
         let mut current = input;
 
         while !current.is_empty() {
@@ -405,8 +407,10 @@ impl ExtendedParser {
         }
 
         let mut variable = None;
-        let mut labels = Vec::new();
-        let mut properties = Vec::new();
+        // Most nodes have 1-2 labels
+        let mut labels = Vec::with_capacity(2);
+        // Most nodes have 0-3 properties
+        let mut properties = Vec::with_capacity(2);
 
         let mut current = input;
 
@@ -491,9 +495,11 @@ impl ExtendedParser {
         let input = input.trim();
 
         let mut variable = None;
-        let mut edge_types = Vec::new();
+        // Most edges have 1-2 types
+        let mut edge_types = Vec::with_capacity(2);
         let mut length = EdgeLength::Single;
-        let mut properties = Vec::new();
+        // Most edges have 0-2 properties
+        let mut properties = Vec::with_capacity(2);
 
         if input.is_empty() {
             return Ok(EdgePattern { direction, variable, edge_types, properties, length });
@@ -605,7 +611,9 @@ impl ExtendedParser {
             return Ok(Vec::new());
         }
 
-        let mut properties = Vec::new();
+        // Estimate properties count from comma count + 1
+        let estimated_count = input.matches(',').count() + 1;
+        let mut properties = Vec::with_capacity(estimated_count);
 
         for pair in input.split(',') {
             let pair = pair.trim();

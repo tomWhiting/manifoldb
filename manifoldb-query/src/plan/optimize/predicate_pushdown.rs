@@ -255,9 +255,10 @@ impl PredicatePushdown {
         let left_tables = self.collect_tables(&left);
         let right_tables = self.collect_tables(&right);
 
-        let mut left_predicates = Vec::new();
-        let mut right_predicates = Vec::new();
-        let mut remaining = Vec::new();
+        // Pre-allocate based on predicates size - most predicates go to one side
+        let mut left_predicates = Vec::with_capacity(predicates.len());
+        let mut right_predicates = Vec::with_capacity(predicates.len());
+        let mut remaining = Vec::with_capacity(predicates.len());
 
         for pred in predicates {
             let pred_tables = self.collect_referenced_tables(&pred);
@@ -341,8 +342,9 @@ impl PredicatePushdown {
     where
         F: Fn(&LogicalExpr) -> bool,
     {
-        let mut pushable = Vec::new();
-        let mut remaining = Vec::new();
+        // Pre-allocate assuming roughly half go to each partition
+        let mut pushable = Vec::with_capacity(predicates.len());
+        let mut remaining = Vec::with_capacity(predicates.len());
 
         for pred in predicates {
             if can_push(pred) {

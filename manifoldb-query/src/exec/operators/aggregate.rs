@@ -44,8 +44,8 @@ impl HashAggregateOp {
         having: Option<LogicalExpr>,
         input: BoxedOperator,
     ) -> Self {
-        // Build output schema
-        let mut columns = Vec::new();
+        // Build output schema - pre-allocate for group_by + aggregates
+        let mut columns = Vec::with_capacity(group_by.len() + aggregates.len());
         for (i, expr) in group_by.iter().enumerate() {
             columns.push(expr_to_name(expr, i));
         }
@@ -238,7 +238,8 @@ impl SortMergeAggregateOp {
         having: Option<LogicalExpr>,
         input: BoxedOperator,
     ) -> Self {
-        let mut columns = Vec::new();
+        // Pre-allocate for group_by + aggregates
+        let mut columns = Vec::with_capacity(group_by.len() + aggregates.len());
         for (i, expr) in group_by.iter().enumerate() {
             columns.push(expr_to_name(expr, i));
         }
@@ -254,7 +255,7 @@ impl SortMergeAggregateOp {
             having,
             input,
             current_key: None,
-            current_values: Vec::new(),
+            current_values: Vec::with_capacity(8), // Pre-allocate for typical group size
             accumulators: Vec::new(),
             pending_row: None,
             finished: false,
@@ -360,8 +361,7 @@ impl SortMergeAggregateOp {
                     // Compute key into reusable buffer
                     self.compute_group_key_into(&row, key_buffer)?;
 
-                    if self.current_key.as_deref() == Some(key_buffer.as_slice())
-                    {
+                    if self.current_key.as_deref() == Some(key_buffer.as_slice()) {
                         // Same group, accumulate
                         self.update_accumulators(&row)?;
                     } else if self.current_key.is_some() {
