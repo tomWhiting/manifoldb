@@ -1098,3 +1098,693 @@ fn graph_size_validation_error_message() {
     assert!(msg.contains("10000000"), "Error message should contain limit");
     assert!(msg.contains("exceeds limit"), "Error message should explain the issue");
 }
+
+// ============================================================================
+// Degree Centrality tests
+// ============================================================================
+
+use manifoldb_graph::analytics::{
+    ClosenessCentrality, ClosenessCentralityConfig, DegreeCentrality, DegreeCentralityConfig,
+    EigenvectorCentrality, EigenvectorCentralityConfig,
+};
+
+#[test]
+fn degree_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = DegreeCentralityConfig::default();
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.scores.is_empty());
+}
+
+#[test]
+fn degree_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default();
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 1);
+    // Single node with no edges has degree 0
+    assert_eq!(result.score(node.id).unwrap(), 0.0);
+}
+
+#[test]
+fn degree_star_graph() {
+    let engine = create_test_engine();
+    let (center, spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Both);
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    // Center should have highest degree (connected to all 5 spokes)
+    let center_degree = result.score(center).unwrap();
+    for &spoke in &spokes {
+        let spoke_degree = result.score(spoke).unwrap();
+        assert!(center_degree > spoke_degree, "Center should have higher degree than spokes");
+    }
+    // Center degree should be 10 (5 outgoing + 5 incoming in bidirectional star)
+    assert_eq!(center_degree, 10.0);
+}
+
+#[test]
+fn degree_outgoing_only() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Outgoing);
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    // In linear graph A -> B -> C -> D:
+    // A, B, C have out-degree 1, D has out-degree 0
+    assert_eq!(result.score(nodes[0]).unwrap(), 1.0);
+    assert_eq!(result.score(nodes[1]).unwrap(), 1.0);
+    assert_eq!(result.score(nodes[2]).unwrap(), 1.0);
+    assert_eq!(result.score(nodes[3]).unwrap(), 0.0);
+}
+
+#[test]
+fn degree_incoming_only() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Incoming);
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    // In linear graph A -> B -> C -> D:
+    // A has in-degree 0, B, C, D have in-degree 1
+    assert_eq!(result.score(nodes[0]).unwrap(), 0.0);
+    assert_eq!(result.score(nodes[1]).unwrap(), 1.0);
+    assert_eq!(result.score(nodes[2]).unwrap(), 1.0);
+    assert_eq!(result.score(nodes[3]).unwrap(), 1.0);
+}
+
+#[test]
+fn degree_complete_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Both);
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    // In complete graph with 4 nodes, each node has degree 6 (3 in + 3 out)
+    for &node in &nodes {
+        let degree = result.score(node).unwrap();
+        assert_eq!(degree, 6.0, "Each node in complete graph should have degree 6");
+    }
+}
+
+#[test]
+fn degree_normalization() {
+    let engine = create_test_engine();
+    let _nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+
+    // With normalization
+    let config_norm =
+        DegreeCentralityConfig::default().with_direction(Direction::Both).with_normalize(true);
+    let result_norm = DegreeCentrality::compute(&tx, &config_norm).unwrap();
+
+    // Normalized values should be in [0, 1] (or up to 2 for bidirectional)
+    for &score in result_norm.scores.values() {
+        assert!(score >= 0.0 && score <= 2.0, "Normalized degree should be reasonable");
+    }
+}
+
+#[test]
+fn degree_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Both);
+
+    // Only compute for first two nodes
+    let subset = vec![nodes[0], nodes[1]];
+    let result = DegreeCentrality::compute_for_nodes(&tx, &subset, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 2);
+    assert!(result.score(nodes[0]).is_some());
+    assert!(result.score(nodes[1]).is_some());
+    assert!(result.score(nodes[2]).is_none());
+}
+
+#[test]
+fn degree_result_methods() {
+    let engine = create_test_engine();
+    let _nodes = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_direction(Direction::Both);
+    let result = DegreeCentrality::compute(&tx, &config).unwrap();
+
+    // Test sorted
+    let sorted = result.sorted();
+    assert_eq!(sorted.len(), 6);
+    for i in 1..sorted.len() {
+        assert!(sorted[i - 1].1 >= sorted[i].1);
+    }
+
+    // Test top_n
+    let top2 = result.top_n(2);
+    assert_eq!(top2.len(), 2);
+
+    // Test max/min
+    let max = result.max().unwrap();
+    let min = result.min().unwrap();
+    assert!(max.1 >= min.1);
+
+    // Test mean
+    let mean = result.mean();
+    assert!(mean >= 0.0);
+}
+
+// ============================================================================
+// Closeness Centrality tests
+// ============================================================================
+
+#[test]
+fn closeness_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = ClosenessCentralityConfig::default();
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.scores.is_empty());
+}
+
+#[test]
+fn closeness_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default();
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 1);
+    // Single node has zero closeness (no paths to others)
+    assert_eq!(result.score(node.id).unwrap(), 0.0);
+}
+
+#[test]
+fn closeness_linear_graph() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_direction(Direction::Both);
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 4);
+
+    // In linear graph A - B - C - D:
+    // B and C are more central (closer to all nodes on average)
+    // A and D are endpoints (farther from others)
+    let score_a = result.score(nodes[0]).unwrap();
+    let score_b = result.score(nodes[1]).unwrap();
+    let score_c = result.score(nodes[2]).unwrap();
+    let score_d = result.score(nodes[3]).unwrap();
+
+    assert!(score_b > score_a, "B should have higher closeness than A");
+    assert!(score_c > score_d, "C should have higher closeness than D");
+    // B and C should have similar closeness
+    assert!((score_b - score_c).abs() < score_b * 0.01);
+}
+
+#[test]
+fn closeness_star_graph() {
+    let engine = create_test_engine();
+    let (center, spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_direction(Direction::Both);
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    // Center should have highest closeness (distance 1 to all others)
+    let center_score = result.score(center).unwrap();
+    for &spoke in &spokes {
+        let spoke_score = result.score(spoke).unwrap();
+        assert!(center_score > spoke_score, "Center should have higher closeness than spokes");
+    }
+}
+
+#[test]
+fn closeness_complete_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_direction(Direction::Both);
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    // In complete graph, all nodes should have equal closeness
+    let scores: Vec<_> = nodes.iter().map(|&n| result.score(n).unwrap()).collect();
+    let first = scores[0];
+    for &score in &scores[1..] {
+        assert!(
+            (score - first).abs() < 1e-6,
+            "All nodes in complete graph should have equal closeness"
+        );
+    }
+}
+
+#[test]
+fn closeness_harmonic() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config =
+        ClosenessCentralityConfig::default().with_direction(Direction::Both).with_harmonic(true);
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.harmonic);
+    assert_eq!(result.scores.len(), 4);
+
+    // Middle nodes should still have higher harmonic centrality
+    let score_b = result.score(nodes[1]).unwrap();
+    let score_a = result.score(nodes[0]).unwrap();
+    assert!(score_b > score_a, "B should have higher harmonic centrality than A");
+}
+
+#[test]
+fn closeness_normalization() {
+    let engine = create_test_engine();
+    let _nodes = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+
+    // With normalization
+    let config_norm =
+        ClosenessCentralityConfig::default().with_direction(Direction::Both).with_normalize(true);
+    let result_norm = ClosenessCentrality::compute(&tx, &config_norm).unwrap();
+
+    // Normalized values should be in reasonable range
+    for &score in result_norm.scores.values() {
+        assert!(score >= 0.0 && score <= 2.0, "Normalized closeness should be reasonable");
+    }
+}
+
+#[test]
+fn closeness_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_direction(Direction::Both);
+
+    let subset = vec![nodes[0], nodes[1], nodes[2]];
+    let result = ClosenessCentrality::compute_for_nodes(&tx, &subset, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 3);
+    assert!(result.score(nodes[3]).is_none());
+}
+
+#[test]
+fn closeness_result_methods() {
+    let engine = create_test_engine();
+    let _nodes = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_direction(Direction::Both);
+    let result = ClosenessCentrality::compute(&tx, &config).unwrap();
+
+    // Test sorted
+    let sorted = result.sorted();
+    for i in 1..sorted.len() {
+        assert!(sorted[i - 1].1 >= sorted[i].1);
+    }
+
+    // Test mean
+    let mean = result.mean();
+    assert!(mean >= 0.0);
+
+    // Test max/min
+    let max = result.max().unwrap();
+    let min = result.min().unwrap();
+    assert!(max.1 >= min.1);
+}
+
+// ============================================================================
+// Eigenvector Centrality tests
+// ============================================================================
+
+#[test]
+fn eigenvector_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = EigenvectorCentralityConfig::default();
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.scores.is_empty());
+    assert!(result.converged);
+    assert_eq!(result.iterations, 0);
+}
+
+#[test]
+fn eigenvector_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default();
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 1);
+    // Single node should have score 1.0 (normalized)
+    assert!((result.score(node.id).unwrap() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn eigenvector_star_graph() {
+    let engine = create_test_engine();
+    let (center, spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    // Star graphs may need more iterations to converge due to their structure
+    let config = EigenvectorCentralityConfig::default()
+        .with_direction(Direction::Both)
+        .with_max_iterations(200);
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    // Note: Eigenvector centrality on small star graphs may not fully converge
+    // due to the eigenvalue structure, but the relative scores should still be meaningful
+    assert_eq!(result.scores.len(), 6);
+
+    // Center should have highest eigenvector centrality
+    let center_score = result.score(center).unwrap();
+    for &spoke in &spokes {
+        let spoke_score = result.score(spoke).unwrap();
+        assert!(
+            center_score >= spoke_score,
+            "Center should have higher eigenvector centrality than spokes"
+        );
+    }
+}
+
+#[test]
+fn eigenvector_cycle_graph() {
+    let engine = create_test_engine();
+    let nodes = create_cycle_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default().with_direction(Direction::Both);
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.converged);
+
+    // In a cycle, all nodes should have equal eigenvector centrality
+    let scores: Vec<_> = nodes.iter().map(|&n| result.score(n).unwrap()).collect();
+    let first = scores[0];
+    for &score in &scores[1..] {
+        assert!(
+            (score - first).abs() < 1e-4,
+            "All nodes in cycle should have similar eigenvector centrality"
+        );
+    }
+}
+
+#[test]
+fn eigenvector_complete_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default().with_direction(Direction::Both);
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    assert!(result.converged);
+
+    // In complete graph, all nodes should have equal eigenvector centrality
+    let scores: Vec<_> = nodes.iter().map(|&n| result.score(n).unwrap()).collect();
+    let first = scores[0];
+    for &score in &scores[1..] {
+        assert!(
+            (score - first).abs() < 1e-6,
+            "All nodes in complete graph should have equal eigenvector centrality"
+        );
+    }
+}
+
+#[test]
+fn eigenvector_convergence_params() {
+    let engine = create_test_engine();
+    let _nodes = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Test with tight tolerance
+    let config_tight =
+        EigenvectorCentralityConfig::default().with_tolerance(1e-10).with_max_iterations(200);
+    let result_tight = EigenvectorCentrality::compute(&tx, &config_tight).unwrap();
+
+    // Test with loose tolerance (should converge faster)
+    let config_loose =
+        EigenvectorCentralityConfig::default().with_tolerance(1e-3).with_max_iterations(200);
+    let result_loose = EigenvectorCentrality::compute(&tx, &config_loose).unwrap();
+
+    // Loose tolerance should converge in fewer or equal iterations
+    assert!(result_loose.iterations <= result_tight.iterations);
+}
+
+#[test]
+fn eigenvector_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default().with_direction(Direction::Both);
+
+    let subset = vec![nodes[0], nodes[1]];
+    let result = EigenvectorCentrality::compute_for_nodes(&tx, &subset, &config).unwrap();
+
+    assert_eq!(result.scores.len(), 2);
+    assert!(result.score(nodes[0]).is_some());
+    assert!(result.score(nodes[1]).is_some());
+    assert!(result.score(nodes[2]).is_none());
+}
+
+#[test]
+fn eigenvector_result_methods() {
+    let engine = create_test_engine();
+    let _nodes = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default().with_direction(Direction::Both);
+    let result = EigenvectorCentrality::compute(&tx, &config).unwrap();
+
+    // Test sorted
+    let sorted = result.sorted();
+    for i in 1..sorted.len() {
+        assert!(sorted[i - 1].1 >= sorted[i].1);
+    }
+
+    // Test top_n
+    let top2 = result.top_n(2);
+    assert_eq!(top2.len(), 2);
+
+    // Test max/min
+    let max = result.max().unwrap();
+    let min = result.min().unwrap();
+    assert!(max.1 >= min.1);
+
+    // Test mean
+    let mean = result.mean();
+    assert!(mean >= 0.0);
+}
+
+// ============================================================================
+// Graph size validation tests for new centrality algorithms
+// ============================================================================
+
+#[test]
+fn degree_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = DegreeCentralityConfig::default().with_max_graph_nodes(Some(5));
+    let result = DegreeCentrality::compute(&tx, &config);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        err => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn closeness_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ClosenessCentralityConfig::default().with_max_graph_nodes(Some(5));
+    let result = ClosenessCentrality::compute(&tx, &config);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        err => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn eigenvector_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = EigenvectorCentralityConfig::default().with_max_graph_nodes(Some(5));
+    let result = EigenvectorCentrality::compute(&tx, &config);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        err => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+// ============================================================================
+// Integration tests - all centrality algorithms on same graph
+// ============================================================================
+
+#[test]
+fn all_centrality_algorithms_on_star_graph() {
+    let engine = create_test_engine();
+    let (center, _spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Run all centrality algorithms
+    let degree_result = DegreeCentrality::compute(
+        &tx,
+        &DegreeCentralityConfig::default().with_direction(Direction::Both),
+    )
+    .unwrap();
+    let closeness_result = ClosenessCentrality::compute(
+        &tx,
+        &ClosenessCentralityConfig::default().with_direction(Direction::Both),
+    )
+    .unwrap();
+    let eigenvector_result = EigenvectorCentrality::compute(
+        &tx,
+        &EigenvectorCentralityConfig::default().with_direction(Direction::Both),
+    )
+    .unwrap();
+    let betweenness_result = BetweennessCentrality::compute(
+        &tx,
+        &BetweennessCentralityConfig::default().with_direction(Direction::Both),
+    )
+    .unwrap();
+    let pagerank_result = PageRank::compute(&tx, &PageRankConfig::default()).unwrap();
+
+    // All should have results for all 6 nodes
+    assert_eq!(degree_result.scores.len(), 6);
+    assert_eq!(closeness_result.scores.len(), 6);
+    assert_eq!(eigenvector_result.scores.len(), 6);
+    assert_eq!(betweenness_result.scores.len(), 6);
+    assert_eq!(pagerank_result.scores.len(), 6);
+
+    // Center should have highest scores in all algorithms
+    assert_eq!(degree_result.max().unwrap().0, center);
+    assert_eq!(closeness_result.max().unwrap().0, center);
+    assert_eq!(betweenness_result.max().unwrap().0, center);
+    assert_eq!(pagerank_result.max().unwrap().0, center);
+    // Eigenvector should also have center as max
+    let eigenvector_max = eigenvector_result.max().unwrap();
+    assert_eq!(eigenvector_max.0, center);
+}
+
+#[test]
+fn all_centrality_algorithms_on_two_communities() {
+    let engine = create_test_engine();
+    let (community1, community2) = create_two_community_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Bridge nodes are community1[2] (C) and community2[0] (D)
+    let bridge_c = community1[2];
+    let bridge_d = community2[0];
+
+    // Run betweenness centrality
+    let betweenness_result = BetweennessCentrality::compute(
+        &tx,
+        &BetweennessCentralityConfig::default()
+            .with_direction(Direction::Both)
+            .with_normalize(false),
+    )
+    .unwrap();
+
+    // Run closeness centrality
+    let closeness_result = ClosenessCentrality::compute(
+        &tx,
+        &ClosenessCentralityConfig::default().with_direction(Direction::Both),
+    )
+    .unwrap();
+
+    // Bridge nodes should have high betweenness
+    let bc_top = betweenness_result.top_n(2);
+    let top_nodes: Vec<_> = bc_top.iter().map(|(id, _)| *id).collect();
+    assert!(
+        top_nodes.contains(&bridge_c) || top_nodes.contains(&bridge_d),
+        "Bridge nodes should have high betweenness"
+    );
+
+    // Bridge nodes should have relatively high closeness
+    let cc_bridge_c = closeness_result.score(bridge_c).unwrap();
+    let cc_bridge_d = closeness_result.score(bridge_d).unwrap();
+    let cc_mean = closeness_result.mean();
+    assert!(
+        cc_bridge_c >= cc_mean || cc_bridge_d >= cc_mean,
+        "Bridge nodes should have above-average closeness"
+    );
+}
