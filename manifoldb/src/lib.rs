@@ -167,5 +167,6 @@ pub use metrics::{
     VectorMetrics, VectorMetricsSnapshot,
 };
 pub use transaction::{
-    DatabaseTransaction, TransactionManager, TransactionManagerConfig, VectorSyncStrategy,
+    BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
+    TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,
 };

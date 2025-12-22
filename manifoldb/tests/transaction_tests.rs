@@ -412,10 +412,13 @@ fn test_transaction_drop_triggers_rollback() {
 
 #[test]
 fn test_vector_sync_strategy_configuration() {
-    use manifoldb::transaction::TransactionManagerConfig;
+    use manifoldb::transaction::{BatchWriterConfig, TransactionManagerConfig};
 
     let engine = create_test_engine();
-    let config = TransactionManagerConfig { vector_sync_strategy: VectorSyncStrategy::Async };
+    let config = TransactionManagerConfig {
+        vector_sync_strategy: VectorSyncStrategy::Async,
+        batch_writer_config: BatchWriterConfig::default(),
+    };
     let manager = TransactionManager::with_config(engine, config);
 
     assert_eq!(manager.vector_sync_strategy(), VectorSyncStrategy::Async);
@@ -423,11 +426,12 @@ fn test_vector_sync_strategy_configuration() {
 
 #[test]
 fn test_hybrid_vector_sync_strategy() {
-    use manifoldb::transaction::TransactionManagerConfig;
+    use manifoldb::transaction::{BatchWriterConfig, TransactionManagerConfig};
 
     let engine = create_test_engine();
     let config = TransactionManagerConfig {
         vector_sync_strategy: VectorSyncStrategy::Hybrid { async_threshold: 100 },
+        batch_writer_config: BatchWriterConfig::default(),
     };
     let manager = TransactionManager::with_config(engine, config);
 

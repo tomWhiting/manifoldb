@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::CacheConfig;
 use crate::error::Error;
-use crate::transaction::{TransactionManagerConfig, VectorSyncStrategy};
+use crate::transaction::{BatchWriterConfig, TransactionManagerConfig, VectorSyncStrategy};
 
 /// Configuration for a database.
 ///
@@ -47,6 +47,9 @@ pub struct Config {
 
     /// Configuration for the query result cache.
     pub query_cache_config: CacheConfig,
+
+    /// Configuration for write batching.
+    pub batch_writer_config: BatchWriterConfig,
 }
 
 impl Default for Config {
@@ -59,6 +62,7 @@ impl Default for Config {
             vector_sync_strategy: VectorSyncStrategy::Synchronous,
             in_memory: false,
             query_cache_config: CacheConfig::default(),
+            batch_writer_config: BatchWriterConfig::default(),
         }
     }
 }
@@ -85,8 +89,11 @@ impl Config {
 
     /// Get the transaction manager configuration.
     #[must_use]
-    pub const fn transaction_config(&self) -> TransactionManagerConfig {
-        TransactionManagerConfig { vector_sync_strategy: self.vector_sync_strategy }
+    pub fn transaction_config(&self) -> TransactionManagerConfig {
+        TransactionManagerConfig {
+            vector_sync_strategy: self.vector_sync_strategy,
+            batch_writer_config: self.batch_writer_config.clone(),
+        }
     }
 }
 
@@ -232,6 +239,42 @@ impl DatabaseBuilder {
     #[must_use]
     pub fn disable_query_cache(mut self) -> Self {
         self.config.query_cache_config = CacheConfig::disabled();
+        self
+    }
+
+    /// Set the batch writer configuration for concurrent write optimization.
+    ///
+    /// Write batching groups multiple concurrent transactions into a single
+    /// commit, improving throughput under concurrent load.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{DatabaseBuilder, BatchWriterConfig};
+    /// use std::time::Duration;
+    ///
+    /// let db = DatabaseBuilder::new()
+    ///     .path("mydb.manifold")
+    ///     .batch_writer_config(
+    ///         BatchWriterConfig::new()
+    ///             .max_batch_size(50)
+    ///             .flush_interval(Duration::from_millis(5))
+    ///     )
+    ///     .open()?;
+    /// ```
+    #[must_use]
+    pub fn batch_writer_config(mut self, config: BatchWriterConfig) -> Self {
+        self.config.batch_writer_config = config;
+        self
+    }
+
+    /// Disable write batching (use immediate commits).
+    ///
+    /// This can be useful for debugging or when write latency is more
+    /// important than throughput.
+    #[must_use]
+    pub fn disable_write_batching(mut self) -> Self {
+        self.config.batch_writer_config = BatchWriterConfig::disabled();
         self
     }
 

@@ -9,7 +9,7 @@
 #![allow(missing_docs)]
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use manifoldb::{Database, EntityId};
+use manifoldb::{BatchWriter, BatchWriterConfig, Database, EntityId};
 use manifoldb_core::EntityId as CoreEntityId;
 use manifoldb_storage::backends::RedbEngine;
 use manifoldb_vector::distance::DistanceMetric;
@@ -18,6 +18,9 @@ use manifoldb_vector::store::VectorStore;
 use manifoldb_vector::types::{Embedding, EmbeddingName, EmbeddingSpace};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 // ============================================================================
 // Helper: Simple RNG for reproducible benchmarks
@@ -739,6 +742,205 @@ fn query_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Write Batching Benchmarks
+// ============================================================================
+
+fn write_batching_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("write_batching");
+
+    // Compare batched vs immediate writes (sequential)
+    for count in [100, 500, 1000] {
+        // Immediate commit (no batching)
+        group.throughput(Throughput::Elements(count));
+        group.bench_with_input(
+            BenchmarkId::new("immediate_sequential", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(engine, BatchWriterConfig::disabled())
+                    },
+                    |writer| {
+                        for i in 0..count {
+                            let mut tx = writer.begin();
+                            let key = format!("key_{i}");
+                            let value = format!("value_{i}");
+                            tx.put("test", key.as_bytes(), value.as_bytes()).expect("put failed");
+                            tx.commit().expect("commit failed");
+                        }
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+
+        // Batched writes
+        group.bench_with_input(
+            BenchmarkId::new("batched_sequential", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(
+                            engine,
+                            BatchWriterConfig::new()
+                                .max_batch_size(50)
+                                .flush_interval(Duration::from_millis(5)),
+                        )
+                    },
+                    |writer| {
+                        for i in 0..count {
+                            let mut tx = writer.begin();
+                            let key = format!("key_{i}");
+                            let value = format!("value_{i}");
+                            tx.put("test", key.as_bytes(), value.as_bytes()).expect("put failed");
+                            tx.commit().expect("commit failed");
+                        }
+                        writer.flush().expect("flush failed");
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+    }
+
+    // Concurrent write benchmark
+    for num_threads in [2, 4, 8] {
+        let writes_per_thread = 100;
+
+        // Immediate commit with concurrent writers
+        group.throughput(Throughput::Elements(num_threads * writes_per_thread));
+        group.bench_with_input(
+            BenchmarkId::new("immediate_concurrent", num_threads),
+            &num_threads,
+            |b, &num_threads| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(engine, BatchWriterConfig::disabled())
+                    },
+                    |writer| {
+                        let handles: Vec<_> = (0..num_threads)
+                            .map(|t| {
+                                let writer = writer.clone();
+                                thread::spawn(move || {
+                                    for i in 0..writes_per_thread {
+                                        let mut tx = writer.begin();
+                                        let key = format!("t{t}_key_{i}");
+                                        let value = format!("value_{i}");
+                                        tx.put("test", key.as_bytes(), value.as_bytes())
+                                            .expect("put failed");
+                                        tx.commit().expect("commit failed");
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().expect("thread panicked");
+                        }
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+
+        // Batched concurrent writes
+        group.bench_with_input(
+            BenchmarkId::new("batched_concurrent", num_threads),
+            &num_threads,
+            |b, &num_threads| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(
+                            engine,
+                            BatchWriterConfig::new()
+                                .max_batch_size(25)
+                                .flush_interval(Duration::from_millis(2)),
+                        )
+                    },
+                    |writer| {
+                        let handles: Vec<_> = (0..num_threads)
+                            .map(|t| {
+                                let writer = writer.clone();
+                                thread::spawn(move || {
+                                    for i in 0..writes_per_thread {
+                                        let mut tx = writer.begin();
+                                        let key = format!("t{t}_key_{i}");
+                                        let value = format!("value_{i}");
+                                        tx.put("test", key.as_bytes(), value.as_bytes())
+                                            .expect("put failed");
+                                        tx.commit().expect("commit failed");
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().expect("thread panicked");
+                        }
+                        writer.flush().expect("flush failed");
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+    }
+
+    // Batch size tuning benchmark
+    for batch_size in [10, 25, 50, 100, 200] {
+        group.bench_with_input(
+            BenchmarkId::new("batch_size_tuning", batch_size),
+            &batch_size,
+            |b, &batch_size| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(
+                            engine,
+                            BatchWriterConfig::new()
+                                .max_batch_size(batch_size)
+                                .flush_interval(Duration::from_millis(50)),
+                        )
+                    },
+                    |writer| {
+                        let num_threads = 4;
+                        let writes_per_thread = 100;
+
+                        let handles: Vec<_> = (0..num_threads)
+                            .map(|t| {
+                                let writer = writer.clone();
+                                thread::spawn(move || {
+                                    for i in 0..writes_per_thread {
+                                        let mut tx = writer.begin();
+                                        let key = format!("t{t}_key_{i}");
+                                        let value = format!("value_{i}");
+                                        tx.put("test", key.as_bytes(), value.as_bytes())
+                                            .expect("put failed");
+                                        tx.commit().expect("commit failed");
+                                    }
+                                })
+                            })
+                            .collect();
+
+                        for h in handles {
+                            h.join().expect("thread panicked");
+                        }
+                        writer.flush().expect("flush failed");
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -748,6 +950,7 @@ criterion_group!(
     graph_benchmarks,
     wide_graph_benchmarks,
     vector_benchmarks,
-    query_benchmarks
+    query_benchmarks,
+    write_batching_benchmarks
 );
 criterion_main!(benches);

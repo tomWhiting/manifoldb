@@ -6,6 +6,7 @@ use std::sync::Arc;
 use manifoldb_core::TransactionError;
 use manifoldb_storage::{StorageEngine, StorageError};
 
+use super::batch_writer::{BatchWriter, BatchWriterConfig, BatchedTransaction};
 use super::handle::DatabaseTransaction;
 
 /// Strategy for synchronizing vector index updates with transactions.
@@ -46,11 +47,17 @@ pub enum VectorSyncStrategy {
 pub struct TransactionManagerConfig {
     /// Strategy for vector index synchronization.
     pub vector_sync_strategy: VectorSyncStrategy,
+
+    /// Configuration for write batching.
+    pub batch_writer_config: BatchWriterConfig,
 }
 
 impl Default for TransactionManagerConfig {
     fn default() -> Self {
-        Self { vector_sync_strategy: VectorSyncStrategy::Synchronous }
+        Self {
+            vector_sync_strategy: VectorSyncStrategy::Synchronous,
+            batch_writer_config: BatchWriterConfig::default(),
+        }
     }
 }
 
@@ -98,6 +105,9 @@ pub struct TransactionManager<E: StorageEngine> {
 
     /// Counter for generating unique transaction IDs.
     next_tx_id: AtomicU64,
+
+    /// Batch writer for concurrent write optimization.
+    batch_writer: BatchWriter<E>,
 }
 
 impl<E: StorageEngine> TransactionManager<E> {
@@ -110,7 +120,10 @@ impl<E: StorageEngine> TransactionManager<E> {
 
     /// Create a new transaction manager with custom configuration.
     pub fn with_config(engine: E, config: TransactionManagerConfig) -> Self {
-        Self { engine: Arc::new(engine), config, next_tx_id: AtomicU64::new(1) }
+        let engine = Arc::new(engine);
+        let batch_writer =
+            BatchWriter::new(Arc::clone(&engine), config.batch_writer_config.clone());
+        Self { engine, config, next_tx_id: AtomicU64::new(1), batch_writer }
     }
 
     /// Get the vector synchronization strategy.
@@ -168,6 +181,58 @@ impl<E: StorageEngine> TransactionManager<E> {
     #[must_use]
     pub fn engine(&self) -> &E {
         &self.engine
+    }
+
+    /// Begin a batched write transaction.
+    ///
+    /// Batched transactions buffer writes locally and commit them through
+    /// the batch writer for group commit optimization. This can significantly
+    /// improve throughput under concurrent load.
+    ///
+    /// Unlike regular write transactions, batched transactions:
+    /// - Buffer all writes in memory until commit
+    /// - Are committed together with other concurrent transactions
+    /// - Provide read-your-own-writes semantics within the transaction
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut tx = manager.begin_batched_write();
+    /// tx.put("table", b"key", b"value")?;
+    /// tx.commit()?;  // Batched with other concurrent commits
+    /// ```
+    #[must_use]
+    pub fn begin_batched_write(&self) -> BatchedTransaction<E> {
+        self.batch_writer.begin()
+    }
+
+    /// Get a reference to the batch writer.
+    ///
+    /// This provides access to the batch writer for manual control over
+    /// batched transactions, including flushing pending writes.
+    #[must_use]
+    pub fn batch_writer(&self) -> &BatchWriter<E> {
+        &self.batch_writer
+    }
+
+    /// Flush any pending batched writes immediately.
+    ///
+    /// This forces all pending batched transactions to be committed,
+    /// even if the batch size or flush interval hasn't been reached.
+    pub fn flush_batched(&self) -> Result<(), TransactionError> {
+        self.batch_writer.flush()
+    }
+
+    /// Get the number of pending batched transactions.
+    #[must_use]
+    pub fn pending_batched_count(&self) -> usize {
+        self.batch_writer.pending_count()
+    }
+
+    /// Get the batch writer configuration.
+    #[must_use]
+    pub fn batch_writer_config(&self) -> &BatchWriterConfig {
+        &self.config.batch_writer_config
     }
 }
 
