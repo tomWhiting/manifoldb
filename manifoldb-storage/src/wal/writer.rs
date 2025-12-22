@@ -169,7 +169,8 @@ impl WalWriter {
         }
 
         // Serialize the entry
-        let data = bincode::serialize(&entry).map_err(|e| WalError::Serialize(e.to_string()))?;
+        let data = bincode::serde::encode_to_vec(&entry, bincode::config::standard())
+            .map_err(|e| WalError::Serialize(e.to_string()))?;
 
         // Calculate CRC32
         let crc = crc32_checksum(&data);
@@ -266,7 +267,7 @@ impl WalWriter {
             match result {
                 Ok(entry) if entry.lsn > checkpoint_lsn => {
                     // Copy this entry to the new file
-                    let data = bincode::serialize(&entry)
+                    let data = bincode::serde::encode_to_vec(&entry, bincode::config::standard())
                         .map_err(|e| WalError::Serialize(e.to_string()))?;
                     let crc = crc32_checksum(&data);
                     let len = data.len() as u32;

@@ -126,8 +126,9 @@ impl WalRecovery {
         let computed_crc = crc32_checksum(&data);
 
         // Deserialize entry
-        let entry: WalEntry =
-            bincode::deserialize(&data).map_err(|e| WalError::Deserialize(e.to_string()))?;
+        let (entry, _): (WalEntry, _) =
+            bincode::serde::decode_from_slice(&data, bincode::config::standard())
+                .map_err(|e| WalError::Deserialize(e.to_string()))?;
 
         if stored_crc != computed_crc {
             return Err(WalError::ChecksumMismatch {
