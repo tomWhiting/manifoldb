@@ -516,3 +516,197 @@ fn test_edge_id_generation_across_transactions() {
     assert_eq!(edge1.id.as_u64(), 1);
     assert_eq!(edge2.id.as_u64(), 2);
 }
+
+// ============================================================================
+// Batch Operation Tests
+// ============================================================================
+
+#[test]
+fn test_put_entities_batch() {
+    use manifoldb::Entity;
+
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entities with specific IDs for batch insert
+    let entities: Vec<Entity> = (1..=100u64)
+        .map(|i| {
+            Entity::new(EntityId::new(i)).with_label("Person").with_property("index", i as i64)
+        })
+        .collect();
+
+    // Batch insert all entities
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_entities_batch(&entities).expect("failed to batch insert entities");
+    tx.commit().expect("failed to commit");
+
+    // Verify all entities were inserted
+    let tx = manager.begin_read().expect("failed to begin read");
+    for entity in &entities {
+        let retrieved =
+            tx.get_entity(entity.id).expect("failed to get entity").expect("entity not found");
+        assert!(retrieved.has_label("Person"));
+        assert_eq!(
+            retrieved.get_property("index"),
+            Some(&manifoldb::Value::Int(entity.id.as_u64() as i64))
+        );
+    }
+}
+
+#[test]
+fn test_put_entities_batch_empty() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Empty batch should succeed
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_entities_batch(&[]).expect("failed to batch insert empty slice");
+    tx.commit().expect("failed to commit");
+}
+
+#[test]
+fn test_put_entities_batch_replaces_existing() {
+    use manifoldb::Entity;
+
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    let id = EntityId::new(1);
+
+    // Create initial entity
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let entity = Entity::new(id).with_property("version", 1i64);
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Batch update with new version
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    let updated_entity = Entity::new(id).with_property("version", 2i64);
+    tx.put_entities_batch(&[updated_entity]).expect("failed to batch insert");
+    tx.commit().expect("failed to commit");
+
+    // Verify update
+    let tx = manager.begin_read().expect("failed to begin read");
+    let entity = tx.get_entity(id).expect("failed to get entity").expect("entity not found");
+    assert_eq!(entity.get_property("version"), Some(&manifoldb::Value::Int(2)));
+}
+
+#[test]
+fn test_put_edges_batch() {
+    use manifoldb::{Edge, EdgeId, Entity};
+
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entities first
+    let entity_count = 10;
+    let entities: Vec<Entity> = (1..=entity_count).map(|i| Entity::new(EntityId::new(i))).collect();
+
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_entities_batch(&entities).expect("failed to batch insert entities");
+    tx.commit().expect("failed to commit");
+
+    // Create edges connecting entities in a chain: 1->2, 2->3, 3->4, ...
+    let edges: Vec<Edge> = (1..entity_count)
+        .map(|i| {
+            Edge::new(EdgeId::new(i), EntityId::new(i), EntityId::new(i + 1), "NEXT")
+                .with_property("order", i as i64)
+        })
+        .collect();
+
+    // Batch insert edges
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_edges_batch(&edges).expect("failed to batch insert edges");
+    tx.commit().expect("failed to commit");
+
+    // Verify all edges and their indexes
+    let tx = manager.begin_read().expect("failed to begin read");
+
+    for edge in &edges {
+        // Verify edge exists
+        let retrieved = tx.get_edge(edge.id).expect("failed to get edge").expect("edge not found");
+        assert_eq!(retrieved.source, edge.source);
+        assert_eq!(retrieved.target, edge.target);
+        assert_eq!(retrieved.edge_type.as_str(), "NEXT");
+
+        // Verify outgoing index
+        let outgoing = tx.get_outgoing_edges(edge.source).expect("failed to get outgoing");
+        assert!(outgoing.iter().any(|e| e.id == edge.id));
+
+        // Verify incoming index
+        let incoming = tx.get_incoming_edges(edge.target).expect("failed to get incoming");
+        assert!(incoming.iter().any(|e| e.id == edge.id));
+    }
+}
+
+#[test]
+fn test_put_edges_batch_empty() {
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Empty batch should succeed
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_edges_batch(&[]).expect("failed to batch insert empty edge slice");
+    tx.commit().expect("failed to commit");
+}
+
+#[test]
+fn test_batch_operations_atomic() {
+    use manifoldb::{Edge, EdgeId, Entity};
+
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create entities and edges in one transaction
+    let entities: Vec<Entity> = (1..=5u64).map(|i| Entity::new(EntityId::new(i))).collect();
+
+    let edges: Vec<Edge> = vec![
+        Edge::new(EdgeId::new(1), EntityId::new(1), EntityId::new(2), "LINKS"),
+        Edge::new(EdgeId::new(2), EntityId::new(2), EntityId::new(3), "LINKS"),
+        Edge::new(EdgeId::new(3), EntityId::new(3), EntityId::new(4), "LINKS"),
+    ];
+
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_entities_batch(&entities).expect("failed to batch insert entities");
+    tx.put_edges_batch(&edges).expect("failed to batch insert edges");
+
+    // Rollback - nothing should be persisted
+    tx.rollback().expect("failed to rollback");
+
+    // Verify nothing was persisted
+    let tx = manager.begin_read().expect("failed to begin read");
+    for entity in &entities {
+        assert!(tx.get_entity(entity.id).expect("failed to get entity").is_none());
+    }
+    for edge in &edges {
+        assert!(tx.get_edge(edge.id).expect("failed to get edge").is_none());
+    }
+}
+
+#[test]
+fn test_batch_entities_large() {
+    use manifoldb::Entity;
+
+    let engine = create_test_engine();
+    let manager = TransactionManager::new(engine);
+
+    // Create 1000 entities
+    let count = 1000u64;
+    let entities: Vec<Entity> = (1..=count)
+        .map(|i| {
+            Entity::new(EntityId::new(i))
+                .with_label("TestEntity")
+                .with_property("data", format!("Entity {}", i))
+        })
+        .collect();
+
+    // Batch insert
+    let mut tx = manager.begin_write().expect("failed to begin write");
+    tx.put_entities_batch(&entities).expect("failed to batch insert 1000 entities");
+    tx.commit().expect("failed to commit");
+
+    // Verify count
+    let tx = manager.begin_read().expect("failed to begin read");
+    let all_entities = tx.iter_entities(Some("TestEntity")).expect("failed to iter entities");
+    assert_eq!(all_entities.len(), count as usize);
+}

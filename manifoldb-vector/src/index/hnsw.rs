@@ -6,7 +6,7 @@
 use std::sync::RwLock;
 
 use manifoldb_core::EntityId;
-use manifoldb_storage::StorageEngine;
+use manifoldb_storage::{StorageEngine, Transaction};
 
 use crate::distance::DistanceMetric;
 use crate::error::VectorError;
@@ -399,6 +399,184 @@ impl<E: StorageEngine> HnswIndex<E> {
         persistence::save_metadata(&self.engine, &self.table, &metadata)?;
         Ok(())
     }
+
+    /// Batch insert multiple embeddings with optimized persistence.
+    ///
+    /// This method inserts all nodes into the graph first, then connects them,
+    /// and finally persists all changes in a single batch operation.
+    fn insert_batch_internal(
+        &self,
+        graph: &mut HnswGraph,
+        embeddings: &[(EntityId, &Embedding)],
+    ) -> Result<(), VectorError> {
+        // Phase 1: Generate levels and create nodes
+        let mut new_nodes: Vec<(EntityId, &Embedding, usize)> =
+            Vec::with_capacity(embeddings.len());
+
+        {
+            let mut level_gen = self.level_gen.write().map_err(|_| VectorError::LockPoisoned)?;
+            for (entity_id, embedding) in embeddings {
+                let node_level = level_gen.generate_level();
+                new_nodes.push((*entity_id, embedding, node_level));
+            }
+        }
+
+        // Phase 2: Insert all nodes and connect them (in-memory)
+        // Track all nodes that need connection updates persisted
+        let mut affected_neighbors: std::collections::HashSet<EntityId> =
+            std::collections::HashSet::new();
+
+        for (entity_id, embedding, node_level) in &new_nodes {
+            let new_node = HnswNode::new(*entity_id, (*embedding).clone(), *node_level);
+
+            // If graph is empty, just insert as entry point
+            if graph.is_empty() {
+                graph.insert_node(new_node);
+                continue;
+            }
+
+            // Get current entry point
+            // SAFETY: We checked !graph.is_empty() above
+            #[allow(clippy::unwrap_used)]
+            let entry_point = graph.entry_point.unwrap();
+            let current_max_layer = graph.max_layer;
+
+            // Search from top layer down to node_level + 1
+            let mut current_ep = vec![entry_point];
+
+            for layer in (node_level + 1..=current_max_layer).rev() {
+                let candidates = search_layer(graph, embedding, &current_ep, 1, layer);
+                current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
+                if current_ep.is_empty() {
+                    current_ep = vec![entry_point];
+                }
+            }
+
+            // Insert node first
+            graph.insert_node(new_node);
+
+            // Search and connect at each layer
+            let start_layer = (*node_level).min(current_max_layer);
+
+            for layer in (0..=start_layer).rev() {
+                let candidates =
+                    search_layer(graph, embedding, &current_ep, self.config.ef_construction, layer);
+
+                let m = if layer == 0 { self.config.m_max0 } else { self.config.m };
+                let neighbors = select_neighbors_heuristic(graph, embedding, &candidates, m, false);
+
+                // Connect the new node to its neighbors
+                if let Some(node) = graph.get_node_mut(*entity_id) {
+                    node.set_connections(layer, neighbors.clone());
+                }
+
+                // Add bidirectional connections and track affected neighbors
+                let max_conn = if layer == 0 { self.config.m_max0 } else { self.config.m };
+                let mut neighbors_to_prune = Vec::new();
+
+                for &neighbor_id in &neighbors {
+                    affected_neighbors.insert(neighbor_id);
+                    if let Some(neighbor) = graph.get_node_mut(neighbor_id) {
+                        neighbor.add_connection(layer, *entity_id);
+
+                        if neighbor.connections_at(layer).len() > max_conn {
+                            let neighbor_conn_ids: Vec<EntityId> =
+                                neighbor.connections_at(layer).to_vec();
+                            let neighbor_embedding = neighbor.embedding.clone();
+                            neighbors_to_prune.push((
+                                neighbor_id,
+                                neighbor_conn_ids,
+                                neighbor_embedding,
+                            ));
+                        }
+                    }
+                }
+
+                // Prune neighbors that have too many connections
+                for (neighbor_id, neighbor_conn_ids, neighbor_embedding) in neighbors_to_prune {
+                    let neighbor_connections: Vec<Candidate> = neighbor_conn_ids
+                        .iter()
+                        .filter_map(|&id| {
+                            graph.get_node(id).map(|n| {
+                                Candidate::new(
+                                    id,
+                                    graph.distance(&neighbor_embedding, &n.embedding),
+                                )
+                            })
+                        })
+                        .collect();
+
+                    let pruned = select_neighbors_heuristic(
+                        graph,
+                        &neighbor_embedding,
+                        &neighbor_connections,
+                        max_conn,
+                        false,
+                    );
+
+                    if let Some(neighbor) = graph.get_node_mut(neighbor_id) {
+                        neighbor.set_connections(layer, pruned);
+                    }
+                }
+
+                current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
+                if current_ep.is_empty() && !neighbors.is_empty() {
+                    current_ep = neighbors;
+                }
+            }
+
+            // Update entry point if new node has higher layer
+            if *node_level > current_max_layer {
+                graph.entry_point = Some(*entity_id);
+                graph.max_layer = *node_level;
+            }
+        }
+
+        // Phase 3: Batch persist all changes in a single transaction
+        let mut tx = self.engine.begin_write()?;
+
+        // Save all new nodes
+        for (entity_id, _, _) in &new_nodes {
+            if let Some(node) = graph.get_node(*entity_id) {
+                persistence::save_node_tx(&mut tx, &self.table, node)?;
+            }
+        }
+
+        // Save all affected neighbor connections
+        for neighbor_id in affected_neighbors {
+            if let Some(neighbor) = graph.get_node(neighbor_id) {
+                // Only update connections, not the full node
+                for (layer, connections) in neighbor.connections.iter().enumerate() {
+                    persistence::update_connections_tx(
+                        &mut tx,
+                        &self.table,
+                        neighbor_id,
+                        layer,
+                        connections,
+                    )?;
+                }
+            }
+        }
+
+        // Update metadata
+        let metadata = IndexMetadata {
+            dimension: graph.dimension,
+            distance_metric: graph.distance_metric,
+            entry_point: graph.entry_point,
+            max_layer: graph.max_layer,
+            m: self.config.m,
+            m_max0: self.config.m_max0,
+            ef_construction: self.config.ef_construction,
+            ef_search: self.config.ef_search,
+            ml_bits: self.config.ml.to_bits(),
+        };
+        persistence::save_metadata_tx(&mut tx, &self.table, &metadata)?;
+
+        // Commit the transaction
+        tx.commit()?;
+
+        Ok(())
+    }
 }
 
 impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
@@ -418,6 +596,32 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         }
 
         self.insert_internal(&mut graph, entity_id, embedding)
+    }
+
+    fn insert_batch(&mut self, embeddings: &[(EntityId, &Embedding)]) -> Result<(), VectorError> {
+        if embeddings.is_empty() {
+            return Ok(());
+        }
+
+        let mut graph = self.graph.write().map_err(|_| VectorError::LockPoisoned)?;
+
+        // Validate all dimensions first
+        for (entity_id, embedding) in embeddings {
+            if embedding.dimension() != graph.dimension {
+                return Err(VectorError::DimensionMismatch {
+                    expected: graph.dimension,
+                    actual: embedding.dimension(),
+                });
+            }
+
+            // If node already exists, remove it first
+            if graph.contains(*entity_id) {
+                self.delete_internal(&mut graph, *entity_id)?;
+            }
+        }
+
+        // Batch insert all embeddings
+        self.insert_batch_internal(&mut graph, embeddings)
     }
 
     fn delete(&mut self, entity_id: EntityId) -> Result<bool, VectorError> {
@@ -937,5 +1141,193 @@ mod tests {
         // Test clamping
         let adjusted_min = config.adjusted_ef(10, None);
         assert_eq!(adjusted_min, 50); // Clamped to min
+    }
+
+    // ========================================================================
+    // Batch Insert Tests
+    // ========================================================================
+
+    #[test]
+    fn test_insert_batch_empty() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Empty batch should succeed
+        index.insert_batch(&[]).unwrap();
+        assert_eq!(index.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_insert_batch_single() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        let embedding = create_test_embedding(4, 1.0);
+        index.insert_batch(&[(EntityId::new(1), &embedding)]).unwrap();
+
+        assert_eq!(index.len().unwrap(), 1);
+        assert!(index.contains(EntityId::new(1)).unwrap());
+    }
+
+    #[test]
+    fn test_insert_batch_multiple() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Create embeddings
+        let embeddings: Vec<Embedding> =
+            (0..10).map(|i| create_test_embedding(4, i as f32)).collect();
+
+        let batch: Vec<(EntityId, &Embedding)> =
+            embeddings.iter().enumerate().map(|(i, e)| (EntityId::new(i as u64), e)).collect();
+
+        index.insert_batch(&batch).unwrap();
+
+        assert_eq!(index.len().unwrap(), 10);
+        for i in 0..10 {
+            assert!(index.contains(EntityId::new(i)).unwrap());
+        }
+    }
+
+    #[test]
+    fn test_insert_batch_large() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(16);
+        let mut index =
+            HnswIndex::new(engine, "test", 128, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert 500 vectors in batch
+        let embeddings: Vec<Embedding> =
+            (0..500).map(|i| Embedding::new(vec![i as f32 / 500.0; 128]).unwrap()).collect();
+
+        let batch: Vec<(EntityId, &Embedding)> =
+            embeddings.iter().enumerate().map(|(i, e)| (EntityId::new(i as u64), e)).collect();
+
+        index.insert_batch(&batch).unwrap();
+
+        assert_eq!(index.len().unwrap(), 500);
+
+        // Verify search still works
+        let query = Embedding::new(vec![0.5; 128]).unwrap();
+        let results = index.search(&query, 10, None).unwrap();
+        assert_eq!(results.len(), 10);
+    }
+
+    #[test]
+    fn test_insert_batch_dimension_mismatch() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        let good_embedding = create_test_embedding(4, 1.0);
+        let bad_embedding = create_test_embedding(8, 2.0); // Wrong dimension
+
+        let batch: Vec<(EntityId, &Embedding)> =
+            vec![(EntityId::new(1), &good_embedding), (EntityId::new(2), &bad_embedding)];
+
+        let result = index.insert_batch(&batch);
+        assert!(matches!(result, Err(VectorError::DimensionMismatch { .. })));
+    }
+
+    #[test]
+    fn test_insert_batch_updates_existing() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert initial embedding
+        let original = create_test_embedding(4, 1.0);
+        index.insert(EntityId::new(1), &original).unwrap();
+
+        // Batch update with different embedding
+        let updated = create_test_embedding(4, 10.0);
+        index.insert_batch(&[(EntityId::new(1), &updated)]).unwrap();
+
+        // Should still have 1 entry
+        assert_eq!(index.len().unwrap(), 1);
+
+        // Search should find the updated embedding
+        let query = create_test_embedding(4, 10.0);
+        let results = index.search(&query, 1, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].distance < 1e-6);
+    }
+
+    #[test]
+    fn test_insert_batch_search_quality() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(16);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert embeddings at increasing values
+        let embeddings: Vec<Embedding> =
+            (1..=20).map(|i| create_test_embedding(4, i as f32)).collect();
+
+        let batch: Vec<(EntityId, &Embedding)> = embeddings
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (EntityId::new((i + 1) as u64), e))
+            .collect();
+
+        index.insert_batch(&batch).unwrap();
+
+        // Query close to embedding 10
+        let query = create_test_embedding(4, 10.5);
+        let results = index.search(&query, 5, None).unwrap();
+
+        // Top results should be entities 10 and 11 (values 10.0 and 11.0)
+        let top_ids: Vec<u64> = results.iter().map(|r| r.entity_id.as_u64()).collect();
+        assert!(top_ids.contains(&10) || top_ids.contains(&11));
+    }
+
+    #[test]
+    fn test_insert_batch_persistence() {
+        let temp_dir = std::env::temp_dir();
+        let db_path = temp_dir.join(format!("hnsw_batch_persist_test_{}.redb", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+
+        // Create and batch insert
+        {
+            let engine = RedbEngine::open(&db_path).unwrap();
+            let config = HnswConfig::new(4);
+            let mut index =
+                HnswIndex::new(engine, "batch_test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+            let embeddings: Vec<Embedding> =
+                (0..50).map(|i| create_test_embedding(4, i as f32)).collect();
+
+            let batch: Vec<(EntityId, &Embedding)> =
+                embeddings.iter().enumerate().map(|(i, e)| (EntityId::new(i as u64), e)).collect();
+
+            index.insert_batch(&batch).unwrap();
+            index.flush().unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let engine = RedbEngine::open(&db_path).unwrap();
+            let index: HnswIndex<RedbEngine> = HnswIndex::open(engine, "batch_test").unwrap();
+
+            assert_eq!(index.len().unwrap(), 50);
+            for i in 0..50 {
+                assert!(index.contains(EntityId::new(i)).unwrap());
+            }
+
+            // Verify search works
+            let query = create_test_embedding(4, 25.0);
+            let results = index.search(&query, 5, None).unwrap();
+            assert_eq!(results.len(), 5);
+        }
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }
