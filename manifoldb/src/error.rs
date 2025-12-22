@@ -45,6 +45,10 @@ pub enum Error {
     /// The database is closed.
     #[error("database is closed")]
     Closed,
+
+    /// An internal lock was poisoned (a thread panicked while holding it).
+    #[error("internal lock poisoned: {0}")]
+    LockPoisoned(String),
 }
 
 impl Error {
@@ -87,6 +91,12 @@ impl Error {
     #[must_use]
     pub fn config(msg: impl Into<String>) -> Self {
         Self::Config(msg.into())
+    }
+
+    /// Create a lock poisoned error.
+    #[must_use]
+    pub fn lock_poisoned(msg: impl Into<String>) -> Self {
+        Self::LockPoisoned(msg.into())
     }
 }
 

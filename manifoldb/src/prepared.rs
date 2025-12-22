@@ -266,12 +266,20 @@ impl PreparedStatementCache {
     ///
     /// If the statement is already cached and the schema hasn't changed,
     /// returns the cached statement. Otherwise, prepares a new statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the SQL cannot be parsed/planned, or if an internal
+    /// lock is poisoned.
     pub fn get_or_prepare(&self, sql: &str) -> Result<Arc<PreparedStatement>> {
         let schema_version = self.schema_version.load(Ordering::Acquire);
 
         // Try to get from cache
         {
-            let cache = self.statements.read().unwrap();
+            let cache = self
+                .statements
+                .read()
+                .map_err(|_| Error::lock_poisoned("prepared statement cache read lock"))?;
             if let Some(stmt) = cache.get(sql) {
                 if stmt.is_valid(schema_version) {
                     self.hits.fetch_add(1, Ordering::Relaxed);
@@ -286,7 +294,10 @@ impl PreparedStatementCache {
 
         // Insert into cache
         {
-            let mut cache = self.statements.write().unwrap();
+            let mut cache = self
+                .statements
+                .write()
+                .map_err(|_| Error::lock_poisoned("prepared statement cache write lock"))?;
 
             // If cache is full, remove oldest entries (simple LRU-ish eviction)
             if cache.len() >= self.max_size {
@@ -325,33 +336,63 @@ impl PreparedStatementCache {
     }
 
     /// Clear all cached statements.
-    pub fn clear(&self) {
-        let mut cache = self.statements.write().unwrap();
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned.
+    pub fn clear(&self) -> Result<()> {
+        let mut cache = self
+            .statements
+            .write()
+            .map_err(|_| Error::lock_poisoned("prepared statement cache write lock"))?;
         cache.clear();
+        Ok(())
     }
 
     /// Invalidate cached statements that access specific tables.
-    pub fn invalidate_tables(&self, tables: &[String]) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned.
+    pub fn invalidate_tables(&self, tables: &[String]) -> Result<()> {
         if tables.is_empty() {
-            return;
+            return Ok(());
         }
 
         let tables_set: HashSet<&String> = tables.iter().collect();
-        let mut cache = self.statements.write().unwrap();
+        let mut cache = self
+            .statements
+            .write()
+            .map_err(|_| Error::lock_poisoned("prepared statement cache write lock"))?;
 
         cache.retain(|_, stmt| !stmt.accessed_tables().iter().any(|t| tables_set.contains(t)));
+        Ok(())
     }
 
     /// Returns the number of cached statements.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.statements.read().unwrap().len()
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned.
+    pub fn len(&self) -> Result<usize> {
+        let cache = self
+            .statements
+            .read()
+            .map_err(|_| Error::lock_poisoned("prepared statement cache read lock"))?;
+        Ok(cache.len())
     }
 
     /// Returns true if the cache is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.statements.read().unwrap().is_empty()
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned.
+    pub fn is_empty(&self) -> Result<bool> {
+        let cache = self
+            .statements
+            .read()
+            .map_err(|_| Error::lock_poisoned("prepared statement cache read lock"))?;
+        Ok(cache.is_empty())
     }
 
     /// Returns the cache hit count.
@@ -405,7 +446,8 @@ mod tests {
 
     #[test]
     fn test_prepare_select() {
-        let stmt = PreparedStatement::new("SELECT * FROM users WHERE id = $1", 0).unwrap();
+        let stmt = PreparedStatement::new("SELECT * FROM users WHERE id = $1", 0)
+            .expect("should parse SELECT statement");
         assert!(!stmt.is_dml());
         assert!(!stmt.is_ddl());
         assert!(stmt.is_query());
@@ -414,7 +456,8 @@ mod tests {
 
     #[test]
     fn test_prepare_insert() {
-        let stmt = PreparedStatement::new("INSERT INTO users (name) VALUES ($1)", 0).unwrap();
+        let stmt = PreparedStatement::new("INSERT INTO users (name) VALUES ($1)", 0)
+            .expect("should parse INSERT statement");
         assert!(stmt.is_dml());
         assert!(!stmt.is_ddl());
         assert!(!stmt.is_query());
@@ -423,7 +466,8 @@ mod tests {
 
     #[test]
     fn test_prepare_update() {
-        let stmt = PreparedStatement::new("UPDATE users SET name = $1 WHERE id = $2", 0).unwrap();
+        let stmt = PreparedStatement::new("UPDATE users SET name = $1 WHERE id = $2", 0)
+            .expect("should parse UPDATE statement");
         assert!(stmt.is_dml());
         assert!(!stmt.is_ddl());
         assert!(stmt.accessed_tables().contains("users"));
@@ -431,7 +475,8 @@ mod tests {
 
     #[test]
     fn test_prepare_delete() {
-        let stmt = PreparedStatement::new("DELETE FROM users WHERE id = $1", 0).unwrap();
+        let stmt = PreparedStatement::new("DELETE FROM users WHERE id = $1", 0)
+            .expect("should parse DELETE statement");
         assert!(stmt.is_dml());
         assert!(!stmt.is_ddl());
         assert!(stmt.accessed_tables().contains("users"));
@@ -439,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_schema_version_validity() {
-        let stmt = PreparedStatement::new("SELECT * FROM users", 5).unwrap();
+        let stmt = PreparedStatement::new("SELECT * FROM users", 5).expect("should parse SELECT");
         assert!(stmt.is_valid(5));
         assert!(!stmt.is_valid(6));
         assert!(!stmt.is_valid(4));
@@ -450,12 +495,13 @@ mod tests {
         let cache = PreparedStatementCache::new(100);
 
         // First access - cache miss
-        let stmt1 = cache.get_or_prepare("SELECT * FROM users").unwrap();
+        let stmt1 = cache.get_or_prepare("SELECT * FROM users").expect("should prepare statement");
         assert_eq!(cache.hits(), 0);
         assert_eq!(cache.misses(), 1);
 
         // Second access - cache hit
-        let stmt2 = cache.get_or_prepare("SELECT * FROM users").unwrap();
+        let stmt2 =
+            cache.get_or_prepare("SELECT * FROM users").expect("should get cached statement");
         assert_eq!(cache.hits(), 1);
         assert_eq!(cache.misses(), 1);
 
@@ -468,14 +514,16 @@ mod tests {
         let cache = PreparedStatementCache::new(100);
 
         // Prepare at version 0
-        let stmt1 = cache.get_or_prepare("SELECT * FROM users").unwrap();
+        let stmt1 = cache.get_or_prepare("SELECT * FROM users").expect("should prepare statement");
         assert_eq!(stmt1.schema_version(), 0);
 
         // Change schema version
         cache.set_schema_version(1);
 
         // Access again - should re-prepare due to schema change
-        let stmt2 = cache.get_or_prepare("SELECT * FROM users").unwrap();
+        let stmt2 = cache
+            .get_or_prepare("SELECT * FROM users")
+            .expect("should re-prepare after schema change");
         assert_eq!(stmt2.schema_version(), 1);
 
         // Different statement instance
@@ -487,16 +535,16 @@ mod tests {
         let cache = PreparedStatementCache::new(100);
 
         // Prepare statements for different tables
-        let _ = cache.get_or_prepare("SELECT * FROM users").unwrap();
-        let _ = cache.get_or_prepare("SELECT * FROM orders").unwrap();
-        assert_eq!(cache.len(), 2);
+        cache.get_or_prepare("SELECT * FROM users").expect("should prepare users query");
+        cache.get_or_prepare("SELECT * FROM orders").expect("should prepare orders query");
+        assert_eq!(cache.len().expect("should get cache len"), 2);
 
         // Invalidate users table
-        cache.invalidate_tables(&["users".to_string()]);
-        assert_eq!(cache.len(), 1);
+        cache.invalidate_tables(&["users".to_string()]).expect("should invalidate tables");
+        assert_eq!(cache.len().expect("should get cache len"), 1);
 
         // Orders should still be cached
-        let _ = cache.get_or_prepare("SELECT * FROM orders").unwrap();
+        cache.get_or_prepare("SELECT * FROM orders").expect("should get cached orders query");
         assert_eq!(cache.hits(), 1);
     }
 
@@ -504,12 +552,12 @@ mod tests {
     fn test_cache_clear() {
         let cache = PreparedStatementCache::new(100);
 
-        let _ = cache.get_or_prepare("SELECT * FROM users").unwrap();
-        let _ = cache.get_or_prepare("SELECT * FROM orders").unwrap();
-        assert_eq!(cache.len(), 2);
+        cache.get_or_prepare("SELECT * FROM users").expect("should prepare users query");
+        cache.get_or_prepare("SELECT * FROM orders").expect("should prepare orders query");
+        assert_eq!(cache.len().expect("should get cache len"), 2);
 
-        cache.clear();
-        assert!(cache.is_empty());
+        cache.clear().expect("should clear cache");
+        assert!(cache.is_empty().expect("should check if empty"));
     }
 
     #[test]
@@ -518,10 +566,55 @@ mod tests {
 
         // Fill the cache
         for i in 0..10 {
-            let _ = cache.get_or_prepare(&format!("SELECT * FROM table{}", i)).unwrap();
+            cache
+                .get_or_prepare(&format!("SELECT * FROM table{i}"))
+                .expect("should prepare statement");
         }
 
         // Cache should not exceed max size (though it may temporarily during eviction)
-        assert!(cache.len() <= 5);
+        assert!(cache.len().expect("should get cache len") <= 5);
+    }
+
+    #[test]
+    fn test_concurrent_schema_version_change() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(PreparedStatementCache::new(100));
+
+        // Prepare initial statement
+        cache.get_or_prepare("SELECT * FROM users").expect("should prepare statement");
+
+        let cache_clone = Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            // Simulate DDL changing the schema
+            cache_clone.set_schema_version(1);
+        });
+
+        handle.join().expect("thread should complete");
+
+        // After schema change, should re-prepare
+        let stmt = cache
+            .get_or_prepare("SELECT * FROM users")
+            .expect("should re-prepare after concurrent schema change");
+        assert_eq!(stmt.schema_version(), 1);
+    }
+
+    #[test]
+    fn test_invalidate_empty_tables_is_noop() {
+        let cache = PreparedStatementCache::new(100);
+
+        cache.get_or_prepare("SELECT * FROM users").expect("should prepare statement");
+        assert_eq!(cache.len().expect("should get cache len"), 1);
+
+        // Invalidating empty list should be a no-op
+        cache.invalidate_tables(&[]).expect("should handle empty table list");
+        assert_eq!(cache.len().expect("should get cache len"), 1);
+    }
+
+    #[test]
+    fn test_parse_error_returns_error() {
+        let result = PreparedStatement::new("INVALID SQL SYNTAX HERE", 0);
+        assert!(result.is_err(), "invalid SQL should return error");
     }
 }

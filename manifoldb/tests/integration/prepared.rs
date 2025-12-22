@@ -222,12 +222,12 @@ fn test_clear_prepared_cache() {
     let _ = db.prepare_cached("SELECT 1").expect("prepare failed");
     let _ = db.prepare_cached("SELECT 2").expect("prepare failed");
 
-    assert_eq!(db.prepared_cache().len(), 2);
+    assert_eq!(db.prepared_cache().len().expect("should get cache len"), 2);
 
     // Clear the cache
-    db.clear_prepared_cache();
+    db.clear_prepared_cache().expect("should clear cache");
 
-    assert!(db.prepared_cache().is_empty());
+    assert!(db.prepared_cache().is_empty().expect("should check if empty"));
 }
 
 /// Test table-specific invalidation in prepared cache.
@@ -243,13 +243,15 @@ fn test_table_invalidation() {
     let _ = db.prepare_cached("SELECT * FROM table_a").expect("prepare failed");
     let _ = db.prepare_cached("SELECT * FROM table_b").expect("prepare failed");
 
-    assert_eq!(db.prepared_cache().len(), 2);
+    assert_eq!(db.prepared_cache().len().expect("should get cache len"), 2);
 
     // Invalidate only table_a
-    db.prepared_cache().invalidate_tables(&["table_a".to_string()]);
+    db.prepared_cache()
+        .invalidate_tables(&["table_a".to_string()])
+        .expect("should invalidate tables");
 
     // Should only have table_b left
-    assert_eq!(db.prepared_cache().len(), 1);
+    assert_eq!(db.prepared_cache().len().expect("should get cache len"), 1);
 
     // table_b query should still hit cache
     let _ = db.prepare_cached("SELECT * FROM table_b").expect("prepare failed");

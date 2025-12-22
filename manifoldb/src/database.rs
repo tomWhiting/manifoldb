@@ -375,7 +375,7 @@ impl Database {
 
                 // Invalidate cache entries for affected tables
                 self.query_cache.invalidate_tables(&affected_tables);
-                self.prepared_cache.invalidate_tables(&affected_tables);
+                self.prepared_cache.invalidate_tables(&affected_tables)?;
 
                 // Update prepared statement cache schema version if DDL
                 if let Some(version) = new_schema_version {
@@ -832,7 +832,7 @@ impl Database {
                 // Invalidate cache entries for affected tables
                 let affected_tables: Vec<String> = stmt.accessed_tables().iter().cloned().collect();
                 self.query_cache.invalidate_tables(&affected_tables);
-                self.prepared_cache.invalidate_tables(&affected_tables);
+                self.prepared_cache.invalidate_tables(&affected_tables)?;
 
                 // Update prepared statement cache schema version if DDL
                 if let Some(version) = new_schema_version {
@@ -859,8 +859,12 @@ impl Database {
     }
 
     /// Clear the prepared statement cache.
-    pub fn clear_prepared_cache(&self) {
-        self.prepared_cache.clear();
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal cache lock is poisoned.
+    pub fn clear_prepared_cache(&self) -> Result<()> {
+        self.prepared_cache.clear()
     }
 }
 
