@@ -20,8 +20,8 @@
 use crate::ast::{
     self, CreateIndexStatement, CreateTableStatement, DeleteStatement, DropIndexStatement,
     DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement, JoinClause,
-    JoinCondition, JoinType as AstJoinType, PathPattern, SelectItem, SelectStatement, SetOperation,
-    SetOperator, Statement, TableRef, UpdateStatement,
+    JoinCondition, JoinType as AstJoinType, MatchStatement, PathPattern, SelectItem,
+    SelectStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
 };
 
 use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
@@ -72,6 +72,7 @@ impl PlanBuilder {
             Statement::Insert(insert) => self.build_insert(insert),
             Statement::Update(update) => self.build_update(update),
             Statement::Delete(delete) => self.build_delete(delete),
+            Statement::Match(match_stmt) => self.build_match(match_stmt),
             Statement::Explain(inner) => {
                 // For EXPLAIN, we still build the plan
                 self.build_statement(inner)
@@ -81,6 +82,16 @@ impl PlanBuilder {
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
         }
+    }
+
+    /// Builds a logical plan from a standalone MATCH statement.
+    ///
+    /// This converts the Cypher-style MATCH statement to an equivalent SELECT
+    /// and builds the plan from that.
+    pub fn build_match(&mut self, match_stmt: &MatchStatement) -> PlanResult<LogicalPlan> {
+        // Convert MATCH to SELECT and build using existing infrastructure
+        let select = match_stmt.to_select();
+        self.build_select(&select)
     }
 
     /// Builds a logical plan from a SELECT statement.
