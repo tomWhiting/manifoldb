@@ -101,7 +101,8 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::Expand { input, .. }
         | LogicalPlan::PathScan { input, .. }
         | LogicalPlan::AnnSearch { input, .. }
-        | LogicalPlan::VectorDistance { input, .. } => {
+        | LogicalPlan::VectorDistance { input, .. }
+        | LogicalPlan::HybridSearch { input, .. } => {
             collect_tables_from_plan(input, tables);
         }
 

@@ -13,12 +13,13 @@
 use super::cost::{Cost, CostModel};
 use super::node::{
     BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, GraphPathScanExecNode,
-    HashAggregateNode, HashJoinNode, HnswSearchNode, JoinOrder, LimitExecNode, NestedLoopJoinNode,
-    PhysicalPlan, ProjectExecNode, SortExecNode,
+    HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
+    HybridSearchNode as PhysicalHybridSearchNode, JoinOrder, LimitExecNode, NestedLoopJoinNode,
+    PhysicalPlan, PhysicalScoreCombinationMethod, ProjectExecNode, SortExecNode,
 };
 use crate::plan::logical::{
-    AggregateNode, AnnSearchNode, ExpandNode, JoinNode, JoinType, LogicalExpr, LogicalPlan,
-    PathScanNode, ScanNode,
+    AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
+    LogicalPlan, PathScanNode, ScanNode, ScoreCombinationMethod,
 };
 
 /// Physical query planner.
@@ -360,6 +361,7 @@ impl PhysicalPlanner {
             // Vector nodes
             LogicalPlan::AnnSearch { node, input } => self.plan_ann_search(node, input),
             LogicalPlan::VectorDistance { node, input } => self.plan_vector_distance(node, input),
+            LogicalPlan::HybridSearch { node, input } => self.plan_hybrid_search(node, input),
 
             // DML nodes
             LogicalPlan::Insert { table, columns, input, returning } => {
@@ -796,6 +798,100 @@ impl PhysicalPlanner {
             node: ProjectExecNode::new(vec![expr]).with_cost(cost),
             input: Box::new(input_plan),
         }
+    }
+
+    fn plan_hybrid_search(&self, node: &HybridSearchNode, input: &LogicalPlan) -> PhysicalPlan {
+        let input_plan = self.plan(input);
+        let table_rows = input_plan.cost().cardinality();
+
+        // Get the source table/collection name
+        let source_name = self.get_table_name(input);
+
+        // Build physical components for each search
+        let mut components = Vec::with_capacity(node.components.len());
+        let mut total_cost = 0.0;
+
+        for comp in &node.components {
+            // Check for HNSW index for this component
+            let hnsw_index_info = source_name.and_then(|table| {
+                self.catalog
+                    .get_hnsw_index_for_named_vector(table, &comp.vector_column)
+                    .or_else(|| self.catalog.get_hnsw_index(table, &comp.vector_column))
+            });
+
+            let ef_search = comp.params.ef_search.unwrap_or(node.k * 10);
+
+            // Determine whether to use HNSW for this component
+            let (use_hnsw, index_name, component_cost) = if let Some(index_info) = hnsw_index_info {
+                if self.cost_model.prefer_hnsw(table_rows, node.k, ef_search) {
+                    let cost = self.cost_model.hnsw_search_cost(table_rows, node.k, ef_search);
+                    (true, Some(index_info.name.clone()), cost)
+                } else {
+                    let cost = self.cost_model.brute_force_search_cost(table_rows, node.k);
+                    (false, None, cost)
+                }
+            } else {
+                let cost = self.cost_model.brute_force_search_cost(table_rows, node.k);
+                (false, None, cost)
+            };
+
+            total_cost += component_cost.value();
+
+            let mut phys_comp = HybridSearchComponentNode::new(
+                &comp.vector_column,
+                comp.query_vector.clone(),
+                comp.metric,
+                comp.weight,
+            )
+            .with_ef_search(ef_search)
+            .with_use_hnsw(use_hnsw);
+
+            if let Some(name) = index_name {
+                phys_comp = phys_comp.with_index_name(name);
+            }
+
+            components.push(phys_comp);
+        }
+
+        // Add merge overhead cost
+        let merge_cost = (node.k * node.components.len()) as f64 * 0.1;
+        total_cost += merge_cost;
+
+        let cost = Cost::new(total_cost, node.k);
+
+        // Convert combination method
+        let combination_method = match node.combination_method {
+            ScoreCombinationMethod::WeightedSum => PhysicalScoreCombinationMethod::WeightedSum,
+            ScoreCombinationMethod::ReciprocalRankFusion { k_param } => {
+                PhysicalScoreCombinationMethod::ReciprocalRankFusion { k_param }
+            }
+        };
+
+        let mut phys_node = PhysicalHybridSearchNode::new(components, node.k)
+            .with_combination_method(combination_method)
+            .with_cost(cost);
+
+        if !node.normalize_scores {
+            phys_node = phys_node.without_normalization();
+        }
+
+        if let Some(filter) = &node.filter {
+            phys_node = phys_node.with_filter(filter.clone());
+        }
+
+        if !node.include_score {
+            phys_node = phys_node.with_include_score(false);
+        }
+
+        if let Some(alias) = &node.score_alias {
+            phys_node = phys_node.with_score_alias(alias);
+        }
+
+        if let Some(source) = source_name {
+            phys_node = phys_node.with_collection_name(source);
+        }
+
+        PhysicalPlan::HybridSearch { node: Box::new(phys_node), input: Box::new(input_plan) }
     }
 
     fn plan_insert(

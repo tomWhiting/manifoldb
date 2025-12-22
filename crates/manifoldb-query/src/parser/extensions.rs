@@ -920,6 +920,11 @@ impl ExtendedParser {
                     Self::restore_vector_ops_in_expr(else_result);
                 }
             }
+            Expr::HybridSearch { components, .. } => {
+                for comp in components {
+                    Self::restore_vector_ops_in_expr(&mut comp.distance_expr);
+                }
+            }
             _ => {}
         }
 
@@ -933,25 +938,32 @@ impl ExtendedParser {
     fn convert_vector_function(expr: &mut Expr) {
         let replacement = if let Expr::Function(func) = expr {
             let func_name = func.name.name().map(|id| id.name.as_str()).unwrap_or("");
-            let op = match func_name {
-                "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
-                "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
-                "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
-                "__VEC_MAXSIM__" => Some(BinaryOp::MaxSim),
-                _ => None,
-            };
 
-            if let Some(op) = op {
-                if func.args.len() == 2 {
-                    let mut args = std::mem::take(&mut func.args);
-                    let right = args.pop().expect("checked len");
-                    let left = args.pop().expect("checked len");
-                    Some(Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) })
+            // Check for HYBRID function first
+            if func_name.eq_ignore_ascii_case("HYBRID") || func_name.eq_ignore_ascii_case("RRF") {
+                Self::parse_hybrid_function(func, func_name.eq_ignore_ascii_case("RRF"))
+            } else {
+                // Check for vector distance operators
+                let op = match func_name {
+                    "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
+                    "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
+                    "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
+                    "__VEC_MAXSIM__" => Some(BinaryOp::MaxSim),
+                    _ => None,
+                };
+
+                if let Some(op) = op {
+                    if func.args.len() == 2 {
+                        let mut args = std::mem::take(&mut func.args);
+                        let right = args.pop().expect("checked len");
+                        let left = args.pop().expect("checked len");
+                        Some(Expr::BinaryOp { left: Box::new(left), op, right: Box::new(right) })
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
             }
         } else {
             None
@@ -959,6 +971,58 @@ impl ExtendedParser {
 
         if let Some(new_expr) = replacement {
             *expr = new_expr;
+        }
+    }
+
+    /// Parses a HYBRID or RRF function call into a HybridSearch expression.
+    ///
+    /// Syntax: `HYBRID(expr1, weight1, expr2, weight2, ...)`
+    /// Or: `RRF(expr1, expr2, ...)` (uses RRF with k=60)
+    fn parse_hybrid_function(func: &mut crate::ast::FunctionCall, is_rrf: bool) -> Option<Expr> {
+        use crate::ast::{HybridCombinationMethod, HybridSearchComponent};
+
+        if is_rrf {
+            // RRF(expr1, expr2, ...) - each expr has equal weight
+            if func.args.is_empty() {
+                return None;
+            }
+
+            let components: Vec<HybridSearchComponent> = std::mem::take(&mut func.args)
+                .into_iter()
+                .map(|arg| HybridSearchComponent::new(arg, 1.0))
+                .collect();
+
+            Some(Expr::HybridSearch { components, method: HybridCombinationMethod::RRF { k: 60 } })
+        } else {
+            // HYBRID(expr1, weight1, expr2, weight2, ...)
+            // Must have even number of args, at least 4
+            if func.args.len() < 4 || func.args.len() % 2 != 0 {
+                return None;
+            }
+
+            let mut components = Vec::new();
+            let args = std::mem::take(&mut func.args);
+
+            let mut iter = args.into_iter();
+            while let Some(distance_expr) = iter.next() {
+                let weight_expr = iter.next()?;
+
+                // Extract weight value
+                let weight = Self::extract_weight(&weight_expr)?;
+
+                components.push(HybridSearchComponent::new(distance_expr, weight));
+            }
+
+            Some(Expr::HybridSearch { components, method: HybridCombinationMethod::WeightedSum })
+        }
+    }
+
+    /// Extracts a numeric weight from an expression.
+    fn extract_weight(expr: &Expr) -> Option<f64> {
+        match expr {
+            Expr::Literal(crate::ast::Literal::Float(f)) => Some(*f),
+            Expr::Literal(crate::ast::Literal::Integer(i)) => Some(*i as f64),
+            _ => None,
         }
     }
 
@@ -1507,6 +1571,7 @@ pub fn parse_vector_distance(left: Expr, metric: DistanceMetric, right: Expr) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::HybridCombinationMethod;
 
     #[test]
     fn parse_simple_node_pattern() {
@@ -1750,5 +1815,81 @@ mod tests {
         let (edge, _) = &sp.path.steps[0];
         assert_eq!(edge.edge_types.len(), 1);
         assert_eq!(edge.edge_types[0].name, "ROAD");
+    }
+
+    #[test]
+    fn parse_hybrid_function_basic() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY HYBRID(dense <=> $1, 0.7, sparse <#> $2, 0.3) LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert_eq!(select.order_by.len(), 1);
+            // The ORDER BY should contain a HybridSearch expression
+            let order_expr = &*select.order_by[0].expr;
+            assert!(matches!(order_expr, Expr::HybridSearch { .. }));
+            if let Expr::HybridSearch { components, method } = order_expr {
+                assert_eq!(components.len(), 2);
+                assert!((components[0].weight - 0.7).abs() < 0.001);
+                assert!((components[1].weight - 0.3).abs() < 0.001);
+                assert!(matches!(method, HybridCombinationMethod::WeightedSum));
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_rrf_function() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY RRF(dense <=> $1, sparse <#> $2) LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            let order_expr = &*select.order_by[0].expr;
+            if let Expr::HybridSearch { components, method } = order_expr {
+                assert_eq!(components.len(), 2);
+                // RRF uses equal weights (1.0)
+                assert!((components[0].weight - 1.0).abs() < 0.001);
+                assert!((components[1].weight - 1.0).abs() < 0.001);
+                assert!(matches!(method, HybridCombinationMethod::RRF { k: 60 }));
+            } else {
+                panic!("Expected HybridSearch expression");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_hybrid_function_preserves_vector_ops() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY HYBRID(embedding <=> $q1, 0.5, sparse <#> $q2, 0.5)",
+        )
+        .unwrap();
+        if let Statement::Select(select) = &stmts[0] {
+            if let Expr::HybridSearch { components, .. } = &*select.order_by[0].expr {
+                // First component should be cosine distance
+                if let Expr::BinaryOp { op: BinaryOp::CosineDistance, .. } =
+                    components[0].distance_expr.as_ref()
+                {
+                    // OK
+                } else {
+                    panic!("Expected CosineDistance operator for first component");
+                }
+                // Second component should be inner product
+                if let Expr::BinaryOp { op: BinaryOp::InnerProduct, .. } =
+                    components[1].distance_expr.as_ref()
+                {
+                    // OK
+                } else {
+                    panic!("Expected InnerProduct operator for second component");
+                }
+            } else {
+                panic!("Expected HybridSearch expression");
+            }
+        }
     }
 }

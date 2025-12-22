@@ -3,9 +3,10 @@
 //! These operators integrate with the manifoldb-vector crate
 //! for similarity search operations.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use manifoldb_core::Value;
+use manifoldb_core::{EntityId, Value};
 use manifoldb_vector::Embedding;
 
 use crate::ast::DistanceMetric;
@@ -14,6 +15,7 @@ use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResul
 use crate::exec::operators::filter::evaluate_expr;
 use crate::exec::row::{Row, Schema};
 use crate::plan::logical::LogicalExpr;
+use crate::plan::physical::{HybridSearchComponentNode, PhysicalScoreCombinationMethod};
 
 /// Computes distance between two vectors using the specified metric.
 fn compute_distance_with_metric(a: &[f32], b: &[f32], metric: &DistanceMetric) -> f32 {
@@ -489,6 +491,403 @@ impl Operator for BruteForceSearchOp {
 
     fn name(&self) -> &'static str {
         "BruteForceSearch"
+    }
+}
+
+/// Hybrid vector search operator.
+///
+/// Combines multiple vector searches (dense + sparse) and merges results
+/// using weighted combination or reciprocal rank fusion.
+pub struct HybridSearchOp {
+    /// Base operator state.
+    base: OperatorBase,
+    /// Search components.
+    components: Vec<HybridSearchComponentNode>,
+    /// Number of results.
+    k: usize,
+    /// Score combination method.
+    combination_method: PhysicalScoreCombinationMethod,
+    /// Whether to normalize scores.
+    normalize_scores: bool,
+    /// Whether to include score in output.
+    include_score: bool,
+    /// Score column alias (used for schema naming).
+    #[allow(dead_code)]
+    score_alias: String,
+    /// Input operator.
+    input: BoxedOperator,
+    /// Collected candidates with scores.
+    candidates: Vec<(Row, f32)>,
+    /// Position in results.
+    position: usize,
+    /// Whether search is complete.
+    searched: bool,
+    /// Cached reference to the vector index provider.
+    vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
+}
+
+impl HybridSearchOp {
+    /// Creates a new hybrid search operator.
+    #[must_use]
+    pub fn new(
+        components: Vec<HybridSearchComponentNode>,
+        k: usize,
+        combination_method: PhysicalScoreCombinationMethod,
+        normalize_scores: bool,
+        include_score: bool,
+        score_alias: Option<String>,
+        input: BoxedOperator,
+    ) -> Self {
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
+        let score_name = score_alias.clone().unwrap_or_else(|| "score".to_string());
+        if include_score {
+            columns.push(score_name.clone());
+        }
+        let schema = Arc::new(Schema::new(columns));
+
+        Self {
+            base: OperatorBase::new(schema),
+            components,
+            k,
+            combination_method,
+            normalize_scores,
+            include_score,
+            score_alias: score_name,
+            input,
+            candidates: Vec::new(),
+            position: 0,
+            searched: false,
+            vector_index_provider: None,
+        }
+    }
+
+    /// Performs the hybrid search by executing each component and merging results.
+    fn search(&mut self) -> OperatorResult<()> {
+        // Collect all input rows first
+        let mut all_rows: Vec<Row> = Vec::new();
+        while let Some(row) = self.input.next()? {
+            all_rows.push(row);
+        }
+
+        if all_rows.is_empty() {
+            self.searched = true;
+            return Ok(());
+        }
+
+        // Execute each component search
+        let mut component_results: Vec<Vec<(EntityId, f32)>> = Vec::new();
+
+        for comp in &self.components {
+            let results = self.search_component(comp, &all_rows)?;
+            component_results.push(results);
+        }
+
+        // Merge results using the specified combination method
+        let merged = self.merge_component_results(&component_results, &all_rows)?;
+
+        // Match merged results back to rows
+        let rows_by_id: HashMap<i64, Row> = all_rows
+            .into_iter()
+            .filter_map(|row| {
+                row.get_by_name("id").or_else(|| row.get_by_name("_id")).and_then(|v| {
+                    if let Value::Int(id) = v {
+                        Some((*id, row.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        for (entity_id, score) in merged {
+            if let Some(row) = rows_by_id.get(&(entity_id.as_u64() as i64)) {
+                self.candidates.push((row.clone(), score));
+            }
+        }
+
+        self.searched = true;
+        Ok(())
+    }
+
+    /// Searches a single component using either HNSW or brute-force.
+    fn search_component(
+        &self,
+        comp: &HybridSearchComponentNode,
+        rows: &[Row],
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        // Evaluate query vector
+        let dummy_schema = Arc::new(Schema::empty());
+        let dummy_row = Row::new(dummy_schema, vec![]);
+        let query_value = evaluate_expr(&comp.query_vector, &dummy_row)?;
+
+        let query = match query_value {
+            Value::Vector(v) => v,
+            _ => {
+                return Err(crate::error::ParseError::InvalidVectorOp(
+                    "query expression did not evaluate to a vector".to_string(),
+                )
+                .into())
+            }
+        };
+
+        // Try to use HNSW if configured
+        if comp.use_hnsw {
+            if let (Some(index_name), Some(provider)) =
+                (&comp.index_name, &self.vector_index_provider)
+            {
+                if provider.has_index(index_name) {
+                    return self.search_with_hnsw(index_name, &query, comp.ef_search, provider);
+                }
+            }
+        }
+
+        // Fall back to brute-force search
+        self.search_brute_force(&query, &comp.vector_column, &comp.metric, rows)
+    }
+
+    /// Searches using HNSW index.
+    fn search_with_hnsw(
+        &self,
+        index_name: &str,
+        query: &[f32],
+        ef_search: usize,
+        provider: &Arc<dyn VectorIndexProvider>,
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        let embedding = Embedding::new(query.to_vec()).map_err(|e| {
+            crate::error::ParseError::InvalidVectorOp(format!("Failed to create embedding: {e}"))
+        })?;
+
+        // Fetch more candidates for hybrid merging (2x k per component)
+        let search_k = self.k * 2;
+
+        let results =
+            provider.search(index_name, &embedding, search_k, Some(ef_search)).map_err(|e| {
+                crate::error::ParseError::InvalidVectorOp(format!("HNSW search failed: {e}"))
+            })?;
+
+        Ok(results.into_iter().map(|m| (m.entity_id, m.distance)).collect())
+    }
+
+    /// Searches using brute-force.
+    fn search_brute_force(
+        &self,
+        query: &[f32],
+        vector_column: &str,
+        metric: &DistanceMetric,
+        rows: &[Row],
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        let mut results: Vec<(EntityId, f32)> = Vec::new();
+
+        for row in rows {
+            if let Some(Value::Vector(v)) = row.get_by_name(vector_column) {
+                if v.len() == query.len() {
+                    let distance = compute_distance_with_metric(v, query, metric);
+
+                    // Extract entity ID from row
+                    if let Some(Value::Int(id)) =
+                        row.get_by_name("id").or_else(|| row.get_by_name("_id"))
+                    {
+                        let entity_id = EntityId::new(*id as u64);
+                        results.push((entity_id, distance));
+                    }
+                }
+            }
+        }
+
+        // Sort by distance and take top 2*k for merging
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(self.k * 2);
+
+        Ok(results)
+    }
+
+    /// Merges results from all components using the specified combination method.
+    fn merge_component_results(
+        &self,
+        component_results: &[Vec<(EntityId, f32)>],
+        _rows: &[Row],
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        if component_results.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        match self.combination_method {
+            PhysicalScoreCombinationMethod::WeightedSum => {
+                self.merge_weighted_sum(component_results)
+            }
+            PhysicalScoreCombinationMethod::ReciprocalRankFusion { k_param } => {
+                self.merge_rrf(component_results, k_param)
+            }
+        }
+    }
+
+    /// Merges using weighted sum combination.
+    fn merge_weighted_sum(
+        &self,
+        component_results: &[Vec<(EntityId, f32)>],
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        // Collect all scores by entity ID
+        let mut scores_by_entity: HashMap<EntityId, Vec<(usize, f32)>> = HashMap::new();
+
+        for (idx, results) in component_results.iter().enumerate() {
+            for (entity_id, distance) in results {
+                scores_by_entity.entry(*entity_id).or_default().push((idx, *distance));
+            }
+        }
+
+        // Normalize if configured
+        let normalization_params: Vec<(f32, f32)> = if self.normalize_scores {
+            component_results
+                .iter()
+                .map(|results| {
+                    if results.is_empty() {
+                        (0.0, 1.0)
+                    } else {
+                        let min = results.iter().map(|(_, d)| *d).fold(f32::INFINITY, f32::min);
+                        let max = results.iter().map(|(_, d)| *d).fold(f32::NEG_INFINITY, f32::max);
+                        (min, max)
+                    }
+                })
+                .collect()
+        } else {
+            vec![(0.0, 1.0); component_results.len()]
+        };
+
+        // Compute combined scores
+        let mut results: Vec<(EntityId, f32)> = scores_by_entity
+            .into_iter()
+            .map(|(entity_id, component_scores)| {
+                let mut total_score = 0.0;
+                let mut total_weight = 0.0;
+
+                // Track which components have scores
+                let mut has_score_for: Vec<bool> = vec![false; self.components.len()];
+
+                for (idx, distance) in &component_scores {
+                    let weight = self.components[*idx].weight;
+                    let (min, max) = normalization_params[*idx];
+
+                    let normalized = if max - min > f32::EPSILON {
+                        (*distance - min) / (max - min)
+                    } else {
+                        0.0
+                    };
+
+                    total_score += weight * normalized;
+                    total_weight += weight;
+                    has_score_for[*idx] = true;
+                }
+
+                // Handle missing component scores (use 1.0 as worst normalized distance)
+                for (idx, comp) in self.components.iter().enumerate() {
+                    if !has_score_for[idx] {
+                        total_score += comp.weight * 1.0;
+                        total_weight += comp.weight;
+                    }
+                }
+
+                // Normalize by total weight
+                let combined = if total_weight > 0.0 { total_score / total_weight } else { 1.0 };
+
+                (entity_id, combined)
+            })
+            .collect();
+
+        // Sort by combined score (lower is better)
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(self.k);
+
+        Ok(results)
+    }
+
+    /// Merges using Reciprocal Rank Fusion.
+    fn merge_rrf(
+        &self,
+        component_results: &[Vec<(EntityId, f32)>],
+        k_param: u32,
+    ) -> OperatorResult<Vec<(EntityId, f32)>> {
+        let mut rrf_scores: HashMap<EntityId, f32> = HashMap::new();
+
+        for results in component_results {
+            for (rank, (entity_id, _)) in results.iter().enumerate() {
+                let score = 1.0 / (k_param as f32 + rank as f32 + 1.0);
+                *rrf_scores.entry(*entity_id).or_insert(0.0) += score;
+            }
+        }
+
+        // Convert RRF scores to distances (higher RRF score = lower distance)
+        let max_score = rrf_scores.values().fold(0.0f32, |a, &b| a.max(b));
+
+        let mut results: Vec<(EntityId, f32)> = rrf_scores
+            .into_iter()
+            .map(|(entity_id, score)| {
+                let distance = if max_score > 0.0 { 1.0 - (score / max_score) } else { 1.0 };
+                (entity_id, distance)
+            })
+            .collect();
+
+        // Sort by distance (lower is better)
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(self.k);
+
+        Ok(results)
+    }
+}
+
+impl Operator for HybridSearchOp {
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        self.input.open(ctx)?;
+        self.candidates.clear();
+        self.position = 0;
+        self.searched = false;
+        self.vector_index_provider = ctx.vector_index_provider_arc();
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        if !self.searched {
+            self.search()?;
+        }
+
+        if self.position >= self.candidates.len() {
+            self.base.set_finished();
+            return Ok(None);
+        }
+
+        let (row, score) = &self.candidates[self.position];
+        self.position += 1;
+
+        // Build output row
+        let mut values = row.values().to_vec();
+        if self.include_score {
+            values.push(Value::Float(f64::from(*score)));
+        }
+
+        let result = Row::new(self.base.schema(), values);
+        self.base.inc_rows_produced();
+        Ok(Some(result))
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        self.input.close()?;
+        self.candidates.clear();
+        self.vector_index_provider = None;
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "HybridSearch"
     }
 }
 

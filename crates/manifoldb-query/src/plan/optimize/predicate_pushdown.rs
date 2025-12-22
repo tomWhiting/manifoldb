@@ -203,6 +203,12 @@ impl PredicatePushdown {
                 // DDL statements don't have predicates to push
                 plan
             }
+
+            // Hybrid search - push predicates to input but don't cross the search boundary
+            LogicalPlan::HybridSearch { node, input } => {
+                let optimized_input = self.push_down(*input, predicates);
+                LogicalPlan::HybridSearch { node, input: Box::new(optimized_input) }
+            }
         }
     }
 

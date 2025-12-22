@@ -309,6 +309,20 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 ));
             }
         }
+
+        LogicalPlan::HybridSearch { node, input } => {
+            validate_plan(input)?;
+            if node.components.is_empty() {
+                return Err(PlanError::InvalidAggregation(
+                    "hybrid search requires at least one component".to_string(),
+                ));
+            }
+            if node.k == 0 {
+                return Err(PlanError::InvalidAggregation(
+                    "hybrid search k must be > 0".to_string(),
+                ));
+            }
+        }
     }
 
     Ok(())

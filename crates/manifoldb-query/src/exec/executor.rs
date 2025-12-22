@@ -20,7 +20,7 @@ use super::operators::{
     set_ops::{SetOpOp, UnionOp},
     sort::SortOp,
     values::{EmptyOp, ValuesOp},
-    vector::{BruteForceSearchOp, HnswSearchOp},
+    vector::{BruteForceSearchOp, HnswSearchOp, HybridSearchOp},
 };
 use super::result::{QueryResult, ResultSet, ResultSetBuilder};
 use super::row::{Row, Schema};
@@ -302,6 +302,19 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
                 node.k,
                 node.include_distance,
                 node.distance_alias.clone(),
+                input_op,
+            )))
+        }
+
+        PhysicalPlan::HybridSearch { node, input } => {
+            let input_op = build_operator_tree(input)?;
+            Ok(Box::new(HybridSearchOp::new(
+                node.components.clone(),
+                node.k,
+                node.combination_method,
+                node.normalize_scores,
+                node.include_score,
+                node.score_alias.clone(),
                 input_op,
             )))
         }

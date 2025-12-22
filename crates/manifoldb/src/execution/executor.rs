@@ -1298,6 +1298,11 @@ fn execute_logical_plan<T: Transaction>(
             "DDL statements should be executed via execute_statement, not execute_logical_plan"
                 .to_string(),
         )),
+
+        LogicalPlan::HybridSearch { input, .. } => {
+            // Hybrid search in entity context: execute the input, scoring handled by physical plan
+            execute_logical_plan(tx, input, ctx)
+        }
     }
 }
 

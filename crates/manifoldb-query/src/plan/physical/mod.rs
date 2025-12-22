@@ -38,7 +38,7 @@ pub use builder::PhysicalPlanner;
 pub use cost::{Cost, CostModel};
 pub use node::{
     BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, HashAggregateNode,
-    HashJoinNode, HnswSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder, LimitExecNode,
-    MergeJoinNode, NestedLoopJoinNode, PhysicalPlan, ProjectExecNode, SortExecNode,
-    SortMergeAggregateNode,
+    HashJoinNode, HnswSearchNode, HybridSearchComponentNode, HybridSearchNode, IndexRangeScanNode,
+    IndexScanNode, JoinOrder, LimitExecNode, MergeJoinNode, NestedLoopJoinNode, PhysicalPlan,
+    PhysicalScoreCombinationMethod, ProjectExecNode, SortExecNode, SortMergeAggregateNode,
 };

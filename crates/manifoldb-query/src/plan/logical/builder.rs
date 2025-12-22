@@ -890,6 +890,18 @@ impl PlanBuilder {
                 Ok(LogicalExpr::QualifiedWildcard(qualifier))
             }
 
+            Expr::HybridSearch { components, method: _ } => {
+                // Convert AST HybridSearch to a logical expression
+                // For now, return the first component's distance expression
+                // The full hybrid search is handled at the plan level
+                if let Some(first) = components.first() {
+                    self.build_expr(&first.distance_expr)
+                } else {
+                    // Empty hybrid search - return a null literal
+                    Ok(LogicalExpr::Literal(ast::Literal::Null))
+                }
+            }
+
             Expr::Tuple(exprs) => {
                 // Convert tuple to first element for now
                 // Full tuple support would need a Tuple variant

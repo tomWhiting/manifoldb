@@ -472,6 +472,52 @@ pub enum Expr {
 
     /// Qualified wildcard (table.*).
     QualifiedWildcard(QualifiedName),
+
+    /// Hybrid vector search expression.
+    ///
+    /// Combines multiple vector distance operations with weights.
+    /// Example: `HYBRID(dense <=> $q1, 0.7, sparse <#> $q2, 0.3)`
+    HybridSearch {
+        /// Vector search components (each has distance expr and weight).
+        components: Vec<HybridSearchComponent>,
+        /// Combination method (WeightedSum, RRF).
+        method: HybridCombinationMethod,
+    },
+}
+
+/// A component of a hybrid vector search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridSearchComponent {
+    /// The vector distance expression (e.g., `column <=> $query`).
+    pub distance_expr: Box<Expr>,
+    /// Weight for this component (0.0 to 1.0).
+    pub weight: f64,
+}
+
+impl HybridSearchComponent {
+    /// Creates a new hybrid search component.
+    #[must_use]
+    pub fn new(distance_expr: Expr, weight: f64) -> Self {
+        Self { distance_expr: Box::new(distance_expr), weight }
+    }
+}
+
+/// Combination method for hybrid vector search.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HybridCombinationMethod {
+    /// Weighted sum of distances: `w1*d1 + w2*d2`.
+    WeightedSum,
+    /// Reciprocal Rank Fusion with k parameter.
+    RRF {
+        /// The k parameter (typically 60).
+        k: u32,
+    },
+}
+
+impl Default for HybridCombinationMethod {
+    fn default() -> Self {
+        Self::WeightedSum
+    }
 }
 
 /// A parameter reference in a query.

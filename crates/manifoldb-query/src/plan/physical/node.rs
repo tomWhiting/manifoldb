@@ -189,6 +189,14 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
 
+    /// Hybrid vector search combining multiple search types.
+    HybridSearch {
+        /// Hybrid search configuration.
+        node: Box<HybridSearchNode>,
+        /// Input plan (source table).
+        input: Box<PhysicalPlan>,
+    },
+
     // ========== Graph Operations ==========
     /// Graph edge expansion (boxed node - 264 bytes unboxed).
     GraphExpand {
@@ -1134,6 +1142,201 @@ impl BruteForceSearchNode {
     }
 }
 
+/// Score combination method for hybrid search.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PhysicalScoreCombinationMethod {
+    /// Weighted linear combination: `w1*s1 + w2*s2`
+    WeightedSum,
+    /// Reciprocal Rank Fusion with configurable k parameter.
+    ReciprocalRankFusion {
+        /// RRF k parameter (typically 60).
+        k_param: u32,
+    },
+}
+
+impl Default for PhysicalScoreCombinationMethod {
+    fn default() -> Self {
+        Self::WeightedSum
+    }
+}
+
+/// A component search in a hybrid search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridSearchComponentNode {
+    /// Vector column to search.
+    pub vector_column: String,
+    /// Query vector.
+    pub query_vector: LogicalExpr,
+    /// Distance metric.
+    pub metric: DistanceMetric,
+    /// Weight for this component.
+    pub weight: f32,
+    /// HNSW ef_search parameter.
+    pub ef_search: usize,
+    /// HNSW index name if available.
+    pub index_name: Option<String>,
+    /// Whether to use HNSW (true) or brute-force (false).
+    pub use_hnsw: bool,
+}
+
+impl HybridSearchComponentNode {
+    /// Creates a new component node.
+    #[must_use]
+    pub fn new(
+        vector_column: impl Into<String>,
+        query_vector: LogicalExpr,
+        metric: DistanceMetric,
+        weight: f32,
+    ) -> Self {
+        Self {
+            vector_column: vector_column.into(),
+            query_vector,
+            metric,
+            weight,
+            ef_search: 100,
+            index_name: None,
+            use_hnsw: false,
+        }
+    }
+
+    /// Sets ef_search parameter.
+    #[must_use]
+    pub const fn with_ef_search(mut self, ef: usize) -> Self {
+        self.ef_search = ef;
+        self
+    }
+
+    /// Sets the HNSW index name.
+    #[must_use]
+    pub fn with_index_name(mut self, name: impl Into<String>) -> Self {
+        self.index_name = Some(name.into());
+        self.use_hnsw = true;
+        self
+    }
+
+    /// Sets whether to use HNSW.
+    #[must_use]
+    pub const fn with_use_hnsw(mut self, use_hnsw: bool) -> Self {
+        self.use_hnsw = use_hnsw;
+        self
+    }
+}
+
+/// Hybrid vector search node.
+///
+/// Combines multiple vector searches and merges results using score combination.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridSearchNode {
+    /// Search components (each represents a vector search).
+    pub components: Vec<HybridSearchComponentNode>,
+    /// Number of results.
+    pub k: usize,
+    /// Score combination method.
+    pub combination_method: PhysicalScoreCombinationMethod,
+    /// Whether to normalize scores before combining.
+    pub normalize_scores: bool,
+    /// Optional filter.
+    pub filter: Option<LogicalExpr>,
+    /// Whether to include the combined score in output.
+    pub include_score: bool,
+    /// Score column alias.
+    pub score_alias: Option<String>,
+    /// Collection name for named vector lookup.
+    pub collection_name: Option<String>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl HybridSearchNode {
+    /// Creates a new hybrid search node.
+    #[must_use]
+    pub fn new(components: Vec<HybridSearchComponentNode>, k: usize) -> Self {
+        Self {
+            components,
+            k,
+            combination_method: PhysicalScoreCombinationMethod::default(),
+            normalize_scores: true,
+            filter: None,
+            include_score: true,
+            score_alias: None,
+            collection_name: None,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Creates a two-component hybrid search.
+    #[must_use]
+    pub fn two(
+        first: HybridSearchComponentNode,
+        second: HybridSearchComponentNode,
+        k: usize,
+    ) -> Self {
+        Self::new(vec![first, second], k)
+    }
+
+    /// Sets the combination method.
+    #[must_use]
+    pub const fn with_combination_method(mut self, method: PhysicalScoreCombinationMethod) -> Self {
+        self.combination_method = method;
+        self
+    }
+
+    /// Uses RRF combination.
+    #[must_use]
+    pub const fn with_rrf(mut self, k_param: u32) -> Self {
+        self.combination_method = PhysicalScoreCombinationMethod::ReciprocalRankFusion { k_param };
+        self
+    }
+
+    /// Disables score normalization.
+    #[must_use]
+    pub const fn without_normalization(mut self) -> Self {
+        self.normalize_scores = false;
+        self
+    }
+
+    /// Sets the filter.
+    #[must_use]
+    pub fn with_filter(mut self, filter: LogicalExpr) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Sets whether to include the score in output.
+    #[must_use]
+    pub const fn with_include_score(mut self, include: bool) -> Self {
+        self.include_score = include;
+        self
+    }
+
+    /// Sets the score alias.
+    #[must_use]
+    pub fn with_score_alias(mut self, alias: impl Into<String>) -> Self {
+        self.score_alias = Some(alias.into());
+        self
+    }
+
+    /// Sets the collection name.
+    #[must_use]
+    pub fn with_collection_name(mut self, name: impl Into<String>) -> Self {
+        self.collection_name = Some(name.into());
+        self
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+
+    /// Returns the number of components.
+    #[must_use]
+    pub fn num_components(&self) -> usize {
+        self.components.len()
+    }
+}
+
 // ============================================================================
 // Graph Operation Node Types
 // ============================================================================
@@ -1326,6 +1529,7 @@ impl PhysicalPlan {
             | Self::SortMergeAggregate { input, .. }
             | Self::HnswSearch { input, .. }
             | Self::BruteForceSearch { input, .. }
+            | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
             | Self::Insert { input, .. } => vec![input.as_ref()],
@@ -1373,6 +1577,7 @@ impl PhysicalPlan {
             | Self::SortMergeAggregate { input, .. }
             | Self::HnswSearch { input, .. }
             | Self::BruteForceSearch { input, .. }
+            | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
             | Self::Insert { input, .. } => vec![input.as_mut()],
@@ -1433,6 +1638,7 @@ impl PhysicalPlan {
             Self::Union { .. } => "Union",
             Self::HnswSearch { .. } => "HnswSearch",
             Self::BruteForceSearch { .. } => "BruteForceSearch",
+            Self::HybridSearch { .. } => "HybridSearch",
             Self::GraphExpand { .. } => "GraphExpand",
             Self::GraphPathScan { .. } => "GraphPathScan",
             Self::Insert { .. } => "Insert",
@@ -1470,6 +1676,7 @@ impl PhysicalPlan {
             Self::Union { cost, .. } => *cost,
             Self::HnswSearch { node, .. } => node.cost,
             Self::BruteForceSearch { node, .. } => node.cost,
+            Self::HybridSearch { node, .. } => node.cost,
             Self::GraphExpand { node, .. } => node.cost,
             Self::GraphPathScan { node, .. } => node.cost,
             Self::Insert { cost, .. } => *cost,
@@ -1719,6 +1926,28 @@ impl DisplayTree<'_> {
                     node.k,
                     node.cost.value()
                 )?;
+            }
+            PhysicalPlan::HybridSearch { node, .. } => {
+                write!(f, "HybridSearch: {} components, k={}", node.num_components(), node.k)?;
+                for (i, comp) in node.components.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    } else {
+                        write!(f, " [")?;
+                    }
+                    write!(
+                        f,
+                        "{} {} (w={:.2}{})",
+                        comp.vector_column,
+                        comp.metric.operator(),
+                        comp.weight,
+                        if comp.use_hnsw { ", HNSW" } else { "" }
+                    )?;
+                }
+                if !node.components.is_empty() {
+                    write!(f, "]")?;
+                }
+                write!(f, " (cost: {:.2})", node.cost.value())?;
             }
             PhysicalPlan::GraphExpand { node, .. } => {
                 write!(

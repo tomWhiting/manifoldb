@@ -27,7 +27,7 @@ use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
     SortNode, UnionNode, ValuesNode,
 };
-use super::vector::{AnnSearchNode, VectorDistanceNode};
+use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
 /// A logical query plan.
 ///
@@ -170,6 +170,14 @@ pub enum LogicalPlan {
         /// The distance node.
         node: Box<VectorDistanceNode>,
         /// The input plan.
+        input: Box<LogicalPlan>,
+    },
+
+    /// Hybrid vector search combining multiple distance types.
+    HybridSearch {
+        /// The hybrid search node.
+        node: Box<HybridSearchNode>,
+        /// The input plan (table to search).
         input: Box<LogicalPlan>,
     },
 
@@ -362,6 +370,12 @@ impl LogicalPlan {
         Self::AnnSearch { node: Box::new(node), input: Box::new(self) }
     }
 
+    /// Adds a hybrid search operation.
+    #[must_use]
+    pub fn hybrid_search(self, node: HybridSearchNode) -> Self {
+        Self::HybridSearch { node: Box::new(node), input: Box::new(self) }
+    }
+
     // ========== Utility Methods ==========
 
     /// Returns the children of this plan node.
@@ -383,6 +397,7 @@ impl LogicalPlan {
             | Self::PathScan { input, .. }
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
+            | Self::HybridSearch { input, .. }
             | Self::Insert { input, .. } => vec![input.as_ref()],
 
             // Binary nodes
@@ -425,6 +440,7 @@ impl LogicalPlan {
             | Self::PathScan { input, .. }
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
+            | Self::HybridSearch { input, .. }
             | Self::Insert { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
@@ -475,6 +491,7 @@ impl LogicalPlan {
             Self::PathScan { .. } => "PathScan",
             Self::AnnSearch { .. } => "AnnSearch",
             Self::VectorDistance { .. } => "VectorDistance",
+            Self::HybridSearch { .. } => "HybridSearch",
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
@@ -645,6 +662,26 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::VectorDistance { node, .. } => {
                 write!(f, "VectorDistance: {} {}", node.metric.operator(), node.left)?;
+            }
+            LogicalPlan::HybridSearch { node, .. } => {
+                write!(f, "HybridSearch: {} components, k={}", node.num_components(), node.k)?;
+                for (i, comp) in node.components.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    } else {
+                        write!(f, " [")?;
+                    }
+                    write!(
+                        f,
+                        "{} {} (w={:.2})",
+                        comp.vector_column,
+                        comp.metric.operator(),
+                        comp.weight
+                    )?;
+                }
+                if !node.components.is_empty() {
+                    write!(f, "]")?;
+                }
             }
             LogicalPlan::Insert { table, columns, .. } => {
                 write!(f, "Insert: {table}")?;

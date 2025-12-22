@@ -50,4 +50,7 @@ pub use relational::{
     SetOpNode, SetOpType, SortNode, UnionNode, ValuesNode,
 };
 pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
-pub use vector::{AnnSearchNode, AnnSearchParams, VectorDistanceNode};
+pub use vector::{
+    AnnSearchNode, AnnSearchParams, HybridSearchComponent, HybridSearchNode,
+    ScoreCombinationMethod, VectorDistanceNode,
+};
