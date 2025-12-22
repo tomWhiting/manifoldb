@@ -64,4 +64,16 @@ pub enum VectorError {
     /// This error is unrecoverable - the index must be dropped and recreated.
     #[error("index corrupted: lock poisoned due to prior panic in another thread")]
     LockPoisoned,
+
+    /// Node not found in the graph.
+    ///
+    /// This typically indicates an internal inconsistency in the index structure.
+    #[error("node not found in graph: entity {0}")]
+    NodeNotFound(manifoldb_core::EntityId),
+
+    /// Invalid graph state - internal invariant violation.
+    ///
+    /// This typically indicates an internal bug where expected graph state is missing.
+    #[error("invalid graph state: {0}")]
+    InvalidGraphState(&'static str),
 }

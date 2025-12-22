@@ -255,17 +255,19 @@ impl<E: StorageEngine> HnswIndex<E> {
         // If graph is empty, just insert as entry point
         if graph.is_empty() {
             graph.insert_node(new_node);
-            // SAFETY: We just inserted this node above, so it must exist
-            #[allow(clippy::unwrap_used)]
-            save_node(&self.engine, &self.table, graph.get_node(entity_id).unwrap())?;
+            save_node(
+                &self.engine,
+                &self.table,
+                graph.get_node(entity_id).ok_or(VectorError::NodeNotFound(entity_id))?,
+            )?;
             self.update_metadata(graph)?;
             return Ok(());
         }
 
         // Get current entry point
-        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
-        #[allow(clippy::unwrap_used)]
-        let entry_point = graph.entry_point.unwrap();
+        let entry_point = graph
+            .entry_point
+            .ok_or(VectorError::InvalidGraphState("entry_point missing in non-empty graph"))?;
         let current_max_layer = graph.max_layer;
 
         // Search from top layer down to node_level + 1 (just to find entry point for lower layers)
@@ -360,9 +362,11 @@ impl<E: StorageEngine> HnswIndex<E> {
         }
 
         // Save the new node
-        // SAFETY: We inserted this node at line 271, so it must exist
-        #[allow(clippy::unwrap_used)]
-        save_node(&self.engine, &self.table, graph.get_node(entity_id).unwrap())?;
+        save_node(
+            &self.engine,
+            &self.table,
+            graph.get_node(entity_id).ok_or(VectorError::NodeNotFound(entity_id))?,
+        )?;
 
         // Update connections for all affected neighbors
         for layer in 0..=start_layer {
@@ -446,9 +450,9 @@ impl<E: StorageEngine> HnswIndex<E> {
             }
 
             // Get current entry point
-            // SAFETY: We checked !graph.is_empty() above
-            #[allow(clippy::unwrap_used)]
-            let entry_point = graph.entry_point.unwrap();
+            let entry_point = graph
+                .entry_point
+                .ok_or(VectorError::InvalidGraphState("entry_point missing in non-empty graph"))?;
             let current_max_layer = graph.max_layer;
 
             // Search from top layer down to node_level + 1
@@ -663,9 +667,9 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
 
         // ef_search defaults to configured value, but is always at least k
         let ef = ef_search.unwrap_or(self.config.ef_search).max(k);
-        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
-        #[allow(clippy::unwrap_used)]
-        let entry_point = graph.entry_point.unwrap();
+        let entry_point = graph
+            .entry_point
+            .ok_or(VectorError::InvalidGraphState("entry_point missing in non-empty graph"))?;
 
         // Search from top layer to layer 1, using ef=1 (greedy)
         let mut current_ep = vec![entry_point];
@@ -724,9 +728,9 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         let base_ef = ef_search.unwrap_or(self.config.ef_search).max(k);
         let ef = filter_config.adjusted_ef(base_ef, None);
 
-        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
-        #[allow(clippy::unwrap_used)]
-        let entry_point = graph.entry_point.unwrap();
+        let entry_point = graph
+            .entry_point
+            .ok_or(VectorError::InvalidGraphState("entry_point missing in non-empty graph"))?;
 
         // Search from top layer to layer 1, using ef=1 (greedy)
         // Note: We don't filter in upper layers - just find a good entry point
@@ -1341,5 +1345,98 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    // ========================================================================
+    // Error Handling Tests
+    // ========================================================================
+
+    #[test]
+    fn test_error_node_not_found_display() {
+        let error = VectorError::NodeNotFound(EntityId::new(42));
+        let msg = error.to_string();
+        assert!(msg.contains("42"), "Error should contain entity ID");
+        assert!(msg.contains("node not found"), "Error should describe issue");
+    }
+
+    #[test]
+    fn test_error_invalid_graph_state_display() {
+        let error = VectorError::InvalidGraphState("entry_point missing in non-empty graph");
+        let msg = error.to_string();
+        assert!(msg.contains("entry_point"), "Error should contain context");
+        assert!(msg.contains("invalid graph state"), "Error should describe issue");
+    }
+
+    #[test]
+    fn test_delete_nonexistent_returns_false() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Try to delete a node that was never inserted
+        let result = index.delete(EntityId::new(999));
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_contains_nonexistent_returns_false() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let index = HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Check for a node that was never inserted
+        assert!(!index.contains(EntityId::new(999)).unwrap());
+    }
+
+    #[test]
+    fn test_search_after_all_deleted() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::new(4);
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Insert some nodes
+        for i in 0..5 {
+            let embedding = create_test_embedding(4, i as f32);
+            index.insert(EntityId::new(i), &embedding).unwrap();
+        }
+
+        // Delete all nodes
+        for i in 0..5 {
+            assert!(index.delete(EntityId::new(i)).unwrap());
+        }
+
+        // Search should return empty results
+        let query = create_test_embedding(4, 1.0);
+        let results = index.search(&query, 5, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_search_on_empty_index() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let index = HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        let query = create_test_embedding(4, 1.0);
+        let predicate = |_id: EntityId| true;
+
+        let results = index.search_with_filter(&query, 5, predicate, None, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_batch_insert_empty_vec() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let config = HnswConfig::default();
+        let mut index =
+            HnswIndex::new(engine, "test", 4, DistanceMetric::Euclidean, config).unwrap();
+
+        // Empty batch should be a no-op
+        let empty: Vec<(EntityId, &Embedding)> = vec![];
+        index.insert_batch(&empty).unwrap();
+        assert_eq!(index.len().unwrap(), 0);
     }
 }
