@@ -318,14 +318,19 @@ impl Dijkstra {
             return Ok(Some(WeightedPathResult::single_node(self.source)));
         }
 
+        // Estimate initial capacity based on typical graph traversal patterns
+        // For shortest path, we typically visit O(sqrt(n)) to O(n) nodes
+        const INITIAL_CAPACITY: usize = 256;
+
         // Distance from source to each node
-        let mut distances: HashMap<EntityId, f64> = HashMap::new();
+        let mut distances: HashMap<EntityId, f64> = HashMap::with_capacity(INITIAL_CAPACITY);
         // Track parent and edge used to reach each node
-        let mut parent: HashMap<EntityId, (EntityId, EdgeId)> = HashMap::new();
+        let mut parent: HashMap<EntityId, (EntityId, EdgeId)> =
+            HashMap::with_capacity(INITIAL_CAPACITY);
         // Nodes that have been finalized
-        let mut finalized: HashSet<EntityId> = HashSet::new();
+        let mut finalized: HashSet<EntityId> = HashSet::with_capacity(INITIAL_CAPACITY);
         // Priority queue (min-heap by distance)
-        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::new();
+        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::with_capacity(INITIAL_CAPACITY);
 
         // Initialize source
         distances.insert(self.source, 0.0);
@@ -532,9 +537,12 @@ impl Dijkstra {
             return Ok(Some(0.0));
         }
 
-        let mut distances: HashMap<EntityId, f64> = HashMap::new();
-        let mut finalized: HashSet<EntityId> = HashSet::new();
-        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::new();
+        // Estimate initial capacity based on typical graph traversal patterns
+        const INITIAL_CAPACITY: usize = 256;
+
+        let mut distances: HashMap<EntityId, f64> = HashMap::with_capacity(INITIAL_CAPACITY);
+        let mut finalized: HashSet<EntityId> = HashSet::with_capacity(INITIAL_CAPACITY);
+        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::with_capacity(INITIAL_CAPACITY);
 
         distances.insert(self.source, 0.0);
         heap.push(DijkstraEntry { node: self.source, distance: 0.0 });
@@ -663,9 +671,13 @@ impl SingleSourceDijkstra {
         self,
         tx: &T,
     ) -> GraphResult<HashMap<EntityId, (f64, Option<(EntityId, EdgeId)>)>> {
-        let mut results: HashMap<EntityId, (f64, Option<(EntityId, EdgeId)>)> = HashMap::new();
-        let mut finalized: HashSet<EntityId> = HashSet::new();
-        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::new();
+        // Estimate initial capacity based on typical graph traversal patterns
+        const INITIAL_CAPACITY: usize = 256;
+
+        let mut results: HashMap<EntityId, (f64, Option<(EntityId, EdgeId)>)> =
+            HashMap::with_capacity(INITIAL_CAPACITY);
+        let mut finalized: HashSet<EntityId> = HashSet::with_capacity(INITIAL_CAPACITY);
+        let mut heap: BinaryHeap<DijkstraEntry> = BinaryHeap::with_capacity(INITIAL_CAPACITY);
 
         // Initialize source
         results.insert(self.source, (0.0, None));

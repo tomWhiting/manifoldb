@@ -226,7 +226,10 @@ impl SetOpOp {
     /// Computes INTERSECT or INTERSECT ALL.
     fn compute_intersect(&mut self, all: bool, _schema: &Arc<Schema>) -> OperatorResult<()> {
         // Build hash map of right side with counts
-        let mut right_counts: HashMap<Vec<u8>, (usize, Vec<Value>)> = HashMap::new();
+        // Pre-allocate for typical query sizes
+        const INITIAL_CAPACITY: usize = 1000;
+        let mut right_counts: HashMap<Vec<u8>, (usize, Vec<Value>)> =
+            HashMap::with_capacity(INITIAL_CAPACITY);
         while let Some(row) = self.right.next()? {
             let key = encode_row(&row);
             let entry = right_counts.entry(key).or_insert_with(|| (0, row.values().to_vec()));
@@ -262,7 +265,9 @@ impl SetOpOp {
     /// Computes EXCEPT or EXCEPT ALL.
     fn compute_except(&mut self, all: bool, _schema: &Arc<Schema>) -> OperatorResult<()> {
         // Build hash map of right side with counts
-        let mut right_counts: HashMap<Vec<u8>, usize> = HashMap::new();
+        // Pre-allocate for typical query sizes
+        const INITIAL_CAPACITY: usize = 1000;
+        let mut right_counts: HashMap<Vec<u8>, usize> = HashMap::with_capacity(INITIAL_CAPACITY);
         while let Some(row) = self.right.next()? {
             let key = encode_row(&row);
             *right_counts.entry(key).or_insert(0) += 1;

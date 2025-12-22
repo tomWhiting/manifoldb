@@ -332,7 +332,11 @@ impl PathPattern {
             return Ok(vec![PatternMatch { nodes: vec![start], step_edges: Vec::new() }]);
         }
 
-        let mut results = Vec::new();
+        // Pre-allocate results based on expected pattern matches
+        // For typical patterns, we expect a moderate number of matches
+        const INITIAL_RESULTS_CAPACITY: usize = 64;
+
+        let mut results = Vec::with_capacity(INITIAL_RESULTS_CAPACITY);
         let mut ctx = MatchContext::new(tx, start, self.allow_cycles, &mut results);
 
         self.match_from_step(&mut ctx)?;
@@ -559,7 +563,10 @@ impl PathPattern {
         node: EntityId,
         step: &PathStep,
     ) -> GraphResult<Vec<(EntityId, EdgeId)>> {
-        let mut neighbors = Vec::new();
+        // Pre-allocate for typical node degree (most nodes have < 32 neighbors)
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut neighbors = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         if step.direction.includes_outgoing() {
             self.add_filtered_outgoing(tx, node, step, &mut neighbors)?;
