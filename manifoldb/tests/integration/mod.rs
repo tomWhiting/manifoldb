@@ -4,9 +4,13 @@
 //! the database across multiple features and at various scales.
 
 pub mod combined;
+pub mod concurrency;
+pub mod correctness;
 pub mod crud;
 pub mod ddl;
 pub mod graph;
+pub mod recovery;
+pub mod scale;
 pub mod sql;
 pub mod transactions;
 pub mod vector;
