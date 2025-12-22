@@ -37,7 +37,7 @@ impl CoreError {
 
     /// Creates a type mismatch error with a value for debugging.
     ///
-    /// The value is truncated to [`MAX_VALUE_DISPLAY_LEN`] characters for display.
+    /// The value is truncated to 100 characters for display.
     #[must_use]
     pub fn type_mismatch_with_value(
         expected: impl Into<String>,

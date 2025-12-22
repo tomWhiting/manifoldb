@@ -11,7 +11,7 @@ use manifoldb_core::Value;
 /// A schema defines the column names and their order in a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
-    /// Column names in order (using Arc<str> to avoid cloning).
+    /// Column names in order (using `Arc<str>` to avoid cloning).
     columns: Vec<Arc<str>>,
     /// Map from column name to index for fast lookup.
     name_to_index: HashMap<Arc<str>, usize>,
@@ -28,7 +28,7 @@ impl Schema {
         Self { columns: arc_columns, name_to_index }
     }
 
-    /// Creates a new schema from Arc<str> column names (avoids allocation).
+    /// Creates a new schema from `Arc<str>` column names (avoids allocation).
     #[must_use]
     pub fn from_arcs(columns: Vec<Arc<str>>) -> Self {
         let name_to_index =
@@ -50,7 +50,7 @@ impl Schema {
         self.columns.iter().map(|s| s.as_ref()).collect()
     }
 
-    /// Returns the Arc<str> column names (for efficient cloning).
+    /// Returns the `Arc<str>` column names (for efficient cloning).
     #[must_use]
     pub fn columns_arc(&self) -> &[Arc<str>] {
         &self.columns
@@ -92,7 +92,7 @@ impl Schema {
         Self::from_arcs(columns)
     }
 
-    /// Creates a new schema by merging with another (efficiently clones Arc<str>).
+    /// Creates a new schema by merging with another (efficiently clones `Arc<str>`).
     #[must_use]
     pub fn merge(&self, other: &Schema) -> Self {
         let mut columns: Vec<Arc<str>> = self.columns.iter().map(Arc::clone).collect();
