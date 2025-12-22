@@ -185,6 +185,11 @@ fn execute_physical_plan<T: Transaction>(
 
         LogicalPlan::Join { node, left, right } => execute_join(tx, node, left, right, ctx),
 
+        LogicalPlan::Distinct { input, .. } => {
+            // Execute DISTINCT by deduplicating the input result
+            execute_distinct(tx, input, ctx)
+        }
+
         _ => {
             // For other plan types, execute and return
             let entities = execute_logical_plan(tx, logical, ctx)?;
@@ -239,6 +244,147 @@ fn execute_aggregate<T: Transaction>(
     agg_op.close().map_err(|e| Error::Execution(e.to_string()))?;
 
     Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Execute a DISTINCT query by deduplicating the input result.
+///
+/// Uses `HashAggregateOp` with all columns as group-by keys and no aggregates.
+/// This is a standard technique for implementing DISTINCT.
+fn execute_distinct<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Check if input contains a JOIN - handle through join path first
+    if contains_join(input) {
+        let join_result = execute_join_plan(tx, input, ctx)?;
+        return deduplicate_result_set(join_result, ctx);
+    }
+
+    // For projections, execute the projection first, then deduplicate
+    if let LogicalPlan::Project { node, input: proj_input } = input {
+        // Execute the input entities first
+        let entities = execute_logical_plan(tx, proj_input, ctx)?;
+
+        // Check for wildcard projection
+        let has_wildcard = node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+
+        // Build the projected rows
+        let (columns, rows): (Vec<String>, Vec<Vec<Value>>) = if has_wildcard {
+            // For SELECT *, use all entity columns
+            let cols = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, cols.clone());
+            (cols, scan.collect_values())
+        } else {
+            // For specific columns, project
+            let cols: Vec<String> = node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+            let row_vals: Vec<Vec<Value>> = entities
+                .iter()
+                .map(|entity| {
+                    node.exprs.iter().map(|expr| evaluate_expr(expr, entity, ctx)).collect()
+                })
+                .collect();
+            (cols, row_vals)
+        };
+
+        // Deduplicate using HashAggregateOp
+        let group_by: Vec<LogicalExpr> = columns.iter().map(|c| LogicalExpr::column(c)).collect();
+        let input_op: Box<dyn Operator> = Box::new(ValuesOp::with_columns(columns, rows));
+        let mut agg_op = HashAggregateOp::new(group_by, vec![], None, input_op);
+
+        agg_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+        let schema = agg_op.schema();
+        let mut result_rows = Vec::new();
+        while let Some(row) = agg_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+            result_rows.push(row);
+        }
+        agg_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+        return Ok(ResultSet::with_rows(schema, result_rows));
+    }
+
+    // For other inputs, execute and deduplicate
+    let entities = execute_logical_plan(tx, input, ctx)?;
+
+    // Collect all columns from entities to build the schema
+    let columns = collect_all_columns(&entities);
+
+    // Convert entities to rows for the operator
+    let scan = StorageScan::new(entities, columns.clone());
+    let rows: Vec<Vec<Value>> = scan.collect_values();
+
+    // Create column expressions for group-by (all columns become group-by keys)
+    let group_by: Vec<LogicalExpr> = columns.iter().map(|c| LogicalExpr::column(c)).collect();
+
+    // Create a ValuesOp as input
+    let input_op: Box<dyn Operator> = Box::new(ValuesOp::with_columns(columns, rows));
+
+    // Create HashAggregateOp with all columns as group-by and no aggregates
+    let mut agg_op = HashAggregateOp::new(
+        group_by,
+        vec![], // No aggregate functions - just deduplication
+        None,   // No HAVING clause
+        input_op,
+    );
+
+    // Execute the operator
+    agg_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = agg_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = agg_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    agg_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Deduplicate a result set using HashAggregateOp.
+fn deduplicate_result_set(result: ResultSet, ctx: &ExecutionContext) -> Result<ResultSet> {
+    let schema = result.schema_arc();
+    let columns: Vec<String> = schema.columns().iter().map(|c| (*c).to_string()).collect();
+
+    // Create column expressions for group-by (all columns become group-by keys)
+    let group_by: Vec<LogicalExpr> = columns.iter().map(|c| LogicalExpr::column(c)).collect();
+
+    // Convert rows to values
+    let rows: Vec<Vec<Value>> = result
+        .into_rows()
+        .into_iter()
+        .map(|row| {
+            (0..row.schema().columns().len())
+                .map(|i| row.get(i).cloned().unwrap_or(Value::Null))
+                .collect()
+        })
+        .collect();
+
+    // Create a ValuesOp as input
+    let input_op: Box<dyn Operator> = Box::new(ValuesOp::with_columns(columns, rows));
+
+    // Create HashAggregateOp with all columns as group-by and no aggregates
+    let mut agg_op = HashAggregateOp::new(
+        group_by,
+        vec![], // No aggregate functions
+        None,   // No HAVING clause
+        input_op,
+    );
+
+    // Execute the operator
+    agg_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let output_schema = agg_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = agg_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    agg_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(output_schema, result_rows))
 }
 
 /// Evaluate an expression on a Row (for aggregate result projection).
@@ -373,9 +519,10 @@ fn execute_logical_plan<T: Transaction>(
             execute_logical_plan(tx, input, ctx)
         }
 
-        LogicalPlan::Distinct { .. } => Err(Error::Execution(
-            "DISTINCT queries not yet supported in entity execution".to_string(),
-        )),
+        LogicalPlan::Distinct { input, .. } => {
+            // Execute the input - deduplication is handled at the physical plan level
+            execute_logical_plan(tx, input, ctx)
+        }
 
         LogicalPlan::Alias { input, .. } => {
             // Alias is logical-only, just execute the input

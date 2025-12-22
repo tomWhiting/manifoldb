@@ -734,3 +734,130 @@ fn test_multiple_aggregates() {
     // MAX(price)
     assert_eq!(row.get(3), Some(&Value::Int(25)));
 }
+
+// ============================================================================
+// DISTINCT Query Tests
+// ============================================================================
+
+#[test]
+fn test_select_distinct_single_column() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data with duplicate categories
+    db.execute("INSERT INTO products (name, category) VALUES ('Widget', 'Electronics')")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (name, category) VALUES ('Gadget', 'Electronics')")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (name, category) VALUES ('Shirt', 'Clothing')")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (name, category) VALUES ('Pants', 'Clothing')")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (name, category) VALUES ('Hat', 'Clothing')")
+        .expect("insert failed");
+
+    // Query distinct categories
+    let result = db.query("SELECT DISTINCT category FROM products").expect("query failed");
+
+    // Should only have 2 unique categories
+    assert_eq!(result.len(), 2, "Expected 2 distinct categories, got {}", result.len());
+
+    // Verify both categories are present
+    let mut categories: Vec<String> =
+        result
+            .rows()
+            .iter()
+            .filter_map(|row| {
+                if let Some(Value::String(s)) = row.get(0) {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+    categories.sort();
+    assert_eq!(categories, vec!["Clothing", "Electronics"]);
+}
+
+#[test]
+fn test_select_distinct_multiple_columns() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data with duplicate name/city combinations
+    db.execute("INSERT INTO users (name, city) VALUES ('Alice', 'NYC')").expect("insert failed");
+    db.execute("INSERT INTO users (name, city) VALUES ('Alice', 'NYC')").expect("insert failed");
+    db.execute("INSERT INTO users (name, city) VALUES ('Alice', 'LA')").expect("insert failed");
+    db.execute("INSERT INTO users (name, city) VALUES ('Bob', 'NYC')").expect("insert failed");
+    db.execute("INSERT INTO users (name, city) VALUES ('Bob', 'NYC')").expect("insert failed");
+
+    // Query distinct name/city combinations
+    let result = db.query("SELECT DISTINCT name, city FROM users").expect("query failed");
+
+    // Should have 3 unique combinations: (Alice, NYC), (Alice, LA), (Bob, NYC)
+    assert_eq!(result.len(), 3, "Expected 3 distinct name/city combinations, got {}", result.len());
+}
+
+#[test]
+fn test_select_distinct_all_unique() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert data where all values are already unique
+    db.execute("INSERT INTO users (name) VALUES ('Alice')").expect("insert failed");
+    db.execute("INSERT INTO users (name) VALUES ('Bob')").expect("insert failed");
+    db.execute("INSERT INTO users (name) VALUES ('Charlie')").expect("insert failed");
+
+    // Query distinct
+    let result = db.query("SELECT DISTINCT name FROM users").expect("query failed");
+
+    // Should still have all 3 rows
+    assert_eq!(result.len(), 3, "Expected 3 distinct names, got {}", result.len());
+}
+
+#[test]
+fn test_select_distinct_empty_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Query distinct on empty table
+    let result = db.query("SELECT DISTINCT category FROM products").expect("query failed");
+
+    // Should be empty
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_select_distinct_with_where() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO products (category, price) VALUES ('Electronics', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Electronics', 200)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Clothing', 50)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (category, price) VALUES ('Clothing', 75)")
+        .expect("insert failed");
+
+    // Query distinct categories with price filter
+    let result =
+        db.query("SELECT DISTINCT category FROM products WHERE price > 60").expect("query failed");
+
+    // Should have 2 categories (Electronics: 100, 200 > 60; Clothing: 75 > 60)
+    assert_eq!(result.len(), 2, "Expected 2 distinct categories, got {}", result.len());
+}
+
+#[test]
+fn test_select_distinct_star() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert data with some completely duplicate rows
+    db.execute("INSERT INTO simple (val) VALUES (1)").expect("insert failed");
+    db.execute("INSERT INTO simple (val) VALUES (1)").expect("insert failed");
+    db.execute("INSERT INTO simple (val) VALUES (2)").expect("insert failed");
+
+    // Note: SELECT DISTINCT * will include 'id' column which is unique per row
+    // So all 3 rows will be distinct because they have different ids
+    let result = db.query("SELECT DISTINCT * FROM simple").expect("query failed");
+
+    // All rows are distinct because 'id' column is unique
+    assert_eq!(result.len(), 3);
+}
