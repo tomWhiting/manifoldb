@@ -21,6 +21,12 @@
 //! Points are organized into collections, and each point can have any combination
 //! of dense, sparse, or multi-vectors.
 //!
+//! ## Inverted index for sparse vectors
+//!
+//! The [`InvertedIndex`] provides efficient top-k similarity search for sparse vectors
+//! using posting lists and WAND/DAAT algorithms. This is optimized for SPLADE-style
+//! sparse retrieval.
+//!
 //! # Example (Entity embeddings)
 //!
 //! ```ignore
@@ -74,11 +80,15 @@
 //! store.upsert_point(&name, PointId::new(1), payload, vectors)?;
 //! ```
 
+mod inverted_index;
 mod multi_vector_store;
 mod point_store;
 mod sparse_store;
 mod vector_store;
 
+pub use inverted_index::{
+    InvertedIndex, InvertedIndexMeta, PostingEntry, PostingList, ScoringFunction, SearchResult,
+};
 pub use multi_vector_store::MultiVectorStore;
 pub use point_store::PointStore;
 pub use sparse_store::SparseVectorStore;

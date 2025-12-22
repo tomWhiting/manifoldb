@@ -20,8 +20,14 @@
 //! - `0x23` - Sparse vector: `[0x23][collection_name_hash][point_id][vector_name_hash]`
 //! - `0x24` - Multi-vector: `[0x24][collection_name_hash][point_id][vector_name_hash]`
 //!
+//! ## Inverted index (sparse vector index)
+//! - `0x30` - Posting list: `[0x30][collection_hash][vector_name_hash][token_id]`
+//! - `0x31` - Index metadata: `[0x31][collection_hash][vector_name_hash]`
+//! - `0x32` - Point tokens: `[0x32][collection_hash][vector_name_hash][point_id]`
+//!
 //! All numeric values are encoded in big-endian format to preserve sort order.
 
+mod inverted_keys;
 mod keys;
 mod point_keys;
 
@@ -86,4 +92,12 @@ pub use point_keys::{
     PREFIX_POINT_MULTI_VECTOR,
     PREFIX_POINT_PAYLOAD,
     PREFIX_POINT_SPARSE_VECTOR,
+};
+
+pub use inverted_keys::{
+    decode_inverted_meta_key, decode_point_tokens_key, decode_posting_key,
+    encode_inverted_meta_collection_prefix, encode_inverted_meta_key,
+    encode_point_tokens_collection_prefix, encode_point_tokens_key, encode_point_tokens_prefix,
+    encode_posting_collection_prefix, encode_posting_key, encode_posting_prefix, InvertedMetaKey,
+    PointTokensKey, PostingKey, PREFIX_INVERTED_META, PREFIX_POINT_TOKENS, PREFIX_POSTING,
 };
