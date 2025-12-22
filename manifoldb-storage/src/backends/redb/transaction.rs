@@ -2,6 +2,13 @@
 //!
 //! This module provides the `RedbTransaction` type which implements the
 //! `Transaction` trait for both read-only and read-write transactions.
+//!
+//! # Memory-Efficient Cursors
+//!
+//! The cursor implementation uses batched streaming to avoid loading entire
+//! tables into memory. Instead of materializing all entries upfront, it loads
+//! entries in configurable batches (default 1000 entries), fetching the next
+//! batch on demand as the cursor advances.
 
 use std::ops::Bound;
 
@@ -10,6 +17,10 @@ use redb::{ReadTransaction, ReadableTable, WriteTransaction};
 use crate::engine::{Cursor, CursorResult, KeyValue, StorageError, Transaction};
 
 use super::tables::{decode_key, encode_key, table_end_key, table_start_key, DATA_TABLE};
+
+/// Default batch size for cursor operations.
+/// This limits memory usage while maintaining good performance.
+const DEFAULT_BATCH_SIZE: usize = 1000;
 
 /// A transaction for the Redb storage engine.
 ///
@@ -41,7 +52,7 @@ impl RedbTransaction {
 
 impl Transaction for RedbTransaction {
     type Cursor<'a>
-        = RedbCursor
+        = RedbCursor<'a>
     where
         Self: 'a;
 
@@ -116,9 +127,7 @@ impl Transaction for RedbTransaction {
     }
 
     fn cursor(&self, table: &str) -> Result<Self::Cursor<'_>, StorageError> {
-        // Collect all entries from this logical table
-        let entries = self.collect_table_entries(table)?;
-        Ok(RedbCursor::new(entries, None, None))
+        RedbCursor::new(self, table.to_string(), None, None, DEFAULT_BATCH_SIZE)
     }
 
     fn range(
@@ -127,10 +136,15 @@ impl Transaction for RedbTransaction {
         start: Bound<&[u8]>,
         end: Bound<&[u8]>,
     ) -> Result<Self::Cursor<'_>, StorageError> {
-        let entries = self.collect_table_entries(table)?;
         let start_owned = bound_to_owned(start);
         let end_owned = bound_to_owned(end);
-        Ok(RedbCursor::new(entries, Some(start_owned), Some(end_owned)))
+        RedbCursor::new(
+            self,
+            table.to_string(),
+            Some(start_owned),
+            Some(end_owned),
+            DEFAULT_BATCH_SIZE,
+        )
     }
 
     fn commit(self) -> Result<(), StorageError> {
@@ -163,49 +177,241 @@ impl Transaction for RedbTransaction {
 }
 
 impl RedbTransaction {
-    /// Collect all entries from a logical table into a vector.
-    fn collect_table_entries(&self, table: &str) -> Result<Vec<KeyValue>, StorageError> {
-        let start = table_start_key(table);
-        let end = table_end_key(table);
+    /// Fetch a batch of entries from the table, starting after the given key.
+    ///
+    /// This is the core method for batched streaming. It fetches up to `batch_size`
+    /// entries starting from `after_key` (exclusive) or from the beginning if None.
+    fn fetch_batch(
+        &self,
+        table: &str,
+        after_key: Option<&[u8]>,
+        user_start_bound: &Option<Bound<Vec<u8>>>,
+        user_end_bound: &Option<Bound<Vec<u8>>>,
+        batch_size: usize,
+    ) -> Result<Vec<KeyValue>, StorageError> {
+        // Compute the physical range for this table
+        let table_start = table_start_key(table);
+        let table_end = table_end_key(table);
+
+        // Compute effective start based on after_key or user bounds
+        let effective_start: Vec<u8> = if let Some(after) = after_key {
+            // Start after the given key
+            encode_key(table, after)
+        } else {
+            // Start from user's start bound or table start
+            match user_start_bound {
+                Some(Bound::Included(k)) => encode_key(table, k),
+                Some(Bound::Excluded(k)) => encode_key(table, k),
+                _ => table_start.clone(),
+            }
+        };
+
+        // Determine if we should skip the first key (for after_key or Excluded bounds)
+        let skip_first =
+            after_key.is_some() || matches!(user_start_bound, Some(Bound::Excluded(_)));
+
+        // Compute effective end based on user bounds
+        let effective_end: Vec<u8> = match user_end_bound {
+            Some(Bound::Included(k)) => {
+                // We need to include k, so use encode_key(table, k) + 1 byte
+                let mut end = encode_key(table, k);
+                end.push(0xFF);
+                end
+            }
+            Some(Bound::Excluded(k)) => encode_key(table, k),
+            _ => table_end,
+        };
+
+        // Fetch entries
+        let mut entries = Vec::with_capacity(batch_size.min(1024));
 
         match self {
             Self::Read(tx) => match tx.open_table(DATA_TABLE) {
                 Ok(t) => {
-                    let mut entries = Vec::new();
                     let range = t
-                        .range(start.as_slice()..end.as_slice())
+                        .range(effective_start.as_slice()..effective_end.as_slice())
                         .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+                    let mut skipped_first = !skip_first;
                     for result in range {
+                        if entries.len() >= batch_size {
+                            break;
+                        }
+
                         let (k, v) = result.map_err(|e| StorageError::Internal(e.to_string()))?;
-                        // Decode to get the original key (without table prefix)
                         if let Some((_, original_key)) = decode_key(k.value()) {
+                            // Skip the first entry if needed (for after_key continuation)
+                            if !skipped_first {
+                                skipped_first = true;
+                                continue;
+                            }
+
+                            // Check user end bound for Included case
+                            if let Some(Bound::Included(end_key)) = user_end_bound {
+                                if original_key > end_key.as_slice() {
+                                    break;
+                                }
+                            }
+
                             entries.push((original_key.to_vec(), v.value().to_vec()));
                         }
                     }
                     Ok(entries)
                 }
                 Err(redb::TableError::TableDoesNotExist(_)) => {
-                    Err(StorageError::TableNotFound(table.to_string()))
+                    // Table doesn't exist yet, return empty result (not an error)
+                    Ok(Vec::new())
                 }
                 Err(e) => Err(StorageError::Internal(e.to_string())),
             },
             Self::Write(tx) => match tx.open_table(DATA_TABLE) {
                 Ok(t) => {
-                    let mut entries = Vec::new();
                     let range = t
-                        .range(start.as_slice()..end.as_slice())
+                        .range(effective_start.as_slice()..effective_end.as_slice())
                         .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+                    let mut skipped_first = !skip_first;
                     for result in range {
+                        if entries.len() >= batch_size {
+                            break;
+                        }
+
                         let (k, v) = result.map_err(|e| StorageError::Internal(e.to_string()))?;
-                        // Decode to get the original key (without table prefix)
                         if let Some((_, original_key)) = decode_key(k.value()) {
+                            if !skipped_first {
+                                skipped_first = true;
+                                continue;
+                            }
+
+                            if let Some(Bound::Included(end_key)) = user_end_bound {
+                                if original_key > end_key.as_slice() {
+                                    break;
+                                }
+                            }
+
                             entries.push((original_key.to_vec(), v.value().to_vec()));
                         }
                     }
                     Ok(entries)
                 }
                 Err(redb::TableError::TableDoesNotExist(_)) => {
-                    Err(StorageError::TableNotFound(table.to_string()))
+                    // Table doesn't exist yet, return empty result (not an error)
+                    Ok(Vec::new())
+                }
+                Err(e) => Err(StorageError::Internal(e.to_string())),
+            },
+        }
+    }
+
+    /// Fetch a batch in reverse, ending before the given key.
+    ///
+    /// Returns entries in ascending key order (even though fetched in reverse).
+    fn fetch_batch_reverse(
+        &self,
+        table: &str,
+        before_key: Option<&[u8]>,
+        user_start_bound: &Option<Bound<Vec<u8>>>,
+        user_end_bound: &Option<Bound<Vec<u8>>>,
+        batch_size: usize,
+    ) -> Result<Vec<KeyValue>, StorageError> {
+        let table_start = table_start_key(table);
+        let table_end = table_end_key(table);
+
+        // Compute effective end for reverse scan
+        // When before_key is provided, we use an exclusive range ending at before_key
+        // When before_key is None, we use the user's end bound
+        let effective_end: Vec<u8> = if let Some(before) = before_key {
+            // Range [start..before_key) already excludes before_key
+            encode_key(table, before)
+        } else {
+            match user_end_bound {
+                Some(Bound::Included(k)) => {
+                    // Need to include k, so extend past it
+                    let mut end = encode_key(table, k);
+                    end.push(0xFF);
+                    end
+                }
+                Some(Bound::Excluded(k)) => encode_key(table, k),
+                _ => table_end,
+            }
+        };
+
+        // Compute effective start
+        let effective_start: Vec<u8> = match user_start_bound {
+            Some(Bound::Included(k)) => encode_key(table, k),
+            Some(Bound::Excluded(k)) => {
+                let mut start = encode_key(table, k);
+                start.push(0x00);
+                start
+            }
+            _ => table_start,
+        };
+
+        let mut entries = Vec::with_capacity(batch_size.min(1024));
+
+        match self {
+            Self::Read(tx) => match tx.open_table(DATA_TABLE) {
+                Ok(t) => {
+                    let range = t
+                        .range(effective_start.as_slice()..effective_end.as_slice())
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+                    // Collect in reverse order by using rev()
+                    for result in range.rev() {
+                        if entries.len() >= batch_size {
+                            break;
+                        }
+
+                        let (k, v) = result.map_err(|e| StorageError::Internal(e.to_string()))?;
+                        if let Some((_, original_key)) = decode_key(k.value()) {
+                            // Check start bound for Excluded case
+                            if let Some(Bound::Excluded(start_key)) = user_start_bound {
+                                if original_key <= start_key.as_slice() {
+                                    break;
+                                }
+                            }
+
+                            entries.push((original_key.to_vec(), v.value().to_vec()));
+                        }
+                    }
+                    // Reverse to get ascending order within the batch
+                    entries.reverse();
+                    Ok(entries)
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {
+                    // Table doesn't exist yet, return empty result (not an error)
+                    Ok(Vec::new())
+                }
+                Err(e) => Err(StorageError::Internal(e.to_string())),
+            },
+            Self::Write(tx) => match tx.open_table(DATA_TABLE) {
+                Ok(t) => {
+                    let range = t
+                        .range(effective_start.as_slice()..effective_end.as_slice())
+                        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+                    for result in range.rev() {
+                        if entries.len() >= batch_size {
+                            break;
+                        }
+
+                        let (k, v) = result.map_err(|e| StorageError::Internal(e.to_string()))?;
+                        if let Some((_, original_key)) = decode_key(k.value()) {
+                            if let Some(Bound::Excluded(start_key)) = user_start_bound {
+                                if original_key <= start_key.as_slice() {
+                                    break;
+                                }
+                            }
+
+                            entries.push((original_key.to_vec(), v.value().to_vec()));
+                        }
+                    }
+                    entries.reverse();
+                    Ok(entries)
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {
+                    // Table doesn't exist yet, return empty result (not an error)
+                    Ok(Vec::new())
                 }
                 Err(e) => Err(StorageError::Internal(e.to_string())),
             },
@@ -222,266 +428,309 @@ fn bound_to_owned(bound: Bound<&[u8]>) -> Bound<Vec<u8>> {
     }
 }
 
-/// A cursor for iterating over key-value pairs in Redb.
+/// A memory-efficient cursor for iterating over key-value pairs in Redb.
 ///
-/// This implementation stores a snapshot of the table entries in memory
-/// to provide stable iteration without holding table references.
-pub struct RedbCursor {
-    /// All entries in the table (or range).
-    entries: Vec<KeyValue>,
-    /// Current position in the entries vector.
-    /// None means "before first" position.
-    position: Option<usize>,
-    /// Optional start bound for range queries.
+/// This implementation uses batched streaming to avoid loading entire tables
+/// into memory. Instead of materializing all entries upfront, it fetches
+/// entries in batches and loads more data on demand as the cursor advances.
+///
+/// # Memory Guarantees
+///
+/// At any time, the cursor holds at most `batch_size` entries in memory,
+/// plus the current entry (if any). This means a table with 1M entries
+/// will use approximately the same memory as a table with 1K entries.
+pub struct RedbCursor<'a> {
+    /// Reference to the transaction for fetching additional batches.
+    tx: &'a RedbTransaction,
+    /// The logical table name.
+    table: String,
+    /// Current batch of entries.
+    batch: Vec<KeyValue>,
+    /// Position within the current batch.
+    batch_position: Option<usize>,
+    /// User's start bound for range queries.
     start_bound: Option<Bound<Vec<u8>>>,
-    /// Optional end bound for range queries.
+    /// User's end bound for range queries.
     end_bound: Option<Bound<Vec<u8>>>,
+    /// Maximum entries per batch.
+    batch_size: usize,
+    /// Whether there are more entries after the current batch.
+    has_more_forward: bool,
+    /// Whether there are more entries before the current batch.
+    has_more_backward: bool,
+    /// Cached current entry for the `current()` method.
+    /// This is separate from the batch to handle edge cases.
+    current_entry: Option<KeyValue>,
 }
 
-impl RedbCursor {
-    /// Create a new cursor with the given entries and optional bounds.
-    pub const fn new(
-        entries: Vec<KeyValue>,
+impl<'a> RedbCursor<'a> {
+    /// Create a new streaming cursor.
+    ///
+    /// The cursor starts in an unpositioned state. Call `seek_first()`, `seek_last()`,
+    /// or `seek()` to position the cursor before iterating.
+    pub fn new(
+        tx: &'a RedbTransaction,
+        table: String,
         start_bound: Option<Bound<Vec<u8>>>,
         end_bound: Option<Bound<Vec<u8>>>,
-    ) -> Self {
-        Self { entries, position: None, start_bound, end_bound }
+        batch_size: usize,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            tx,
+            table,
+            batch: Vec::new(),
+            batch_position: None,
+            start_bound,
+            end_bound,
+            batch_size,
+            has_more_forward: true,
+            has_more_backward: true,
+            current_entry: None,
+        })
     }
 
-    /// Check if a key is within the cursor's bounds.
-    fn in_bounds(&self, key: &[u8]) -> bool {
-        let after_start = match &self.start_bound {
-            None | Some(Bound::Unbounded) => true,
-            Some(Bound::Included(start)) => key >= start.as_slice(),
-            Some(Bound::Excluded(start)) => key > start.as_slice(),
+    /// Load the first batch of entries.
+    fn load_first_batch(&mut self) -> Result<(), StorageError> {
+        self.batch = self.tx.fetch_batch(
+            &self.table,
+            None,
+            &self.start_bound,
+            &self.end_bound,
+            self.batch_size,
+        )?;
+        self.has_more_forward = self.batch.len() >= self.batch_size;
+        self.has_more_backward = false; // We're at the start
+        Ok(())
+    }
+
+    /// Load the last batch of entries.
+    fn load_last_batch(&mut self) -> Result<(), StorageError> {
+        self.batch = self.tx.fetch_batch_reverse(
+            &self.table,
+            None,
+            &self.start_bound,
+            &self.end_bound,
+            self.batch_size,
+        )?;
+        self.has_more_backward = self.batch.len() >= self.batch_size;
+        self.has_more_forward = false; // We're at the end
+        Ok(())
+    }
+
+    /// Load the next batch, continuing from the last key in the current batch.
+    fn load_next_batch(&mut self) -> Result<bool, StorageError> {
+        if !self.has_more_forward {
+            return Ok(false);
+        }
+
+        let after_key = self.batch.last().map(|(k, _)| k.as_slice());
+
+        let new_batch = self.tx.fetch_batch(
+            &self.table,
+            after_key,
+            &self.start_bound,
+            &self.end_bound,
+            self.batch_size,
+        )?;
+
+        if new_batch.is_empty() {
+            self.has_more_forward = false;
+            return Ok(false);
+        }
+
+        self.has_more_forward = new_batch.len() >= self.batch_size;
+        self.has_more_backward = true;
+        self.batch = new_batch;
+        self.batch_position = Some(0);
+
+        Ok(true)
+    }
+
+    /// Load the previous batch, ending before the first key in the current batch.
+    fn load_prev_batch(&mut self) -> Result<bool, StorageError> {
+        if !self.has_more_backward {
+            return Ok(false);
+        }
+
+        let before_key = self.batch.first().map(|(k, _)| k.as_slice());
+
+        let new_batch = self.tx.fetch_batch_reverse(
+            &self.table,
+            before_key,
+            &self.start_bound,
+            &self.end_bound,
+            self.batch_size,
+        )?;
+
+        if new_batch.is_empty() {
+            self.has_more_backward = false;
+            return Ok(false);
+        }
+
+        self.has_more_backward = new_batch.len() >= self.batch_size;
+        self.has_more_forward = true;
+        self.batch = new_batch;
+        self.batch_position = Some(self.batch.len() - 1);
+
+        Ok(true)
+    }
+
+    /// Load a batch starting at or after the given key for seek operations.
+    fn load_batch_at_key(&mut self, key: &[u8]) -> Result<(), StorageError> {
+        // Create a temporary start bound that's at least the seek key
+        let seek_start = match &self.start_bound {
+            Some(Bound::Included(start)) if start.as_slice() > key => {
+                Some(Bound::Included(start.clone()))
+            }
+            Some(Bound::Excluded(start)) if start.as_slice() >= key => {
+                Some(Bound::Excluded(start.clone()))
+            }
+            _ => Some(Bound::Included(key.to_vec())),
         };
 
-        let before_end = match &self.end_bound {
-            None | Some(Bound::Unbounded) => true,
-            Some(Bound::Included(end)) => key <= end.as_slice(),
-            Some(Bound::Excluded(end)) => key < end.as_slice(),
-        };
+        self.batch = self.tx.fetch_batch(
+            &self.table,
+            None,
+            &seek_start,
+            &self.end_bound,
+            self.batch_size,
+        )?;
 
-        after_start && before_end
+        self.has_more_forward = self.batch.len() >= self.batch_size;
+        // There might be entries before the seek key
+        self.has_more_backward = key > self.start_bound_key().unwrap_or(&[]);
+
+        Ok(())
     }
 
-    /// Find the first valid position (respecting bounds).
-    fn find_first_valid(&self) -> Option<usize> {
-        for (i, (key, _)) in self.entries.iter().enumerate() {
-            if self.in_bounds(key) {
-                return Some(i);
-            }
+    /// Get the start bound key, if any.
+    fn start_bound_key(&self) -> Option<&[u8]> {
+        match &self.start_bound {
+            Some(Bound::Included(k) | Bound::Excluded(k)) => Some(k.as_slice()),
+            _ => None,
         }
-        None
     }
 
-    /// Find the last valid position (respecting bounds).
-    fn find_last_valid(&self) -> Option<usize> {
-        for (i, (key, _)) in self.entries.iter().enumerate().rev() {
-            if self.in_bounds(key) {
-                return Some(i);
-            }
-        }
-        None
+    /// Update the current entry cache from the batch.
+    fn update_current(&mut self) {
+        self.current_entry = self.batch_position.and_then(|pos| self.batch.get(pos).cloned());
     }
 }
 
-impl Cursor for RedbCursor {
+impl Cursor for RedbCursor<'_> {
     fn seek(&mut self, key: &[u8]) -> CursorResult {
-        // Find the first entry with key >= target
-        for (i, (k, v)) in self.entries.iter().enumerate() {
-            if k.as_slice() >= key && self.in_bounds(k) {
-                self.position = Some(i);
-                return Ok(Some((k.clone(), v.clone())));
+        self.load_batch_at_key(key)?;
+
+        // Use binary search to find the first key >= target
+        let pos = self.batch.partition_point(|(k, _)| k.as_slice() < key);
+
+        if pos < self.batch.len() {
+            self.batch_position = Some(pos);
+            self.update_current();
+            Ok(self.current_entry.clone())
+        } else if self.has_more_forward {
+            // The key might be in the next batch
+            if self.load_next_batch()? {
+                self.batch_position = Some(0);
+                self.update_current();
+                Ok(self.current_entry.clone())
+            } else {
+                self.batch_position = None;
+                self.current_entry = None;
+                Ok(None)
             }
+        } else {
+            self.batch_position = None;
+            self.current_entry = None;
+            Ok(None)
         }
-        self.position = None;
-        Ok(None)
     }
 
     fn seek_first(&mut self) -> CursorResult {
-        if let Some(i) = self.find_first_valid() {
-            self.position = Some(i);
-            let (k, v) = &self.entries[i];
-            Ok(Some((k.clone(), v.clone())))
-        } else {
-            self.position = None;
-            Ok(None)
+        self.load_first_batch()?;
+
+        if self.batch.is_empty() {
+            self.batch_position = None;
+            self.current_entry = None;
+            return Ok(None);
         }
+
+        self.batch_position = Some(0);
+        self.update_current();
+        Ok(self.current_entry.clone())
     }
 
     fn seek_last(&mut self) -> CursorResult {
-        if let Some(i) = self.find_last_valid() {
-            self.position = Some(i);
-            let (k, v) = &self.entries[i];
-            Ok(Some((k.clone(), v.clone())))
-        } else {
-            self.position = None;
-            Ok(None)
+        self.load_last_batch()?;
+
+        if self.batch.is_empty() {
+            self.batch_position = None;
+            self.current_entry = None;
+            return Ok(None);
         }
+
+        self.batch_position = Some(self.batch.len() - 1);
+        self.update_current();
+        Ok(self.current_entry.clone())
     }
 
     fn next(&mut self) -> CursorResult {
-        let next_pos = match self.position {
-            None => self.find_first_valid(),
-            Some(current) => {
-                // Find next valid position after current
-                for i in (current + 1)..self.entries.len() {
-                    if self.in_bounds(&self.entries[i].0) {
-                        return {
-                            self.position = Some(i);
-                            let (k, v) = &self.entries[i];
-                            Ok(Some((k.clone(), v.clone())))
-                        };
-                    }
-                }
-                None
+        match self.batch_position {
+            None => {
+                // Not positioned, start from first
+                self.seek_first()
             }
-        };
-
-        if let Some(i) = next_pos {
-            self.position = Some(i);
-            let (k, v) = &self.entries[i];
-            Ok(Some((k.clone(), v.clone())))
-        } else {
-            self.position = None;
-            Ok(None)
+            Some(pos) => {
+                let next_pos = pos + 1;
+                if next_pos < self.batch.len() {
+                    // Move within current batch
+                    self.batch_position = Some(next_pos);
+                    self.update_current();
+                    Ok(self.current_entry.clone())
+                } else if self.load_next_batch()? {
+                    // Moved to next batch
+                    self.update_current();
+                    Ok(self.current_entry.clone())
+                } else {
+                    // No more entries
+                    self.batch_position = None;
+                    self.current_entry = None;
+                    Ok(None)
+                }
+            }
         }
     }
 
     fn prev(&mut self) -> CursorResult {
-        match self.position {
+        match self.batch_position {
             None => {
-                // If no position, seek to last
+                // Not positioned, start from last
                 self.seek_last()
             }
             Some(0) => {
-                self.position = None;
-                Ok(None)
-            }
-            Some(current) => {
-                // Find previous valid position
-                for i in (0..current).rev() {
-                    if self.in_bounds(&self.entries[i].0) {
-                        self.position = Some(i);
-                        let (k, v) = &self.entries[i];
-                        return Ok(Some((k.clone(), v.clone())));
-                    }
+                // At beginning of batch, try to load previous
+                if self.load_prev_batch()? {
+                    self.update_current();
+                    Ok(self.current_entry.clone())
+                } else {
+                    self.batch_position = None;
+                    self.current_entry = None;
+                    Ok(None)
                 }
-                self.position = None;
-                Ok(None)
+            }
+            Some(pos) => {
+                // Move within current batch
+                self.batch_position = Some(pos - 1);
+                self.update_current();
+                Ok(self.current_entry.clone())
             }
         }
     }
 
     fn current(&self) -> Option<(&[u8], &[u8])> {
-        self.position.and_then(|i| {
-            self.entries
-                .get(i)
-                .filter(|(k, _)| self.in_bounds(k))
-                .map(|(k, v)| (k.as_slice(), v.as_slice()))
-        })
+        self.current_entry.as_ref().map(|(k, v)| (k.as_slice(), v.as_slice()))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cursor_empty() {
-        let mut cursor = RedbCursor::new(vec![], None, None);
-        assert!(cursor.seek_first().unwrap().is_none());
-        assert!(cursor.seek_last().unwrap().is_none());
-        assert!(cursor.next().unwrap().is_none());
-        assert!(cursor.current().is_none());
-    }
-
-    #[test]
-    fn test_cursor_single_entry() {
-        let entries = vec![(b"key".to_vec(), b"value".to_vec())];
-        let mut cursor = RedbCursor::new(entries, None, None);
-
-        let first = cursor.seek_first().unwrap();
-        assert_eq!(first, Some((b"key".to_vec(), b"value".to_vec())));
-        assert_eq!(cursor.current(), Some((b"key".as_slice(), b"value".as_slice())));
-
-        let next = cursor.next().unwrap();
-        assert!(next.is_none());
-    }
-
-    #[test]
-    fn test_cursor_multiple_entries() {
-        let entries = vec![
-            (b"a".to_vec(), b"1".to_vec()),
-            (b"b".to_vec(), b"2".to_vec()),
-            (b"c".to_vec(), b"3".to_vec()),
-        ];
-        let mut cursor = RedbCursor::new(entries, None, None);
-
-        // Forward iteration
-        cursor.seek_first().unwrap();
-        assert_eq!(cursor.current(), Some((b"a".as_slice(), b"1".as_slice())));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.current(), Some((b"b".as_slice(), b"2".as_slice())));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.current(), Some((b"c".as_slice(), b"3".as_slice())));
-
-        // Backward
-        cursor.prev().unwrap();
-        assert_eq!(cursor.current(), Some((b"b".as_slice(), b"2".as_slice())));
-    }
-
-    #[test]
-    fn test_cursor_seek() {
-        let entries = vec![
-            (b"a".to_vec(), b"1".to_vec()),
-            (b"c".to_vec(), b"3".to_vec()),
-            (b"e".to_vec(), b"5".to_vec()),
-        ];
-        let mut cursor = RedbCursor::new(entries, None, None);
-
-        // Seek to exact key
-        let result = cursor.seek(b"c").unwrap();
-        assert_eq!(result, Some((b"c".to_vec(), b"3".to_vec())));
-
-        // Seek to non-existent key (should find next greater)
-        let result = cursor.seek(b"b").unwrap();
-        assert_eq!(result, Some((b"c".to_vec(), b"3".to_vec())));
-
-        // Seek past all keys
-        let result = cursor.seek(b"z").unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_cursor_with_bounds() {
-        let entries = vec![
-            (b"a".to_vec(), b"1".to_vec()),
-            (b"b".to_vec(), b"2".to_vec()),
-            (b"c".to_vec(), b"3".to_vec()),
-            (b"d".to_vec(), b"4".to_vec()),
-            (b"e".to_vec(), b"5".to_vec()),
-        ];
-        let mut cursor = RedbCursor::new(
-            entries,
-            Some(Bound::Included(b"b".to_vec())),
-            Some(Bound::Excluded(b"e".to_vec())),
-        );
-
-        // Should only iterate b, c, d
-        let first = cursor.seek_first().unwrap();
-        assert_eq!(first, Some((b"b".to_vec(), b"2".to_vec())));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.current(), Some((b"c".as_slice(), b"3".as_slice())));
-
-        cursor.next().unwrap();
-        assert_eq!(cursor.current(), Some((b"d".as_slice(), b"4".as_slice())));
-
-        let past_end = cursor.next().unwrap();
-        assert!(past_end.is_none());
-    }
-}
+// Note: Cursor tests have been moved to the integration tests in tests/redb_cursor.rs
+// because the streaming cursor requires a real transaction context.
