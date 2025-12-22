@@ -62,12 +62,7 @@ fn test_iot_sensor_database() {
             let temp = 20.0 + (i as f32 * 0.5) + (cycle as f32 * 0.1);
 
             // Create reading entity with embedding for anomaly detection
-            let embedding = vec![
-                temp / 50.0,
-                (cycle as f32) / 20.0,
-                (i as f32) / 10.0,
-                0.5,
-            ];
+            let embedding = vec![temp / 50.0, (cycle as f32) / 20.0, (i as f32) / 10.0, 0.5];
 
             let reading = tx
                 .create_entity()
@@ -92,19 +87,15 @@ fn test_iot_sensor_database() {
 
     // Verify gateway monitors all sensors
     let monitored = tx.get_outgoing_edges(gateway.id).expect("failed");
-    let monitored_sensors: Vec<_> = monitored
-        .iter()
-        .filter(|e| e.edge_type.as_str() == "MONITORS")
-        .collect();
+    let monitored_sensors: Vec<_> =
+        monitored.iter().filter(|e| e.edge_type.as_str() == "MONITORS").collect();
     assert_eq!(monitored_sensors.len(), 5);
 
     // Verify each sensor has readings
     for &sensor_id in &sensor_ids {
         let readings = tx.get_outgoing_edges(sensor_id).expect("failed");
-        let recorded: Vec<_> = readings
-            .iter()
-            .filter(|e| e.edge_type.as_str() == "RECORDED")
-            .collect();
+        let recorded: Vec<_> =
+            readings.iter().filter(|e| e.edge_type.as_str() == "RECORDED").collect();
         assert_eq!(recorded.len(), 10);
     }
 
@@ -147,18 +138,12 @@ fn test_local_notes_application() {
         .with_property("is_root", true);
     tx.put_entity(&root).expect("failed");
 
-    let work = tx
-        .create_entity()
-        .expect("failed")
-        .with_label("Folder")
-        .with_property("name", "Work");
+    let work =
+        tx.create_entity().expect("failed").with_label("Folder").with_property("name", "Work");
     tx.put_entity(&work).expect("failed");
 
-    let personal = tx
-        .create_entity()
-        .expect("failed")
-        .with_label("Folder")
-        .with_property("name", "Personal");
+    let personal =
+        tx.create_entity().expect("failed").with_label("Folder").with_property("name", "Personal");
     tx.put_entity(&personal).expect("failed");
 
     // Folder hierarchy
@@ -170,11 +155,8 @@ fn test_local_notes_application() {
     // Create tags
     let mut tag_ids = HashMap::new();
     for tag_name in ["important", "todo", "idea", "reference"] {
-        let tag = tx
-            .create_entity()
-            .expect("failed")
-            .with_label("Tag")
-            .with_property("name", tag_name);
+        let tag =
+            tx.create_entity().expect("failed").with_label("Tag").with_property("name", tag_name);
         tag_ids.insert(tag_name.to_string(), tag.id);
         tx.put_entity(&tag).expect("failed");
     }
@@ -239,10 +221,8 @@ fn test_local_notes_application() {
 
     // Query: Find notes in work folder
     let work_contents = tx.get_outgoing_edges(work.id).expect("failed");
-    let work_notes: Vec<_> = work_contents
-        .iter()
-        .filter(|e| e.edge_type.as_str() == "CONTAINS")
-        .collect();
+    let work_notes: Vec<_> =
+        work_contents.iter().filter(|e| e.edge_type.as_str() == "CONTAINS").collect();
     assert_eq!(work_notes.len(), 3);
 
     // Query: Find similar notes using embeddings
@@ -362,8 +342,13 @@ fn test_recommendation_engine() {
         .iter()
         .filter(|e| e.edge_type.as_str() == "PLAYED")
         .filter_map(|e| {
-            e.get_property("count")
-                .and_then(|v| if let Value::Int(c) = v { Some((e.target, *c)) } else { None })
+            e.get_property("count").and_then(|v| {
+                if let Value::Int(c) = v {
+                    Some((e.target, *c))
+                } else {
+                    None
+                }
+            })
         })
         .collect();
     favorites.sort_by(|a, b| b.1.cmp(&a.1));
@@ -376,7 +361,8 @@ fn test_recommendation_engine() {
     };
 
     // Find similar songs user hasn't played much
-    let played_a_lot: HashSet<_> = favorites.iter().filter(|(_, c)| *c > 10).map(|(id, _)| *id).collect();
+    let played_a_lot: HashSet<_> =
+        favorites.iter().filter(|(_, c)| *c > 10).map(|(id, _)| *id).collect();
 
     let mut recommendations = Vec::new();
     for &song_id in &song_ids {
@@ -517,13 +503,10 @@ fn test_task_manager() {
         }
 
         let deps = tx.get_outgoing_edges(task_id).expect("failed");
-        let all_deps_done = deps
-            .iter()
-            .filter(|e| e.edge_type.as_str() == "DEPENDS_ON")
-            .all(|e| {
-                let dep = tx.get_entity(e.target).expect("failed").expect("not found");
-                dep.get_property("status") == Some(&Value::String("done".to_string()))
-            });
+        let all_deps_done = deps.iter().filter(|e| e.edge_type.as_str() == "DEPENDS_ON").all(|e| {
+            let dep = tx.get_entity(e.target).expect("failed").expect("not found");
+            dep.get_property("status") == Some(&Value::String("done".to_string()))
+        });
 
         if all_deps_done {
             actionable.push(task_id);
@@ -548,18 +531,12 @@ fn test_task_manager() {
     let tx = db.begin_read().expect("failed");
     let write_tests = tx.get_entity(task_ids[2]).expect("failed").expect("not found");
     let deps = tx.get_outgoing_edges(task_ids[2]).expect("failed");
-    let all_deps_done = deps
-        .iter()
-        .filter(|e| e.edge_type.as_str() == "DEPENDS_ON")
-        .all(|e| {
-            let dep = tx.get_entity(e.target).expect("failed").expect("not found");
-            dep.get_property("status") == Some(&Value::String("done".to_string()))
-        });
+    let all_deps_done = deps.iter().filter(|e| e.edge_type.as_str() == "DEPENDS_ON").all(|e| {
+        let dep = tx.get_entity(e.target).expect("failed").expect("not found");
+        dep.get_property("status") == Some(&Value::String("done".to_string()))
+    });
     assert!(all_deps_done);
-    assert_eq!(
-        write_tests.get_property("status"),
-        Some(&Value::String("todo".to_string()))
-    );
+    assert_eq!(write_tests.get_property("status"), Some(&Value::String("todo".to_string())));
 }
 
 // ============================================================================
@@ -637,10 +614,7 @@ fn test_multi_transaction_workflow() {
     assert_eq!(user.get_property("credits"), Some(&Value::Int(50)));
 
     let order = tx.get_entity(order_id).expect("failed").expect("not found");
-    assert_eq!(
-        order.get_property("status"),
-        Some(&Value::String("completed".to_string()))
-    );
+    assert_eq!(order.get_property("status"), Some(&Value::String("completed".to_string())));
 
     let user_orders = tx.get_outgoing_edges(user_id).expect("failed");
     assert_eq!(user_orders.len(), 1);
@@ -701,11 +675,8 @@ fn test_update_integrity() {
     {
         let mut tx = db.begin().expect("failed");
 
-        let parent = tx
-            .create_entity()
-            .expect("failed")
-            .with_label("Parent")
-            .with_property("name", "Root");
+        let parent =
+            tx.create_entity().expect("failed").with_label("Parent").with_property("name", "Root");
         parent_id = parent.id;
         tx.put_entity(&parent).expect("failed");
 
@@ -748,10 +719,7 @@ fn test_update_integrity() {
     }
 
     let parent = tx.get_entity(parent_id).expect("failed").expect("not found");
-    assert_eq!(
-        parent.get_property("name"),
-        Some(&Value::String("Updated Root".to_string()))
-    );
+    assert_eq!(parent.get_property("name"), Some(&Value::String("Updated Root".to_string())));
     assert_eq!(parent.get_property("updated"), Some(&Value::Bool(true)));
 }
 

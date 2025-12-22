@@ -327,11 +327,18 @@ impl NodeStore {
         let start = [PREFIX_ENTITY];
         let end = [PREFIX_ENTITY + 1];
 
-        let mut cursor = tx.range(
+        let cursor_result = tx.range(
             TABLE_ENTITIES,
             Bound::Included(start.as_slice()),
             Bound::Excluded(end.as_slice()),
-        )?;
+        );
+
+        // Handle table not existing (empty store)
+        let mut cursor = match cursor_result {
+            Ok(c) => c,
+            Err(manifoldb_storage::StorageError::TableNotFound(_)) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
 
         while let Some((_, value)) = cursor.next()? {
             let entity = Entity::decode(&value)?;

@@ -258,8 +258,11 @@ mod tests {
         ];
 
         for entry in entries {
-            let serialized = bincode::serde::encode_to_vec(&entry, bincode::config::standard()).unwrap();
-            let (deserialized, _): (WalEntry, _) = bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
+            let serialized =
+                bincode::serde::encode_to_vec(&entry, bincode::config::standard()).unwrap();
+            let (deserialized, _): (WalEntry, _) =
+                bincode::serde::decode_from_slice(&serialized, bincode::config::standard())
+                    .unwrap();
             assert_eq!(entry, deserialized);
         }
     }

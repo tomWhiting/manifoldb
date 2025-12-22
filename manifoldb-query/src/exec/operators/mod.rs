@@ -14,8 +14,10 @@
 //! - **Set operators**: [`set_ops`] - UNION, INTERSECT, EXCEPT
 //! - **Graph operators**: [`graph`] - Graph traversal
 //! - **Vector operators**: [`vector`] - Vector search
+//! - **Analytics operators**: [`analytics`] - Graph analytics (PageRank, centrality, community)
 
 pub mod aggregate;
+pub mod analytics;
 pub mod filter;
 pub mod graph;
 pub mod join;
@@ -29,6 +31,10 @@ pub mod vector;
 
 // Re-exports for convenience
 pub use aggregate::{HashAggregateOp, SortMergeAggregateOp};
+pub use analytics::{
+    BetweennessCentralityOp, BetweennessCentralityOpConfig, CommunityDetectionOp,
+    CommunityDetectionOpConfig, PageRankOp, PageRankOpConfig,
+};
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp};
 pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
