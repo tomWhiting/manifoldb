@@ -153,6 +153,7 @@ pub mod database;
 pub mod error;
 pub mod execution;
 pub mod metrics;
+pub mod prepared;
 pub mod schema;
 pub mod transaction;
 pub mod vector;
@@ -166,6 +167,7 @@ pub use metrics::{
     StorageMetrics, StorageMetricsSnapshot, TransactionMetrics, TransactionMetricsSnapshot,
     VectorMetrics, VectorMetricsSnapshot,
 };
+pub use prepared::{PreparedStatement, PreparedStatementCache};
 pub use transaction::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
     TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,

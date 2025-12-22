@@ -8,6 +8,8 @@ mod graph_accessor;
 mod scan;
 mod table_extractor;
 
-pub use executor::{execute_query, execute_statement};
+pub use executor::{
+    execute_prepared_query, execute_prepared_statement, execute_query, execute_statement,
+};
 pub use scan::StorageScan;
 pub use table_extractor::extract_tables_from_sql;

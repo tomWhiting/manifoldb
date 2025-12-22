@@ -22,6 +22,8 @@ const INDEX_PREFIX: &[u8] = b"schema:index:";
 const TABLES_LIST_KEY: &[u8] = b"schema:tables_list";
 /// Key for the list of all indexes.
 const INDEXES_LIST_KEY: &[u8] = b"schema:indexes_list";
+/// Key for the schema version counter.
+const SCHEMA_VERSION_KEY: &[u8] = b"schema:version";
 
 /// Stored table schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -277,6 +279,35 @@ impl StoredIndexColumn {
 pub struct SchemaManager;
 
 impl SchemaManager {
+    /// Get the current schema version.
+    ///
+    /// Returns 0 if no schema version has been set yet.
+    pub fn get_version<T: Transaction>(tx: &DatabaseTransaction<T>) -> Result<u64, SchemaError> {
+        match tx.get_metadata(SCHEMA_VERSION_KEY)? {
+            Some(bytes) => {
+                let (version, _): (u64, _) =
+                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                        .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+                Ok(version)
+            }
+            None => Ok(0),
+        }
+    }
+
+    /// Increment and return the new schema version.
+    ///
+    /// This should be called after any DDL operation that modifies the schema.
+    fn increment_version<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+    ) -> Result<u64, SchemaError> {
+        let current = Self::get_version(tx)?;
+        let new_version = current + 1;
+        let value = bincode::serde::encode_to_vec(new_version, bincode::config::standard())
+            .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+        tx.put_metadata(SCHEMA_VERSION_KEY, &value)?;
+        Ok(new_version)
+    }
+
     /// Create a new table schema.
     pub fn create_table<T: Transaction>(
         tx: &mut DatabaseTransaction<T>,
@@ -302,6 +333,9 @@ impl SchemaManager {
 
         // Add to tables list
         Self::add_to_list(tx, TABLES_LIST_KEY, table_name)?;
+
+        // Increment schema version
+        Self::increment_version(tx)?;
 
         Ok(())
     }
@@ -332,6 +366,9 @@ impl SchemaManager {
         for idx_name in indexes {
             Self::drop_index(tx, &idx_name, true)?;
         }
+
+        // Increment schema version
+        Self::increment_version(tx)?;
 
         Ok(())
     }
@@ -367,6 +404,9 @@ impl SchemaManager {
         // Add to indexes list
         Self::add_to_list(tx, INDEXES_LIST_KEY, index_name)?;
 
+        // Increment schema version
+        Self::increment_version(tx)?;
+
         Ok(())
     }
 
@@ -390,6 +430,9 @@ impl SchemaManager {
 
         // Remove from indexes list
         Self::remove_from_list(tx, INDEXES_LIST_KEY, index_name)?;
+
+        // Increment schema version
+        Self::increment_version(tx)?;
 
         Ok(())
     }

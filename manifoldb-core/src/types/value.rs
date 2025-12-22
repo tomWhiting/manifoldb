@@ -1,4 +1,29 @@
 //! Property values that can be stored on entities and edges.
+//!
+//! This module provides the [`Value`] enum, which represents all possible value
+//! types that can be stored as properties in `ManifoldDB`.
+//!
+//! # Example
+//!
+//! ```
+//! use manifoldb_core::Value;
+//!
+//! // Create values via From trait
+//! let name: Value = "Alice".into();
+//! let age: Value = 30i64.into();
+//! let score: Value = 95.5f64.into();
+//! let active: Value = true.into();
+//!
+//! // Access typed values
+//! assert_eq!(name.as_str(), Some("Alice"));
+//! assert_eq!(age.as_int(), Some(30));
+//! assert_eq!(score.as_float(), Some(95.5));
+//! assert_eq!(active.as_bool(), Some(true));
+//!
+//! // Vector embeddings for similarity search
+//! let embedding: Value = vec![0.1f32, 0.2, 0.3].into();
+//! assert_eq!(embedding.as_vector().map(|v| v.len()), Some(3));
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +31,44 @@ use serde::{Deserialize, Serialize};
 ///
 /// This enum represents all possible value types in `ManifoldDB`, including
 /// vector embeddings for similarity search.
+///
+/// # Supported Types
+///
+/// | Variant | Rust Type | Use Case |
+/// |---------|-----------|----------|
+/// | `Null` | - | Missing/optional values |
+/// | `Bool` | `bool` | Boolean flags |
+/// | `Int` | `i64` | Integers, counters, timestamps |
+/// | `Float` | `f64` | Numeric measurements |
+/// | `String` | `String` | Text data |
+/// | `Bytes` | `Vec<u8>` | Binary data |
+/// | `Vector` | `Vec<f32>` | Dense embeddings (BERT, OpenAI, etc.) |
+/// | `SparseVector` | `Vec<(u32, f32)>` | Sparse embeddings (SPLADE, BM25) |
+/// | `MultiVector` | `Vec<Vec<f32>>` | Per-token embeddings (ColBERT) |
+/// | `Array` | `Vec<Value>` | Lists of values |
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::Value;
+///
+/// // Standard types
+/// let v1 = Value::from("hello");
+/// let v2 = Value::from(42i64);
+/// let v3 = Value::from(3.14f64);
+///
+/// // Dense embedding (e.g., from BERT, OpenAI)
+/// let embedding = Value::from(vec![0.1f32, 0.2, 0.3, 0.4]);
+///
+/// // Sparse embedding (only non-zero indices stored)
+/// let sparse = Value::from(vec![(10u32, 0.5f32), (50, 0.3), (100, 0.2)]);
+///
+/// // Multi-vector (per-token embeddings for ColBERT)
+/// let multi = Value::from(vec![
+///     vec![0.1f32, 0.2],  // Token 1
+///     vec![0.3, 0.4],     // Token 2
+/// ]);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     /// Null/missing value
