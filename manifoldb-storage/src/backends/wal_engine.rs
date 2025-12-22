@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::engine::{StorageEngine, StorageError, Transaction};
-use crate::wal::{Lsn, Operation, TxnId, WalConfig, WalEntry, WalRecovery, WalWriter};
+use crate::wal::{
+    Lsn, Operation, RecoveryMode, RecoveryStats, TxnId, WalConfig, WalEntry, WalRecovery, WalWriter,
+};
+use tracing::{info, warn};
 
 /// Configuration for the WAL-enabled storage engine
 #[derive(Debug, Clone)]
@@ -22,11 +25,19 @@ pub struct WalEngineConfig {
 
     /// Recover from WAL on startup
     pub recover_on_open: bool,
+
+    /// How to handle corruption during recovery
+    pub recovery_mode: RecoveryMode,
 }
 
 impl Default for WalEngineConfig {
     fn default() -> Self {
-        Self { wal: WalConfig::default(), auto_checkpoint_ops: 10000, recover_on_open: true }
+        Self {
+            wal: WalConfig::default(),
+            auto_checkpoint_ops: 10000,
+            recover_on_open: true,
+            recovery_mode: RecoveryMode::default(),
+        }
     }
 }
 
@@ -78,22 +89,60 @@ pub struct WalEngine<E: StorageEngine> {
     config: WalEngineConfig,
 }
 
+/// Result of opening a WAL engine, including recovery statistics if recovery was performed
+pub struct WalEngineOpenResult<E: StorageEngine> {
+    /// The opened WAL engine
+    pub engine: WalEngine<E>,
+
+    /// Recovery statistics if recovery was performed, None otherwise
+    pub recovery_stats: Option<RecoveryStats>,
+}
+
+impl<E: StorageEngine> std::fmt::Debug for WalEngineOpenResult<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalEngineOpenResult")
+            .field("engine", &"WalEngine<...>")
+            .field("recovery_stats", &self.recovery_stats)
+            .finish()
+    }
+}
+
 impl<E: StorageEngine> WalEngine<E> {
     /// Open or create a WAL-enabled storage engine
     ///
     /// If the WAL file exists and `recover_on_open` is true, any uncommitted
     /// transactions will be replayed to the underlying storage.
+    ///
+    /// Returns the engine directly. Use `open_with_stats` to get recovery statistics.
     pub fn open(
         inner: E,
         wal_path: impl AsRef<Path>,
         config: WalEngineConfig,
     ) -> Result<Self, StorageError> {
+        Self::open_with_stats(inner, wal_path, config).map(|r| r.engine)
+    }
+
+    /// Open or create a WAL-enabled storage engine with recovery statistics
+    ///
+    /// If the WAL file exists and `recover_on_open` is true, any uncommitted
+    /// transactions will be replayed to the underlying storage.
+    ///
+    /// Returns both the engine and recovery statistics (if recovery was performed).
+    /// The recovery stats include corruption information if any was detected.
+    pub fn open_with_stats(
+        inner: E,
+        wal_path: impl AsRef<Path>,
+        config: WalEngineConfig,
+    ) -> Result<WalEngineOpenResult<E>, StorageError> {
         let wal_path = wal_path.as_ref().to_path_buf();
 
         // Recover from existing WAL if present
-        if config.recover_on_open && wal_path.exists() {
-            Self::recover(&inner, &wal_path)?;
-        }
+        let recovery_stats = if config.recover_on_open && wal_path.exists() {
+            let stats = Self::recover(&inner, &wal_path, config.recovery_mode)?;
+            Some(stats)
+        } else {
+            None
+        };
 
         // Open WAL writer
         let wal = WalWriter::open(&wal_path, config.wal.clone())
@@ -102,45 +151,83 @@ impl<E: StorageEngine> WalEngine<E> {
         // Determine next transaction ID from WAL state
         let next_txn_id = wal.current_lsn() + 1;
 
-        Ok(Self {
+        let engine = Self {
             inner,
             wal_path,
             wal: Mutex::new(wal),
             next_txn_id: AtomicU64::new(next_txn_id),
             ops_since_checkpoint: AtomicU64::new(0),
             config,
-        })
+        };
+
+        Ok(WalEngineOpenResult { engine, recovery_stats })
     }
 
     /// Recover by replaying the WAL to the storage engine
-    fn recover(inner: &E, wal_path: &Path) -> Result<(), StorageError> {
-        let recovery = WalRecovery::open(wal_path)
+    fn recover(
+        inner: &E,
+        wal_path: &Path,
+        mode: RecoveryMode,
+    ) -> Result<RecoveryStats, StorageError> {
+        use crate::wal::WalError;
+
+        info!(path = %wal_path.display(), "Starting WAL recovery");
+
+        let mut recovery = WalRecovery::open(wal_path)
             .map_err(|e| StorageError::Open(format!("failed to open WAL for recovery: {e}")))?;
 
-        // Iterate through committed entries and apply them
-        for entry in recovery.committed_entries() {
-            let mut tx = inner.begin_write()?;
+        let stats = recovery
+            .replay_with_mode(
+                |entry| {
+                    let mut tx = inner
+                        .begin_write()
+                        .map_err(|e| WalError::Recovery(format!("begin_write failed: {e}")))?;
 
-            match entry.operation {
-                Operation::Put => {
-                    if let (Some(table), Some(key), Some(value)) =
-                        (&entry.table, &entry.key, &entry.value)
-                    {
-                        tx.put(table, key, value)?;
+                    match entry.operation {
+                        Operation::Put => {
+                            if let (Some(table), Some(key), Some(value)) =
+                                (&entry.table, &entry.key, &entry.value)
+                            {
+                                tx.put(table, key, value)
+                                    .map_err(|e| WalError::Recovery(format!("put failed: {e}")))?;
+                            }
+                        }
+                        Operation::Delete => {
+                            if let (Some(table), Some(key)) = (&entry.table, &entry.key) {
+                                tx.delete(table, key).map_err(|e| {
+                                    WalError::Recovery(format!("delete failed: {e}"))
+                                })?;
+                            }
+                        }
+                        _ => {}
                     }
-                }
-                Operation::Delete => {
-                    if let (Some(table), Some(key)) = (&entry.table, &entry.key) {
-                        tx.delete(table, key)?;
-                    }
-                }
-                _ => {}
-            }
 
-            tx.commit()?;
+                    tx.commit().map_err(|e| WalError::Recovery(format!("commit failed: {e}")))?;
+                    Ok(())
+                },
+                mode,
+            )
+            .map_err(|e| StorageError::Open(format!("WAL recovery failed: {e}")))?;
+
+        // Log summary
+        if stats.has_corruption() {
+            warn!(
+                entries_skipped = stats.entries_skipped,
+                corrupted_bytes = stats.corrupted_bytes,
+                warnings = stats.warnings.len(),
+                path = %wal_path.display(),
+                "WAL recovery completed with corruption"
+            );
+        } else {
+            info!(
+                operations_applied = stats.operations_applied,
+                entries_processed = stats.entries_processed,
+                path = %wal_path.display(),
+                "WAL recovery completed successfully"
+            );
         }
 
-        Ok(())
+        Ok(stats)
     }
 
     /// Create a checkpoint

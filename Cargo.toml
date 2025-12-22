@@ -50,6 +50,7 @@ criterion = "0.5"
 
 # Metrics and observability
 metrics = "0.24"
+tracing = "0.1"
 
 # Workspace-wide lints
 [workspace.lints.rust]

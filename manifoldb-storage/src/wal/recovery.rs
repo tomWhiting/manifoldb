@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use tracing::{info, warn};
 
 /// Magic number for WAL files
 const WAL_MAGIC: [u8; 8] = [0x4D, 0x46, 0x4C, 0x44, 0x57, 0x41, 0x4C, 0x00];
@@ -164,25 +165,170 @@ impl WalRecovery {
     /// 1. Reads all entries from the WAL
     /// 2. Filters to only committed transactions
     /// 3. Applies operations in order
-    pub fn replay<F>(&mut self, mut apply: F) -> WalResult<RecoveryStats>
+    ///
+    /// Uses `RecoveryMode::SkipCorrupted` by default. Use `replay_with_mode`
+    /// for more control over corruption handling.
+    pub fn replay<F>(&mut self, apply: F) -> WalResult<RecoveryStats>
+    where
+        F: FnMut(&WalEntry) -> WalResult<()>,
+    {
+        self.replay_with_mode(apply, RecoveryMode::default())
+    }
+
+    /// Replay WAL entries with configurable corruption handling
+    ///
+    /// This is the main recovery entry point with explicit control over
+    /// how corruption is handled. It:
+    /// 1. Reads all entries from the WAL
+    /// 2. Handles corruption according to the specified mode
+    /// 3. Filters to only committed transactions
+    /// 4. Applies operations in order
+    ///
+    /// # Recovery Modes
+    ///
+    /// - `SkipCorrupted`: Skip corrupted entries with warnings (default)
+    /// - `FailOnCorruption`: Fail immediately on any corruption
+    /// - `FailOnThreshold`: Fail if corruption exceeds configured limits
+    ///
+    /// # Returns
+    ///
+    /// Returns `RecoveryStats` containing both success metrics and corruption
+    /// information. Check `stats.has_corruption()` to detect if any entries
+    /// were skipped.
+    pub fn replay_with_mode<F>(
+        &mut self,
+        mut apply: F,
+        mode: RecoveryMode,
+    ) -> WalResult<RecoveryStats>
     where
         F: FnMut(&WalEntry) -> WalResult<()>,
     {
         let path = self.path.clone();
-        let committed_iter = CommittedEntryIterator::new(path);
 
-        let mut stats = RecoveryStats::default();
+        // First pass: identify committed transactions and gather corruption info
+        let (committed_txns, first_pass_stats) = Self::first_pass_with_mode(&path, mode)?;
 
-        for entry in committed_iter {
-            if entry.is_data_operation() {
-                apply(&entry)?;
-                stats.operations_applied += 1;
+        // Second pass: apply committed entries
+        let mut stats = first_pass_stats;
+        let recovery = WalRecovery::open(&path)?;
+
+        for result in recovery.iter() {
+            match result {
+                Ok(entry) => {
+                    // Include if:
+                    // - Standalone operation (txn_id = 0)
+                    // - Part of a committed transaction
+                    // - Transaction markers are skipped for data replay
+                    if entry.is_data_operation()
+                        && (entry.txn_id == 0 || committed_txns.contains(&entry.txn_id))
+                    {
+                        apply(&entry)?;
+                        stats.operations_applied += 1;
+                    }
+                    stats.max_lsn = stats.max_lsn.max(entry.lsn);
+                }
+                Err(e) => {
+                    // Corruption already handled in first pass, just skip
+                    // (mode validation already passed)
+                    let warning = format!("Skipping corrupted entry during replay: {e}");
+                    warn!("{warning}");
+                }
             }
-            stats.entries_processed += 1;
-            stats.max_lsn = stats.max_lsn.max(entry.lsn);
+        }
+
+        // Log recovery summary
+        if stats.has_corruption() {
+            warn!(
+                entries_skipped = stats.entries_skipped,
+                corrupted_bytes = stats.corrupted_bytes,
+                warnings = stats.warnings.len(),
+                "WAL recovery completed with corruption detected"
+            );
+        } else {
+            info!(
+                entries_processed = stats.entries_processed,
+                operations_applied = stats.operations_applied,
+                max_lsn = stats.max_lsn,
+                "WAL recovery completed successfully"
+            );
         }
 
         Ok(stats)
+    }
+
+    /// First pass to identify committed transactions and check for corruption
+    fn first_pass_with_mode(
+        path: &Path,
+        mode: RecoveryMode,
+    ) -> WalResult<(HashSet<u64>, RecoveryStats)> {
+        let mut committed_txns = HashSet::new();
+        let mut stats = RecoveryStats::default();
+
+        let recovery = WalRecovery::open(path)?;
+
+        for result in recovery.iter() {
+            match result {
+                Ok(entry) => {
+                    if entry.operation == Operation::CommitTxn {
+                        committed_txns.insert(entry.txn_id);
+                        stats.committed_txns += 1;
+                    }
+                    stats.entries_processed += 1;
+                }
+                Err(e) => {
+                    // Handle corruption based on mode
+                    let warning = format!("Corrupted WAL entry at recovery: {e}");
+                    warn!("{warning}");
+                    stats.add_warning(warning.clone());
+                    stats.entries_skipped += 1;
+
+                    // Estimate corrupted bytes based on error type
+                    if let WalError::Truncated { offset } = &e {
+                        stats.corrupted_bytes = stats.corrupted_bytes.saturating_add(
+                            std::fs::metadata(path)
+                                .map(|m| m.len().saturating_sub(*offset) as usize)
+                                .unwrap_or(0),
+                        );
+                    } else {
+                        // Estimate ~100 bytes per corrupted entry as a reasonable guess
+                        stats.corrupted_bytes = stats.corrupted_bytes.saturating_add(100);
+                    }
+
+                    // Check if we should fail based on mode
+                    match mode {
+                        RecoveryMode::SkipCorrupted => {
+                            // Continue processing
+                        }
+                        RecoveryMode::FailOnCorruption => {
+                            return Err(WalError::Recovery(format!(
+                                "Corruption detected and FailOnCorruption mode is enabled: {e}"
+                            )));
+                        }
+                        RecoveryMode::FailOnThreshold {
+                            max_corrupted_entries,
+                            max_corrupted_bytes,
+                        } => {
+                            if stats.entries_skipped > max_corrupted_entries {
+                                return Err(WalError::Recovery(format!(
+                                    "Corruption threshold exceeded: {} entries skipped (max: {})",
+                                    stats.entries_skipped, max_corrupted_entries
+                                )));
+                            }
+                            if max_corrupted_bytes > 0
+                                && stats.corrupted_bytes > max_corrupted_bytes
+                            {
+                                return Err(WalError::Recovery(format!(
+                                    "Corruption threshold exceeded: {} bytes corrupted (max: {})",
+                                    stats.corrupted_bytes, max_corrupted_bytes
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((committed_txns, stats))
     }
 
     /// Get the last checkpoint LSN in the WAL
@@ -202,10 +348,30 @@ impl WalRecovery {
     }
 }
 
+/// Recovery mode determines how corruption is handled during WAL recovery
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecoveryMode {
+    /// Skip corrupted entries and continue recovery (default)
+    /// Logs warnings for each skipped entry
+    #[default]
+    SkipCorrupted,
+
+    /// Fail immediately if any corruption is detected
+    FailOnCorruption,
+
+    /// Skip corrupted entries but fail if corruption exceeds threshold
+    FailOnThreshold {
+        /// Maximum number of corrupted entries before failing
+        max_corrupted_entries: usize,
+        /// Maximum bytes of corruption before failing (0 = no limit)
+        max_corrupted_bytes: usize,
+    },
+}
+
 /// Statistics from WAL recovery
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RecoveryStats {
-    /// Total entries processed
+    /// Total entries processed successfully
     pub entries_processed: usize,
 
     /// Data operations applied (Put/Delete)
@@ -219,6 +385,27 @@ pub struct RecoveryStats {
 
     /// Number of aborted/incomplete transactions
     pub aborted_txns: usize,
+
+    /// Number of entries skipped due to corruption
+    pub entries_skipped: usize,
+
+    /// Estimated bytes of corrupted data skipped
+    pub corrupted_bytes: usize,
+
+    /// Warnings generated during recovery
+    pub warnings: Vec<String>,
+}
+
+impl RecoveryStats {
+    /// Returns true if any corruption was detected during recovery
+    pub const fn has_corruption(&self) -> bool {
+        self.entries_skipped > 0
+    }
+
+    /// Add a corruption warning
+    pub fn add_warning(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
+    }
 }
 
 /// Iterator over WAL entries
@@ -650,5 +837,180 @@ mod tests {
             "Should detect checksum mismatch, got: {:?}",
             results[0]
         );
+    }
+
+    #[test]
+    fn test_replay_with_corruption_skip_mode() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("replay_corrupt_skip.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::put(3, "nodes", b"k3", b"v3")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Corrupt the CRC of the second entry
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
+            // Corrupt in the middle to affect the second entry
+            file.seek(std::io::SeekFrom::Start(70)).unwrap();
+            file.write_all(b"CORRUPT").unwrap();
+        }
+
+        // Replay with SkipCorrupted mode should succeed and report corruption
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+        let mut applied = Vec::new();
+
+        let stats = recovery
+            .replay_with_mode(
+                |entry| {
+                    applied.push(entry.lsn);
+                    Ok(())
+                },
+                RecoveryMode::SkipCorrupted,
+            )
+            .unwrap();
+
+        // Stats should show corruption was detected
+        assert!(stats.has_corruption(), "Should detect corruption");
+        assert!(stats.entries_skipped > 0, "Should have skipped entries");
+        assert!(!stats.warnings.is_empty(), "Should have warnings");
+
+        // At least some entries should be applied
+        assert!(!applied.is_empty(), "Should apply some entries");
+    }
+
+    #[test]
+    fn test_replay_with_corruption_fail_mode() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("replay_corrupt_fail.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Corrupt the CRC of the first entry
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
+            let metadata = file.metadata().unwrap();
+            let file_size = metadata.len();
+            // Corrupt near the end
+            file.seek(std::io::SeekFrom::Start(file_size - 4)).unwrap();
+            file.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        }
+
+        // Replay with FailOnCorruption mode should fail
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+
+        let result = recovery.replay_with_mode(|_| Ok(()), RecoveryMode::FailOnCorruption);
+
+        assert!(result.is_err(), "Should fail on corruption");
+        let err = result.unwrap_err();
+        assert!(matches!(err, WalError::Recovery(_)), "Should be Recovery error, got: {err:?}");
+    }
+
+    #[test]
+    fn test_replay_with_corruption_threshold_mode() {
+        use std::io::Write;
+
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("replay_corrupt_threshold.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::put(3, "nodes", b"k3", b"v3")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Corrupt one entry
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&wal_path).unwrap();
+            let metadata = file.metadata().unwrap();
+            let file_size = metadata.len();
+            file.seek(std::io::SeekFrom::Start(file_size - 4)).unwrap();
+            file.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        }
+
+        // Replay with threshold that allows 1 corruption
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+        let result = recovery.replay_with_mode(
+            |_| Ok(()),
+            RecoveryMode::FailOnThreshold { max_corrupted_entries: 5, max_corrupted_bytes: 0 },
+        );
+
+        // Should succeed with 1 corruption when threshold is 5
+        assert!(result.is_ok(), "Should succeed within threshold");
+        let stats = result.unwrap();
+        assert!(stats.entries_skipped <= 5, "Should be within threshold");
+    }
+
+    #[test]
+    fn test_recovery_stats_has_corruption() {
+        let mut stats = RecoveryStats::default();
+        assert!(!stats.has_corruption(), "Empty stats should not have corruption");
+
+        stats.entries_skipped = 1;
+        assert!(stats.has_corruption(), "Should have corruption when entries skipped");
+    }
+
+    #[test]
+    fn test_recovery_stats_add_warning() {
+        let mut stats = RecoveryStats::default();
+        stats.add_warning("Test warning 1");
+        stats.add_warning(String::from("Test warning 2"));
+
+        assert_eq!(stats.warnings.len(), 2);
+        assert_eq!(stats.warnings[0], "Test warning 1");
+        assert_eq!(stats.warnings[1], "Test warning 2");
+    }
+
+    #[test]
+    fn test_recovery_mode_default() {
+        let mode = RecoveryMode::default();
+        assert_eq!(mode, RecoveryMode::SkipCorrupted);
+    }
+
+    #[test]
+    fn test_replay_clean_wal_reports_no_corruption() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("clean.wal");
+
+        // Write valid entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Replay should report no corruption
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+        let stats = recovery.replay(|_| Ok(())).unwrap();
+
+        assert!(!stats.has_corruption(), "Clean WAL should have no corruption");
+        assert_eq!(stats.entries_skipped, 0);
+        assert_eq!(stats.corrupted_bytes, 0);
+        assert!(stats.warnings.is_empty());
+        assert_eq!(stats.entries_processed, 2);
+        assert_eq!(stats.operations_applied, 2);
     }
 }

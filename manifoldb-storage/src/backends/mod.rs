@@ -11,4 +11,4 @@ pub mod redb;
 pub mod wal_engine;
 
 pub use self::redb::{RedbConfig, RedbCursor, RedbEngine, RedbTransaction};
-pub use self::wal_engine::{WalEngine, WalEngineConfig, WalTransaction};
+pub use self::wal_engine::{WalEngine, WalEngineConfig, WalEngineOpenResult, WalTransaction};
