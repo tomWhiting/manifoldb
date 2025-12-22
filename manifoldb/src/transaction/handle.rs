@@ -418,6 +418,28 @@ impl<T: Transaction> DatabaseTransaction<T> {
     }
 
     // ========================================================================
+    // Metadata Operations
+    // ========================================================================
+
+    /// Get a metadata value by key.
+    pub fn get_metadata(&self, key: &[u8]) -> Result<Option<Vec<u8>>, TransactionError> {
+        let storage = self.storage()?;
+        storage.get(tables::METADATA, key).map_err(storage_error_to_tx_error)
+    }
+
+    /// Put a metadata value.
+    pub fn put_metadata(&mut self, key: &[u8], value: &[u8]) -> Result<(), TransactionError> {
+        let storage = self.storage_mut()?;
+        storage.put(tables::METADATA, key, value).map_err(storage_error_to_tx_error)
+    }
+
+    /// Delete a metadata value.
+    pub fn delete_metadata(&mut self, key: &[u8]) -> Result<bool, TransactionError> {
+        let storage = self.storage_mut()?;
+        storage.delete(tables::METADATA, key).map_err(storage_error_to_tx_error)
+    }
+
+    // ========================================================================
     // Transaction Lifecycle
     // ========================================================================
 

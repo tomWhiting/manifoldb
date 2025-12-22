@@ -150,6 +150,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod execution;
+pub mod schema;
 pub mod transaction;
 
 // Public API re-exports

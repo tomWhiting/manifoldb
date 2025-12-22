@@ -192,6 +192,15 @@ impl PredicatePushdown {
             LogicalPlan::Empty { columns } => {
                 self.apply_predicates(LogicalPlan::Empty { columns }, predicates)
             }
+
+            // DDL operations - no predicate pushdown
+            LogicalPlan::CreateTable(_)
+            | LogicalPlan::DropTable(_)
+            | LogicalPlan::CreateIndex(_)
+            | LogicalPlan::DropIndex(_) => {
+                // DDL statements don't have predicates to push
+                plan
+            }
         }
     }
 

@@ -306,6 +306,12 @@ impl PhysicalPlanner {
             LogicalPlan::Delete { table, filter, returning } => {
                 self.plan_delete(table, filter, returning)
             }
+
+            // DDL nodes - these are executed directly without physical plans
+            LogicalPlan::CreateTable(node) => PhysicalPlan::CreateTable(node.clone()),
+            LogicalPlan::DropTable(node) => PhysicalPlan::DropTable(node.clone()),
+            LogicalPlan::CreateIndex(node) => PhysicalPlan::CreateIndex(node.clone()),
+            LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
         }
     }
 

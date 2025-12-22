@@ -329,6 +329,12 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         PhysicalPlan::Update { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         PhysicalPlan::Delete { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+
+        // DDL operations are handled at a higher level, not as operators
+        PhysicalPlan::CreateTable(_)
+        | PhysicalPlan::DropTable(_)
+        | PhysicalPlan::CreateIndex(_)
+        | PhysicalPlan::DropIndex(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
     }
 }
 

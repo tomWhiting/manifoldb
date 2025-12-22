@@ -18,10 +18,13 @@
 #![allow(clippy::map_unwrap_or)]
 
 use crate::ast::{
-    self, DeleteStatement, Expr, GraphPattern, InsertSource, InsertStatement, JoinClause,
+    self, CreateIndexStatement, CreateTableStatement, DeleteStatement, DropIndexStatement,
+    DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement, JoinClause,
     JoinCondition, JoinType as AstJoinType, PathPattern, SelectItem, SelectStatement, SetOperation,
     SetOperator, Statement, TableRef, UpdateStatement,
 };
+
+use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
 
 use super::expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
 use super::graph::{ExpandDirection, ExpandLength, ExpandNode};
@@ -73,12 +76,10 @@ impl PlanBuilder {
                 // For EXPLAIN, we still build the plan
                 self.build_statement(inner)
             }
-            Statement::CreateTable(_)
-            | Statement::CreateIndex(_)
-            | Statement::DropTable(_)
-            | Statement::DropIndex(_) => {
-                Err(PlanError::Unsupported("DDL statements don't produce query plans".to_string()))
-            }
+            Statement::CreateTable(create) => self.build_create_table(create),
+            Statement::CreateIndex(create) => self.build_create_index(create),
+            Statement::DropTable(drop) => self.build_drop_table(drop),
+            Statement::DropIndex(drop) => self.build_drop_index(drop),
         }
     }
 
@@ -633,6 +634,60 @@ impl PlanBuilder {
             .collect::<PlanResult<_>>()?;
 
         Ok(LogicalPlan::Delete { table, filter, returning })
+    }
+
+    /// Builds a CREATE TABLE plan.
+    fn build_create_table(&self, create: &CreateTableStatement) -> PlanResult<LogicalPlan> {
+        let name = create.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = CreateTableNode::new(name, create.columns.clone())
+            .with_if_not_exists(create.if_not_exists)
+            .with_constraints(create.constraints.clone());
+
+        Ok(LogicalPlan::CreateTable(node))
+    }
+
+    /// Builds a DROP TABLE plan.
+    fn build_drop_table(&self, drop: &DropTableStatement) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let node =
+            DropTableNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropTable(node))
+    }
+
+    /// Builds a CREATE INDEX plan.
+    fn build_create_index(&self, create: &CreateIndexStatement) -> PlanResult<LogicalPlan> {
+        let table =
+            create.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = CreateIndexNode::new(create.name.name.clone(), table, create.columns.clone())
+            .with_unique(create.unique)
+            .with_if_not_exists(create.if_not_exists)
+            .with_using(create.using.clone())
+            .with_options(create.with.clone())
+            .with_where_clause(create.where_clause.clone());
+
+        Ok(LogicalPlan::CreateIndex(node))
+    }
+
+    /// Builds a DROP INDEX plan.
+    fn build_drop_index(&self, drop: &DropIndexStatement) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let node =
+            DropIndexNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropIndex(node))
     }
 
     /// Builds a logical expression from an AST expression.

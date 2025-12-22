@@ -17,6 +17,7 @@
 
 use std::fmt;
 
+use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
@@ -203,6 +204,19 @@ pub enum LogicalPlan {
         /// Whether to return deleted rows.
         returning: Vec<LogicalExpr>,
     },
+
+    // ========== DDL Nodes ==========
+    /// CREATE TABLE operation.
+    CreateTable(CreateTableNode),
+
+    /// DROP TABLE operation.
+    DropTable(DropTableNode),
+
+    /// CREATE INDEX operation.
+    CreateIndex(CreateIndexNode),
+
+    /// DROP INDEX operation.
+    DropIndex(DropIndexNode),
 }
 
 impl LogicalPlan {
@@ -372,6 +386,12 @@ impl LogicalPlan {
 
             // DML without input
             Self::Update { .. } | Self::Delete { .. } => vec![],
+
+            // DDL nodes (no inputs)
+            Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
         }
     }
 
@@ -406,6 +426,12 @@ impl LogicalPlan {
 
             // DML without input
             Self::Update { .. } | Self::Delete { .. } => vec![],
+
+            // DDL nodes (no inputs)
+            Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
         }
     }
 
@@ -439,6 +465,10 @@ impl LogicalPlan {
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
+            Self::CreateTable(_) => "CreateTable",
+            Self::DropTable(_) => "DropTable",
+            Self::CreateIndex(_) => "CreateIndex",
+            Self::DropIndex(_) => "DropIndex",
         }
     }
 
@@ -620,6 +650,37 @@ impl DisplayTree<'_> {
                 write!(f, "Delete: {table}")?;
                 if let Some(filt) = filter {
                     write!(f, " WHERE {filt}")?;
+                }
+            }
+            LogicalPlan::CreateTable(node) => {
+                write!(f, "CreateTable: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                write!(f, " ({} columns)", node.columns.len())?;
+            }
+            LogicalPlan::DropTable(node) => {
+                write!(f, "DropTable: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::CreateIndex(node) => {
+                write!(f, "CreateIndex: {} ON {}", node.name, node.table)?;
+                if node.unique {
+                    write!(f, " UNIQUE")?;
+                }
+                if let Some(method) = &node.using {
+                    write!(f, " USING {method}")?;
+                }
+            }
+            LogicalPlan::DropIndex(node) => {
+                write!(f, "DropIndex: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
                 }
             }
         }

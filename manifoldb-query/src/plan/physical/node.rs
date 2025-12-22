@@ -19,7 +19,8 @@ use std::fmt;
 
 use crate::ast::DistanceMetric;
 use crate::plan::logical::{
-    ExpandDirection, ExpandLength, JoinType, LogicalExpr, SetOpType, SortOrder,
+    CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, ExpandDirection, ExpandLength,
+    JoinType, LogicalExpr, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -245,6 +246,19 @@ pub enum PhysicalPlan {
         /// Estimated cost.
         cost: Cost,
     },
+
+    // ========== DDL Operations ==========
+    /// CREATE TABLE operation.
+    CreateTable(CreateTableNode),
+
+    /// DROP TABLE operation.
+    DropTable(DropTableNode),
+
+    /// CREATE INDEX operation.
+    CreateIndex(CreateIndexNode),
+
+    /// DROP INDEX operation.
+    DropIndex(DropIndexNode),
 }
 
 // ============================================================================
@@ -1218,7 +1232,11 @@ impl PhysicalPlan {
             | Self::Values { .. }
             | Self::Empty { .. }
             | Self::Update { .. }
-            | Self::Delete { .. } => vec![],
+            | Self::Delete { .. }
+            | Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1259,7 +1277,11 @@ impl PhysicalPlan {
             | Self::Values { .. }
             | Self::Empty { .. }
             | Self::Update { .. }
-            | Self::Delete { .. } => vec![],
+            | Self::Delete { .. }
+            | Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1299,6 +1321,10 @@ impl PhysicalPlan {
                 | Self::IndexRangeScan(_)
                 | Self::Values { .. }
                 | Self::Empty { .. }
+                | Self::CreateTable(_)
+                | Self::DropTable(_)
+                | Self::CreateIndex(_)
+                | Self::DropIndex(_)
         )
     }
 
@@ -1330,6 +1356,10 @@ impl PhysicalPlan {
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
+            Self::CreateTable(_) => "CreateTable",
+            Self::DropTable(_) => "DropTable",
+            Self::CreateIndex(_) => "CreateIndex",
+            Self::DropIndex(_) => "DropIndex",
         }
     }
 
@@ -1361,6 +1391,11 @@ impl PhysicalPlan {
             Self::Insert { cost, .. } => *cost,
             Self::Update { cost, .. } => *cost,
             Self::Delete { cost, .. } => *cost,
+            // DDL operations have zero query cost
+            Self::CreateTable(_)
+            | Self::DropTable(_)
+            | Self::CreateIndex(_)
+            | Self::DropIndex(_) => Cost::zero(),
         }
     }
 
@@ -1625,6 +1660,37 @@ impl DisplayTree<'_> {
             }
             PhysicalPlan::Delete { table, cost, .. } => {
                 write!(f, "Delete: {} (cost: {:.2})", table, cost.value())?;
+            }
+            PhysicalPlan::CreateTable(node) => {
+                write!(f, "CreateTable: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                write!(f, " ({} columns)", node.columns.len())?;
+            }
+            PhysicalPlan::DropTable(node) => {
+                write!(f, "DropTable: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::CreateIndex(node) => {
+                write!(f, "CreateIndex: {} ON {}", node.name, node.table)?;
+                if node.unique {
+                    write!(f, " UNIQUE")?;
+                }
+                if let Some(method) = &node.using {
+                    write!(f, " USING {method}")?;
+                }
+            }
+            PhysicalPlan::DropIndex(node) => {
+                write!(f, "DropIndex: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
             }
         }
         Ok(())

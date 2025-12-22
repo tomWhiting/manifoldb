@@ -12,12 +12,15 @@ use manifoldb_query::exec::operators::{HashAggregateOp, HashJoinOp, NestedLoopJo
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::parse_single_statement;
-use manifoldb_query::plan::logical::{JoinType, LogicalExpr};
+use manifoldb_query::plan::logical::{
+    CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, JoinType, LogicalExpr,
+};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_storage::Transaction;
 
 use super::StorageScan;
 use crate::error::{Error, Result};
+use crate::schema::SchemaManager;
 use crate::transaction::DatabaseTransaction;
 
 /// Execute a SELECT query and return the result set.
@@ -69,9 +72,16 @@ pub fn execute_statement<T: Transaction>(
             execute_update(tx, table, assignments, filter, &ctx)
         }
         LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+
+        // DDL statements
+        LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
+        LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
+        LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
+        LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+
         _ => {
             // For SELECT, we shouldn't be here but handle gracefully
-            Err(Error::Execution("Expected DML statement".to_string()))
+            Err(Error::Execution("Expected DML or DDL statement".to_string()))
         }
     }
 }
@@ -410,6 +420,14 @@ fn execute_logical_plan<T: Transaction>(
                     .to_string(),
             ))
         }
+
+        LogicalPlan::CreateTable(_)
+        | LogicalPlan::DropTable(_)
+        | LogicalPlan::CreateIndex(_)
+        | LogicalPlan::DropIndex(_) => Err(Error::Execution(
+            "DDL statements should be executed via execute_statement, not execute_logical_plan"
+                .to_string(),
+        )),
     }
 }
 
@@ -899,6 +917,57 @@ fn evaluate_row_expr(expr: &LogicalExpr, row: &Row) -> Value {
 
     // Use the operator's evaluate_expr which works with Row
     op_evaluate_expr(expr, row).unwrap_or(Value::Null)
+}
+
+/// Execute a CREATE TABLE statement.
+fn execute_create_table<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateTableNode,
+) -> Result<u64> {
+    SchemaManager::create_table(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
+    Ok(0) // DDL doesn't return row counts
+}
+
+/// Execute a DROP TABLE statement.
+fn execute_drop_table<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &DropTableNode,
+) -> Result<u64> {
+    for table_name in &node.names {
+        SchemaManager::drop_table(tx, table_name, node.if_exists)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+
+        // Also delete all entities with this label if cascade or always
+        // For now, we'll delete entities when dropping a table
+        let entities = tx.iter_entities(Some(table_name)).map_err(Error::Transaction)?;
+        for entity in entities {
+            tx.delete_entity(entity.id).map_err(Error::Transaction)?;
+        }
+    }
+    Ok(0)
+}
+
+/// Execute a CREATE INDEX statement.
+fn execute_create_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateIndexNode,
+) -> Result<u64> {
+    SchemaManager::create_index(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
+    // Note: Actually building the index would require additional implementation
+    // For now, we just store the index metadata
+    Ok(0)
+}
+
+/// Execute a DROP INDEX statement.
+fn execute_drop_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &DropIndexNode,
+) -> Result<u64> {
+    for index_name in &node.names {
+        SchemaManager::drop_index(tx, index_name, node.if_exists)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+    }
+    Ok(0)
 }
 
 /// Evaluate a logical expression to a value.
