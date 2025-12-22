@@ -8,12 +8,15 @@ use std::sync::Arc;
 
 use manifoldb_core::{Entity, Value};
 use manifoldb_query::ast::Literal;
-use manifoldb_query::exec::operators::{HashAggregateOp, HashJoinOp, NestedLoopJoinOp, ValuesOp};
+use manifoldb_query::exec::operators::{
+    HashAggregateOp, HashJoinOp, NestedLoopJoinOp, SetOpOp, UnionOp, ValuesOp,
+};
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::parse_single_statement;
 use manifoldb_query::plan::logical::{
     CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, JoinType, LogicalExpr,
+    SetOpNode, UnionNode,
 };
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_storage::Transaction;
@@ -188,6 +191,16 @@ fn execute_physical_plan<T: Transaction>(
         LogicalPlan::Distinct { input, .. } => {
             // Execute DISTINCT by deduplicating the input result
             execute_distinct(tx, input, ctx)
+        }
+
+        LogicalPlan::Union { node, inputs } => {
+            // Execute UNION / UNION ALL using UnionOp
+            execute_union(tx, node, inputs, ctx)
+        }
+
+        LogicalPlan::SetOp { node, left, right } => {
+            // Execute INTERSECT / EXCEPT using SetOpOp
+            execute_set_op(tx, node, left, right, ctx)
         }
 
         _ => {
@@ -387,6 +400,130 @@ fn deduplicate_result_set(result: ResultSet, ctx: &ExecutionContext) -> Result<R
     Ok(ResultSet::with_rows(output_schema, result_rows))
 }
 
+/// Execute a UNION query using UnionOp.
+///
+/// Handles both UNION (with deduplication) and UNION ALL.
+fn execute_union<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &UnionNode,
+    inputs: &[LogicalPlan],
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute each input plan and convert to operators
+    let input_ops: Vec<Box<dyn Operator>> =
+        inputs.iter().map(|input| plan_to_operator(tx, input, ctx)).collect::<Result<Vec<_>>>()?;
+
+    if input_ops.is_empty() {
+        return Ok(ResultSet::new(Arc::new(Schema::empty())));
+    }
+
+    // Create UnionOp
+    let mut union_op = UnionOp::new(input_ops, node.all);
+
+    // Execute the operator
+    union_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = union_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = union_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    union_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Execute a set operation (INTERSECT/EXCEPT) using SetOpOp.
+fn execute_set_op<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &SetOpNode,
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute both input plans and convert to operators
+    let left_op = plan_to_operator(tx, left, ctx)?;
+    let right_op = plan_to_operator(tx, right, ctx)?;
+
+    // Create SetOpOp
+    let mut set_op = SetOpOp::new(node.op_type, left_op, right_op);
+
+    // Execute the operator
+    set_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = set_op.schema();
+    let mut result_rows = Vec::new();
+
+    while let Some(row) = set_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        result_rows.push(row);
+    }
+
+    set_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Convert a logical plan to a boxed operator for use in set operations.
+///
+/// This recursively executes the plan and wraps the results in a ValuesOp.
+fn plan_to_operator<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    plan: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<Box<dyn Operator>> {
+    // Check if this is a JOIN - needs special handling
+    if contains_join(plan) {
+        let join_result = execute_join_plan(tx, plan, ctx)?;
+        let schema = join_result.schema_arc();
+        let columns: Vec<String> = schema.columns().iter().map(|c| (*c).to_string()).collect();
+        let rows: Vec<Vec<Value>> = join_result
+            .into_rows()
+            .into_iter()
+            .map(|row| {
+                (0..row.schema().columns().len())
+                    .map(|i| row.get(i).cloned().unwrap_or(Value::Null))
+                    .collect()
+            })
+            .collect();
+        return Ok(Box::new(ValuesOp::with_columns(columns, rows)));
+    }
+
+    // For Project nodes, execute the projection
+    if let LogicalPlan::Project { node, input } = plan {
+        // Check for wildcard
+        let has_wildcard = node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+
+        let entities = execute_logical_plan(tx, input, ctx)?;
+
+        let (columns, rows): (Vec<String>, Vec<Vec<Value>>) = if has_wildcard {
+            let cols = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, cols.clone());
+            (cols, scan.collect_values())
+        } else {
+            let cols: Vec<String> = node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+            let row_vals: Vec<Vec<Value>> = entities
+                .iter()
+                .map(|entity| {
+                    node.exprs.iter().map(|expr| evaluate_expr(expr, entity, ctx)).collect()
+                })
+                .collect();
+            (cols, row_vals)
+        };
+
+        return Ok(Box::new(ValuesOp::with_columns(columns, rows)));
+    }
+
+    // For other plans, execute and convert to ValuesOp
+    let entities = execute_logical_plan(tx, plan, ctx)?;
+    let columns = collect_all_columns(&entities);
+    let scan = StorageScan::new(entities, columns.clone());
+    let rows: Vec<Vec<Value>> = scan.collect_values();
+
+    Ok(Box::new(ValuesOp::with_columns(columns, rows)))
+}
+
 /// Evaluate an expression on a Row (for aggregate result projection).
 fn evaluate_expr_on_row(
     expr: &LogicalExpr,
@@ -537,12 +674,20 @@ fn execute_logical_plan<T: Transaction>(
             ))
         }
 
-        LogicalPlan::SetOp { .. } => Err(Error::Execution(
-            "Set operations (INTERSECT/EXCEPT) not yet supported in entity execution".to_string(),
-        )),
+        LogicalPlan::SetOp { .. } => {
+            // Set operations produce rows, not entities. Handle through execute_physical_plan.
+            Err(Error::Execution(
+                "Set operations should be executed through execute_physical_plan, not execute_logical_plan"
+                    .to_string(),
+            ))
+        }
 
         LogicalPlan::Union { .. } => {
-            Err(Error::Execution("UNION queries not yet supported in entity execution".to_string()))
+            // UNION produces rows, not entities. Handle through execute_physical_plan.
+            Err(Error::Execution(
+                "UNION queries should be executed through execute_physical_plan, not execute_logical_plan"
+                    .to_string(),
+            ))
         }
 
         LogicalPlan::Expand { .. } => Err(Error::Execution(
