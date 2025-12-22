@@ -4,6 +4,7 @@
 //! converting logical plans into operations on entities and edges.
 
 mod executor;
+mod graph_accessor;
 mod scan;
 
 pub use executor::{execute_query, execute_statement};

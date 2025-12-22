@@ -543,6 +543,95 @@ fn test_large_fan_in() {
 }
 
 // ============================================================================
+// SQL MATCH Query Tests
+// ============================================================================
+
+#[test]
+fn test_sql_match_single_hop() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    let mut tx = db.begin().expect("failed to begin");
+
+    // Create persons
+    let alice =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "Alice");
+    let bob = tx.create_entity().expect("failed").with_label("Person").with_property("name", "Bob");
+    let carol =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "Carol");
+
+    tx.put_entity(&alice).expect("failed");
+    tx.put_entity(&bob).expect("failed");
+    tx.put_entity(&carol).expect("failed");
+
+    // Create FOLLOWS relationships
+    let e1 = tx.create_edge(alice.id, bob.id, "FOLLOWS").expect("failed");
+    let e2 = tx.create_edge(alice.id, carol.id, "FOLLOWS").expect("failed");
+    let e3 = tx.create_edge(bob.id, carol.id, "FOLLOWS").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+    tx.put_edge(&e3).expect("failed");
+
+    tx.commit().expect("failed");
+
+    // Execute MATCH query using Database.query()
+    // Test: Find all FOLLOWS relationships (3 total: Alice->Bob, Alice->Carol, Bob->Carol)
+    let result = db.query("SELECT * FROM Person p MATCH (p)-[:FOLLOWS]->(f)");
+
+    // The query should return all 3 FOLLOWS relationships
+    assert!(result.is_ok(), "query should succeed: {:?}", result);
+    let result = result.unwrap();
+
+    // We should have 3 relationships
+    assert_eq!(result.len(), 3, "Should find 3 FOLLOWS relationships, got {}", result.len());
+}
+
+#[test]
+fn test_sql_match_with_filter() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    let mut tx = db.begin().expect("failed to begin");
+
+    // Create persons with different activity status
+    let alice = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Alice")
+        .with_property("active", true);
+    let bob = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Bob")
+        .with_property("active", true);
+    let carol = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Carol")
+        .with_property("active", false);
+
+    tx.put_entity(&alice).expect("failed");
+    tx.put_entity(&bob).expect("failed");
+    tx.put_entity(&carol).expect("failed");
+
+    // Create FOLLOWS relationships
+    let e1 = tx.create_edge(alice.id, bob.id, "FOLLOWS").expect("failed");
+    let e2 = tx.create_edge(alice.id, carol.id, "FOLLOWS").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+
+    tx.commit().expect("failed");
+
+    // Execute MATCH query - this tests the basic structure exists
+    let result = db.query("SELECT * FROM Person p MATCH (p)-[:FOLLOWS]->(f)");
+
+    assert!(result.is_ok(), "query should succeed: {:?}", result);
+}
+
+// ============================================================================
 // Edge Properties in Traversal
 // ============================================================================
 

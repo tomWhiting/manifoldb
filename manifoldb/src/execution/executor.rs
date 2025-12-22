@@ -11,9 +11,10 @@ use manifoldb_query::ast::Literal;
 use manifoldb_query::exec::operators::{
     HashAggregateOp, HashJoinOp, NestedLoopJoinOp, SetOpOp, UnionOp, ValuesOp,
 };
+use manifoldb_query::plan::logical::{ExpandNode, PathScanNode};
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
-use manifoldb_query::parse_single_statement;
+use manifoldb_query::ExtendedParser;
 use manifoldb_query::plan::logical::{
     CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, JoinType, LogicalExpr,
     SetOpNode, UnionNode,
@@ -21,6 +22,7 @@ use manifoldb_query::plan::logical::{
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_storage::Transaction;
 
+use super::graph_accessor;
 use super::StorageScan;
 use crate::error::{Error, Result};
 use crate::schema::SchemaManager;
@@ -32,8 +34,8 @@ pub fn execute_query<T: Transaction>(
     sql: &str,
     params: &[Value],
 ) -> Result<ResultSet> {
-    // Parse SQL
-    let stmt = parse_single_statement(sql)?;
+    // Parse SQL using ExtendedParser to support MATCH syntax
+    let stmt = ExtendedParser::parse_single(sql)?;
 
     // Build logical plan
     let mut builder = PlanBuilder::new();
@@ -56,8 +58,8 @@ pub fn execute_statement<T: Transaction>(
     sql: &str,
     params: &[Value],
 ) -> Result<u64> {
-    // Parse SQL
-    let stmt = parse_single_statement(sql)?;
+    // Parse SQL using ExtendedParser to support MATCH syntax
+    let stmt = ExtendedParser::parse_single(sql)?;
 
     // Build logical plan
     let mut builder = PlanBuilder::new();
@@ -150,6 +152,11 @@ fn execute_physical_plan<T: Transaction>(
                 return execute_join_projection(tx, &node.exprs, input, ctx);
             }
 
+            // Check if input contains a graph traversal - if so, execute through the graph path
+            if contains_graph(input) {
+                return execute_graph_projection(tx, &node.exprs, input, ctx);
+            }
+
             // First execute the input
             let input_result = execute_logical_plan(tx, input, ctx)?;
 
@@ -201,6 +208,16 @@ fn execute_physical_plan<T: Transaction>(
         LogicalPlan::SetOp { node, left, right } => {
             // Execute INTERSECT / EXCEPT using SetOpOp
             execute_set_op(tx, node, left, right, ctx)
+        }
+
+        LogicalPlan::Expand { node, input } => {
+            // Execute graph expansion
+            execute_expand(tx, node, input, ctx)
+        }
+
+        LogicalPlan::PathScan { node, input } => {
+            // Execute graph path scan
+            execute_path_scan(tx, node, input, ctx)
         }
 
         _ => {
@@ -463,6 +480,186 @@ fn execute_set_op<T: Transaction>(
     set_op.close().map_err(|e| Error::Execution(e.to_string()))?;
 
     Ok(ResultSet::with_rows(schema, result_rows))
+}
+
+/// Execute a graph expand query by directly calling graph traversal APIs.
+///
+/// This executes single-hop or variable-length graph traversals.
+fn execute_expand<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &ExpandNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute the input plan to get starting nodes
+    let input_result = execute_graph_plan(tx, input, ctx)?;
+
+    // Extract source node IDs from the input
+    let source_nodes = graph_accessor::extract_source_nodes(input_result, &node.src_var);
+
+    // Execute the expand operation
+    graph_accessor::execute_expand_operation(tx, node, source_nodes)
+}
+
+/// Execute a graph path scan query by executing each step sequentially.
+///
+/// This executes multi-step path pattern matching by chaining expand operations.
+fn execute_path_scan<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &PathScanNode,
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute the input plan to get starting nodes
+    let mut current_result = execute_graph_plan(tx, input, ctx)?;
+
+    // Execute each path step in sequence
+    for step in &node.steps {
+        // Extract source nodes from the current result
+        let source_nodes =
+            graph_accessor::extract_source_nodes(current_result, &step.expand.src_var);
+
+        // Execute the expand for this step
+        current_result = graph_accessor::execute_expand_operation(tx, &step.expand, source_nodes)?;
+    }
+
+    Ok(current_result)
+}
+
+/// Execute a projection over a graph traversal result.
+fn execute_graph_projection<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    exprs: &[LogicalExpr],
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // First execute the graph traversal
+    let graph_result = execute_graph_plan(tx, input, ctx)?;
+
+    // Check for wildcard projection
+    let has_wildcard = exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+
+    if has_wildcard {
+        // Return all columns from the graph result
+        Ok(graph_result)
+    } else {
+        // Project specific columns
+        let projected_columns: Vec<String> = exprs.iter().map(|e| expr_to_column_name(e)).collect();
+        let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+
+        let mut projected_rows = Vec::new();
+        for row in graph_result.rows() {
+            let values: Vec<Value> =
+                exprs.iter().map(|expr| evaluate_row_expr(expr, row)).collect();
+            projected_rows.push(Row::new(Arc::clone(&new_schema), values));
+        }
+
+        Ok(ResultSet::with_rows(new_schema, projected_rows))
+    }
+}
+
+/// Execute a plan that may contain graph traversals, returning a ResultSet.
+fn execute_graph_plan<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    plan: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    match plan {
+        LogicalPlan::Expand { node, input } => execute_expand(tx, node, input, ctx),
+        LogicalPlan::PathScan { node, input } => execute_path_scan(tx, node, input, ctx),
+        LogicalPlan::Filter { node, input } => {
+            // Apply filter to graph result
+            let graph_result = execute_graph_plan(tx, input, ctx)?;
+            let schema = graph_result.schema_arc();
+            let filtered_rows: Vec<Row> = graph_result
+                .into_rows()
+                .into_iter()
+                .filter(|row| {
+                    let result = evaluate_row_expr(&node.predicate, row);
+                    matches!(result, Value::Bool(true))
+                })
+                .collect();
+            Ok(ResultSet::with_rows(schema, filtered_rows))
+        }
+        LogicalPlan::Sort { node, input } => {
+            // Apply sort to graph result
+            let graph_result = execute_graph_plan(tx, input, ctx)?;
+            let schema = graph_result.schema_arc();
+            let mut rows = graph_result.into_rows();
+
+            if let Some(order) = node.order_by.first() {
+                rows.sort_by(|a, b| {
+                    let va = evaluate_row_expr(&order.expr, a);
+                    let vb = evaluate_row_expr(&order.expr, b);
+                    let cmp = compare_values(&va, &vb);
+                    if order.ascending {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
+                });
+            }
+
+            Ok(ResultSet::with_rows(schema, rows))
+        }
+        LogicalPlan::Limit { node, input } => {
+            // Apply limit to graph result
+            let graph_result = execute_graph_plan(tx, input, ctx)?;
+            let schema = graph_result.schema_arc();
+            let rows = graph_result.into_rows();
+
+            let start = node.offset.unwrap_or(0);
+            let end = node.limit.map(|l| start + l).unwrap_or(rows.len());
+            let limited_rows: Vec<Row> = rows.into_iter().skip(start).take(end - start).collect();
+
+            Ok(ResultSet::with_rows(schema, limited_rows))
+        }
+        LogicalPlan::Alias { input, .. } => {
+            // Alias doesn't change the rows
+            execute_graph_plan(tx, input, ctx)
+        }
+        LogicalPlan::Scan(scan_node) => {
+            // Execute a table scan and convert to result set for graph traversal input
+            let label = &scan_node.table_name;
+            let alias = scan_node.alias.as_deref().unwrap_or(label);
+            let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
+
+            // Build schema with prefixed column names
+            let columns = collect_all_columns(&entities);
+            let prefixed_columns: Vec<String> =
+                columns.iter().map(|c| format!("{}.{}", alias, c)).collect();
+            let schema = Arc::new(Schema::new(prefixed_columns.clone()));
+
+            // Convert entities to rows
+            let rows: Vec<Row> = entities
+                .iter()
+                .map(|entity| {
+                    let values: Vec<Value> = columns
+                        .iter()
+                        .map(|col| {
+                            if col == "id" {
+                                Value::Int(entity.id.as_u64() as i64)
+                            } else {
+                                entity.get_property(col).cloned().unwrap_or(Value::Null)
+                            }
+                        })
+                        .collect();
+                    Row::new(Arc::clone(&schema), values)
+                })
+                .collect();
+
+            Ok(ResultSet::with_rows(schema, rows))
+        }
+        _ => {
+            // Fall back to entity execution for non-graph plans
+            let entities = execute_logical_plan(tx, plan, ctx)?;
+            let columns = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, columns);
+            let schema = scan.schema();
+            let rows = scan.collect_rows();
+            Ok(ResultSet::with_rows(schema, rows))
+        }
+    }
 }
 
 /// Convert a logical plan to a boxed operator for use in set operations.
@@ -830,6 +1027,21 @@ fn contains_join(plan: &LogicalPlan) -> bool {
         | LogicalPlan::Distinct { input, .. }
         | LogicalPlan::Alias { input, .. }
         | LogicalPlan::Aggregate { input, .. } => contains_join(input),
+        _ => false,
+    }
+}
+
+/// Check if a logical plan contains a graph traversal node (Expand or PathScan).
+fn contains_graph(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Expand { .. } | LogicalPlan::PathScan { .. } => true,
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input, .. }
+        | LogicalPlan::Alias { input, .. }
+        | LogicalPlan::Aggregate { input, .. } => contains_graph(input),
         _ => false,
     }
 }

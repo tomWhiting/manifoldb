@@ -1,6 +1,7 @@
 //! Database transaction handle for user operations.
 
 use manifoldb_core::{Edge, EdgeId, Entity, EntityId, TransactionError};
+use manifoldb_graph::index::IndexMaintenance;
 use manifoldb_storage::{Cursor, Transaction};
 
 use super::VectorSyncStrategy;
@@ -104,6 +105,18 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Get the storage transaction, returning an error if already consumed.
     fn storage(&self) -> Result<&T, TransactionError> {
         self.storage.as_ref().ok_or(TransactionError::AlreadyCompleted)
+    }
+
+    /// Get a reference to the underlying storage transaction for direct access.
+    ///
+    /// This is useful for graph traversal operations that need low-level access
+    /// to the storage layer without going through the higher-level entity/edge APIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction has already been committed or rolled back.
+    pub fn storage_ref(&self) -> Result<&T, TransactionError> {
+        self.storage()
     }
 
     /// Get a mutable reference to the storage transaction.
@@ -219,7 +232,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Put an edge into the database.
     ///
     /// If an edge with the same ID already exists, it will be replaced.
-    /// This also updates the adjacency indexes.
+    /// This also updates the adjacency indexes (both the simple and graph-layer indexes).
     pub fn put_edge(&mut self, edge: &Edge) -> Result<(), TransactionError> {
         let storage = self.storage_mut()?;
         let key = edge.id.as_u64().to_be_bytes();
@@ -229,13 +242,18 @@ impl<T: Transaction> DatabaseTransaction<T> {
         // Store the edge data
         storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
 
-        // Update outgoing edge index (source -> edge)
+        // Update simple outgoing edge index (source -> edge)
         let out_key = make_adjacency_key(edge.source, edge.id);
         storage.put(tables::EDGES_OUT, &out_key, &[]).map_err(storage_error_to_tx_error)?;
 
-        // Update incoming edge index (target -> edge)
+        // Update simple incoming edge index (target -> edge)
         let in_key = make_adjacency_key(edge.target, edge.id);
         storage.put(tables::EDGES_IN, &in_key, &[]).map_err(storage_error_to_tx_error)?;
+
+        // Update graph layer indexes (edges_by_source, edges_by_target, edge_types)
+        // These indexes include edge type and are used for graph traversal queries
+        IndexMaintenance::add_edge_indexes(storage, edge)
+            .map_err(|e| TransactionError::Storage(e.to_string()))?;
 
         Ok(())
     }
@@ -308,13 +326,16 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let deleted = storage.delete(tables::EDGES, &key).map_err(storage_error_to_tx_error)?;
 
         if deleted {
-            // Remove from outgoing edge index
+            // Remove from simple outgoing edge index
             let out_key = make_adjacency_key(edge.source, edge.id);
             let _ = storage.delete(tables::EDGES_OUT, &out_key);
 
-            // Remove from incoming edge index
+            // Remove from simple incoming edge index
             let in_key = make_adjacency_key(edge.target, edge.id);
             let _ = storage.delete(tables::EDGES_IN, &in_key);
+
+            // Remove from graph layer indexes
+            let _ = IndexMaintenance::remove_edge_indexes(storage, &edge);
         }
 
         Ok(deleted)
