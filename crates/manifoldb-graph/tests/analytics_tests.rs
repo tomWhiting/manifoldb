@@ -1,12 +1,13 @@
 //! Integration tests for graph analytics algorithms.
 //!
 //! These tests verify the correctness of PageRank, Betweenness Centrality,
-//! and Community Detection algorithms on various graph topologies.
+//! Community Detection, and Connected Components algorithms on various graph topologies.
 
 use manifoldb_core::{Edge, Entity, EntityId};
 use manifoldb_graph::analytics::{
     BetweennessCentrality, BetweennessCentralityConfig, CommunityDetection,
-    CommunityDetectionConfig, PageRank, PageRankConfig,
+    CommunityDetectionConfig, ConnectedComponents, ConnectedComponentsConfig, PageRank,
+    PageRankConfig,
 };
 use manifoldb_graph::store::{EdgeStore, GraphError, IdGenerator, NodeStore};
 use manifoldb_graph::traversal::Direction;
@@ -1097,4 +1098,791 @@ fn graph_size_validation_error_message() {
     assert!(msg.contains("100000000"), "Error message should contain node count");
     assert!(msg.contains("10000000"), "Error message should contain limit");
     assert!(msg.contains("exceeds limit"), "Error message should explain the issue");
+}
+
+// ============================================================================
+// Connected Components tests - Weakly Connected Components (WCC)
+// ============================================================================
+
+#[test]
+fn wcc_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert!(result.assignments.is_empty());
+    assert_eq!(result.num_components, 0);
+}
+
+#[test]
+fn wcc_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 1);
+    assert_eq!(result.num_components, 1);
+    assert!(result.component(node.id).is_some());
+}
+
+#[test]
+fn wcc_disconnected_nodes() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let mut nodes = Vec::new();
+    for _ in 0..5 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+        nodes.push(node.id);
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    // Each disconnected node is its own component
+    assert_eq!(result.num_components, 5);
+}
+
+#[test]
+fn wcc_linear_graph() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 4);
+    // Linear graph A -> B -> C -> D is one weakly connected component
+    assert_eq!(result.num_components, 1);
+
+    // All nodes should be in the same component
+    let c0 = result.component(nodes[0]).unwrap();
+    for &node in &nodes[1..] {
+        assert_eq!(result.component(node).unwrap(), c0);
+    }
+}
+
+#[test]
+fn wcc_cycle_graph() {
+    let engine = create_test_engine();
+    let nodes = create_cycle_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    assert_eq!(result.num_components, 1);
+
+    // All nodes in same component
+    assert!(result.same_component(nodes[0], nodes[4]));
+}
+
+#[test]
+fn wcc_two_communities() {
+    let engine = create_test_engine();
+    let (community1, community2) = create_two_community_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 6);
+    // Since communities are connected by a bridge, it's one component
+    assert_eq!(result.num_components, 1);
+
+    // All nodes should be in the same weakly connected component
+    assert!(result.same_component(community1[0], community2[2]));
+}
+
+#[test]
+fn wcc_two_disconnected_cliques() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create first clique (3 nodes)
+    let mut clique1 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("clique", 1i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        clique1.push(node);
+    }
+
+    // Connect all pairs in clique1
+    for i in 0..3 {
+        for j in 0..3 {
+            if i != j {
+                EdgeStore::create(&mut tx, &id_gen, clique1[i], clique1[j], "EDGE", |id| {
+                    Edge::new(id, clique1[i], clique1[j], "EDGE")
+                })
+                .unwrap();
+            }
+        }
+    }
+
+    // Create second clique (3 nodes)
+    let mut clique2 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("clique", 2i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        clique2.push(node);
+    }
+
+    // Connect all pairs in clique2
+    for i in 0..3 {
+        for j in 0..3 {
+            if i != j {
+                EdgeStore::create(&mut tx, &id_gen, clique2[i], clique2[j], "EDGE", |id| {
+                    Edge::new(id, clique2[i], clique2[j], "EDGE")
+                })
+                .unwrap();
+            }
+        }
+    }
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 6);
+    // Two disconnected cliques = 2 components
+    assert_eq!(result.num_components, 2);
+
+    // Nodes within each clique are in the same component
+    assert!(result.same_component(clique1[0], clique1[2]));
+    assert!(result.same_component(clique2[0], clique2[2]));
+
+    // Nodes in different cliques are in different components
+    assert!(!result.same_component(clique1[0], clique2[0]));
+}
+
+#[test]
+fn wcc_star_graph() {
+    let engine = create_test_engine();
+    let (center, spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 6);
+    assert_eq!(result.num_components, 1);
+
+    // All nodes connected through center
+    for &spoke in &spokes {
+        assert!(result.same_component(center, spoke));
+    }
+}
+
+#[test]
+fn wcc_complete_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    assert_eq!(result.num_components, 1);
+
+    // All nodes in same component
+    for i in 1..nodes.len() {
+        assert!(result.same_component(nodes[0], nodes[i]));
+    }
+}
+
+#[test]
+fn wcc_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+
+    // Only analyze first 3 nodes
+    let subset = vec![nodes[0], nodes[1], nodes[2]];
+    let result = ConnectedComponents::weakly_connected_for_nodes(&tx, &subset, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 3);
+    assert_eq!(result.num_components, 1);
+    assert!(result.component(nodes[3]).is_none());
+}
+
+// ============================================================================
+// Connected Components tests - Strongly Connected Components (SCC)
+// ============================================================================
+
+#[test]
+fn scc_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert!(result.assignments.is_empty());
+    assert_eq!(result.num_components, 0);
+}
+
+#[test]
+fn scc_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 1);
+    assert_eq!(result.num_components, 1);
+    assert!(result.component(node.id).is_some());
+}
+
+#[test]
+fn scc_linear_graph() {
+    let engine = create_test_engine();
+    let _nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 4);
+    // Linear graph A -> B -> C -> D: each node is its own SCC
+    // (can't get back to A from D)
+    assert_eq!(result.num_components, 4);
+}
+
+#[test]
+fn scc_cycle_graph() {
+    let engine = create_test_engine();
+    let nodes = create_cycle_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    // Cycle graph: all nodes are mutually reachable = 1 SCC
+    assert_eq!(result.num_components, 1);
+
+    // All nodes in same SCC
+    assert!(result.same_component(nodes[0], nodes[4]));
+}
+
+#[test]
+fn scc_two_cycles_connected() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create cycle 1: A -> B -> C -> A
+    let mut cycle1 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("cycle", 1i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        cycle1.push(node);
+    }
+    for i in 0..3 {
+        let src = cycle1[i];
+        let tgt = cycle1[(i + 1) % 3];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "CYCLE", |id| {
+            Edge::new(id, src, tgt, "CYCLE")
+        })
+        .unwrap();
+    }
+
+    // Create cycle 2: D -> E -> F -> D
+    let mut cycle2 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("cycle", 2i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        cycle2.push(node);
+    }
+    for i in 0..3 {
+        let src = cycle2[i];
+        let tgt = cycle2[(i + 1) % 3];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "CYCLE", |id| {
+            Edge::new(id, src, tgt, "CYCLE")
+        })
+        .unwrap();
+    }
+
+    // Connect cycles with one-way edge: C -> D
+    EdgeStore::create(&mut tx, &id_gen, cycle1[2], cycle2[0], "BRIDGE", |id| {
+        Edge::new(id, cycle1[2], cycle2[0], "BRIDGE")
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 6);
+    // Two separate SCCs (can't get from cycle2 back to cycle1)
+    assert_eq!(result.num_components, 2);
+
+    // Nodes within each cycle are in same SCC
+    assert!(result.same_component(cycle1[0], cycle1[2]));
+    assert!(result.same_component(cycle2[0], cycle2[2]));
+
+    // Nodes in different cycles are in different SCCs
+    assert!(!result.same_component(cycle1[0], cycle2[0]));
+}
+
+#[test]
+fn scc_bidirectional_bridge() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create two cycles connected bidirectionally
+    let mut cycle1 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("cycle", 1i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        cycle1.push(node);
+    }
+    for i in 0..3 {
+        let src = cycle1[i];
+        let tgt = cycle1[(i + 1) % 3];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "CYCLE", |id| {
+            Edge::new(id, src, tgt, "CYCLE")
+        })
+        .unwrap();
+    }
+
+    let mut cycle2 = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("cycle", 2i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        cycle2.push(node);
+    }
+    for i in 0..3 {
+        let src = cycle2[i];
+        let tgt = cycle2[(i + 1) % 3];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "CYCLE", |id| {
+            Edge::new(id, src, tgt, "CYCLE")
+        })
+        .unwrap();
+    }
+
+    // Bidirectional bridge: C <-> D
+    EdgeStore::create(&mut tx, &id_gen, cycle1[2], cycle2[0], "BRIDGE", |id| {
+        Edge::new(id, cycle1[2], cycle2[0], "BRIDGE")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, cycle2[0], cycle1[2], "BRIDGE", |id| {
+        Edge::new(id, cycle2[0], cycle1[2], "BRIDGE")
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 6);
+    // With bidirectional bridge, all nodes are mutually reachable = 1 SCC
+    assert_eq!(result.num_components, 1);
+
+    assert!(result.same_component(cycle1[0], cycle2[0]));
+}
+
+#[test]
+fn scc_complete_graph() {
+    let engine = create_test_engine();
+    let _nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    // Complete graph: all nodes mutually reachable = 1 SCC
+    assert_eq!(result.num_components, 1);
+}
+
+#[test]
+fn scc_disconnected_nodes() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let mut nodes = Vec::new();
+    for _ in 0..5 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+        nodes.push(node.id);
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 5);
+    // Each isolated node is its own SCC
+    assert_eq!(result.num_components, 5);
+}
+
+#[test]
+fn scc_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_cycle_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+
+    // Only analyze first 3 nodes (breaks the cycle)
+    let subset = vec![nodes[0], nodes[1], nodes[2]];
+    let result = ConnectedComponents::strongly_connected_for_nodes(&tx, &subset, &config).unwrap();
+
+    assert_eq!(result.assignments.len(), 3);
+    // Without the full cycle, each node is its own SCC
+    assert_eq!(result.num_components, 3);
+}
+
+// ============================================================================
+// Connected Components - Result methods tests
+// ============================================================================
+
+#[test]
+fn component_result_methods() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 6 nodes in 2 disconnected groups
+    let mut group1 = Vec::new();
+    let mut group2 = Vec::new();
+
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("group", 1i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        group1.push(node);
+    }
+
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("group", 2i64).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        group2.push(node);
+    }
+
+    // Connect within groups
+    EdgeStore::create(&mut tx, &id_gen, group1[0], group1[1], "EDGE", |id| {
+        Edge::new(id, group1[0], group1[1], "EDGE")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, group1[1], group1[2], "EDGE", |id| {
+        Edge::new(id, group1[1], group1[2], "EDGE")
+    })
+    .unwrap();
+
+    EdgeStore::create(&mut tx, &id_gen, group2[0], group2[1], "EDGE", |id| {
+        Edge::new(id, group2[0], group2[1], "EDGE")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, group2[1], group2[2], "EDGE", |id| {
+        Edge::new(id, group2[1], group2[2], "EDGE")
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+    let result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+
+    assert_eq!(result.num_components, 2);
+
+    // Test component_sizes
+    let sizes = result.component_sizes();
+    assert_eq!(sizes.len(), 2);
+    let total_size: usize = sizes.values().sum();
+    assert_eq!(total_size, 6);
+
+    // Test components_by_size
+    let by_size = result.components_by_size();
+    assert_eq!(by_size.len(), 2);
+    // Both have 3 nodes
+    assert_eq!(by_size[0].1, 3);
+    assert_eq!(by_size[1].1, 3);
+
+    // Test largest/smallest
+    let largest = result.largest_component().unwrap();
+    let smallest = result.smallest_component().unwrap();
+    assert_eq!(largest.1, 3);
+    assert_eq!(smallest.1, 3);
+
+    // Test nodes_in_component
+    let c0 = result.component(group1[0]).unwrap();
+    let nodes_in_c0 = result.nodes_in_component(c0);
+    assert_eq!(nodes_in_c0.len(), 3);
+
+    // Test component_size
+    assert_eq!(result.component_size(c0), 3);
+}
+
+// ============================================================================
+// Connected Components - Graph size validation tests
+// ============================================================================
+
+#[test]
+fn wcc_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set a very low limit
+    let config = ConnectedComponentsConfig::default().with_max_graph_nodes(Some(5));
+    let result = ConnectedComponents::weakly_connected(&tx, &config);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        _ => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn scc_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    let config = ConnectedComponentsConfig::default().with_max_graph_nodes(Some(5));
+    let result = ConnectedComponents::strongly_connected(&tx, &config);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        _ => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn connected_components_within_limit() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..5 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    let config = ConnectedComponentsConfig::default().with_max_graph_nodes(Some(10));
+
+    let wcc_result = ConnectedComponents::weakly_connected(&tx, &config);
+    assert!(wcc_result.is_ok());
+    assert_eq!(wcc_result.unwrap().assignments.len(), 5);
+
+    let scc_result = ConnectedComponents::strongly_connected(&tx, &config);
+    assert!(scc_result.is_ok());
+    assert_eq!(scc_result.unwrap().assignments.len(), 5);
+}
+
+#[test]
+fn connected_components_limit_disabled() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Disable limit
+    let config = ConnectedComponentsConfig::default().with_max_graph_nodes(None);
+
+    let wcc_result = ConnectedComponents::weakly_connected(&tx, &config);
+    assert!(wcc_result.is_ok());
+
+    let scc_result = ConnectedComponents::strongly_connected(&tx, &config);
+    assert!(scc_result.is_ok());
+}
+
+// ============================================================================
+// Connected Components - Large graph tests
+// ============================================================================
+
+#[test]
+fn connected_components_large_ring() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create a large ring (100 nodes)
+    let mut nodes = Vec::new();
+    for i in 0..100 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        nodes.push(node);
+    }
+
+    // Connect in a ring
+    for i in 0..100 {
+        let next = (i + 1) % 100;
+        EdgeStore::create(&mut tx, &id_gen, nodes[i], nodes[next], "EDGE", |id| {
+            Edge::new(id, nodes[i], nodes[next], "EDGE")
+        })
+        .unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+
+    // WCC: one component (ring is connected)
+    let wcc_result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+    assert_eq!(wcc_result.num_components, 1);
+    assert_eq!(wcc_result.assignments.len(), 100);
+
+    // SCC: one component (ring is strongly connected)
+    let scc_result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+    assert_eq!(scc_result.num_components, 1);
+    assert_eq!(scc_result.assignments.len(), 100);
+}
+
+#[test]
+fn connected_components_large_chain() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create a large chain (100 nodes)
+    let mut nodes = Vec::new();
+    for i in 0..100 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        nodes.push(node);
+    }
+
+    // Connect in a chain (one-way)
+    for i in 0..99 {
+        EdgeStore::create(&mut tx, &id_gen, nodes[i], nodes[i + 1], "EDGE", |id| {
+            Edge::new(id, nodes[i], nodes[i + 1], "EDGE")
+        })
+        .unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+
+    // WCC: one component (chain is weakly connected)
+    let wcc_result = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+    assert_eq!(wcc_result.num_components, 1);
+
+    // SCC: 100 components (chain is not strongly connected - can't go backward)
+    let scc_result = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+    assert_eq!(scc_result.num_components, 100);
+}
+
+// ============================================================================
+// Integration tests - combining WCC and SCC
+// ============================================================================
+
+#[test]
+fn wcc_vs_scc_comparison() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = ConnectedComponentsConfig::default();
+
+    let wcc = ConnectedComponents::weakly_connected(&tx, &config).unwrap();
+    let scc = ConnectedComponents::strongly_connected(&tx, &config).unwrap();
+
+    // WCC should find 1 component (all connected ignoring direction)
+    assert_eq!(wcc.num_components, 1);
+
+    // SCC should find 4 components (each node is its own SCC in a linear chain)
+    assert_eq!(scc.num_components, 4);
+
+    // WCC: all nodes in same component
+    assert!(wcc.same_component(nodes[0], nodes[3]));
+
+    // SCC: nodes in different components
+    assert!(!scc.same_component(nodes[0], nodes[3]));
 }

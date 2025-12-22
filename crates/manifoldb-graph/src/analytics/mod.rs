@@ -8,6 +8,7 @@
 //! - [`PageRank`] - Iterative power method for node importance ranking
 //! - [`BetweennessCentrality`] - Brandes algorithm for node centrality
 //! - [`CommunityDetection`] - Label Propagation for community detection
+//! - [`ConnectedComponents`] - Weakly and strongly connected components
 //!
 //! # Example
 //!
@@ -26,8 +27,10 @@
 
 mod centrality;
 mod community;
+mod connected;
 mod pagerank;
 
 pub use centrality::{BetweennessCentrality, BetweennessCentralityConfig, CentralityResult};
 pub use community::{CommunityDetection, CommunityDetectionConfig, CommunityResult};
+pub use connected::{ComponentResult, ConnectedComponents, ConnectedComponentsConfig};
 pub use pagerank::{PageRank, PageRankConfig, PageRankResult};
