@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use manifoldb_core::{Entity, Value};
 use manifoldb_query::ast::Literal;
-use manifoldb_query::exec::operators::{HashAggregateOp, ValuesOp};
+use manifoldb_query::exec::operators::{HashAggregateOp, HashJoinOp, NestedLoopJoinOp, ValuesOp};
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::parse_single_statement;
-use manifoldb_query::plan::logical::LogicalExpr;
+use manifoldb_query::plan::logical::{JoinType, LogicalExpr};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_storage::Transaction;
 
@@ -132,6 +132,11 @@ fn execute_physical_plan<T: Transaction>(
                 return Ok(ResultSet::with_rows(new_schema, rows));
             }
 
+            // Check if input contains a JOIN - if so, execute through the join path
+            if contains_join(input) {
+                return execute_join_projection(tx, &node.exprs, input, ctx);
+            }
+
             // First execute the input
             let input_result = execute_logical_plan(tx, input, ctx)?;
 
@@ -167,6 +172,8 @@ fn execute_physical_plan<T: Transaction>(
             // Execute aggregate directly (not wrapped in Project)
             execute_aggregate(tx, node, input, ctx)
         }
+
+        LogicalPlan::Join { node, left, right } => execute_join(tx, node, left, right, ctx),
 
         _ => {
             // For other plan types, execute and return
@@ -366,7 +373,11 @@ fn execute_logical_plan<T: Transaction>(
         }
 
         LogicalPlan::Join { .. } => {
-            Err(Error::Execution("JOIN queries not yet supported in entity execution".to_string()))
+            // JOIN produces rows, not entities. Handle through execute_physical_plan.
+            Err(Error::Execution(
+                "JOIN queries should be executed through execute_physical_plan, not execute_logical_plan"
+                    .to_string(),
+            ))
         }
 
         LogicalPlan::SetOp { .. } => Err(Error::Execution(
@@ -496,6 +507,398 @@ fn execute_delete<T: Transaction>(
     }
 
     Ok(count)
+}
+
+/// Check if a logical plan contains a JOIN node.
+fn contains_join(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Join { .. } => true,
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input, .. }
+        | LogicalPlan::Alias { input, .. }
+        | LogicalPlan::Aggregate { input, .. } => contains_join(input),
+        _ => false,
+    }
+}
+
+/// Execute a JOIN query and return the result set.
+fn execute_join<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    node: &manifoldb_query::plan::logical::JoinNode,
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Execute both sides to get entities
+    let (left_entities, left_alias) = execute_join_input(tx, left, ctx)?;
+    let (right_entities, right_alias) = execute_join_input(tx, right, ctx)?;
+
+    // Create ValuesOp operators for both sides with proper column prefixes
+    let (left_op, left_cols) = entities_to_values_op(&left_entities, &left_alias);
+    let (right_op, right_cols) = entities_to_values_op(&right_entities, &right_alias);
+
+    // Determine the appropriate join operator
+    let mut join_op = create_join_operator(
+        node.join_type,
+        node.condition.clone(),
+        &node.using_columns,
+        Box::new(left_op),
+        Box::new(right_op),
+        &left_cols,
+        &right_cols,
+    );
+
+    // Execute the join
+    join_op.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let mut rows = Vec::new();
+    while let Some(row) = join_op.next().map_err(|e| Error::Execution(e.to_string()))? {
+        rows.push(row);
+    }
+
+    join_op.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    let schema = join_op.schema();
+    Ok(ResultSet::with_rows(schema, rows))
+}
+
+/// Execute a projection over a JOIN result.
+fn execute_join_projection<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    exprs: &[LogicalExpr],
+    input: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // First execute the join to get rows
+    let join_result = execute_join_plan(tx, input, ctx)?;
+
+    // Check for wildcard projection
+    let has_wildcard = exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+
+    if has_wildcard {
+        // Return all columns from the join
+        Ok(join_result)
+    } else {
+        // Project specific columns
+        let projected_columns: Vec<String> = exprs.iter().map(|e| expr_to_column_name(e)).collect();
+        let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+
+        let mut projected_rows = Vec::new();
+        for row in join_result.rows() {
+            let values: Vec<Value> =
+                exprs.iter().map(|expr| evaluate_row_expr(expr, row)).collect();
+            projected_rows.push(Row::new(Arc::clone(&new_schema), values));
+        }
+
+        Ok(ResultSet::with_rows(new_schema, projected_rows))
+    }
+}
+
+/// Execute a plan that may contain a JOIN, returning a ResultSet.
+fn execute_join_plan<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    plan: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    match plan {
+        LogicalPlan::Join { node, left, right } => execute_join(tx, node, left, right, ctx),
+        LogicalPlan::Filter { node, input } => {
+            // Apply filter to join result
+            let join_result = execute_join_plan(tx, input, ctx)?;
+            let schema = join_result.schema_arc();
+            let filtered_rows: Vec<Row> = join_result
+                .into_rows()
+                .into_iter()
+                .filter(|row| {
+                    let result = evaluate_row_expr(&node.predicate, row);
+                    matches!(result, Value::Bool(true))
+                })
+                .collect();
+            Ok(ResultSet::with_rows(schema, filtered_rows))
+        }
+        LogicalPlan::Sort { node, input } => {
+            // Apply sort to join result
+            let join_result = execute_join_plan(tx, input, ctx)?;
+            let schema = join_result.schema_arc();
+            let mut rows = join_result.into_rows();
+
+            if let Some(order) = node.order_by.first() {
+                rows.sort_by(|a, b| {
+                    let va = evaluate_row_expr(&order.expr, a);
+                    let vb = evaluate_row_expr(&order.expr, b);
+                    let cmp = compare_values(&va, &vb);
+                    if order.ascending {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
+                });
+            }
+
+            Ok(ResultSet::with_rows(schema, rows))
+        }
+        LogicalPlan::Limit { node, input } => {
+            // Apply limit to join result
+            let join_result = execute_join_plan(tx, input, ctx)?;
+            let schema = join_result.schema_arc();
+            let rows = join_result.into_rows();
+
+            let start = node.offset.unwrap_or(0);
+            let end = node.limit.map(|l| start + l).unwrap_or(rows.len());
+            let limited_rows: Vec<Row> = rows.into_iter().skip(start).take(end - start).collect();
+
+            Ok(ResultSet::with_rows(schema, limited_rows))
+        }
+        LogicalPlan::Alias { input, .. } => {
+            // Alias doesn't change the rows
+            execute_join_plan(tx, input, ctx)
+        }
+        _ => {
+            // Fall back to entity execution for non-join plans
+            let entities = execute_logical_plan(tx, plan, ctx)?;
+            let columns = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, columns);
+            let schema = scan.schema();
+            let rows = scan.collect_rows();
+            Ok(ResultSet::with_rows(schema, rows))
+        }
+    }
+}
+
+/// Execute a join input and return entities along with the table alias.
+fn execute_join_input<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    plan: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<(Vec<Entity>, String)> {
+    match plan {
+        LogicalPlan::Scan(scan_node) => {
+            let label = &scan_node.table_name;
+            let alias = scan_node.alias.as_deref().unwrap_or(label);
+            let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
+            Ok((entities, alias.to_string()))
+        }
+        LogicalPlan::Alias { alias, input } => {
+            let (entities, _) = execute_join_input(tx, input, ctx)?;
+            Ok((entities, alias.clone()))
+        }
+        LogicalPlan::Filter { node, input } => {
+            let (entities, alias) = execute_join_input(tx, input, ctx)?;
+            let filtered: Vec<Entity> = entities
+                .into_iter()
+                .filter(|entity| evaluate_predicate(&node.predicate, entity, ctx))
+                .collect();
+            Ok((filtered, alias))
+        }
+        LogicalPlan::Join { node, left, right } => {
+            // Nested join - execute recursively as rows, then we need to handle differently
+            // For now, execute inner joins and convert to a synthetic entity representation
+            let result = execute_join(tx, node, left, right, ctx)?;
+
+            // Convert rows back to synthetic entities for the outer join
+            let entities: Vec<Entity> = result
+                .rows()
+                .iter()
+                .enumerate()
+                .map(|(i, row)| row_to_entity(row, i as u64))
+                .collect();
+
+            Ok((entities, "joined".to_string()))
+        }
+        _ => {
+            // Execute other plan types normally
+            let entities = execute_logical_plan(tx, plan, ctx)?;
+            Ok((entities, "table".to_string()))
+        }
+    }
+}
+
+/// Convert entities to a ValuesOp with prefixed column names.
+fn entities_to_values_op(entities: &[Entity], prefix: &str) -> (ValuesOp, Vec<String>) {
+    // Collect all unique property names
+    let mut prop_names: Vec<String> = vec!["id".to_string()];
+    for entity in entities {
+        for key in entity.properties.keys() {
+            if !prop_names.contains(key) {
+                prop_names.push(key.clone());
+            }
+        }
+    }
+
+    // Create prefixed column names (e.g., "u.id", "u.name")
+    let prefixed_columns: Vec<String> =
+        prop_names.iter().map(|n| format!("{}.{}", prefix, n)).collect();
+
+    // Convert entities to row values
+    let rows: Vec<Vec<Value>> = entities
+        .iter()
+        .map(|entity| {
+            prop_names
+                .iter()
+                .map(|prop| {
+                    if prop == "id" {
+                        Value::Int(entity.id.as_u64() as i64)
+                    } else {
+                        entity.get_property(prop).cloned().unwrap_or(Value::Null)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    (ValuesOp::with_columns(prefixed_columns.clone(), rows), prefixed_columns)
+}
+
+/// Create the appropriate join operator based on join type and condition.
+fn create_join_operator(
+    join_type: JoinType,
+    condition: Option<LogicalExpr>,
+    using_columns: &[String],
+    left: Box<dyn Operator>,
+    right: Box<dyn Operator>,
+    left_cols: &[String],
+    right_cols: &[String],
+) -> Box<dyn Operator> {
+    // Handle USING clause by converting to equijoin condition
+    let join_condition = if using_columns.is_empty() {
+        condition
+    } else {
+        // Convert USING(col1, col2) to left.col1 = right.col1 AND left.col2 = right.col2
+        let conditions: Vec<LogicalExpr> = using_columns
+            .iter()
+            .filter_map(|col| {
+                // Find matching columns in left and right
+                let left_col = left_cols.iter().find(|c| c.ends_with(&format!(".{}", col)));
+                let right_col = right_cols.iter().find(|c| c.ends_with(&format!(".{}", col)));
+
+                match (left_col, right_col) {
+                    (Some(l), Some(r)) => Some(LogicalExpr::column(l).eq(LogicalExpr::column(r))),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        if conditions.is_empty() {
+            condition
+        } else {
+            // Combine with AND
+            let mut combined = conditions.into_iter();
+            let first = combined.next();
+            first.map(|f| combined.fold(f, |acc, c| acc.and(c)))
+        }
+    };
+
+    // Check if we can use a hash join (equijoin on simple columns)
+    if let Some(ref cond) = join_condition {
+        if let Some((left_keys, right_keys)) = extract_equijoin_keys(cond, left_cols, right_cols) {
+            // For LEFT join: probe with left (all left rows appear), build with right
+            // For INNER join: probe with right (smaller side typically), build with left
+            // HashJoinOp: build_null_row().merge(probe) for unmatched probe rows (supports LEFT)
+            return match join_type {
+                JoinType::Left => {
+                    // Swap: build on right, probe with left for LEFT OUTER join
+                    Box::new(HashJoinOp::new(join_type, right_keys, left_keys, None, right, left))
+                }
+                _ => Box::new(HashJoinOp::new(join_type, left_keys, right_keys, None, left, right)),
+            };
+        }
+    }
+
+    // Fall back to nested loop join
+    Box::new(NestedLoopJoinOp::new(join_type, join_condition, left, right))
+}
+
+/// Extract equijoin keys from a join condition if possible.
+fn extract_equijoin_keys(
+    condition: &LogicalExpr,
+    left_cols: &[String],
+    right_cols: &[String],
+) -> Option<(Vec<LogicalExpr>, Vec<LogicalExpr>)> {
+    match condition {
+        LogicalExpr::BinaryOp { left, op, right } => {
+            use manifoldb_query::ast::BinaryOp;
+            match op {
+                BinaryOp::Eq => {
+                    // Check if this is a simple column = column equality
+                    let left_col = extract_column_name(left);
+                    let right_col = extract_column_name(right);
+
+                    if let (Some(l), Some(r)) = (left_col, right_col) {
+                        // Determine which side each column belongs to
+                        let l_is_left =
+                            left_cols.iter().any(|c| c == l || c.ends_with(&format!(".{}", l)));
+                        let r_is_right =
+                            right_cols.iter().any(|c| c == r || c.ends_with(&format!(".{}", r)));
+
+                        if l_is_left && r_is_right {
+                            return Some((vec![*left.clone()], vec![*right.clone()]));
+                        }
+
+                        // Try the other way
+                        let l_is_right =
+                            right_cols.iter().any(|c| c == l || c.ends_with(&format!(".{}", l)));
+                        let r_is_left =
+                            left_cols.iter().any(|c| c == r || c.ends_with(&format!(".{}", r)));
+
+                        if l_is_right && r_is_left {
+                            return Some((vec![*right.clone()], vec![*left.clone()]));
+                        }
+                    }
+                    None
+                }
+                BinaryOp::And => {
+                    // Try to extract keys from both sides of AND
+                    let left_keys = extract_equijoin_keys(left, left_cols, right_cols);
+                    let right_keys = extract_equijoin_keys(right, left_cols, right_cols);
+
+                    match (left_keys, right_keys) {
+                        (Some((mut lk1, mut rk1)), Some((lk2, rk2))) => {
+                            lk1.extend(lk2);
+                            rk1.extend(rk2);
+                            Some((lk1, rk1))
+                        }
+                        (Some(keys), None) | (None, Some(keys)) => Some(keys),
+                        (None, None) => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a column name from an expression.
+fn extract_column_name(expr: &LogicalExpr) -> Option<&str> {
+    match expr {
+        LogicalExpr::Column { name, .. } => Some(name.as_str()),
+        LogicalExpr::Alias { expr, .. } => extract_column_name(expr),
+        _ => None,
+    }
+}
+
+/// Convert a row back to a synthetic entity (for nested joins).
+fn row_to_entity(row: &Row, id: u64) -> Entity {
+    let mut entity = Entity::new(manifoldb_core::EntityId::new(id));
+
+    for (i, col) in row.schema().columns().iter().enumerate() {
+        if let Some(value) = row.get(i) {
+            entity.set_property(*col, value.clone());
+        }
+    }
+
+    entity
+}
+
+/// Evaluate a logical expression against a row (for join results).
+fn evaluate_row_expr(expr: &LogicalExpr, row: &Row) -> Value {
+    use manifoldb_query::exec::operators::filter::evaluate_expr as op_evaluate_expr;
+
+    // Use the operator's evaluate_expr which works with Row
+    op_evaluate_expr(expr, row).unwrap_or(Value::Null)
 }
 
 /// Evaluate a logical expression to a value.

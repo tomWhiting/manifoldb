@@ -441,6 +441,95 @@ fn test_boolean_values() {
 }
 
 // ============================================================================
+// JOIN Tests
+// ============================================================================
+
+#[test]
+fn test_inner_join() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create users table with data
+    db.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')").expect("insert failed");
+    db.execute("INSERT INTO users (id, name) VALUES (2, 'Bob')").expect("insert failed");
+    db.execute("INSERT INTO users (id, name) VALUES (3, 'Carol')").expect("insert failed");
+
+    // Create orders table with data
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (1, 100)").expect("insert failed");
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (1, 150)").expect("insert failed");
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (2, 200)").expect("insert failed");
+
+    // Test inner join - should match users with orders (Alice has 2, Bob has 1, Carol has 0)
+    let result = db
+        .query("SELECT * FROM users u INNER JOIN orders o ON u.id = o.user_id")
+        .expect("join query failed");
+
+    // Alice (2 orders) + Bob (1 order) = 3 rows
+    assert_eq!(result.len(), 3, "Expected 3 rows from inner join, got {}", result.len());
+}
+
+#[test]
+fn test_left_join() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create users table with data
+    db.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')").expect("insert failed");
+    db.execute("INSERT INTO users (id, name) VALUES (2, 'Bob')").expect("insert failed");
+    db.execute("INSERT INTO users (id, name) VALUES (3, 'Carol')").expect("insert failed");
+
+    // Create orders table with data - Carol has no orders
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (1, 100)").expect("insert failed");
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (2, 200)").expect("insert failed");
+
+    // Test left join - should include Carol even though she has no orders
+    let result = db
+        .query("SELECT * FROM users u LEFT JOIN orders o ON u.id = o.user_id")
+        .expect("join query failed");
+
+    // Alice (1 order) + Bob (1 order) + Carol (no orders but still included) = 3 rows
+    assert_eq!(result.len(), 3, "Expected 3 rows from left join, got {}", result.len());
+}
+
+#[test]
+fn test_cross_join() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create small tables for cross join
+    db.execute("INSERT INTO colors (name) VALUES ('red')").expect("insert failed");
+    db.execute("INSERT INTO colors (name) VALUES ('blue')").expect("insert failed");
+
+    db.execute("INSERT INTO sizes (name) VALUES ('small')").expect("insert failed");
+    db.execute("INSERT INTO sizes (name) VALUES ('large')").expect("insert failed");
+
+    // Test cross join - should produce 2*2=4 rows
+    let result =
+        db.query("SELECT * FROM colors CROSS JOIN sizes").expect("cross join query failed");
+
+    assert_eq!(result.len(), 4, "Expected 4 rows from cross join, got {}", result.len());
+}
+
+#[test]
+fn test_join_with_filter() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create users table with data
+    db.execute("INSERT INTO users (id, name) VALUES (1, 'Alice')").expect("insert failed");
+    db.execute("INSERT INTO users (id, name) VALUES (2, 'Bob')").expect("insert failed");
+
+    // Create orders table with data
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (1, 100)").expect("insert failed");
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (1, 150)").expect("insert failed");
+    db.execute("INSERT INTO orders (user_id, amount) VALUES (2, 200)").expect("insert failed");
+
+    // Test join with WHERE filter on order amount
+    let result = db
+        .query("SELECT * FROM users u INNER JOIN orders o ON u.id = o.user_id WHERE o.amount > 120")
+        .expect("join query failed");
+
+    // Alice's 150 order + Bob's 200 order = 2 rows
+    assert_eq!(result.len(), 2, "Expected 2 rows from filtered join, got {}", result.len());
+}
+
+// ============================================================================
 // Error Cases
 // ============================================================================
 
