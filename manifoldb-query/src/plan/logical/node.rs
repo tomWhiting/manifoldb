@@ -249,7 +249,10 @@ impl LogicalPlan {
     /// Adds an aggregation to this plan.
     #[must_use]
     pub fn aggregate(self, group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self::Aggregate { node: Box::new(AggregateNode::new(group_by, aggregates)), input: Box::new(self) }
+        Self::Aggregate {
+            node: Box::new(AggregateNode::new(group_by, aggregates)),
+            input: Box::new(self),
+        }
     }
 
     /// Adds a sort to this plan.
@@ -291,19 +294,31 @@ impl LogicalPlan {
     /// Creates an inner join with another plan.
     #[must_use]
     pub fn inner_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: Box::new(JoinNode::inner(on)), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::inner(on)),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a left outer join with another plan.
     #[must_use]
     pub fn left_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
-        Self::Join { node: Box::new(JoinNode::left(on)), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::left(on)),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a cross join with another plan.
     #[must_use]
     pub fn cross_join(self, right: LogicalPlan) -> Self {
-        Self::Join { node: Box::new(JoinNode::cross()), left: Box::new(self), right: Box::new(right) }
+        Self::Join {
+            node: Box::new(JoinNode::cross()),
+            left: Box::new(self),
+            right: Box::new(right),
+        }
     }
 
     /// Creates a UNION ALL with another plan.

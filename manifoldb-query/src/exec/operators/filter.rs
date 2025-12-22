@@ -103,9 +103,26 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
     match expr {
         LogicalExpr::Literal(lit) => Ok(literal_to_value(lit)),
 
-        LogicalExpr::Column { qualifier: _, name } => {
+        LogicalExpr::Column { qualifier, name } => {
+            // Try qualified name first (e.g., "u.id"), then unqualified (e.g., "id")
+            // This supports both regular queries and joins with aliased tables
+            let value = if let Some(qual) = qualifier {
+                let qualified_name = format!("{}.{}", qual, name);
+                row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name))
+            } else {
+                // For unqualified names, also try finding a match that ends with ".name"
+                row.get_by_name(name).or_else(|| {
+                    // Search for a column that ends with ".{name}"
+                    let suffix = format!(".{}", name);
+                    row.schema()
+                        .columns()
+                        .iter()
+                        .find(|col| col.ends_with(&suffix))
+                        .and_then(|col| row.get_by_name(col))
+                })
+            };
             // Missing columns return NULL - follows SQL semantics for sparse/dynamic schemas
-            Ok(row.get_by_name(name).cloned().unwrap_or(Value::Null))
+            Ok(value.cloned().unwrap_or(Value::Null))
         }
 
         LogicalExpr::BinaryOp { left, op, right } => {
