@@ -1301,8 +1301,9 @@ fn execute_insert<T: Transaction>(
 
             tx.put_entity(&entity).map_err(Error::Transaction)?;
 
-            // Update HNSW indexes for this entity (silently ignore errors for now)
-            let _ = crate::vector::update_entity_in_indexes(tx, &entity, None);
+            // Update HNSW indexes for this entity
+            crate::vector::update_entity_in_indexes(tx, &entity, None)
+                .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
 
             count += 1;
         }
@@ -1344,8 +1345,9 @@ fn execute_update<T: Transaction>(
 
             tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
 
-            // Update HNSW indexes for this entity (silently ignore errors for now)
-            let _ = crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity));
+            // Update HNSW indexes for this entity
+            crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
+                .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
 
             count += 1;
         }
@@ -1374,8 +1376,9 @@ fn execute_delete<T: Transaction>(
         };
 
         if matches {
-            // Remove from HNSW indexes before deleting (silently ignore errors for now)
-            let _ = crate::vector::remove_entity_from_indexes(tx, &entity);
+            // Remove from HNSW indexes before deleting
+            crate::vector::remove_entity_from_indexes(tx, &entity)
+                .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
 
             tx.delete_entity(entity.id).map_err(Error::Transaction)?;
             count += 1;
@@ -1913,7 +1916,9 @@ fn execute_drop_index<T: Transaction>(
 ) -> Result<u64> {
     for index_name in &node.names {
         // Check if this is an HNSW index and drop it
-        let _ = crate::vector::drop_index(tx, index_name, true);
+        // Pass if_exists=true since the index might be a non-HNSW index (schema-only)
+        crate::vector::drop_index(tx, index_name, true)
+            .map_err(|e| Error::Execution(format!("failed to drop vector index: {e}")))?;
 
         // Drop from schema manager
         SchemaManager::drop_index(tx, index_name, node.if_exists)
