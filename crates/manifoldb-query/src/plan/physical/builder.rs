@@ -102,6 +102,10 @@ pub struct IndexInfo {
     pub unique: bool,
     /// Index type.
     pub index_type: IndexType,
+    /// Collection name for named vector indexes.
+    pub collection_name: Option<String>,
+    /// Vector name for named vector indexes.
+    pub vector_name: Option<String>,
 }
 
 impl IndexInfo {
@@ -114,6 +118,8 @@ impl IndexInfo {
             columns,
             unique: false,
             index_type: IndexType::BTree,
+            collection_name: None,
+            vector_name: None,
         }
     }
 
@@ -130,6 +136,8 @@ impl IndexInfo {
             columns,
             unique: true,
             index_type: IndexType::BTree,
+            collection_name: None,
+            vector_name: None,
         }
     }
 
@@ -146,6 +154,30 @@ impl IndexInfo {
             columns: vec![column.into()],
             unique: false,
             index_type: IndexType::Hnsw,
+            collection_name: None,
+            vector_name: None,
+        }
+    }
+
+    /// Creates a new HNSW vector index info for a named vector in a collection.
+    ///
+    /// The index name follows the convention: `{collection}_{vector_name}_hnsw`
+    #[must_use]
+    pub fn hnsw_for_named_vector(
+        collection: impl Into<String>,
+        vector_name: impl Into<String>,
+    ) -> Self {
+        let collection = collection.into();
+        let vector = vector_name.into();
+        let index_name = format!("{collection}_{vector}_hnsw");
+        Self {
+            name: index_name,
+            table: collection.clone(),
+            columns: vec![vector.clone()],
+            unique: false,
+            index_type: IndexType::Hnsw,
+            collection_name: Some(collection),
+            vector_name: Some(vector),
         }
     }
 }
@@ -208,6 +240,39 @@ impl PlannerCatalog {
                 && i.index_type == IndexType::Hnsw
                 && i.columns.first().is_some_and(|c| c == column)
         })
+    }
+
+    /// Finds an HNSW index for a named vector in a collection.
+    ///
+    /// This looks for indexes that were created with collection and vector metadata,
+    /// following the naming convention `{collection}_{vector_name}_hnsw`.
+    #[must_use]
+    pub fn get_hnsw_index_for_named_vector(
+        &self,
+        collection: &str,
+        vector_name: &str,
+    ) -> Option<&IndexInfo> {
+        // First try to find by explicit collection/vector metadata
+        self.indexes
+            .iter()
+            .find(|i| {
+                i.index_type == IndexType::Hnsw
+                    && i.collection_name.as_deref() == Some(collection)
+                    && i.vector_name.as_deref() == Some(vector_name)
+            })
+            .or_else(|| {
+                // Fall back to naming convention matching
+                let expected_name = format!("{collection}_{vector_name}_hnsw");
+                self.indexes
+                    .iter()
+                    .find(|i| i.index_type == IndexType::Hnsw && i.name == expected_name)
+            })
+    }
+
+    /// Checks if an HNSW index exists for a named vector.
+    #[must_use]
+    pub fn has_hnsw_index_for_named_vector(&self, collection: &str, vector_name: &str) -> bool {
+        self.get_hnsw_index_for_named_vector(collection, vector_name).is_some()
     }
 
     /// Finds a B-tree index that can serve a predicate.
@@ -624,61 +689,78 @@ impl PhysicalPlanner {
         let input_plan = self.plan(input);
         let table_rows = input_plan.cost().cardinality();
 
-        // Check for HNSW index - only available when we can identify the source table
-        let has_hnsw = self
-            .get_table_name(input)
-            .and_then(|table| self.catalog.get_hnsw_index(table, &node.vector_column))
-            .is_some();
+        // Get the source table/collection name
+        let source_name = self.get_table_name(input);
+
+        // Check for HNSW index - try named vector first, then fall back to table/column
+        let hnsw_index_info = source_name.and_then(|table| {
+            // First try to find an HNSW index for a named vector
+            self.catalog.get_hnsw_index_for_named_vector(table, &node.vector_column).or_else(|| {
+                // Fall back to regular table/column index lookup
+                self.catalog.get_hnsw_index(table, &node.vector_column)
+            })
+        });
 
         // Choose algorithm based on data size and index availability
         let ef_search = node.params.ef_search.unwrap_or(node.k * 10);
 
-        if has_hnsw && self.cost_model.prefer_hnsw(table_rows, node.k, ef_search) {
-            // Use HNSW search
-            let cost = self.cost_model.hnsw_search_cost(table_rows, node.k, ef_search);
+        if let Some(index_info) = hnsw_index_info {
+            if self.cost_model.prefer_hnsw(table_rows, node.k, ef_search) {
+                // Use HNSW search with the index name
+                let cost = self.cost_model.hnsw_search_cost(table_rows, node.k, ef_search);
 
-            let mut hnsw_node = HnswSearchNode::new(
-                &node.vector_column,
-                node.query_vector.clone(),
-                node.metric,
-                node.k,
-            )
-            .with_ef_search(ef_search)
-            .with_include_distance(node.include_distance)
-            .with_cost(cost);
+                let mut hnsw_node = HnswSearchNode::new(
+                    &node.vector_column,
+                    node.query_vector.clone(),
+                    node.metric,
+                    node.k,
+                )
+                .with_ef_search(ef_search)
+                .with_include_distance(node.include_distance)
+                .with_index_name(&index_info.name)
+                .with_cost(cost);
 
-            if let Some(filter) = &node.filter {
-                hnsw_node = hnsw_node.with_filter(filter.clone());
+                // Set collection name if available
+                if let Some(collection) = &index_info.collection_name {
+                    hnsw_node = hnsw_node.with_collection_name(collection);
+                }
+
+                if let Some(filter) = &node.filter {
+                    hnsw_node = hnsw_node.with_filter(filter.clone());
+                }
+
+                if let Some(alias) = &node.distance_alias {
+                    hnsw_node = hnsw_node.with_distance_alias(alias);
+                }
+
+                return PhysicalPlan::HnswSearch {
+                    node: Box::new(hnsw_node),
+                    input: Box::new(input_plan),
+                };
             }
-
-            if let Some(alias) = &node.distance_alias {
-                hnsw_node = hnsw_node.with_distance_alias(alias);
-            }
-
-            PhysicalPlan::HnswSearch { node: Box::new(hnsw_node), input: Box::new(input_plan) }
-        } else {
-            // Use brute-force search
-            let cost = self.cost_model.brute_force_search_cost(table_rows, node.k);
-
-            let mut bf_node = BruteForceSearchNode::new(
-                &node.vector_column,
-                node.query_vector.clone(),
-                node.metric,
-                node.k,
-            )
-            .with_include_distance(node.include_distance)
-            .with_cost(cost);
-
-            if let Some(filter) = &node.filter {
-                bf_node = bf_node.with_filter(filter.clone());
-            }
-
-            if let Some(alias) = &node.distance_alias {
-                bf_node = bf_node.with_distance_alias(alias);
-            }
-
-            PhysicalPlan::BruteForceSearch { node: Box::new(bf_node), input: Box::new(input_plan) }
         }
+
+        // Fall back to brute-force search (no index or HNSW not preferred)
+        let cost = self.cost_model.brute_force_search_cost(table_rows, node.k);
+
+        let mut bf_node = BruteForceSearchNode::new(
+            &node.vector_column,
+            node.query_vector.clone(),
+            node.metric,
+            node.k,
+        )
+        .with_include_distance(node.include_distance)
+        .with_cost(cost);
+
+        if let Some(filter) = &node.filter {
+            bf_node = bf_node.with_filter(filter.clone());
+        }
+
+        if let Some(alias) = &node.distance_alias {
+            bf_node = bf_node.with_distance_alias(alias);
+        }
+
+        PhysicalPlan::BruteForceSearch { node: Box::new(bf_node), input: Box::new(input_plan) }
     }
 
     fn plan_vector_distance(
@@ -1009,5 +1091,141 @@ mod tests {
         assert!(display.contains("Filter"));
         assert!(display.contains("FullScan"));
         assert!(display.contains("cost:"));
+    }
+
+    #[test]
+    fn hnsw_index_for_named_vector() {
+        // Test that HNSW index info correctly stores collection and vector metadata
+        let index = IndexInfo::hnsw_for_named_vector("documents", "embedding");
+
+        assert_eq!(index.name, "documents_embedding_hnsw");
+        assert_eq!(index.table, "documents");
+        assert_eq!(index.columns, vec!["embedding".to_string()]);
+        assert_eq!(index.collection_name, Some("documents".to_string()));
+        assert_eq!(index.vector_name, Some("embedding".to_string()));
+        assert_eq!(index.index_type, IndexType::Hnsw);
+    }
+
+    #[test]
+    fn catalog_lookup_named_vector_index() {
+        // Test catalog can find HNSW indexes by collection and vector name
+        let catalog = PlannerCatalog::new()
+            .with_index(IndexInfo::hnsw_for_named_vector("documents", "dense"))
+            .with_index(IndexInfo::hnsw_for_named_vector("documents", "sparse"))
+            .with_index(IndexInfo::hnsw_for_named_vector("images", "embedding"));
+
+        // Should find the correct index for documents/dense
+        let dense_index = catalog.get_hnsw_index_for_named_vector("documents", "dense");
+        assert!(dense_index.is_some());
+        assert_eq!(dense_index.unwrap().name, "documents_dense_hnsw");
+
+        // Should find the correct index for documents/sparse
+        let sparse_index = catalog.get_hnsw_index_for_named_vector("documents", "sparse");
+        assert!(sparse_index.is_some());
+        assert_eq!(sparse_index.unwrap().name, "documents_sparse_hnsw");
+
+        // Should find the correct index for images/embedding
+        let images_index = catalog.get_hnsw_index_for_named_vector("images", "embedding");
+        assert!(images_index.is_some());
+        assert_eq!(images_index.unwrap().name, "images_embedding_hnsw");
+
+        // Should not find non-existent indexes
+        assert!(catalog.get_hnsw_index_for_named_vector("documents", "nonexistent").is_none());
+        assert!(catalog.get_hnsw_index_for_named_vector("nonexistent", "dense").is_none());
+    }
+
+    #[test]
+    fn catalog_has_named_vector_index() {
+        let catalog =
+            PlannerCatalog::new().with_index(IndexInfo::hnsw_for_named_vector("docs", "text"));
+
+        assert!(catalog.has_hnsw_index_for_named_vector("docs", "text"));
+        assert!(!catalog.has_hnsw_index_for_named_vector("docs", "other"));
+        assert!(!catalog.has_hnsw_index_for_named_vector("other", "text"));
+    }
+
+    #[test]
+    fn plan_ann_search_with_named_vector_index() {
+        use crate::plan::logical::AnnSearchNode;
+
+        // Set up catalog with a named vector index
+        let catalog = PlannerCatalog::new()
+            .with_table(TableStats::new("documents", 100_000))
+            .with_index(IndexInfo::hnsw_for_named_vector("documents", "embedding"));
+
+        let planner = PhysicalPlanner::new().with_catalog(catalog);
+
+        // Create an ANN search on the documents.embedding vector
+        let scan = LogicalPlan::scan("documents");
+        let ann_node = AnnSearchNode::cosine("embedding", LogicalExpr::param(1), 10);
+        let logical = LogicalPlan::AnnSearch { node: Box::new(ann_node), input: Box::new(scan) };
+
+        let physical = planner.plan(&logical);
+
+        // Should use HNSW search since we have an index
+        assert_eq!(physical.node_type(), "HnswSearch");
+
+        // Verify the index name is populated
+        if let PhysicalPlan::HnswSearch { node, .. } = &physical {
+            assert_eq!(node.index_name, Some("documents_embedding_hnsw".to_string()));
+            assert_eq!(node.collection_name, Some("documents".to_string()));
+        } else {
+            panic!("Expected HnswSearch plan");
+        }
+    }
+
+    #[test]
+    fn plan_ann_search_without_index_falls_back_to_brute_force() {
+        use crate::plan::logical::AnnSearchNode;
+
+        // No indexes in catalog
+        let catalog = PlannerCatalog::new().with_table(TableStats::new("documents", 1000));
+
+        let planner = PhysicalPlanner::new().with_catalog(catalog);
+
+        // Create an ANN search
+        let scan = LogicalPlan::scan("documents");
+        let ann_node = AnnSearchNode::cosine("embedding", LogicalExpr::param(1), 10);
+        let logical = LogicalPlan::AnnSearch { node: Box::new(ann_node), input: Box::new(scan) };
+
+        let physical = planner.plan(&logical);
+
+        // Should fall back to brute force since no index
+        assert_eq!(physical.node_type(), "BruteForceSearch");
+    }
+
+    #[test]
+    fn hnsw_search_node_for_named_vector() {
+        use super::HnswSearchNode;
+        use crate::ast::DistanceMetric;
+
+        // Test the for_named_vector constructor
+        let node = HnswSearchNode::for_named_vector(
+            "documents",
+            "embedding",
+            LogicalExpr::param(1),
+            DistanceMetric::Cosine,
+            10,
+        );
+
+        assert_eq!(node.vector_column, "embedding");
+        assert_eq!(node.index_name, Some("documents_embedding_hnsw".to_string()));
+        assert_eq!(node.collection_name, Some("documents".to_string()));
+        assert_eq!(node.k, 10);
+    }
+
+    #[test]
+    fn hnsw_search_node_with_collection() {
+        use super::HnswSearchNode;
+        use crate::ast::DistanceMetric;
+
+        // Test building with with_collection
+        let node =
+            HnswSearchNode::new("dense", LogicalExpr::param(1), DistanceMetric::Euclidean, 5)
+                .with_collection("my_collection");
+
+        assert_eq!(node.vector_column, "dense");
+        assert_eq!(node.index_name, Some("my_collection_dense_hnsw".to_string()));
+        assert_eq!(node.collection_name, Some("my_collection".to_string()));
     }
 }

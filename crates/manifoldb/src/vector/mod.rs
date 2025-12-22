@@ -19,7 +19,7 @@
 //! tx.commit()?;
 //! ```
 
-use manifoldb_core::{Entity, EntityId, TransactionError, Value};
+use manifoldb_core::{Entity, EntityId, PointId, TransactionError, Value};
 use manifoldb_storage::Transaction;
 use manifoldb_vector::distance::DistanceMetric;
 use manifoldb_vector::index::{
@@ -29,6 +29,7 @@ use manifoldb_vector::index::{
 };
 use manifoldb_vector::types::Embedding;
 
+use crate::collection::VectorConfig;
 use crate::transaction::DatabaseTransaction;
 
 /// Error type for vector index operations.
@@ -886,6 +887,284 @@ fn compute_distance_embeddings(a: &Embedding, b: &Embedding, metric: DistanceMet
             a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
         }
     }
+}
+
+// ============================================================================
+// Named Vector Collection Integration
+// ============================================================================
+
+/// Create HNSW indexes for all dense vectors in a collection.
+///
+/// This is called when a collection is created to automatically set up
+/// indexes based on the vector configurations.
+///
+/// # Arguments
+///
+/// * `tx` - The database transaction
+/// * `collection_name` - The collection name
+/// * `vectors` - Iterator of (vector_name, config) pairs
+///
+/// # Returns
+///
+/// A list of index names that were created.
+pub fn create_indexes_for_collection<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+    vectors: impl IntoIterator<Item = (String, VectorConfig)>,
+) -> Result<Vec<String>, VectorIndexError> {
+    use crate::collection::IndexMethod;
+
+    let mut created = Vec::new();
+
+    for (vector_name, config) in vectors {
+        // Only create HNSW indexes for dense vectors with HNSW config
+        if let Some(dimension) = config.dimension() {
+            if let IndexMethod::Hnsw(hnsw_params) = &config.index.method {
+                // Extract distance metric (only for dense vectors)
+                let distance_metric = match &config.distance {
+                    crate::collection::DistanceType::Dense(m) => *m,
+                    _ => continue, // Skip non-dense vectors
+                };
+
+                // Convert HnswParams to HnswConfig
+                let hnsw_config = HnswConfig {
+                    m: hnsw_params.m,
+                    m_max0: hnsw_params.m_max0,
+                    ef_construction: hnsw_params.ef_construction,
+                    ef_search: hnsw_params.ef_search,
+                    ..HnswConfig::default()
+                };
+
+                let index_name = create_index_for_named_vector(
+                    tx,
+                    collection_name,
+                    &vector_name,
+                    dimension,
+                    distance_metric,
+                    &hnsw_config,
+                )?;
+
+                created.push(index_name);
+            }
+        }
+    }
+
+    Ok(created)
+}
+
+/// Create an HNSW index for a specific named vector in a collection.
+///
+/// Uses the standard naming convention: `{collection}_{vector_name}_hnsw`
+pub fn create_index_for_named_vector<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+    dimension: usize,
+    distance_metric: DistanceMetric,
+    config: &HnswConfig,
+) -> Result<String, VectorIndexError> {
+    let index_name = HnswRegistry::index_name_for_vector(collection_name, vector_name);
+
+    // Check if index already exists
+    let storage = tx.storage_ref()?;
+    if HnswRegistry::exists(storage, &index_name)? {
+        return Err(VectorIndexError::IndexExists(index_name));
+    }
+
+    // Create an empty HNSW graph
+    let graph = HnswGraph::new(dimension, distance_metric);
+
+    // Save to storage
+    let table_name = hnsw_table_name(&index_name);
+    let storage = tx.storage_mut_ref()?;
+    save_graph_tx(storage, &table_name, &graph, config)?;
+
+    // Register the index with collection and vector name metadata
+    let entry = HnswIndexEntry::for_named_vector(
+        collection_name,
+        vector_name,
+        dimension,
+        distance_metric,
+        config,
+    );
+    HnswRegistry::register(storage, &entry)?;
+
+    Ok(index_name)
+}
+
+/// Drop all HNSW indexes for a collection.
+///
+/// This is called when a collection is deleted.
+pub fn drop_indexes_for_collection<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+) -> Result<Vec<String>, VectorIndexError> {
+    let mut dropped = Vec::new();
+
+    // Get all indexes for this collection
+    let entries = {
+        let storage = tx.storage_ref()?;
+        HnswRegistry::list_for_collection(storage, collection_name)?
+    };
+
+    // Drop each index
+    for entry in entries {
+        drop_index(tx, &entry.name, true)?;
+        dropped.push(entry.name);
+    }
+
+    Ok(dropped)
+}
+
+/// Find an HNSW index for a collection's named vector.
+///
+/// Returns the index name if found.
+pub fn find_index_for_named_vector<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+) -> Result<Option<String>, VectorIndexError> {
+    let storage = tx.storage_ref()?;
+
+    if let Some(entry) = HnswRegistry::get_for_named_vector(storage, collection_name, vector_name)?
+    {
+        return Ok(Some(entry.name.clone()));
+    }
+
+    Ok(None)
+}
+
+/// Check if an HNSW index exists for a collection's named vector.
+pub fn has_index_for_named_vector<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+) -> Result<bool, VectorIndexError> {
+    let storage = tx.storage_ref()?;
+    Ok(HnswRegistry::exists_for_named_vector(storage, collection_name, vector_name)?)
+}
+
+/// List all HNSW index entries for a collection.
+pub fn list_indexes_for_collection<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    collection_name: &str,
+) -> Result<Vec<HnswIndexEntry>, VectorIndexError> {
+    let storage = tx.storage_ref()?;
+    Ok(HnswRegistry::list_for_collection(storage, collection_name)?)
+}
+
+/// Update a named vector in the HNSW index when a point is upserted.
+///
+/// This adds or updates the point's vector in the appropriate HNSW index.
+pub fn update_point_vector_in_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+    point_id: PointId,
+    vector_data: &[f32],
+) -> Result<(), VectorIndexError> {
+    let index_name = HnswRegistry::index_name_for_vector(collection_name, vector_name);
+
+    // Check if index exists
+    let storage = tx.storage_ref()?;
+    if !HnswRegistry::exists(storage, &index_name)? {
+        // No index for this vector, nothing to do
+        return Ok(());
+    }
+
+    // Create embedding
+    let embedding = Embedding::new(vector_data.to_vec())?;
+
+    // Convert PointId to EntityId for HNSW compatibility
+    let entity_id = EntityId::new(point_id.as_u64());
+
+    // Add to index
+    add_to_index(tx, &index_name, entity_id, embedding)?;
+
+    Ok(())
+}
+
+/// Remove a point's vector from the HNSW index.
+pub fn remove_point_vector_from_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+    point_id: PointId,
+) -> Result<(), VectorIndexError> {
+    let index_name = HnswRegistry::index_name_for_vector(collection_name, vector_name);
+
+    // Check if index exists
+    let storage = tx.storage_ref()?;
+    if !HnswRegistry::exists(storage, &index_name)? {
+        // No index for this vector, nothing to do
+        return Ok(());
+    }
+
+    // Convert PointId to EntityId for HNSW compatibility
+    let entity_id = EntityId::new(point_id.as_u64());
+
+    // Remove from index
+    remove_from_index(tx, &index_name, entity_id)?;
+
+    Ok(())
+}
+
+/// Remove a point from all HNSW indexes in a collection.
+pub fn remove_point_from_collection_indexes<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    collection_name: &str,
+    point_id: PointId,
+) -> Result<(), VectorIndexError> {
+    // Get all indexes for this collection
+    let entries = {
+        let storage = tx.storage_ref()?;
+        HnswRegistry::list_for_collection(storage, collection_name)?
+    };
+
+    // Convert PointId to EntityId
+    let entity_id = EntityId::new(point_id.as_u64());
+
+    // Remove from each index
+    for entry in entries {
+        remove_from_index(tx, &entry.name, entity_id)?;
+    }
+
+    Ok(())
+}
+
+/// Search a collection's named vector index.
+///
+/// This is a convenience function that looks up the index by collection
+/// and vector name, then performs the search.
+pub fn search_named_vector_index<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+    query: &Embedding,
+    k: usize,
+    ef_search: Option<usize>,
+) -> Result<Vec<SearchResult>, VectorIndexError> {
+    let index_name = HnswRegistry::index_name_for_vector(collection_name, vector_name);
+    search_index(tx, &index_name, query, k, ef_search)
+}
+
+/// Search a collection's named vector index with filtering.
+pub fn search_named_vector_index_filtered<T, F>(
+    tx: &DatabaseTransaction<T>,
+    collection_name: &str,
+    vector_name: &str,
+    query: &Embedding,
+    k: usize,
+    predicate: F,
+    ef_search: Option<usize>,
+    filter_config: Option<FilteredSearchConfig>,
+) -> Result<Vec<SearchResult>, VectorIndexError>
+where
+    T: Transaction,
+    F: Fn(EntityId) -> bool,
+{
+    let index_name = HnswRegistry::index_name_for_vector(collection_name, vector_name);
+    search_index_filtered(tx, &index_name, query, k, predicate, ef_search, filter_config)
 }
 
 #[cfg(test)]

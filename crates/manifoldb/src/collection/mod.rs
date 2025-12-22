@@ -45,8 +45,8 @@ mod manager;
 mod metadata;
 
 pub use config::{
-    AggregationMethod, HnswParams, IndexConfig, IndexMethod, InvertedIndexParams, VectorConfig,
-    VectorType,
+    AggregationMethod, DistanceType, HnswParams, IndexConfig, IndexMethod, InvertedIndexParams,
+    VectorConfig, VectorType,
 };
 pub use manager::{CollectionError, CollectionManager};
 pub use metadata::{Collection, CollectionName, PayloadSchema};
