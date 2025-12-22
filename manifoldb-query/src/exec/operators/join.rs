@@ -253,7 +253,8 @@ impl HashJoinOp {
 
     /// Computes hash key from expressions.
     fn compute_key(&self, row: &Row, exprs: &[LogicalExpr]) -> OperatorResult<Vec<u8>> {
-        let mut key = Vec::new();
+        // Pre-allocate for typical key sizes (64 bytes handles most cases)
+        let mut key = Vec::with_capacity(64);
         for expr in exprs {
             let value = evaluate_expr(expr, row)?;
             // Simple key encoding
