@@ -11,7 +11,9 @@
 //!
 //! - [`Expand`] - Single-hop traversal from a node to its neighbors
 //! - [`ExpandAll`] - Multi-hop traversal with depth control
-//! - [`ShortestPath`] - BFS-based shortest path finding
+//! - [`ShortestPath`] - BFS-based unweighted shortest path finding
+//! - [`Dijkstra`] - Weighted shortest path using Dijkstra's algorithm
+//! - [`AStar`] - Goal-directed weighted shortest path with heuristics
 //! - [`PathPattern`] - Pattern matching for paths
 //! - [`TraversalIterator`] - Lazy iteration over traversal results
 //!
@@ -22,6 +24,18 @@
 //! - [`Direction::Outgoing`] - Follow edges from source to target
 //! - [`Direction::Incoming`] - Follow edges from target to source
 //! - [`Direction::Both`] - Follow edges in both directions
+//!
+//! # Weighted vs Unweighted Paths
+//!
+//! For unweighted graphs where all edges have equal cost, use [`ShortestPath`]
+//! which implements BFS for O(V+E) performance.
+//!
+//! For weighted graphs, use [`Dijkstra`] or [`AStar`]:
+//! - [`Dijkstra`] finds the shortest weighted path without any heuristic
+//! - [`AStar`] uses a heuristic to guide the search toward the goal
+//!
+//! Both detect negative edge weights and return an error, as they do not
+//! support negative weights (use Bellman-Ford for that, not yet implemented).
 //!
 //! # Memory Efficiency
 //!
@@ -34,7 +48,10 @@
 //! # Example
 //!
 //! ```ignore
-//! use manifoldb_graph::traversal::{Expand, ExpandAll, Direction, TraversalConfig};
+//! use manifoldb_graph::traversal::{
+//!     Expand, ExpandAll, Direction, TraversalConfig,
+//!     ShortestPath, Dijkstra, AStar, EuclideanHeuristic,
+//! };
 //!
 //! // Single-hop: find all friends of a user
 //! let friends = Expand::neighbors(&tx, user_id, Direction::Outgoing)?
@@ -46,15 +63,32 @@
 //!     .with_max_depth(3)
 //!     .collect_nodes()?;
 //!
-//! // Shortest path between two users
+//! // Unweighted shortest path between two users
 //! let path = ShortestPath::find(&tx, user_a, user_b, Direction::Both)?;
+//!
+//! // Weighted shortest path using edge costs
+//! let path = Dijkstra::new(city_a, city_b, Direction::Outgoing)
+//!     .with_weight_property("distance")
+//!     .find(&tx)?;
+//!
+//! // A* with Euclidean heuristic for spatial graphs
+//! let path = AStar::new(start, goal, Direction::Outgoing)
+//!     .with_heuristic(EuclideanHeuristic::xy())
+//!     .with_weight_property("cost")
+//!     .find(&tx)?;
 //! ```
 
+mod astar;
+mod dijkstra;
 mod expand;
 mod iterator;
 mod pattern;
 mod shortest_path;
 
+pub use astar::{
+    AStar, ConstantHeuristic, EuclideanHeuristic, Heuristic, ManhattanHeuristic, ZeroHeuristic,
+};
+pub use dijkstra::{Dijkstra, SingleSourceDijkstra, WeightConfig, WeightedPathResult};
 pub use expand::{Expand, ExpandAll, ExpandResult};
 pub use iterator::{
     NeighborIterator, NeighborIteratorAdapter, TraversalConfig, TraversalIterator,

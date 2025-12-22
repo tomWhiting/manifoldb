@@ -2,6 +2,13 @@
 //!
 //! This module defines types for representing graph patterns used in MATCH clauses.
 //! The syntax is inspired by Cypher/GQL patterns: `(a)-[r:TYPE]->(b)`.
+//!
+//! # Weighted Shortest Paths
+//!
+//! Path patterns can include weight specifications for shortest path algorithms:
+//! - `SHORTEST PATH (a)-[*]->(b)` - unweighted BFS shortest path
+//! - `SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost` - weighted Dijkstra shortest path
+//! - `SHORTEST PATH (a)-[*]->(b) WEIGHTED BY distance + toll` - weighted with expression
 
 use super::expr::{Expr, Identifier};
 use std::fmt;
@@ -371,6 +378,143 @@ impl fmt::Display for PropertyCondition {
     }
 }
 
+/// A shortest path pattern.
+///
+/// Represents a query for the shortest path between two nodes, optionally weighted.
+///
+/// # Examples
+///
+/// ```text
+/// SHORTEST PATH (a)-[*]->(b)              -- unweighted BFS
+/// SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost  -- weighted Dijkstra
+/// ALL SHORTEST PATHS (a)-[*]->(b)         -- all equal-length shortest paths
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShortestPathPattern {
+    /// The path pattern defining the traversal.
+    pub path: PathPattern,
+    /// Whether to find all shortest paths or just one.
+    pub find_all: bool,
+    /// Optional weight specification for weighted shortest path.
+    pub weight: Option<WeightSpec>,
+}
+
+impl ShortestPathPattern {
+    /// Creates a new shortest path pattern.
+    #[must_use]
+    pub fn new(path: PathPattern) -> Self {
+        Self { path, find_all: false, weight: None }
+    }
+
+    /// Creates a pattern that finds all shortest paths.
+    #[must_use]
+    pub fn all(path: PathPattern) -> Self {
+        Self { path, find_all: true, weight: None }
+    }
+
+    /// Adds a weight specification (makes it use Dijkstra's algorithm).
+    #[must_use]
+    pub fn weighted_by(mut self, weight: WeightSpec) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    /// Adds a simple property weight (e.g., `WEIGHTED BY cost`).
+    #[must_use]
+    pub fn weighted_by_property(self, property: impl Into<String>) -> Self {
+        self.weighted_by(WeightSpec::property(property))
+    }
+
+    /// Returns true if this is a weighted shortest path query.
+    #[must_use]
+    pub const fn is_weighted(&self) -> bool {
+        self.weight.is_some()
+    }
+}
+
+impl fmt::Display for ShortestPathPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.find_all {
+            write!(f, "ALL SHORTEST PATHS ")?;
+        } else {
+            write!(f, "SHORTEST PATH ")?;
+        }
+        write!(f, "{}", self.path)?;
+        if let Some(ref weight) = self.weight {
+            write!(f, " {weight}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Weight specification for weighted shortest path algorithms.
+///
+/// Specifies how edge weights should be calculated for Dijkstra's algorithm.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WeightSpec {
+    /// Use a single edge property as the weight.
+    ///
+    /// Example: `WEIGHTED BY cost` uses the "cost" property on edges.
+    Property {
+        /// The name of the edge property containing the weight.
+        name: String,
+        /// Default weight to use if the property is missing.
+        default: Option<f64>,
+    },
+    /// Use a constant weight for all edges.
+    ///
+    /// Example: `WEIGHTED BY 1.0` gives all edges weight 1.0.
+    Constant(f64),
+    /// Use an expression to calculate the weight.
+    ///
+    /// Example: `WEIGHTED BY distance + toll * 0.5`
+    /// The expression can reference edge properties.
+    Expression(Expr),
+}
+
+impl WeightSpec {
+    /// Creates a weight spec using an edge property.
+    #[must_use]
+    pub fn property(name: impl Into<String>) -> Self {
+        Self::Property { name: name.into(), default: None }
+    }
+
+    /// Creates a weight spec using an edge property with a default value.
+    #[must_use]
+    pub fn property_with_default(name: impl Into<String>, default: f64) -> Self {
+        Self::Property { name: name.into(), default: Some(default) }
+    }
+
+    /// Creates a constant weight spec.
+    #[must_use]
+    pub const fn constant(value: f64) -> Self {
+        Self::Constant(value)
+    }
+
+    /// Creates a weight spec from an expression.
+    #[must_use]
+    pub const fn expression(expr: Expr) -> Self {
+        Self::Expression(expr)
+    }
+}
+
+impl fmt::Display for WeightSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "WEIGHTED BY ")?;
+        match self {
+            Self::Property { name, default } => {
+                write!(f, "{name}")?;
+                if let Some(d) = default {
+                    write!(f, " DEFAULT {d}")?;
+                }
+            }
+            Self::Constant(v) => write!(f, "{v}")?,
+            Self::Expression(_) => write!(f, "<expr>")?,
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +582,37 @@ mod tests {
         assert_eq!(EdgeLength::Any, EdgeLength::Any);
         assert_eq!(EdgeLength::Exact(3), EdgeLength::Exact(3));
         assert_eq!(EdgeLength::at_least(2), EdgeLength::Range { min: Some(2), max: None });
+    }
+
+    #[test]
+    fn shortest_path_pattern_display() {
+        let path = PathPattern::chain(
+            NodePattern::var("a"),
+            EdgePattern::directed().length(EdgeLength::Any),
+            NodePattern::var("b"),
+        );
+
+        let sp = ShortestPathPattern::new(path.clone());
+        assert_eq!(sp.to_string(), "SHORTEST PATH (a)-[*]->(b)");
+        assert!(!sp.is_weighted());
+
+        let sp = ShortestPathPattern::all(path.clone());
+        assert_eq!(sp.to_string(), "ALL SHORTEST PATHS (a)-[*]->(b)");
+
+        let sp = ShortestPathPattern::new(path).weighted_by_property("cost");
+        assert!(sp.is_weighted());
+        assert!(sp.to_string().contains("WEIGHTED BY cost"));
+    }
+
+    #[test]
+    fn weight_spec_variants() {
+        let ws = WeightSpec::property("cost");
+        assert_eq!(ws.to_string(), "WEIGHTED BY cost");
+
+        let ws = WeightSpec::property_with_default("cost", 1.0);
+        assert_eq!(ws.to_string(), "WEIGHTED BY cost DEFAULT 1");
+
+        let ws = WeightSpec::constant(2.5);
+        assert_eq!(ws.to_string(), "WEIGHTED BY 2.5");
     }
 }

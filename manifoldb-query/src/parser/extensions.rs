@@ -3,6 +3,7 @@
 //! This module provides parsing for custom SQL extensions:
 //! - Graph pattern matching (MATCH clause)
 //! - Vector distance operators (<->, <=>, <#>, <##>)
+//! - Weighted shortest path queries (SHORTEST PATH ... WEIGHTED BY)
 //!
 //! # Extended Syntax Examples
 //!
@@ -21,6 +22,21 @@
 //! SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1;
 //! ```
 //!
+//! ## Weighted Shortest Path
+//! ```sql
+//! -- Unweighted shortest path (BFS)
+//! SELECT SHORTEST PATH (a)-[*]->(b)
+//! WHERE a.id = 1 AND b.id = 10;
+//!
+//! -- Weighted shortest path (Dijkstra) using edge property
+//! SELECT SHORTEST PATH (a)-[:ROAD*]->(b) WEIGHTED BY distance
+//! WHERE a.name = 'New York' AND b.name = 'Los Angeles';
+//!
+//! -- All shortest paths of equal length
+//! SELECT ALL SHORTEST PATHS (a)-[*]->(b)
+//! WHERE a.id = 1 AND b.id = 10;
+//! ```
+//!
 //! ## Combined Query
 //! ```sql
 //! SELECT d.*, a.name
@@ -32,7 +48,7 @@
 use crate::ast::{
     BinaryOp, DistanceMetric, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
     Identifier, NodePattern, ParameterRef, PathPattern, PropertyCondition, QualifiedName,
-    SelectStatement, Statement,
+    SelectStatement, ShortestPathPattern, Statement, WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -895,6 +911,119 @@ impl ExtendedParser {
     }
 }
 
+/// Parses a shortest path pattern from a string.
+///
+/// Handles the following syntaxes:
+/// - `SHORTEST PATH (a)-[*]->(b)` - unweighted shortest path
+/// - `SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost` - weighted by property
+/// - `SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost DEFAULT 1.0` - with default
+/// - `ALL SHORTEST PATHS (a)-[*]->(b)` - find all shortest paths
+///
+/// # Returns
+///
+/// A tuple of (ShortestPathPattern, remaining input).
+pub fn parse_shortest_path(input: &str) -> ParseResult<(ShortestPathPattern, &str)> {
+    let input = input.trim();
+    let input_upper = input.to_uppercase();
+
+    // Check for ALL SHORTEST PATHS or SHORTEST PATH
+    let (find_all, remaining) = if input_upper.starts_with("ALL SHORTEST PATHS") {
+        (true, input[18..].trim_start())
+    } else if input_upper.starts_with("ALL SHORTEST PATH") {
+        // Also accept without the S
+        (true, input[17..].trim_start())
+    } else if input_upper.starts_with("SHORTEST PATHS") {
+        (true, input[14..].trim_start())
+    } else if input_upper.starts_with("SHORTEST PATH") {
+        (false, input[13..].trim_start())
+    } else {
+        return Err(ParseError::InvalidPattern(
+            "expected SHORTEST PATH or ALL SHORTEST PATHS".to_string(),
+        ));
+    };
+
+    // Parse the path pattern
+    let (path, remaining) = ExtendedParser::parse_path_pattern(remaining)?;
+
+    // Check for WEIGHTED BY clause
+    let remaining = remaining.trim();
+    let remaining_upper = remaining.to_uppercase();
+
+    let (weight, remaining) = if remaining_upper.starts_with("WEIGHTED BY") {
+        let after_weighted = remaining[11..].trim_start();
+        let (weight_spec, rest) = parse_weight_spec(after_weighted)?;
+        (Some(weight_spec), rest)
+    } else {
+        (None, remaining)
+    };
+
+    let pattern = ShortestPathPattern { path, find_all, weight };
+
+    Ok((pattern, remaining))
+}
+
+/// Parses a weight specification.
+///
+/// Handles:
+/// - Property name: `cost`
+/// - Property with default: `cost DEFAULT 1.0`
+/// - Numeric constant: `1.5`
+fn parse_weight_spec(input: &str) -> ParseResult<(WeightSpec, &str)> {
+    let input = input.trim();
+
+    // Try to parse as a number first
+    let num_end =
+        input.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').unwrap_or(input.len());
+
+    if num_end > 0 {
+        let potential_num = &input[..num_end];
+        if let Ok(value) = potential_num.parse::<f64>() {
+            // Check if this looks like a number (not an identifier starting with digits)
+            if potential_num.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-') {
+                return Ok((WeightSpec::Constant(value), &input[num_end..]));
+            }
+        }
+    }
+
+    // Parse as identifier (property name)
+    let ident_end = input.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(input.len());
+
+    if ident_end == 0 {
+        return Err(ParseError::InvalidPattern(
+            "expected property name or number after WEIGHTED BY".to_string(),
+        ));
+    }
+
+    let name = input[..ident_end].to_string();
+    let remaining = input[ident_end..].trim_start();
+    let remaining_upper = remaining.to_uppercase();
+
+    // Check for DEFAULT clause
+    let (default, remaining) = if remaining_upper.starts_with("DEFAULT") {
+        let after_default = remaining[7..].trim_start();
+
+        // Parse the default value
+        let default_end = after_default
+            .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+            .unwrap_or(after_default.len());
+
+        if default_end == 0 {
+            return Err(ParseError::InvalidPattern("expected number after DEFAULT".to_string()));
+        }
+
+        let default_str = &after_default[..default_end];
+        let default_value = default_str.parse::<f64>().map_err(|_| {
+            ParseError::InvalidPattern(format!("invalid default value: {default_str}"))
+        })?;
+
+        (Some(default_value), &after_default[default_end..])
+    } else {
+        (None, remaining)
+    };
+
+    Ok((WeightSpec::Property { name, default }, remaining))
+}
+
 /// Parses a vector distance expression.
 ///
 /// This function is used to parse expressions like:
@@ -1100,5 +1229,67 @@ mod tests {
     fn parse_edge_length_max_only() {
         let length = ExtendedParser::parse_edge_length("..5").unwrap();
         assert_eq!(length, EdgeLength::Range { min: None, max: Some(5) });
+    }
+
+    #[test]
+    fn parse_shortest_path_unweighted() {
+        let (sp, remaining) = parse_shortest_path("SHORTEST PATH (a)-[*]->(b)").unwrap();
+        assert!(!sp.find_all);
+        assert!(sp.weight.is_none());
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn parse_shortest_path_weighted() {
+        let (sp, _) = parse_shortest_path("SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost").unwrap();
+        assert!(!sp.find_all);
+        assert!(sp.weight.is_some());
+        match sp.weight.unwrap() {
+            WeightSpec::Property { name, default } => {
+                assert_eq!(name, "cost");
+                assert!(default.is_none());
+            }
+            _ => panic!("expected Property weight spec"),
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_weighted_with_default() {
+        let (sp, _) =
+            parse_shortest_path("SHORTEST PATH (a)-[*]->(b) WEIGHTED BY distance DEFAULT 1.0")
+                .unwrap();
+        match sp.weight.unwrap() {
+            WeightSpec::Property { name, default } => {
+                assert_eq!(name, "distance");
+                assert_eq!(default, Some(1.0));
+            }
+            _ => panic!("expected Property weight spec"),
+        }
+    }
+
+    #[test]
+    fn parse_all_shortest_paths() {
+        let (sp, _) = parse_shortest_path("ALL SHORTEST PATHS (a)-[*]->(b)").unwrap();
+        assert!(sp.find_all);
+        assert!(sp.weight.is_none());
+    }
+
+    #[test]
+    fn parse_shortest_path_constant_weight() {
+        let (sp, _) = parse_shortest_path("SHORTEST PATH (a)-[*]->(b) WEIGHTED BY 2.5").unwrap();
+        match sp.weight.unwrap() {
+            WeightSpec::Constant(v) => assert_eq!(v, 2.5),
+            _ => panic!("expected Constant weight spec"),
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_with_edge_type() {
+        let (sp, _) =
+            parse_shortest_path("SHORTEST PATH (a)-[:ROAD*]->(b) WEIGHTED BY distance").unwrap();
+        assert_eq!(sp.path.steps.len(), 1);
+        let (edge, _) = &sp.path.steps[0];
+        assert_eq!(edge.edge_types.len(), 1);
+        assert_eq!(edge.edge_types[0].name, "ROAD");
     }
 }

@@ -19,7 +19,7 @@ pub use expr::{
 };
 pub use pattern::{
     EdgeDirection, EdgeLength, EdgePattern, GraphPattern, NodePattern, PathPattern,
-    PropertyCondition,
+    PropertyCondition, ShortestPathPattern, WeightSpec,
 };
 pub use statement::{
     Assignment, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CreateIndexStatement,

@@ -8,8 +8,9 @@
 use manifoldb_core::{Edge, EdgeType, Entity, EntityId};
 use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};
 use manifoldb_graph::traversal::{
-    AllShortestPaths, Direction, Expand, ExpandAll, PathPattern, PathStep, PatternBuilder,
-    ShortestPath, TraversalConfig, TraversalFilter, TraversalIterator,
+    AllShortestPaths, Dijkstra, Direction, Expand, ExpandAll, PathPattern, PathStep,
+    PatternBuilder, ShortestPath, SingleSourceDijkstra, TraversalConfig, TraversalFilter,
+    TraversalIterator,
 };
 use manifoldb_storage::backends::RedbEngine;
 use manifoldb_storage::{StorageEngine, Transaction};
@@ -110,6 +111,101 @@ fn create_multi_type_graph(engine: &RedbEngine) -> (EntityId, EntityId, EntityId
 
     tx.commit().unwrap();
     (a.id, b.id, c.id)
+}
+
+/// Create a weighted graph for Dijkstra testing:
+/// A --2.0--> B --3.0--> C
+/// |                      ^
+/// +-------4.0----------->+
+/// (A to C directly costs 4.0, but A->B->C costs 5.0)
+fn create_weighted_graph(engine: &RedbEngine) -> (EntityId, EntityId, EntityId) {
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let c = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+
+    // A -> B with weight 2.0
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "ROAD", |id| {
+        Edge::new(id, a.id, b.id, "ROAD").with_property("weight", 2.0f64)
+    })
+    .unwrap();
+
+    // B -> C with weight 3.0
+    EdgeStore::create(&mut tx, &id_gen, b.id, c.id, "ROAD", |id| {
+        Edge::new(id, b.id, c.id, "ROAD").with_property("weight", 3.0f64)
+    })
+    .unwrap();
+
+    // A -> C direct with weight 4.0 (shorter than A->B->C = 5.0)
+    EdgeStore::create(&mut tx, &id_gen, a.id, c.id, "ROAD", |id| {
+        Edge::new(id, a.id, c.id, "ROAD").with_property("weight", 4.0f64)
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+    (a.id, b.id, c.id)
+}
+
+/// Create a more complex weighted graph:
+///     B
+///    /|\
+///   1 | 2
+///  /  |  \
+/// A---3---C---1---D
+///  \     /
+///   5   2
+///    \ /
+///     E
+fn create_complex_weighted_graph(engine: &RedbEngine) -> Vec<EntityId> {
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let c = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let d = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let e = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+
+    // A -> B (weight 1)
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| {
+        Edge::new(id, a.id, b.id, "EDGE").with_property("cost", 1.0f64)
+    })
+    .unwrap();
+
+    // B -> C (weight 2)
+    EdgeStore::create(&mut tx, &id_gen, b.id, c.id, "EDGE", |id| {
+        Edge::new(id, b.id, c.id, "EDGE").with_property("cost", 2.0f64)
+    })
+    .unwrap();
+
+    // A -> C (weight 3)
+    EdgeStore::create(&mut tx, &id_gen, a.id, c.id, "EDGE", |id| {
+        Edge::new(id, a.id, c.id, "EDGE").with_property("cost", 3.0f64)
+    })
+    .unwrap();
+
+    // C -> D (weight 1)
+    EdgeStore::create(&mut tx, &id_gen, c.id, d.id, "EDGE", |id| {
+        Edge::new(id, c.id, d.id, "EDGE").with_property("cost", 1.0f64)
+    })
+    .unwrap();
+
+    // A -> E (weight 5)
+    EdgeStore::create(&mut tx, &id_gen, a.id, e.id, "EDGE", |id| {
+        Edge::new(id, a.id, e.id, "EDGE").with_property("cost", 5.0f64)
+    })
+    .unwrap();
+
+    // E -> C (weight 2)
+    EdgeStore::create(&mut tx, &id_gen, e.id, c.id, "EDGE", |id| {
+        Edge::new(id, e.id, c.id, "EDGE").with_property("cost", 2.0f64)
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+    vec![a.id, b.id, c.id, d.id, e.id]
 }
 
 /// Create a dense graph with bidirectional edges
@@ -955,4 +1051,300 @@ fn traversal_filter_combination() {
 
     let neighbors = Expand::neighbors_filtered(&tx, a, Direction::Outgoing, &filter).unwrap();
     assert_eq!(neighbors.len(), 1);
+}
+
+// ============================================================================
+// Dijkstra tests - Weighted shortest path
+// ============================================================================
+
+#[test]
+fn dijkstra_same_node() {
+    let engine = create_test_engine();
+    let (a, _, _) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let path = Dijkstra::new(a, a, Direction::Outgoing).find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    assert_eq!(path.length, 0);
+    assert_eq!(path.total_weight, 0.0);
+    assert!(path.is_empty());
+}
+
+#[test]
+fn dijkstra_prefers_shorter_weight_path() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    // A -> C direct (weight 4.0) is shorter than A -> B -> C (weight 5.0)
+    let path =
+        Dijkstra::new(a, c, Direction::Outgoing).with_weight_property("weight").find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    // Should take direct path A -> C with weight 4.0
+    assert_eq!(path.total_weight, 4.0);
+    assert_eq!(path.length, 1); // Direct path is 1 hop
+    assert_eq!(path.nodes, vec![a, c]);
+}
+
+#[test]
+fn dijkstra_vs_bfs_different_results() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // BFS finds shortest hop count (both A->C and A->B->C have 1 and 2 hops)
+    // It would prefer A->C (1 hop)
+    let bfs_path = ShortestPath::new(a, c, Direction::Outgoing).find(&tx).unwrap();
+    assert!(bfs_path.is_some());
+    assert_eq!(bfs_path.unwrap().length, 1);
+
+    // Dijkstra also prefers A->C but because weight 4.0 < 5.0
+    let dijkstra_path =
+        Dijkstra::new(a, c, Direction::Outgoing).with_weight_property("weight").find(&tx).unwrap();
+    assert!(dijkstra_path.is_some());
+    assert_eq!(dijkstra_path.unwrap().total_weight, 4.0);
+}
+
+#[test]
+fn dijkstra_complex_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complex_weighted_graph(&engine);
+    let (a, b, c, d, _e) = (nodes[0], nodes[1], nodes[2], nodes[3], nodes[4]);
+
+    let tx = engine.begin_read().unwrap();
+
+    // A -> C: best is A -> B -> C (1 + 2 = 3) vs A -> C direct (3) vs A -> E -> C (5 + 2 = 7)
+    let path =
+        Dijkstra::new(a, c, Direction::Outgoing).with_weight_property("cost").find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    assert_eq!(path.total_weight, 3.0);
+    // Could be either A -> C direct or A -> B -> C since both have weight 3
+
+    // A -> D: best is A -> B -> C -> D (1 + 2 + 1 = 4) or A -> C -> D (3 + 1 = 4)
+    let path =
+        Dijkstra::new(a, d, Direction::Outgoing).with_weight_property("cost").find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    assert_eq!(path.total_weight, 4.0);
+}
+
+#[test]
+fn dijkstra_no_path() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    // C -> A doesn't exist (only outgoing edges from A)
+    let path =
+        Dijkstra::new(c, a, Direction::Outgoing).with_weight_property("weight").find(&tx).unwrap();
+
+    assert!(path.is_none());
+}
+
+#[test]
+fn dijkstra_with_max_weight() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Max weight 3.0 shouldn't find any path to C (cheapest is 4.0)
+    let path = Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .with_max_weight(3.0)
+        .find(&tx)
+        .unwrap();
+
+    assert!(path.is_none());
+
+    // Max weight 5.0 should find the path
+    let path = Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .with_max_weight(5.0)
+        .find(&tx)
+        .unwrap();
+
+    assert!(path.is_some());
+}
+
+#[test]
+fn dijkstra_distance_only() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let distance = Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .distance(&tx)
+        .unwrap();
+
+    assert_eq!(distance, Some(4.0));
+}
+
+#[test]
+fn dijkstra_exists() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    assert!(Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .exists(&tx)
+        .unwrap());
+
+    assert!(!Dijkstra::new(c, a, Direction::Outgoing)
+        .with_weight_property("weight")
+        .exists(&tx)
+        .unwrap());
+}
+
+#[test]
+fn dijkstra_constant_weight() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // With constant weight 1.0, Dijkstra behaves like BFS
+    let path =
+        Dijkstra::new(a, c, Direction::Outgoing).with_constant_weight(1.0).find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    // Should find shortest hop path (A -> C)
+    assert_eq!(path.length, 1);
+    assert_eq!(path.total_weight, 1.0);
+}
+
+#[test]
+fn dijkstra_default_weight() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create graph without weight properties
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| Edge::new(id, a.id, b.id, "EDGE"))
+        .unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Default weight should be used (1.0)
+    let path = Dijkstra::new(a.id, b.id, Direction::Outgoing).find(&tx).unwrap();
+
+    assert!(path.is_some());
+    let path = path.unwrap();
+    assert_eq!(path.total_weight, 1.0);
+}
+
+#[test]
+fn dijkstra_negative_weight_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+
+    // Create edge with negative weight
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| {
+        Edge::new(id, a.id, b.id, "EDGE").with_property("weight", -1.0f64)
+    })
+    .unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Should return error for negative weight
+    let result =
+        Dijkstra::new(a.id, b.id, Direction::Outgoing).with_weight_property("weight").find(&tx);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("negative"));
+}
+
+#[test]
+fn dijkstra_with_edge_type_filter() {
+    let engine = create_test_engine();
+    let (a, _b, c) = create_weighted_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Filter to only ROAD edges
+    let path = Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .with_edge_type("ROAD")
+        .find(&tx)
+        .unwrap();
+
+    assert!(path.is_some());
+
+    // Filter to non-existent edge type
+    let path = Dijkstra::new(a, c, Direction::Outgoing)
+        .with_weight_property("weight")
+        .with_edge_type("NONEXISTENT")
+        .find(&tx)
+        .unwrap();
+
+    assert!(path.is_none());
+}
+
+// ============================================================================
+// SingleSourceDijkstra tests
+// ============================================================================
+
+#[test]
+fn single_source_dijkstra_basic() {
+    let engine = create_test_engine();
+    let nodes = create_complex_weighted_graph(&engine);
+    let (a, b, c, d, e) = (nodes[0], nodes[1], nodes[2], nodes[3], nodes[4]);
+
+    let tx = engine.begin_read().unwrap();
+
+    let distances = SingleSourceDijkstra::new(a, Direction::Outgoing)
+        .with_weight_property("cost")
+        .compute(&tx)
+        .unwrap();
+
+    // Check distances from A to all nodes
+    assert_eq!(distances.get(&a).unwrap().0, 0.0);
+    assert_eq!(distances.get(&b).unwrap().0, 1.0); // A -> B = 1
+    assert_eq!(distances.get(&c).unwrap().0, 3.0); // A -> B -> C = 3 or A -> C = 3
+    assert_eq!(distances.get(&d).unwrap().0, 4.0); // A -> B -> C -> D or A -> C -> D = 4
+    assert_eq!(distances.get(&e).unwrap().0, 5.0); // A -> E = 5
+}
+
+#[test]
+fn single_source_dijkstra_with_max_weight() {
+    let engine = create_test_engine();
+    let nodes = create_complex_weighted_graph(&engine);
+    let (a, b, c, d, e) = (nodes[0], nodes[1], nodes[2], nodes[3], nodes[4]);
+
+    let tx = engine.begin_read().unwrap();
+
+    let distances = SingleSourceDijkstra::new(a, Direction::Outgoing)
+        .with_weight_property("cost")
+        .with_max_weight(3.5)
+        .compute(&tx)
+        .unwrap();
+
+    // Should only include nodes reachable within max_weight
+    assert!(distances.contains_key(&a));
+    assert!(distances.contains_key(&b));
+    assert!(distances.contains_key(&c));
+    assert!(!distances.contains_key(&d)); // D requires 4.0
+    assert!(!distances.contains_key(&e)); // E requires 5.0
 }
