@@ -24,10 +24,8 @@ fn format_as_table(result: &QueryResult) -> Result<String> {
     }
 
     // Build rows for the table
-    let rows: Vec<Vec<String>> = result
-        .iter()
-        .map(|row| row.values().iter().map(format_value).collect())
-        .collect();
+    let rows: Vec<Vec<String>> =
+        result.iter().map(|row| row.values().iter().map(format_value).collect()).collect();
 
     // Create a dynamic table
     let mut builder = tabled::builder::Builder::new();
@@ -159,12 +157,12 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
             .collect::<Vec<_>>()),
         Value::MultiVector(mv) => serde_json::Value::Array(
             mv.iter()
-                .map(|v| serde_json::Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect()))
+                .map(|v| {
+                    serde_json::Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect())
+                })
                 .collect(),
         ),
-        Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(value_to_json).collect())
-        }
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
     }
 }
 

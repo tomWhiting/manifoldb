@@ -30,7 +30,7 @@ fn list(path: Option<&Path>, format: OutputFormat) -> Result<()> {
         .filter_map(|row| {
             row.get(0).and_then(|v| v.as_str()).map(|name| CollectionRow {
                 name: name.to_string(),
-                rows: "-".to_string(),   // Row count would require a separate query
+                rows: "-".to_string(), // Row count would require a separate query
                 columns: "-".to_string(), // Column count would require schema inspection
             })
         })
@@ -107,11 +107,8 @@ fn info(path: Option<&Path>, name: &str, format: OutputFormat) -> Result<()> {
 
     // Get row count
     let count_result = db.query(&format!("SELECT COUNT(*) FROM {name}"))?;
-    let row_count = count_result
-        .first()
-        .and_then(|r| r.get(0))
-        .and_then(|v| v.as_int())
-        .unwrap_or(0);
+    let row_count =
+        count_result.first().and_then(|r| r.get(0)).and_then(|v| v.as_int()).unwrap_or(0);
 
     let rows = vec![
         InfoRow { key: "Name".to_string(), value: name.to_string() },

@@ -800,6 +800,12 @@ mod vector_ops {
     }
 
     #[test]
+    fn binary_op_maxsim_exists() {
+        // Verify the MaxSim operator for ColBERT-style multi-vectors is in the AST
+        assert_eq!(BinaryOp::MaxSim.to_string(), "<##>");
+    }
+
+    #[test]
     fn distance_metric_functions() {
         use manifoldb_query::ast::DistanceMetric;
 
@@ -820,6 +826,111 @@ mod vector_ops {
         assert_eq!(params.limit, Some(10));
         assert_eq!(params.ef_search, Some(100));
         assert_eq!(params.distance_threshold, Some(0.5));
+    }
+
+    #[test]
+    fn parse_maxsim_operator() {
+        // Parse a query using the MaxSim operator for ColBERT-style multi-vector search
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY colbert <##> $query_tokens LIMIT 10",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            // Check ORDER BY has the MaxSim operator
+            assert_eq!(select.order_by.len(), 1);
+            if let Expr::BinaryOp { op: BinaryOp::MaxSim, .. } = select.order_by[0].expr.as_ref() {
+                // Good - MaxSim operator was parsed correctly
+            } else {
+                panic!("expected MaxSim binary operator in ORDER BY");
+            }
+            // Check LIMIT
+            assert!(select.limit.is_some());
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn parse_maxsim_with_where() {
+        // Parse MaxSim with a WHERE clause
+        let stmts = ExtendedParser::parse(
+            "SELECT id, title FROM documents WHERE category = 'science' ORDER BY embeddings <##> $query DESC LIMIT 5",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(select.where_clause.is_some());
+            assert_eq!(select.order_by.len(), 1);
+            assert!(!select.order_by[0].asc); // DESC
+            if let Expr::BinaryOp { op: BinaryOp::MaxSim, .. } = select.order_by[0].expr.as_ref() {
+                // Good
+            } else {
+                panic!("expected MaxSim operator");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn parse_maxsim_with_column_names() {
+        // Parse MaxSim with specific column names
+        let stmts = ExtendedParser::parse(
+            "SELECT doc_id, content, token_embeddings <##> $query AS score FROM corpus ORDER BY score DESC LIMIT 20",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            // Check projection includes the MaxSim expression with alias
+            assert_eq!(select.projection.len(), 3);
+            if let SelectItem::Expr { expr, alias } = &select.projection[2] {
+                if let Expr::BinaryOp { op: BinaryOp::MaxSim, .. } = expr {
+                    assert!(alias.is_some());
+                    assert_eq!(alias.as_ref().unwrap().name, "score");
+                } else {
+                    panic!("expected MaxSim in projection");
+                }
+            } else {
+                panic!("expected expression with alias");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn parse_maxsim_does_not_conflict_with_inner_product() {
+        // Ensure <##> doesn't conflict with <#>
+        let stmts = ExtendedParser::parse(
+            "SELECT a <#> b AS inner_prod, c <##> d AS maxsim_score FROM vectors",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            assert_eq!(select.projection.len(), 2);
+
+            // First should be InnerProduct
+            if let SelectItem::Expr { expr, alias } = &select.projection[0] {
+                if let Expr::BinaryOp { op: BinaryOp::InnerProduct, .. } = expr {
+                    assert_eq!(alias.as_ref().unwrap().name, "inner_prod");
+                } else {
+                    panic!("expected InnerProduct");
+                }
+            }
+
+            // Second should be MaxSim
+            if let SelectItem::Expr { expr, alias } = &select.projection[1] {
+                if let Expr::BinaryOp { op: BinaryOp::MaxSim, .. } = expr {
+                    assert_eq!(alias.as_ref().unwrap().name, "maxsim_score");
+                } else {
+                    panic!("expected MaxSim");
+                }
+            }
+        } else {
+            panic!("expected SELECT");
+        }
     }
 }
 

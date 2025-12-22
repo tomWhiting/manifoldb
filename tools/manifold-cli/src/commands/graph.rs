@@ -49,11 +49,7 @@ fn stats(path: Option<&Path>, format: OutputFormat) -> Result<()> {
             value: if label_counts.is_empty() {
                 "(none)".to_string()
             } else {
-                label_counts
-                    .iter()
-                    .map(|(k, v)| format!("{k}: {v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                label_counts.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ")
             },
         },
     ];
@@ -131,11 +127,8 @@ fn traverse(
                 }
             }
 
-            let target_id = if direction == TraversalDirection::Incoming {
-                edge.source
-            } else {
-                edge.target
-            };
+            let target_id =
+                if direction == TraversalDirection::Incoming { edge.source } else { edge.target };
 
             if visited.insert(target_id) {
                 queue.push_back((target_id, depth + 1));

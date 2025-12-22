@@ -770,4 +770,94 @@ mod tests {
             panic!("Expected float");
         }
     }
+
+    #[test]
+    fn evaluate_maxsim_operator() {
+        // Test MaxSim operator for ColBERT-style multi-vector scoring
+        // Query: 2 tokens, Document: 3 tokens, dimension: 2
+        let query_tokens = vec![
+            vec![1.0_f32, 0.0], // Query token 1
+            vec![0.0_f32, 1.0], // Query token 2
+        ];
+        let doc_tokens = vec![
+            vec![1.0_f32, 0.0], // Doc token 1 (matches query token 1 perfectly)
+            vec![0.5_f32, 0.5], // Doc token 2
+            vec![0.0_f32, 0.8], // Doc token 3 (close to query token 2)
+        ];
+
+        let schema = Arc::new(Schema::new(vec!["doc".to_string(), "query".to_string()]));
+        let row = Row::new(
+            schema,
+            vec![Value::MultiVector(doc_tokens), Value::MultiVector(query_tokens)],
+        );
+
+        // Create MaxSim expression: query <##> doc
+        let expr = LogicalExpr::BinaryOp {
+            left: Box::new(LogicalExpr::column("query")),
+            op: crate::ast::BinaryOp::MaxSim,
+            right: Box::new(LogicalExpr::column("doc")),
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+
+        // Expected MaxSim score:
+        // Query token 1 [1,0]: max dot products with doc tokens = max(1.0, 0.5, 0.0) = 1.0
+        // Query token 2 [0,1]: max dot products with doc tokens = max(0.0, 0.5, 0.8) = 0.8
+        // Total MaxSim = 1.0 + 0.8 = 1.8
+        if let Value::Float(score) = result {
+            assert!((score - 1.8).abs() < 0.001, "Expected MaxSim score ~1.8, got {score}");
+        } else {
+            panic!("Expected float result from MaxSim");
+        }
+    }
+
+    #[test]
+    fn evaluate_maxsim_identical_vectors() {
+        // When query and document are identical, MaxSim should equal num_tokens
+        let tokens = vec![vec![1.0_f32, 0.0], vec![0.0_f32, 1.0]];
+
+        let schema = Arc::new(Schema::new(vec!["a".to_string(), "b".to_string()]));
+        let row =
+            Row::new(schema, vec![Value::MultiVector(tokens.clone()), Value::MultiVector(tokens)]);
+
+        let expr = LogicalExpr::BinaryOp {
+            left: Box::new(LogicalExpr::column("a")),
+            op: crate::ast::BinaryOp::MaxSim,
+            right: Box::new(LogicalExpr::column("b")),
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+
+        // Each query token matches itself perfectly: 1.0 + 1.0 = 2.0
+        if let Value::Float(score) = result {
+            assert!(
+                (score - 2.0).abs() < 0.001,
+                "Expected MaxSim score 2.0 for identical vectors, got {score}"
+            );
+        } else {
+            panic!("Expected float result from MaxSim");
+        }
+    }
+
+    #[test]
+    fn evaluate_maxsim_null_on_type_mismatch() {
+        // MaxSim should return Null when operands are not MultiVector
+        let schema = Arc::new(Schema::new(vec!["a".to_string(), "b".to_string()]));
+        let row = Row::new(
+            schema,
+            vec![
+                Value::Vector(vec![1.0, 0.0]), // Dense vector, not multi-vector
+                Value::Vector(vec![0.0, 1.0]),
+            ],
+        );
+
+        let expr = LogicalExpr::BinaryOp {
+            left: Box::new(LogicalExpr::column("a")),
+            op: crate::ast::BinaryOp::MaxSim,
+            right: Box::new(LogicalExpr::column("b")),
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert!(matches!(result, Value::Null), "Expected Null for type mismatch");
+    }
 }
