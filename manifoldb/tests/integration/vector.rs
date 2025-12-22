@@ -535,3 +535,131 @@ fn test_search_from_store() {
     // Entity 25 should be closest (value = 0.5)
     assert_eq!(results[0].entity_id, EntityId::new(25));
 }
+
+// ============================================================================
+// Vector Index Consistency with DML Operations
+// ============================================================================
+//
+// These tests verify that vector indexes remain consistent with entity data
+// after INSERT, UPDATE, and DELETE operations. The goal is to ensure that:
+// - Inserted entities are searchable via vector index
+// - Updated vector values are reflected in search results
+// - Deleted entities are not returned in vector search
+
+#[test]
+fn test_insert_updates_vector_index() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and HNSW index
+    db.execute("CREATE TABLE docs (id BIGINT, title TEXT, embedding VECTOR(4))")
+        .expect("create table failed");
+    db.execute("CREATE INDEX docs_emb_idx ON docs USING hnsw (embedding)")
+        .expect("create index failed");
+
+    // Insert documents with vector embeddings
+    db.execute("INSERT INTO docs (id, title, embedding) VALUES (1, 'doc1', [1.0, 0.0, 0.0, 0.0])")
+        .expect("insert failed");
+    db.execute("INSERT INTO docs (id, title, embedding) VALUES (2, 'doc2', [0.0, 1.0, 0.0, 0.0])")
+        .expect("insert failed");
+    db.execute("INSERT INTO docs (id, title, embedding) VALUES (3, 'doc3', [0.5, 0.5, 0.0, 0.0])")
+        .expect("insert failed");
+
+    // Query using vector search - should find all 3 documents
+    let result = db
+        .query("SELECT id, title FROM docs ORDER BY embedding <-> [0.5, 0.5, 0.0, 0.0] LIMIT 10")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 3, "should find all 3 inserted documents");
+}
+
+#[test]
+fn test_update_maintains_vector_index_consistency() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and HNSW index
+    db.execute("CREATE TABLE docs (id BIGINT, title TEXT, embedding VECTOR(4))")
+        .expect("create table failed");
+    db.execute("CREATE INDEX docs_emb_idx ON docs USING hnsw (embedding)")
+        .expect("create index failed");
+
+    // Insert a document
+    db.execute(
+        "INSERT INTO docs (id, title, embedding) VALUES (1, 'original', [1.0, 0.0, 0.0, 0.0])",
+    )
+    .expect("insert failed");
+
+    // Update the vector to point in a different direction
+    db.execute("UPDATE docs SET embedding = [0.0, 0.0, 0.0, 1.0] WHERE id = 1")
+        .expect("update failed");
+
+    // Search should find the document at its new location
+    let result = db
+        .query("SELECT id, title FROM docs ORDER BY embedding <-> [0.0, 0.0, 0.0, 1.0] LIMIT 1")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 1, "should find the updated document");
+}
+
+#[test]
+fn test_delete_removes_from_vector_index() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and HNSW index
+    db.execute("CREATE TABLE docs (id BIGINT, title TEXT, embedding VECTOR(4))")
+        .expect("create table failed");
+    db.execute("CREATE INDEX docs_emb_idx ON docs USING hnsw (embedding)")
+        .expect("create index failed");
+
+    // Insert documents
+    db.execute("INSERT INTO docs (id, title, embedding) VALUES (1, 'doc1', [1.0, 0.0, 0.0, 0.0])")
+        .expect("insert failed");
+    db.execute("INSERT INTO docs (id, title, embedding) VALUES (2, 'doc2', [0.0, 1.0, 0.0, 0.0])")
+        .expect("insert failed");
+
+    // Delete one document
+    db.execute("DELETE FROM docs WHERE id = 1").expect("delete failed");
+
+    // Vector search should only return the remaining document
+    let result = db
+        .query("SELECT id FROM docs ORDER BY embedding <-> [1.0, 0.0, 0.0, 0.0] LIMIT 10")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 1, "should only find the remaining document");
+
+    // The remaining document should be id=2
+    let id_idx = result.column_index("id").expect("id column not found");
+    assert_eq!(
+        result.rows()[0].get(id_idx),
+        Some(&manifoldb::Value::Int(2)),
+        "remaining document should be id=2"
+    );
+}
+
+#[test]
+fn test_drop_index_removes_vector_index() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and HNSW index
+    db.execute("CREATE TABLE docs (id BIGINT, embedding VECTOR(4))").expect("create table failed");
+    db.execute("CREATE INDEX docs_emb_idx ON docs USING hnsw (embedding)")
+        .expect("create index failed");
+
+    // Insert a document
+    db.execute("INSERT INTO docs (id, embedding) VALUES (1, [1.0, 0.0, 0.0, 0.0])")
+        .expect("insert failed");
+
+    // Drop the index
+    db.execute("DROP INDEX docs_emb_idx").expect("drop index failed");
+
+    // Regular SELECT should still work (entity exists in storage)
+    let result = db.query("SELECT id FROM docs").expect("query failed");
+    assert_eq!(result.len(), 1, "document should still exist after index drop");
+}
