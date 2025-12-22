@@ -102,8 +102,8 @@ impl<R: Read> Importer<R> {
     ///
     /// This must be called before importing data.
     pub fn read_metadata(&mut self) -> BackupResult<&BackupMetadata> {
-        if self.metadata.is_some() {
-            return Ok(self.metadata.as_ref().unwrap());
+        if let Some(ref meta) = self.metadata {
+            return Ok(meta);
         }
 
         let record =
@@ -116,13 +116,18 @@ impl<R: Read> Importer<R> {
                     if meta.version > BACKUP_FORMAT_VERSION {
                         return Err(BackupError::UnsupportedVersion(meta.version));
                     }
-                    self.metadata = Some(meta);
-                    Ok(self.metadata.as_ref().unwrap())
+                    Ok(self.metadata.insert(meta))
                 } else {
-                    Err(BackupError::invalid_format("metadata record has wrong data type"))
+                    Err(BackupError::malformed_record(
+                        self.line_number,
+                        "metadata record has wrong data type",
+                    ))
                 }
             }
-            _ => Err(BackupError::invalid_format("first record must be metadata")),
+            _ => Err(BackupError::malformed_record(
+                self.line_number,
+                "first record must be metadata",
+            )),
         }
     }
 
@@ -483,5 +488,105 @@ mod tests {
             Err(BackupError::MissingReference(_)) => (),
             _ => panic!("expected MissingReference error"),
         }
+    }
+
+    #[test]
+    fn test_empty_backup_file() {
+        let cursor = Cursor::new(b"");
+        let result = verify(cursor);
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupError::Incomplete(msg)) => {
+                assert!(msg.contains("empty"), "Expected 'empty' in message: {msg}");
+            }
+            other => panic!("expected Incomplete error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_truncated_json_line() {
+        // Valid metadata followed by truncated JSON
+        let backup = r#"{"type":"metadata","data":{"version":1,"format":"json_lines","created_at":0,"sequence_number":0,"is_incremental":false,"previous_sequence":null,"statistics":{"entity_count":0,"edge_count":0,"metadata_count":0,"total_records":0,"uncompressed_size":0}}}
+{"type":"entity","data":{"id":1,"labels":["Test"],"properties":{"#;
+
+        let cursor = Cursor::new(backup.as_bytes());
+        let result = verify(cursor);
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupError::Deserialization(msg)) => {
+                assert!(msg.contains("line 2"), "Expected line number in message: {msg}");
+            }
+            other => panic!("expected Deserialization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_invalid_json_syntax() {
+        // Invalid JSON on first line
+        let backup = "not valid json at all";
+
+        let cursor = Cursor::new(backup.as_bytes());
+        let result = verify(cursor);
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupError::Deserialization(msg)) => {
+                assert!(msg.contains("line 1"), "Expected line number in message: {msg}");
+            }
+            other => panic!("expected Deserialization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_non_metadata_first_record() {
+        // Entity record instead of metadata first
+        let backup = r#"{"type":"entity","data":{"id":1,"labels":["Test"],"properties":{}}}"#;
+
+        let cursor = Cursor::new(backup.as_bytes());
+        let result = verify(cursor);
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupError::MalformedRecord { line, message }) => {
+                assert_eq!(line, 1);
+                assert!(
+                    message.contains("first record must be metadata"),
+                    "Unexpected message: {message}"
+                );
+            }
+            other => panic!("expected MalformedRecord error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unsupported_version() {
+        // Future version that shouldn't be supported
+        let backup = r#"{"type":"metadata","data":{"version":999,"format":"json_lines","created_at":0,"sequence_number":0,"is_incremental":false,"previous_sequence":null,"statistics":{"entity_count":0,"edge_count":0,"metadata_count":0,"total_records":0,"uncompressed_size":0}}}"#;
+
+        let cursor = Cursor::new(backup.as_bytes());
+        let result = verify(cursor);
+
+        assert!(result.is_err());
+        match result {
+            Err(BackupError::UnsupportedVersion(version)) => {
+                assert_eq!(version, 999);
+            }
+            other => panic!("expected UnsupportedVersion error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_corrupted_entity_record() {
+        // Valid metadata but entity record with wrong data type
+        let backup = r#"{"type":"metadata","data":{"version":1,"format":"json_lines","created_at":0,"sequence_number":0,"is_incremental":false,"previous_sequence":null,"statistics":{"entity_count":0,"edge_count":0,"metadata_count":0,"total_records":0,"uncompressed_size":0}}}
+{"type":"entity","data":{"wrong_field":"bad_value"}}"#;
+
+        let cursor = Cursor::new(backup.as_bytes());
+        let result = verify(cursor);
+
+        // This should fail during deserialization because the data doesn't match EntityRecord
+        assert!(result.is_err());
     }
 }

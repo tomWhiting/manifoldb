@@ -59,6 +59,15 @@ pub enum BackupError {
     /// Referenced entity not found during restore.
     #[error("missing reference: {0}")]
     MissingReference(String),
+
+    /// A malformed record was encountered during restore.
+    #[error("malformed record at line {line}: {message}")]
+    MalformedRecord {
+        /// The line number where the error occurred.
+        line: u64,
+        /// A description of the malformation.
+        message: String,
+    },
 }
 
 impl BackupError {
@@ -85,6 +94,11 @@ impl BackupError {
     /// Create an incomplete backup error.
     pub fn incomplete(msg: impl Into<String>) -> Self {
         Self::Incomplete(msg.into())
+    }
+
+    /// Create a malformed record error with line number context.
+    pub fn malformed_record(line: u64, msg: impl Into<String>) -> Self {
+        Self::MalformedRecord { line, message: msg.into() }
     }
 }
 
