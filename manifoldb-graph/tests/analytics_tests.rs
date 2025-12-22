@@ -8,7 +8,7 @@ use manifoldb_graph::analytics::{
     BetweennessCentrality, BetweennessCentralityConfig, CommunityDetection,
     CommunityDetectionConfig, PageRank, PageRankConfig,
 };
-use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};
+use manifoldb_graph::store::{EdgeStore, GraphError, IdGenerator, NodeStore};
 use manifoldb_graph::traversal::Direction;
 use manifoldb_storage::backends::RedbEngine;
 use manifoldb_storage::{StorageEngine, Transaction};
@@ -908,4 +908,193 @@ fn analytics_large_graph() {
         "Ring should not fragment into too many communities: {}",
         cd_result.num_communities
     );
+}
+
+// ============================================================================
+// Graph size validation tests
+// ============================================================================
+
+#[test]
+fn pagerank_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 10 nodes
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set a very low limit (5 nodes) - should fail
+    let config = PageRankConfig::default().with_max_graph_nodes(Some(5));
+    let result = PageRank::compute(&tx, &config);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        _ => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn pagerank_graph_within_limit() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 5 nodes
+    for _ in 0..5 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set limit to 10 - should succeed
+    let config = PageRankConfig::default().with_max_graph_nodes(Some(10));
+    let result = PageRank::compute(&tx, &config);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().scores.len(), 5);
+}
+
+#[test]
+fn pagerank_graph_limit_disabled() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 10 nodes
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Disable limit - should succeed
+    let config = PageRankConfig::default().with_max_graph_nodes(None);
+    let result = PageRank::compute(&tx, &config);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().scores.len(), 10);
+}
+
+#[test]
+fn betweenness_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 10 nodes
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set a very low limit (5 nodes) - should fail
+    let config = BetweennessCentralityConfig::default().with_max_graph_nodes(Some(5));
+    let result = BetweennessCentrality::compute(&tx, &config);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        _ => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn betweenness_graph_within_limit() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 5 nodes
+    for _ in 0..5 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set limit to 10 - should succeed
+    let config = BetweennessCentralityConfig::default().with_max_graph_nodes(Some(10));
+    let result = BetweennessCentrality::compute(&tx, &config);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().scores.len(), 5);
+}
+
+#[test]
+fn community_graph_too_large_error() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 10 nodes
+    for _ in 0..10 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set a very low limit (5 nodes) - should fail
+    let config = CommunityDetectionConfig::default().with_max_graph_nodes(Some(5));
+    let result = CommunityDetection::label_propagation(&tx, &config);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    match err {
+        GraphError::GraphTooLarge { node_count, limit } => {
+            assert_eq!(node_count, 10);
+            assert_eq!(limit, 5);
+        }
+        _ => panic!("Expected GraphTooLarge error, got: {:?}", err),
+    }
+}
+
+#[test]
+fn community_graph_within_limit() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 5 nodes
+    for _ in 0..5 {
+        NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    }
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // Set limit to 10 - should succeed
+    let config = CommunityDetectionConfig::default().with_max_graph_nodes(Some(10));
+    let result = CommunityDetection::label_propagation(&tx, &config);
+
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().assignments.len(), 5);
+}
+
+#[test]
+fn graph_size_validation_error_message() {
+    // Test that the error message is properly formatted
+    let err = GraphError::GraphTooLarge { node_count: 100_000_000, limit: 10_000_000 };
+    let msg = err.to_string();
+    assert!(msg.contains("100000000"), "Error message should contain node count");
+    assert!(msg.contains("10000000"), "Error message should contain limit");
+    assert!(msg.contains("exceeds limit"), "Error message should explain the issue");
 }

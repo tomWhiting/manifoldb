@@ -51,6 +51,15 @@ pub enum GraphError {
     /// Data corruption detected in storage.
     #[error("data corruption: {0}")]
     DataCorruption(String),
+
+    /// Graph is too large for the requested operation.
+    #[error("graph too large: {node_count} nodes exceeds limit of {limit}")]
+    GraphTooLarge {
+        /// The number of nodes in the graph.
+        node_count: usize,
+        /// The configured limit.
+        limit: usize,
+    },
 }
 
 impl From<CoreError> for GraphError {

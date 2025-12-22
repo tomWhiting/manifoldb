@@ -47,8 +47,10 @@ use manifoldb_core::EntityId;
 use manifoldb_storage::Transaction;
 
 use crate::index::AdjacencyIndex;
-use crate::store::{EdgeStore, GraphResult, NodeStore};
+use crate::store::{EdgeStore, GraphError, GraphResult, NodeStore};
 use crate::traversal::Direction;
+
+use super::pagerank::DEFAULT_MAX_GRAPH_NODES;
 
 /// Configuration for Community Detection.
 #[derive(Debug, Clone)]
@@ -69,11 +71,22 @@ pub struct CommunityDetectionConfig {
     /// Set to 0.0 to only check for label stability.
     /// Default: 0.0
     pub min_improvement: f64,
+
+    /// Maximum number of nodes allowed before returning an error.
+    /// Set to `None` to disable the check.
+    /// Default: 10,000,000 (10M nodes)
+    pub max_graph_nodes: Option<usize>,
 }
 
 impl Default for CommunityDetectionConfig {
     fn default() -> Self {
-        Self { max_iterations: 100, direction: Direction::Both, seed: None, min_improvement: 0.0 }
+        Self {
+            max_iterations: 100,
+            direction: Direction::Both,
+            seed: None,
+            min_improvement: 0.0,
+            max_graph_nodes: Some(DEFAULT_MAX_GRAPH_NODES),
+        }
     }
 }
 
@@ -104,6 +117,20 @@ impl CommunityDetectionConfig {
     /// Set the minimum improvement threshold.
     pub const fn with_min_improvement(mut self, min_improvement: f64) -> Self {
         self.min_improvement = min_improvement;
+        self
+    }
+
+    /// Set the maximum number of nodes allowed.
+    ///
+    /// If the graph has more nodes than this limit, the algorithm will
+    /// return a [`GraphError::GraphTooLarge`] error instead of attempting
+    /// to allocate potentially gigabytes of memory.
+    ///
+    /// Set to `None` to disable the check (use with caution).
+    ///
+    /// [`GraphError::GraphTooLarge`]: crate::store::GraphError::GraphTooLarge
+    pub const fn with_max_graph_nodes(mut self, limit: Option<usize>) -> Self {
+        self.max_graph_nodes = limit;
         self
     }
 }
@@ -191,6 +218,14 @@ impl CommunityDetection {
         tx: &T,
         config: &CommunityDetectionConfig,
     ) -> GraphResult<CommunityResult> {
+        // Check graph size before allocating large data structures
+        if let Some(limit) = config.max_graph_nodes {
+            let node_count = NodeStore::count(tx)?;
+            if node_count > limit {
+                return Err(GraphError::GraphTooLarge { node_count, limit });
+            }
+        }
+
         // Collect all nodes
         let mut nodes: Vec<EntityId> = Vec::new();
         NodeStore::for_each(tx, |entity| {

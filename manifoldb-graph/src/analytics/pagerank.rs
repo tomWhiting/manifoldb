@@ -47,7 +47,11 @@ use manifoldb_core::EntityId;
 use manifoldb_storage::Transaction;
 
 use crate::index::AdjacencyIndex;
-use crate::store::{EdgeStore, GraphResult, NodeStore};
+use crate::store::{EdgeStore, GraphError, GraphResult, NodeStore};
+
+/// Default maximum number of nodes for graph analytics operations.
+/// Set to 10 million nodes as a reasonable default for most systems.
+pub const DEFAULT_MAX_GRAPH_NODES: usize = 10_000_000;
 
 /// Configuration for PageRank algorithm.
 #[derive(Debug, Clone)]
@@ -67,11 +71,22 @@ pub struct PageRankConfig {
     /// Whether to normalize scores to sum to 1.0.
     /// Default: true
     pub normalize: bool,
+
+    /// Maximum number of nodes allowed before returning an error.
+    /// Set to `None` to disable the check.
+    /// Default: 10,000,000 (10M nodes)
+    pub max_graph_nodes: Option<usize>,
 }
 
 impl Default for PageRankConfig {
     fn default() -> Self {
-        Self { damping_factor: 0.85, max_iterations: 100, tolerance: 1e-6, normalize: true }
+        Self {
+            damping_factor: 0.85,
+            max_iterations: 100,
+            tolerance: 1e-6,
+            normalize: true,
+            max_graph_nodes: Some(DEFAULT_MAX_GRAPH_NODES),
+        }
     }
 }
 
@@ -109,6 +124,20 @@ impl PageRankConfig {
     /// Set whether to normalize scores to sum to 1.0.
     pub const fn with_normalize(mut self, normalize: bool) -> Self {
         self.normalize = normalize;
+        self
+    }
+
+    /// Set the maximum number of nodes allowed.
+    ///
+    /// If the graph has more nodes than this limit, the algorithm will
+    /// return a [`GraphError::GraphTooLarge`] error instead of attempting
+    /// to allocate potentially gigabytes of memory.
+    ///
+    /// Set to `None` to disable the check (use with caution).
+    ///
+    /// [`GraphError::GraphTooLarge`]: crate::store::GraphError::GraphTooLarge
+    pub const fn with_max_graph_nodes(mut self, limit: Option<usize>) -> Self {
+        self.max_graph_nodes = limit;
         self
     }
 }
@@ -191,6 +220,14 @@ impl PageRank {
     /// 3. Handle dangling nodes (nodes with no outgoing edges)
     /// 4. Check for convergence after each iteration
     pub fn compute<T: Transaction>(tx: &T, config: &PageRankConfig) -> GraphResult<PageRankResult> {
+        // Check graph size before allocating large data structures
+        if let Some(limit) = config.max_graph_nodes {
+            let node_count = NodeStore::count(tx)?;
+            if node_count > limit {
+                return Err(GraphError::GraphTooLarge { node_count, limit });
+            }
+        }
+
         // Collect all nodes and build adjacency information
         let mut nodes: Vec<EntityId> = Vec::new();
         NodeStore::for_each(tx, |entity| {
