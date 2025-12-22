@@ -312,6 +312,8 @@ impl PhysicalPlanner {
             LogicalPlan::DropTable(node) => PhysicalPlan::DropTable(node.clone()),
             LogicalPlan::CreateIndex(node) => PhysicalPlan::CreateIndex(node.clone()),
             LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
+            LogicalPlan::CreateCollection(node) => PhysicalPlan::CreateCollection(node.clone()),
+            LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
         }
     }
 

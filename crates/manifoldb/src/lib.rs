@@ -138,8 +138,8 @@
 
 // Re-export core types
 pub use manifoldb_core::{
-    DeleteResult, Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property, TransactionError,
-    TransactionResult, Value,
+    CollectionId, DeleteResult, Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property,
+    TransactionError, TransactionResult, Value,
 };
 
 // Re-export storage types
@@ -148,6 +148,7 @@ pub use manifoldb_storage::{StorageEngine, Transaction};
 // Modules
 pub mod backup;
 pub mod cache;
+pub mod collection;
 pub mod config;
 pub mod database;
 pub mod error;

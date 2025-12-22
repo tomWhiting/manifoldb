@@ -18,13 +18,16 @@
 #![allow(clippy::map_unwrap_or)]
 
 use crate::ast::{
-    self, CreateIndexStatement, CreateTableStatement, DeleteStatement, DropIndexStatement,
-    DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement, JoinClause,
-    JoinCondition, JoinType as AstJoinType, PathPattern, SelectItem, SelectStatement, SetOperation,
-    SetOperator, Statement, TableRef, UpdateStatement,
+    self, CreateCollectionStatement, CreateIndexStatement, CreateTableStatement, DeleteStatement,
+    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, PathPattern,
+    SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
 };
 
-use super::ddl::{CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode};
+use super::ddl::{
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
+    DropTableNode,
+};
 
 use super::expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
 use super::graph::{ExpandDirection, ExpandLength, ExpandNode};
@@ -78,8 +81,10 @@ impl PlanBuilder {
             }
             Statement::CreateTable(create) => self.build_create_table(create),
             Statement::CreateIndex(create) => self.build_create_index(create),
+            Statement::CreateCollection(create) => self.build_create_collection(create),
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
+            Statement::DropCollection(drop) => self.build_drop_collection(drop),
         }
     }
 
@@ -688,6 +693,28 @@ impl PlanBuilder {
             DropIndexNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropIndex(node))
+    }
+
+    /// Builds a CREATE COLLECTION plan.
+    fn build_create_collection(
+        &self,
+        create: &CreateCollectionStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let node = CreateCollectionNode::new(create.name.name.clone(), create.vectors.clone())
+            .with_if_not_exists(create.if_not_exists);
+
+        Ok(LogicalPlan::CreateCollection(node))
+    }
+
+    /// Builds a DROP COLLECTION plan.
+    fn build_drop_collection(&self, drop: &DropCollectionStatement) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop.names.iter().map(|n| n.name.clone()).collect();
+
+        let node = DropCollectionNode::new(names)
+            .with_if_exists(drop.if_exists)
+            .with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropCollection(node))
     }
 
     /// Builds a logical expression from an AST expression.

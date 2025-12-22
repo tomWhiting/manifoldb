@@ -10,5 +10,5 @@ mod value;
 
 pub use edge::{Edge, EdgeType};
 pub use entity::{Entity, Label, Property};
-pub use id::{EdgeId, EntityId};
+pub use id::{CollectionId, EdgeId, EntityId};
 pub use value::Value;
