@@ -28,18 +28,21 @@ pub struct HnswNode {
 
 impl HnswNode {
     /// Create a new HNSW node.
+    #[inline]
     pub fn new(entity_id: EntityId, embedding: Embedding, max_layer: usize) -> Self {
         let connections = vec![Vec::new(); max_layer + 1];
         Self { entity_id, embedding, max_layer, connections }
     }
 
     /// Get the connections at a specific layer.
+    #[inline]
     #[must_use]
     pub fn connections_at(&self, layer: usize) -> &[EntityId] {
         self.connections.get(layer).map_or(&[], |c| c.as_slice())
     }
 
     /// Add a connection at a specific layer.
+    #[inline]
     pub fn add_connection(&mut self, layer: usize, neighbor: EntityId) {
         if layer < self.connections.len() && !self.connections[layer].contains(&neighbor) {
             self.connections[layer].push(neighbor);
@@ -47,6 +50,7 @@ impl HnswNode {
     }
 
     /// Remove a connection at a specific layer.
+    #[inline]
     pub fn remove_connection(&mut self, layer: usize, neighbor: EntityId) {
         if layer < self.connections.len() {
             self.connections[layer].retain(|&id| id != neighbor);
@@ -54,6 +58,7 @@ impl HnswNode {
     }
 
     /// Set the connections at a specific layer, replacing existing ones.
+    #[inline]
     pub fn set_connections(&mut self, layer: usize, neighbors: Vec<EntityId>) {
         if layer < self.connections.len() {
             self.connections[layer] = neighbors;
@@ -84,35 +89,41 @@ impl HnswGraph {
     }
 
     /// Get a node by entity ID.
+    #[inline]
     #[must_use]
     pub fn get_node(&self, entity_id: EntityId) -> Option<&HnswNode> {
         self.nodes.get(&entity_id)
     }
 
     /// Get a mutable node by entity ID.
+    #[inline]
     pub fn get_node_mut(&mut self, entity_id: EntityId) -> Option<&mut HnswNode> {
         self.nodes.get_mut(&entity_id)
     }
 
     /// Check if a node exists in the graph.
+    #[inline]
     #[must_use]
     pub fn contains(&self, entity_id: EntityId) -> bool {
         self.nodes.contains_key(&entity_id)
     }
 
     /// Get the number of nodes in the graph.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Check if the graph is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
     /// Calculate the distance between two embeddings.
+    #[inline]
     #[must_use]
     pub fn distance(&self, a: &Embedding, b: &Embedding) -> f32 {
         match self.distance_metric {
@@ -123,6 +134,7 @@ impl HnswGraph {
     }
 
     /// Calculate the distance from a query to a node.
+    #[inline]
     #[must_use]
     pub fn distance_to_node(&self, query: &Embedding, entity_id: EntityId) -> Option<f32> {
         self.nodes.get(&entity_id).map(|node| self.distance(query, &node.embedding))
@@ -195,6 +207,7 @@ pub struct Candidate {
 
 impl Candidate {
     /// Create a new candidate.
+    #[inline]
     #[must_use]
     pub const fn new(entity_id: EntityId, distance: f32) -> Self {
         Self { entity_id, distance }
@@ -202,6 +215,7 @@ impl Candidate {
 }
 
 impl PartialEq for Candidate {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.distance == other.distance && self.entity_id == other.entity_id
     }
@@ -210,12 +224,14 @@ impl PartialEq for Candidate {
 impl Eq for Candidate {}
 
 impl PartialOrd for Candidate {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Candidate {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse ordering for min-heap (smallest distance first)
         other.distance.partial_cmp(&self.distance).unwrap_or(Ordering::Equal)
@@ -227,6 +243,7 @@ impl Ord for Candidate {
 pub struct MaxCandidate(pub Candidate);
 
 impl PartialEq for MaxCandidate {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
     }
@@ -235,12 +252,14 @@ impl PartialEq for MaxCandidate {
 impl Eq for MaxCandidate {}
 
 impl PartialOrd for MaxCandidate {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for MaxCandidate {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         // Normal ordering for max-heap (largest distance first)
         self.0.distance.partial_cmp(&other.0.distance).unwrap_or(Ordering::Equal)

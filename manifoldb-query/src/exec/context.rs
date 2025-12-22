@@ -110,12 +110,14 @@ impl ExecutionContext {
     }
 
     /// Returns a reference to the graph accessor.
+    #[inline]
     #[must_use]
     pub fn graph(&self) -> &dyn GraphAccessor {
         self.graph.as_ref()
     }
 
     /// Returns the graph accessor as an Arc.
+    #[inline]
     #[must_use]
     pub fn graph_arc(&self) -> Arc<dyn GraphAccessor> {
         Arc::clone(&self.graph)
@@ -154,35 +156,41 @@ impl ExecutionContext {
     }
 
     /// Gets a parameter value.
+    #[inline]
     #[must_use]
     pub fn get_parameter(&self, index: u32) -> Option<&Value> {
         self.parameters.get(&index)
     }
 
     /// Returns all parameters.
+    #[inline]
     #[must_use]
     pub fn parameters(&self) -> &HashMap<u32, Value> {
         &self.parameters
     }
 
     /// Cancels the query execution.
+    #[inline]
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
     /// Checks if the query has been cancelled.
+    #[inline]
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 
     /// Returns the execution statistics.
+    #[inline]
     #[must_use]
     pub fn stats(&self) -> &ExecutionStats {
         &self.stats
     }
 
     /// Returns the configuration.
+    #[inline]
     #[must_use]
     pub fn config(&self) -> &ExecutionConfig {
         &self.config
@@ -194,16 +202,19 @@ impl ExecutionContext {
     }
 
     /// Records that rows were read.
+    #[inline]
     pub fn record_rows_read(&self, count: u64) {
         self.stats.rows_read.fetch_add(count, Ordering::Relaxed);
     }
 
     /// Records that rows were produced.
+    #[inline]
     pub fn record_rows_produced(&self, count: u64) {
         self.stats.rows_produced.fetch_add(count, Ordering::Relaxed);
     }
 
     /// Records that rows were filtered.
+    #[inline]
     pub fn record_rows_filtered(&self, count: u64) {
         self.stats.rows_filtered.fetch_add(count, Ordering::Relaxed);
     }
@@ -254,24 +265,28 @@ impl ExecutionStats {
     }
 
     /// Returns the number of rows read.
+    #[inline]
     #[must_use]
     pub fn rows_read(&self) -> u64 {
         self.rows_read.load(Ordering::Relaxed)
     }
 
     /// Returns the number of rows produced.
+    #[inline]
     #[must_use]
     pub fn rows_produced(&self) -> u64 {
         self.rows_produced.load(Ordering::Relaxed)
     }
 
     /// Returns the number of rows filtered.
+    #[inline]
     #[must_use]
     pub fn rows_filtered(&self) -> u64 {
         self.rows_filtered.load(Ordering::Relaxed)
     }
 
     /// Returns the elapsed execution time.
+    #[inline]
     #[must_use]
     pub fn elapsed(&self) -> std::time::Duration {
         self.start_time.elapsed()
@@ -347,11 +362,13 @@ impl CancellationToken {
     }
 
     /// Cancels the associated query.
+    #[inline]
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
     /// Checks if cancellation was requested.
+    #[inline]
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)

@@ -35,6 +35,7 @@ pub const PREFIX_EDGE_TYPE_INDEX: u8 = 0x06;
 /// Encode an entity ID as a storage key.
 ///
 /// The key format is: `[PREFIX_ENTITY][entity_id as big-endian u64]`
+#[inline]
 #[must_use]
 pub fn encode_entity_key(id: EntityId) -> Vec<u8> {
     let mut key = Vec::with_capacity(9);
@@ -46,6 +47,7 @@ pub fn encode_entity_key(id: EntityId) -> Vec<u8> {
 /// Encode an edge ID as a storage key.
 ///
 /// The key format is: `[PREFIX_EDGE][edge_id as big-endian u64]`
+#[inline]
 #[must_use]
 pub fn encode_edge_key(id: EdgeId) -> Vec<u8> {
     let mut key = Vec::with_capacity(9);
@@ -57,6 +59,7 @@ pub fn encode_edge_key(id: EdgeId) -> Vec<u8> {
 /// Compute a hash for a string that preserves some ordering properties.
 ///
 /// This uses a simple FNV-1a hash for efficient computation.
+#[inline]
 #[must_use]
 fn hash_string(s: &str) -> u64 {
     // FNV-1a hash
@@ -95,6 +98,7 @@ pub fn encode_edge_by_source_key(
 ///
 /// Returns a key that can be used as the start of a range scan
 /// for all edges from the given source entity.
+#[inline]
 #[must_use]
 pub fn encode_edge_by_source_prefix(source: EntityId) -> Vec<u8> {
     let mut key = Vec::with_capacity(9);
@@ -134,6 +138,7 @@ pub fn encode_edge_by_target_key(
 }
 
 /// Encode a prefix for scanning edges by target entity.
+#[inline]
 #[must_use]
 pub fn encode_edge_by_target_prefix(target: EntityId) -> Vec<u8> {
     let mut key = Vec::with_capacity(9);
@@ -197,6 +202,7 @@ pub fn encode_edge_type_index_prefix(edge_type: &EdgeType) -> Vec<u8> {
 /// Decode an entity ID from an entity key.
 ///
 /// Returns `None` if the key doesn't have the correct format.
+#[inline]
 #[must_use]
 pub fn decode_entity_key(key: &[u8]) -> Option<EntityId> {
     if key.len() != 9 || key[0] != PREFIX_ENTITY {
@@ -209,6 +215,7 @@ pub fn decode_entity_key(key: &[u8]) -> Option<EntityId> {
 /// Decode an edge ID from an edge key.
 ///
 /// Returns `None` if the key doesn't have the correct format.
+#[inline]
 #[must_use]
 pub fn decode_edge_key(key: &[u8]) -> Option<EdgeId> {
     if key.len() != 9 || key[0] != PREFIX_EDGE {
@@ -221,6 +228,7 @@ pub fn decode_edge_key(key: &[u8]) -> Option<EdgeId> {
 /// Decode an entity ID from a label index key.
 ///
 /// Returns `None` if the key doesn't have the correct format.
+#[inline]
 #[must_use]
 pub fn decode_label_index_entity_id(key: &[u8]) -> Option<EntityId> {
     if key.len() != 17 || key[0] != PREFIX_LABEL_INDEX {
@@ -233,6 +241,7 @@ pub fn decode_label_index_entity_id(key: &[u8]) -> Option<EntityId> {
 /// Decode an edge ID from an edge-by-source key.
 ///
 /// Returns `None` if the key doesn't have the correct format.
+#[inline]
 #[must_use]
 pub fn decode_edge_by_source_edge_id(key: &[u8]) -> Option<EdgeId> {
     if key.len() != 25 || key[0] != PREFIX_EDGE_BY_SOURCE {
@@ -245,6 +254,7 @@ pub fn decode_edge_by_source_edge_id(key: &[u8]) -> Option<EdgeId> {
 /// Decode an edge ID from an edge-by-target key.
 ///
 /// Returns `None` if the key doesn't have the correct format.
+#[inline]
 #[must_use]
 pub fn decode_edge_by_target_edge_id(key: &[u8]) -> Option<EdgeId> {
     if key.len() != 25 || key[0] != PREFIX_EDGE_BY_TARGET {

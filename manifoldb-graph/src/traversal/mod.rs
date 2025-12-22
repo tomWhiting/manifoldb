@@ -116,6 +116,7 @@ pub struct TraversalFilter {
 
 impl TraversalFilter {
     /// Create a new empty filter.
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
@@ -155,6 +156,7 @@ impl TraversalFilter {
     }
 
     /// Check if a node should be included based on exclusion list.
+    #[inline]
     pub fn should_include_node(&self, node: EntityId) -> bool {
         match &self.exclude_nodes {
             Some(excluded) => !excluded.contains(&node),
@@ -163,6 +165,7 @@ impl TraversalFilter {
     }
 
     /// Check if an edge type should be included.
+    #[inline]
     pub fn should_include_edge_type(&self, edge_type: &EdgeType) -> bool {
         match &self.edge_types {
             Some(types) => types.contains(edge_type),
@@ -171,6 +174,7 @@ impl TraversalFilter {
     }
 
     /// Check if we've hit the result limit.
+    #[inline]
     pub fn is_at_limit(&self, count: usize) -> bool {
         self.limit.is_some_and(|l| count >= l)
     }
@@ -190,6 +194,7 @@ pub struct TraversalNode {
 
 impl TraversalNode {
     /// Create a new traversal node.
+    #[inline]
     pub const fn new(id: EntityId, depth: usize) -> Self {
         Self { id, depth }
     }

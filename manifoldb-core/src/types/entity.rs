@@ -12,12 +12,14 @@ pub struct Label(String);
 
 impl Label {
     /// Create a new label.
+    #[inline]
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 
     /// Get the label name as a string slice.
+    #[inline]
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -25,12 +27,14 @@ impl Label {
 }
 
 impl From<&str> for Label {
+    #[inline]
     fn from(s: &str) -> Self {
         Self::new(s)
     }
 }
 
 impl From<String> for Label {
+    #[inline]
     fn from(s: String) -> Self {
         Self::new(s)
     }
@@ -47,6 +51,7 @@ pub struct Property {
 
 impl Property {
     /// Create a new property.
+    #[inline]
     #[must_use]
     pub fn new(key: impl Into<String>, value: impl Into<Value>) -> Self {
         Self { key: key.into(), value: value.into() }
@@ -91,18 +96,21 @@ impl Entity {
     }
 
     /// Check if this entity has a specific label.
+    #[inline]
     #[must_use]
     pub fn has_label(&self, label: &str) -> bool {
         self.labels.iter().any(|l| l.as_str() == label)
     }
 
     /// Get a property value by key.
+    #[inline]
     #[must_use]
     pub fn get_property(&self, key: &str) -> Option<&Value> {
         self.properties.get(key)
     }
 
     /// Set a property value.
+    #[inline]
     pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<Value>) {
         self.properties.insert(key.into(), value.into());
     }

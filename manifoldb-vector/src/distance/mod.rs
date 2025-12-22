@@ -12,6 +12,7 @@ pub enum DistanceMetric {
 }
 
 /// Calculate the Euclidean distance between two vectors.
+#[inline]
 #[must_use]
 pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
@@ -19,12 +20,14 @@ pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Calculate the cosine distance between two vectors.
+#[inline]
 #[must_use]
 pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     1.0 - cosine_similarity(a, b)
 }
 
 /// Calculate the cosine similarity between two vectors.
+#[inline]
 #[must_use]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
@@ -41,6 +44,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// Calculate the dot product between two vectors.
+#[inline]
 #[must_use]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vectors must have same dimension");
