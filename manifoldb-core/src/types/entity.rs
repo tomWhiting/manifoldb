@@ -1,4 +1,22 @@
 //! Entity (node) types for the graph.
+//!
+//! This module provides the [`Entity`] type, which represents a node in the graph
+//! with optional labels and properties.
+//!
+//! # Example
+//!
+//! ```
+//! use manifoldb_core::types::{Entity, EntityId};
+//!
+//! let entity = Entity::new(EntityId::new(1))
+//!     .with_label("Person")
+//!     .with_label("Employee")
+//!     .with_property("name", "Alice")
+//!     .with_property("age", 30i64);
+//!
+//! assert!(entity.has_label("Person"));
+//! assert_eq!(entity.get_property("name").and_then(|v| v.as_str()), Some("Alice"));
+//! ```
 
 use std::collections::HashMap;
 
@@ -7,6 +25,21 @@ use serde::{Deserialize, Serialize};
 use super::{EntityId, Value};
 
 /// A label that categorizes an entity.
+///
+/// Labels are used to group entities into categories like "Person", "Company",
+/// or "Product". An entity can have multiple labels.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::Label;
+///
+/// let label = Label::new("Person");
+/// assert_eq!(label.as_str(), "Person");
+///
+/// // Also works via From trait
+/// let label: Label = "Company".into();
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Label(String);
 
@@ -61,9 +94,29 @@ impl Property {
 /// An entity (node) in the graph.
 ///
 /// Entities are the primary data objects in `ManifoldDB`. They can have:
-/// - A unique identifier
-/// - One or more labels for categorization
-/// - Properties as key-value pairs
+/// - A unique identifier ([`EntityId`])
+/// - One or more labels for categorization ([`Label`])
+/// - Properties as key-value pairs ([`Value`])
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_core::types::{Entity, EntityId, Value};
+///
+/// // Create an entity with the builder pattern
+/// let mut person = Entity::new(EntityId::new(1))
+///     .with_label("Person")
+///     .with_property("name", "Alice")
+///     .with_property("email", "alice@example.com");
+///
+/// // Query properties
+/// assert!(person.has_label("Person"));
+/// assert_eq!(person.get_property("name"), Some(&Value::String("Alice".into())));
+///
+/// // Modify properties
+/// person.set_property("verified", true);
+/// assert_eq!(person.get_property("verified"), Some(&Value::Bool(true)));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     /// Unique identifier for this entity.
