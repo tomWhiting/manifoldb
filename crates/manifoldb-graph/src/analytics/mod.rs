@@ -5,8 +5,16 @@
 //!
 //! # Algorithms
 //!
+//! ## Centrality Measures
+//!
 //! - [`PageRank`] - Iterative power method for node importance ranking
-//! - [`BetweennessCentrality`] - Brandes algorithm for node centrality
+//! - [`BetweennessCentrality`] - Brandes algorithm for bridge/bottleneck detection
+//! - [`DegreeCentrality`] - Simple degree-based importance (in/out/total)
+//! - [`ClosenessCentrality`] - Distance-based centrality (standard and harmonic)
+//! - [`EigenvectorCentrality`] - Importance based on connections to important nodes
+//!
+//! ## Community Detection
+//!
 //! - [`CommunityDetection`] - Label Propagation for community detection
 //! - [`ConnectedComponents`] - Weakly and strongly connected components
 //!
@@ -24,13 +32,31 @@
 //!     println!("Node {:?} has PageRank score {:.4}", node, score);
 //! }
 //! ```
+//!
+//! # Centrality Comparison
+//!
+//! | Algorithm | Measures | Time Complexity | Best For |
+//! |-----------|----------|-----------------|----------|
+//! | PageRank | Link importance | O(E * iterations) | Directed graphs, authority |
+//! | Betweenness | Bridge nodes | O(V * E) | Finding bottlenecks |
+//! | Degree | Direct connections | O(V) | Quick overview |
+//! | Closeness | Path distances | O(V * (V + E)) | Finding central hubs |
+//! | Eigenvector | Recursive importance | O(E * iterations) | Influence networks |
 
 mod centrality;
+mod closeness;
 mod community;
 mod connected;
+mod degree;
+mod eigenvector;
 mod pagerank;
 
 pub use centrality::{BetweennessCentrality, BetweennessCentralityConfig, CentralityResult};
+pub use closeness::{ClosenessCentrality, ClosenessCentralityConfig, ClosenessCentralityResult};
 pub use community::{CommunityDetection, CommunityDetectionConfig, CommunityResult};
 pub use connected::{ComponentResult, ConnectedComponents, ConnectedComponentsConfig};
+pub use degree::{DegreeCentrality, DegreeCentralityConfig, DegreeCentralityResult};
+pub use eigenvector::{
+    EigenvectorCentrality, EigenvectorCentralityConfig, EigenvectorCentralityResult,
+};
 pub use pagerank::{PageRank, PageRankConfig, PageRankResult};
