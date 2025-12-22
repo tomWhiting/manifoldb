@@ -196,6 +196,8 @@ pub enum BinaryOp {
     CosineDistance,
     /// Inner product (<#>).
     InnerProduct,
+    /// MaxSim distance for ColBERT-style multi-vectors (<##>).
+    MaxSim,
 }
 
 impl fmt::Display for BinaryOp {
@@ -221,6 +223,7 @@ impl fmt::Display for BinaryOp {
             Self::EuclideanDistance => "<->",
             Self::CosineDistance => "<=>",
             Self::InnerProduct => "<#>",
+            Self::MaxSim => "<##>",
         };
         write!(f, "{op}")
     }
@@ -684,6 +687,7 @@ mod tests {
         assert_eq!(BinaryOp::EuclideanDistance.to_string(), "<->");
         assert_eq!(BinaryOp::CosineDistance.to_string(), "<=>");
         assert_eq!(BinaryOp::InnerProduct.to_string(), "<#>");
+        assert_eq!(BinaryOp::MaxSim.to_string(), "<##>");
     }
 
     #[test]

@@ -16,6 +16,7 @@
 //! - `Vector`: `0x06` + 4 bytes length (count) + f32 values (little-endian)
 //! - `Array`: `0x07` + 4 bytes length (count) + encoded values
 //! - `SparseVector`: `0x08` + 4 bytes length (count) + (u32 index, f32 value) pairs
+//! - `MultiVector`: `0x09` + 4 bytes (vector count) + 4 bytes (dim) + f32 values (little-endian)
 
 use crate::error::CoreError;
 use crate::types::Value;
@@ -33,6 +34,7 @@ mod tags {
     pub const VECTOR: u8 = 0x06;
     pub const ARRAY: u8 = 0x07;
     pub const SPARSE_VECTOR: u8 = 0x08;
+    pub const MULTI_VECTOR: u8 = 0x09;
 }
 
 impl Encoder for Value {
@@ -91,6 +93,23 @@ impl Encoder for Value {
                 for (idx, val) in v {
                     buf.extend_from_slice(&idx.to_le_bytes());
                     buf.extend_from_slice(&val.to_le_bytes());
+                }
+            }
+            Self::MultiVector(vecs) => {
+                buf.push(tags::MULTI_VECTOR);
+                let count = u32::try_from(vecs.len())
+                    .map_err(|_| CoreError::Encoding("multi-vector too long".to_owned()))?;
+                buf.extend_from_slice(&count.to_be_bytes());
+                // For variable-length multi-vectors, we store each vector with its length
+                // Format: count + for each vector: (len + f32 values)
+                for vec in vecs {
+                    let vec_len = u32::try_from(vec.len()).map_err(|_| {
+                        CoreError::Encoding("vector in multi-vector too long".to_owned())
+                    })?;
+                    buf.extend_from_slice(&vec_len.to_be_bytes());
+                    for f in vec {
+                        buf.extend_from_slice(&f.to_le_bytes());
+                    }
                 }
             }
             Self::Array(arr) => {
@@ -227,6 +246,46 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
                 vec.push((u32::from_le_bytes(idx_bytes), f32::from_le_bytes(val_bytes)));
             }
             Ok((Value::SparseVector(vec), 5 + byte_len))
+        }
+        tags::MULTI_VECTOR => {
+            if rest.len() < 4 {
+                return Err(CoreError::Encoding("unexpected end of input".to_owned()));
+            }
+            let count_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read count".to_owned()))?;
+            let count = u32::from_be_bytes(count_bytes) as usize;
+
+            let mut vecs = Vec::with_capacity(count);
+            let mut pos = 4; // Position after count
+
+            for _ in 0..count {
+                if rest.len() < pos + 4 {
+                    return Err(CoreError::Encoding("unexpected end of input".to_owned()));
+                }
+                let vec_len_bytes: [u8; 4] = rest[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read vector length".to_owned()))?;
+                let vec_len = u32::from_be_bytes(vec_len_bytes) as usize;
+                pos += 4;
+
+                let byte_len = vec_len * 4;
+                if rest.len() < pos + byte_len {
+                    return Err(CoreError::Encoding("unexpected end of input".to_owned()));
+                }
+
+                let mut vec = Vec::with_capacity(vec_len);
+                for i in 0..vec_len {
+                    let offset = pos + i * 4;
+                    let f_bytes: [u8; 4] = rest[offset..offset + 4]
+                        .try_into()
+                        .map_err(|_| CoreError::Encoding("failed to read f32 bytes".to_owned()))?;
+                    vec.push(f32::from_le_bytes(f_bytes));
+                }
+                vecs.push(vec);
+                pos += byte_len;
+            }
+            Ok((Value::MultiVector(vecs), 1 + pos)) // 1 for tag
         }
         tags::ARRAY => {
             if rest.len() < 4 {
@@ -376,5 +435,34 @@ mod tests {
         let bytes = [tags::INT, 0, 0, 0]; // Only 4 bytes instead of 8
         let result = Value::decode(&bytes);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn encode_decode_multi_vector() {
+        // Empty multi-vector
+        let original = Value::MultiVector(vec![]);
+        let encoded = original.encode().unwrap();
+        let decoded = Value::decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+
+        // Single vector
+        let original = Value::MultiVector(vec![vec![0.1, 0.2, 0.3]]);
+        let encoded = original.encode().unwrap();
+        let decoded = Value::decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+
+        // Multiple vectors (ColBERT-style token embeddings)
+        let original =
+            Value::MultiVector(vec![vec![0.1, 0.2, 0.3], vec![0.4, 0.5, 0.6], vec![0.7, 0.8, 0.9]]);
+        let encoded = original.encode().unwrap();
+        let decoded = Value::decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+
+        // Variable-length vectors
+        let original =
+            Value::MultiVector(vec![vec![0.1, 0.2], vec![0.3, 0.4, 0.5, 0.6], vec![0.7]]);
+        let encoded = original.encode().unwrap();
+        let decoded = Value::decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
     }
 }

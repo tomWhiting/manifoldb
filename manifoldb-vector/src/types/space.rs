@@ -402,6 +402,180 @@ impl SparseEmbeddingSpace {
     }
 }
 
+/// Metadata about a multi-vector embedding space.
+///
+/// A multi-vector embedding space stores per-token embeddings for ColBERT-style
+/// late interaction models. Each document is represented as multiple token embeddings,
+/// and similarity is computed using MaxSim scoring.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_vector::types::{EmbeddingName, MultiVectorEmbeddingSpace};
+/// use manifoldb_vector::distance::DistanceMetric;
+///
+/// let name = EmbeddingName::new("colbert_embedding").unwrap();
+/// let space = MultiVectorEmbeddingSpace::new(name, 128, DistanceMetric::DotProduct);
+///
+/// assert_eq!(space.dimension(), 128);  // Per-token embedding dimension
+/// assert_eq!(space.distance_metric(), DistanceMetric::DotProduct);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiVectorEmbeddingSpace {
+    name: EmbeddingName,
+    /// The dimension of each token embedding.
+    dimension: usize,
+    /// The distance metric used for similarity (typically DotProduct for MaxSim).
+    distance_metric: DistanceMetric,
+}
+
+impl MultiVectorEmbeddingSpace {
+    /// Create a new multi-vector embedding space.
+    #[must_use]
+    pub const fn new(
+        name: EmbeddingName,
+        dimension: usize,
+        distance_metric: DistanceMetric,
+    ) -> Self {
+        Self { name, dimension, distance_metric }
+    }
+
+    /// Get the name of the embedding space.
+    #[must_use]
+    pub fn name(&self) -> &EmbeddingName {
+        &self.name
+    }
+
+    /// Get the dimension of each token embedding in this space.
+    #[must_use]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Get the distance metric used for similarity search.
+    #[must_use]
+    pub fn distance_metric(&self) -> DistanceMetric {
+        self.distance_metric
+    }
+
+    /// Encode the multi-vector embedding space to bytes.
+    ///
+    /// Format:
+    /// - 1 byte: version (3 for multi-vector)
+    /// - 2 bytes: name length (big-endian u16)
+    /// - N bytes: name (UTF-8)
+    /// - 4 bytes: dimension (big-endian u32)
+    /// - 1 byte: distance metric
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name length exceeds u16::MAX or the dimension exceeds u32::MAX.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, VectorError> {
+        let name_bytes = self.name.as_str().as_bytes();
+        let mut bytes = Vec::with_capacity(8 + name_bytes.len());
+
+        // Version (3 for multi-vector spaces)
+        bytes.push(3);
+
+        // Name length and name
+        let name_len = u16::try_from(name_bytes.len()).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding name too long: {} bytes exceeds maximum of {}",
+                name_bytes.len(),
+                u16::MAX
+            ))
+        })?;
+        bytes.extend_from_slice(&name_len.to_be_bytes());
+        bytes.extend_from_slice(name_bytes);
+
+        // Dimension
+        let dim = u32::try_from(self.dimension).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding dimension too large: {} exceeds maximum of {}",
+                self.dimension,
+                u32::MAX
+            ))
+        })?;
+        bytes.extend_from_slice(&dim.to_be_bytes());
+
+        // Distance metric
+        bytes.push(match self.distance_metric {
+            DistanceMetric::Euclidean => 0,
+            DistanceMetric::Cosine => 1,
+            DistanceMetric::DotProduct => 2,
+        });
+
+        Ok(bytes)
+    }
+
+    /// Decode a multi-vector embedding space from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are invalid or truncated.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, VectorError> {
+        if bytes.is_empty() {
+            return Err(VectorError::Encoding(
+                "empty multi-vector embedding space data".to_string(),
+            ));
+        }
+
+        let version = bytes[0];
+        if version != 3 {
+            return Err(VectorError::Encoding(format!(
+                "unsupported multi-vector embedding space version: {} (expected 3)",
+                version
+            )));
+        }
+
+        if bytes.len() < 3 {
+            return Err(VectorError::Encoding(
+                "truncated multi-vector embedding space data".to_string(),
+            ));
+        }
+
+        // Name length
+        let name_len = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
+
+        if bytes.len() < 3 + name_len + 5 {
+            return Err(VectorError::Encoding(
+                "truncated multi-vector embedding space data".to_string(),
+            ));
+        }
+
+        // Name
+        let name_bytes = &bytes[3..3 + name_len];
+        let name_str = std::str::from_utf8(name_bytes)
+            .map_err(|e| VectorError::Encoding(format!("invalid UTF-8 in name: {}", e)))?;
+        let name = EmbeddingName::new(name_str)?;
+
+        // Dimension
+        let dim_offset = 3 + name_len;
+        let dimension = u32::from_be_bytes([
+            bytes[dim_offset],
+            bytes[dim_offset + 1],
+            bytes[dim_offset + 2],
+            bytes[dim_offset + 3],
+        ]) as usize;
+
+        // Distance metric
+        let metric_byte = bytes[dim_offset + 4];
+        let distance_metric = match metric_byte {
+            0 => DistanceMetric::Euclidean,
+            1 => DistanceMetric::Cosine,
+            2 => DistanceMetric::DotProduct,
+            _ => {
+                return Err(VectorError::Encoding(format!(
+                    "unknown distance metric: {}",
+                    metric_byte
+                )))
+            }
+        };
+
+        Ok(Self { name, dimension, distance_metric })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,6 +696,47 @@ mod tests {
     fn sparse_embedding_space_from_wrong_version_fails() {
         // Version 1 is for dense spaces, not sparse
         let result = SparseEmbeddingSpace::from_bytes(&[1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn multi_vector_embedding_space_roundtrip() {
+        let name = EmbeddingName::new("colbert_space").unwrap();
+        let space = MultiVectorEmbeddingSpace::new(name, 128, DistanceMetric::DotProduct);
+
+        let bytes = space.to_bytes().unwrap();
+        let restored = MultiVectorEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+        assert_eq!(space.name().as_str(), restored.name().as_str());
+        assert_eq!(space.dimension(), restored.dimension());
+        assert_eq!(space.distance_metric(), restored.distance_metric());
+    }
+
+    #[test]
+    fn multi_vector_embedding_space_different_metrics() {
+        for metric in
+            [DistanceMetric::Euclidean, DistanceMetric::Cosine, DistanceMetric::DotProduct]
+        {
+            let name = EmbeddingName::new("test").unwrap();
+            let space = MultiVectorEmbeddingSpace::new(name, 128, metric);
+
+            let bytes = space.to_bytes().unwrap();
+            let restored = MultiVectorEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+            assert_eq!(space.distance_metric(), restored.distance_metric());
+        }
+    }
+
+    #[test]
+    fn multi_vector_embedding_space_from_empty_bytes_fails() {
+        let result = MultiVectorEmbeddingSpace::from_bytes(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn multi_vector_embedding_space_from_wrong_version_fails() {
+        // Version 1 is for dense spaces, not multi-vector
+        let result = MultiVectorEmbeddingSpace::from_bytes(&[1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert!(result.is_err());
     }
 }

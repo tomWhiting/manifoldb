@@ -380,6 +380,23 @@ fn value_to_json(value: &manifoldb_core::Value) -> serde_json::Value {
                     .collect(),
             )
         }
+        manifoldb_core::Value::MultiVector(vecs) => {
+            // Serialize multi-vector as array of token embedding arrays
+            serde_json::Value::Array(
+                vecs.iter()
+                    .map(|v| {
+                        serde_json::Value::Array(
+                            v.iter()
+                                .map(|f| {
+                                    serde_json::Number::from_f64(f64::from(*f))
+                                        .map_or(serde_json::Value::Null, serde_json::Value::Number)
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         manifoldb_core::Value::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(value_to_json).collect())
         }

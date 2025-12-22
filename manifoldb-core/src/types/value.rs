@@ -27,6 +27,12 @@ pub enum Value {
     /// Stored as a list of (index, value) pairs, sorted by index.
     /// Only non-zero values are stored for efficiency.
     SparseVector(Vec<(u32, f32)>),
+    /// Multi-vector embedding (for ColBERT-style late interaction models)
+    ///
+    /// Stores per-token embeddings as a list of dense vectors.
+    /// Each inner vector represents a token's embedding.
+    /// Used with MaxSim scoring: `max(dot(q_i, d_j))` for all query/doc token pairs.
+    MultiVector(Vec<Vec<f32>>),
     /// Array of values
     Array(Vec<Value>),
 }
@@ -100,6 +106,19 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Returns the value as a multi-vector slice if it is one.
+    ///
+    /// Multi-vectors are used for ColBERT-style late interaction models,
+    /// where each token has its own embedding vector.
+    #[inline]
+    #[must_use]
+    pub fn as_multi_vector(&self) -> Option<&[Vec<f32>]> {
+        match self {
+            Self::MultiVector(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 impl From<bool> for Value {
@@ -151,6 +170,13 @@ impl From<Vec<(u32, f32)>> for Value {
     }
 }
 
+impl From<Vec<Vec<f32>>> for Value {
+    #[inline]
+    fn from(v: Vec<Vec<f32>>) -> Self {
+        Self::MultiVector(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +218,27 @@ mod tests {
         assert!(dense.as_sparse_vector().is_none());
         // Sparse vector should not be accessible as dense
         assert!(sparse.as_vector().is_none());
+    }
+
+    #[test]
+    fn multi_vector_value() {
+        let multi = vec![vec![0.1, 0.2], vec![0.3, 0.4], vec![0.5, 0.6]];
+        let value = Value::from(multi.clone());
+        assert_eq!(value.as_multi_vector(), Some(multi.as_slice()));
+    }
+
+    #[test]
+    fn multi_vector_vs_other_vectors() {
+        let dense = Value::from(vec![0.1, 0.2, 0.3]);
+        let sparse = Value::from(vec![(0u32, 0.5f32)]);
+        let multi = Value::from(vec![vec![0.1, 0.2], vec![0.3, 0.4]]);
+
+        // Dense and sparse should not be accessible as multi-vector
+        assert!(dense.as_multi_vector().is_none());
+        assert!(sparse.as_multi_vector().is_none());
+
+        // Multi-vector should not be accessible as dense or sparse
+        assert!(multi.as_vector().is_none());
+        assert!(multi.as_sparse_vector().is_none());
     }
 }

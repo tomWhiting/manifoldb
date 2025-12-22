@@ -16,6 +16,12 @@ pub const PREFIX_SPARSE_EMBEDDING_SPACE: u8 = 0x12;
 /// Key prefix for sparse entity embeddings.
 pub const PREFIX_SPARSE_EMBEDDING: u8 = 0x13;
 
+/// Key prefix for multi-vector embedding space metadata.
+pub const PREFIX_MULTI_VECTOR_SPACE: u8 = 0x14;
+
+/// Key prefix for multi-vector entity embeddings.
+pub const PREFIX_MULTI_VECTOR: u8 = 0x15;
+
 /// Compute a hash for an embedding name.
 ///
 /// Uses FNV-1a hash for efficient computation.

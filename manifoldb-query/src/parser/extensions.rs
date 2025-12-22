@@ -2,13 +2,18 @@
 //!
 //! This module provides parsing for custom SQL extensions:
 //! - Graph pattern matching (MATCH clause)
-//! - Vector distance operators (<->, <=>, <#>)
+//! - Vector distance operators (<->, <=>, <#>, <##>)
 //!
 //! # Extended Syntax Examples
 //!
 //! ## Vector Similarity Search
 //! ```sql
 //! SELECT * FROM docs ORDER BY embedding <-> $query LIMIT 10;
+//! ```
+//!
+//! ## Multi-Vector MaxSim Search (ColBERT-style)
+//! ```sql
+//! SELECT * FROM docs ORDER BY token_embeddings <##> $query_tokens LIMIT 10;
 //! ```
 //!
 //! ## Graph Pattern Matching
@@ -181,13 +186,19 @@ impl ExtendedParser {
     /// Converts `a <-> b` to `__VEC_EUCLIDEAN__(a, b)` which sqlparser can parse.
     fn preprocess_vector_ops(input: &str) -> String {
         // Only allocate if we find operators to replace
-        if !input.contains("<->") && !input.contains("<=>") && !input.contains("<#>") {
+        if !input.contains("<->")
+            && !input.contains("<=>")
+            && !input.contains("<#>")
+            && !input.contains("<##>")
+        {
             return input.to_string();
         }
 
         let mut result = input.to_string();
         result = Self::replace_vector_op(&result, "<->", "__VEC_EUCLIDEAN__");
         result = Self::replace_vector_op(&result, "<=>", "__VEC_COSINE__");
+        // Handle <##> (MaxSim) before <#> (InnerProduct) since <##> contains <#>
+        result = Self::replace_vector_op(&result, "<##>", "__VEC_MAXSIM__");
         result = Self::replace_vector_op(&result, "<#>", "__VEC_INNER__");
         result
     }
@@ -451,6 +462,7 @@ impl ExtendedParser {
                 "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
                 "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
                 "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
+                "__VEC_MAXSIM__" => Some(BinaryOp::MaxSim),
                 _ => None,
             };
 
@@ -1044,6 +1056,17 @@ mod tests {
 
         let result = ExtendedParser::preprocess_vector_ops("a <#> b");
         assert!(result.contains("__VEC_INNER__"));
+
+        let result = ExtendedParser::preprocess_vector_ops("a <##> b");
+        assert!(result.contains("__VEC_MAXSIM__"));
+    }
+
+    #[test]
+    fn preprocess_maxsim_before_inner() {
+        // Ensure <##> is processed before <#> to avoid incorrect matching
+        let result = ExtendedParser::preprocess_vector_ops("a <##> b");
+        assert!(result.contains("__VEC_MAXSIM__"));
+        assert!(!result.contains("__VEC_INNER__"));
     }
 
     #[test]

@@ -7,6 +7,8 @@
 //! The [`VectorStore`] manages dense embeddings organized into named embedding spaces.
 //! The [`SparseVectorStore`] manages sparse embeddings for high-dimensional vectors
 //! with few non-zero elements (e.g., SPLADE embeddings).
+//! The [`MultiVectorStore`] manages multi-vector embeddings for ColBERT-style
+//! late interaction models.
 //!
 //! Each entity can have embeddings in multiple spaces (e.g., `text_embedding`,
 //! `image_embedding`), and each space has a fixed dimension and distance metric.
@@ -35,8 +37,10 @@
 //! let retrieved = store.get(EntityId::new(1), &name)?;
 //! ```
 
+mod multi_vector_store;
 mod sparse_store;
 mod vector_store;
 
+pub use multi_vector_store::MultiVectorStore;
 pub use sparse_store::SparseVectorStore;
 pub use vector_store::VectorStore;

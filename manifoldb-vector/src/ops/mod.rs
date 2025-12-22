@@ -10,6 +10,11 @@
 //! - [`ExactKnn`] - Brute force k-NN search for small sets or validation
 //! - [`VectorFilter`] - Post-filter vector results by predicates
 //!
+//! # Multi-Vector / ColBERT
+//!
+//! The [`maxsim`] module provides MaxSim scoring for ColBERT-style late interaction
+//! models, where each query/document is represented as multiple token embeddings.
+//!
 //! # Hybrid Search
 //!
 //! The [`hybrid`] module provides support for combining dense and sparse vector
@@ -45,11 +50,13 @@ mod ann_scan;
 mod exact_knn;
 mod filter;
 pub mod hybrid;
+pub mod maxsim;
 
 pub use ann_scan::AnnScan;
 pub use exact_knn::ExactKnn;
 pub use filter::{FilterBuilder, VectorFilter};
 pub use hybrid::{merge_results, reciprocal_rank_fusion, HybridConfig, HybridMatch};
+pub use maxsim::{maxsim, maxsim_batch, maxsim_cosine, MaxSimScorer};
 
 use manifoldb_core::EntityId;
 

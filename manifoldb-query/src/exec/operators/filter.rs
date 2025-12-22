@@ -352,6 +352,15 @@ fn evaluate_binary_op(left: &Value, op: &BinaryOp, right: &Value) -> OperatorRes
                 Ok(Value::Null)
             }
         }
+        BinaryOp::MaxSim => {
+            // MaxSim operates on multi-vectors (Vec<Vec<f32>>)
+            if let (Value::MultiVector(query), Value::MultiVector(doc)) = (left, right) {
+                let score = maxsim_score(query, doc);
+                Ok(Value::Float(f64::from(score)))
+            } else {
+                Ok(Value::Null)
+            }
+        }
     }
 }
 
@@ -533,6 +542,7 @@ fn value_to_string(value: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Vector(v) => format!("{v:?}"),
         Value::SparseVector(v) => format!("{v:?}"),
+        Value::MultiVector(v) => format!("{v:?}"),
         Value::Bytes(b) => format!("{b:?}"),
         Value::Array(a) => format!("{a:?}"),
     }
@@ -609,6 +619,39 @@ fn inner_product(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+}
+
+/// MaxSim score between multi-vectors.
+///
+/// Computes the sum of maximum similarities between each query token and all document tokens.
+fn maxsim_score(query: &[Vec<f32>], doc: &[Vec<f32>]) -> f32 {
+    if query.is_empty() || doc.is_empty() {
+        return 0.0;
+    }
+
+    // Verify dimensions match
+    let dim = query[0].len();
+    if doc[0].len() != dim {
+        return 0.0;
+    }
+
+    let mut total_score = 0.0_f32;
+
+    // For each query token, find the max dot product with any document token
+    for q in query {
+        let mut max_sim = f32::NEG_INFINITY;
+        for d in doc {
+            let sim: f32 = q.iter().zip(d.iter()).map(|(x, y)| x * y).sum();
+            if sim > max_sim {
+                max_sim = sim;
+            }
+        }
+        if max_sim.is_finite() {
+            total_score += max_sim;
+        }
+    }
+
+    total_score
 }
 
 #[cfg(test)]
