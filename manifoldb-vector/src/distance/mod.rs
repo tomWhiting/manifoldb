@@ -3,7 +3,7 @@
 //! This module provides both SIMD-optimized and scalar implementations of
 //! distance functions for vector similarity search.
 //!
-//! # SIMD Optimization
+//! # Dense Vectors
 //!
 //! When the `simd` feature is enabled (default), this module uses the `wide` crate
 //! for portable SIMD operations that work across:
@@ -13,6 +13,12 @@
 //!
 //! The SIMD implementations process 8 floats at a time using `f32x8` vectors,
 //! with a scalar fallback for the remainder.
+//!
+//! # Sparse Vectors
+//!
+//! The [`sparse`] module provides efficient distance calculations for sparse vectors,
+//! represented as sorted `(index, value)` pairs. These are optimized for vectors
+//! with few non-zero elements, such as SPLADE embeddings.
 //!
 //! # Performance
 //!
@@ -29,6 +35,8 @@ mod simd;
 
 #[cfg(feature = "scalar")]
 mod scalar;
+
+pub mod sparse;
 
 // Re-export the appropriate implementation
 #[cfg(not(feature = "scalar"))]

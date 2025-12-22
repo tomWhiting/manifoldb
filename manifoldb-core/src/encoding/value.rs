@@ -15,6 +15,7 @@
 //! - `Bytes`: `0x05` + 4 bytes length + raw bytes
 //! - `Vector`: `0x06` + 4 bytes length (count) + f32 values (little-endian)
 //! - `Array`: `0x07` + 4 bytes length (count) + encoded values
+//! - `SparseVector`: `0x08` + 4 bytes length (count) + (u32 index, f32 value) pairs
 
 use crate::error::CoreError;
 use crate::types::Value;
@@ -31,6 +32,7 @@ mod tags {
     pub const BYTES: u8 = 0x05;
     pub const VECTOR: u8 = 0x06;
     pub const ARRAY: u8 = 0x07;
+    pub const SPARSE_VECTOR: u8 = 0x08;
 }
 
 impl Encoder for Value {
@@ -78,6 +80,17 @@ impl Encoder for Value {
                 // Use little-endian for f32 values for efficient memory copying
                 for f in v {
                     buf.extend_from_slice(&f.to_le_bytes());
+                }
+            }
+            Self::SparseVector(v) => {
+                buf.push(tags::SPARSE_VECTOR);
+                let len = u32::try_from(v.len())
+                    .map_err(|_| CoreError::Encoding("sparse vector too long".to_owned()))?;
+                buf.extend_from_slice(&len.to_be_bytes());
+                // Encode each (index, value) pair
+                for (idx, val) in v {
+                    buf.extend_from_slice(&idx.to_le_bytes());
+                    buf.extend_from_slice(&val.to_le_bytes());
                 }
             }
             Self::Array(arr) => {
@@ -189,6 +202,32 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             }
             Ok((Value::Vector(vec), 5 + byte_len))
         }
+        tags::SPARSE_VECTOR => {
+            if rest.len() < 4 {
+                return Err(CoreError::Encoding("unexpected end of input".to_owned()));
+            }
+            let len_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read length".to_owned()))?;
+            let count = u32::from_be_bytes(len_bytes) as usize;
+            // Each entry is 4 bytes (u32 index) + 4 bytes (f32 value) = 8 bytes
+            let byte_len = count * 8;
+            if rest.len() < 4 + byte_len {
+                return Err(CoreError::Encoding("unexpected end of input".to_owned()));
+            }
+            let mut vec = Vec::with_capacity(count);
+            for i in 0..count {
+                let offset = 4 + i * 8;
+                let idx_bytes: [u8; 4] = rest[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read u32 index".to_owned()))?;
+                let val_bytes: [u8; 4] = rest[offset + 4..offset + 8]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read f32 value".to_owned()))?;
+                vec.push((u32::from_le_bytes(idx_bytes), f32::from_le_bytes(val_bytes)));
+            }
+            Ok((Value::SparseVector(vec), 5 + byte_len))
+        }
         tags::ARRAY => {
             if rest.len() < 4 {
                 return Err(CoreError::Encoding("unexpected end of input".to_owned()));
@@ -278,6 +317,17 @@ mod tests {
     fn encode_decode_vector() {
         for v in [vec![], vec![0.0f32], vec![0.1, 0.2, 0.3]] {
             let original = Value::Vector(v);
+            let encoded = original.encode().unwrap();
+            let decoded = Value::decode(&encoded).unwrap();
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn encode_decode_sparse_vector() {
+        for v in [vec![], vec![(0u32, 0.5f32)], vec![(0, 0.1), (10, 0.2), (100, 0.3), (1000, 0.4)]]
+        {
+            let original = Value::SparseVector(v);
             let encoded = original.encode().unwrap();
             let decoded = Value::decode(&encoded).unwrap();
             assert_eq!(decoded, original);

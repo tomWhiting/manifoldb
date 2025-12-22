@@ -20,8 +20,13 @@ pub enum Value {
     String(String),
     /// Raw bytes
     Bytes(Vec<u8>),
-    /// Vector embedding (for similarity search)
+    /// Dense vector embedding (for similarity search)
     Vector(Vec<f32>),
+    /// Sparse vector embedding (for SPLADE, sparse retrievers, etc.)
+    ///
+    /// Stored as a list of (index, value) pairs, sorted by index.
+    /// Only non-zero values are stored for efficiency.
+    SparseVector(Vec<(u32, f32)>),
     /// Array of values
     Array(Vec<Value>),
 }
@@ -74,12 +79,24 @@ impl Value {
         }
     }
 
-    /// Returns the value as a vector slice if it is one.
+    /// Returns the value as a dense vector slice if it is one.
     #[inline]
     #[must_use]
     pub fn as_vector(&self) -> Option<&[f32]> {
         match self {
             Self::Vector(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Returns the value as a sparse vector slice if it is one.
+    ///
+    /// The sparse vector is represented as `(index, value)` pairs.
+    #[inline]
+    #[must_use]
+    pub fn as_sparse_vector(&self) -> Option<&[(u32, f32)]> {
+        match self {
+            Self::SparseVector(v) => Some(v),
             _ => None,
         }
     }
@@ -127,6 +144,13 @@ impl From<Vec<f32>> for Value {
     }
 }
 
+impl From<Vec<(u32, f32)>> for Value {
+    #[inline]
+    fn from(v: Vec<(u32, f32)>) -> Self {
+        Self::SparseVector(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +174,23 @@ mod tests {
         let embedding = vec![0.1, 0.2, 0.3];
         let value = Value::from(embedding.clone());
         assert_eq!(value.as_vector(), Some(embedding.as_slice()));
+    }
+
+    #[test]
+    fn sparse_vector_value() {
+        let sparse = vec![(0, 0.5), (10, 0.3), (100, 0.2)];
+        let value = Value::from(sparse.clone());
+        assert_eq!(value.as_sparse_vector(), Some(sparse.as_slice()));
+    }
+
+    #[test]
+    fn sparse_vector_vs_dense_vector() {
+        let dense = Value::from(vec![0.1, 0.2, 0.3]);
+        let sparse = Value::from(vec![(0u32, 0.5f32)]);
+
+        // Dense vector should not be accessible as sparse
+        assert!(dense.as_sparse_vector().is_none());
+        // Sparse vector should not be accessible as dense
+        assert!(sparse.as_vector().is_none());
     }
 }

@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::distance::sparse::SparseDistanceMetric;
 use crate::distance::DistanceMetric;
 use crate::error::VectorError;
 
@@ -238,6 +239,169 @@ impl EmbeddingSpace {
     }
 }
 
+/// Metadata about a sparse embedding space.
+///
+/// A sparse embedding space defines the properties of sparse embeddings stored within it:
+/// - The maximum dimension (vocabulary size for SPLADE, etc.)
+/// - The distance metric used for similarity search
+///
+/// Unlike dense embedding spaces, sparse spaces don't require a fixed dimension
+/// since sparse vectors only store non-zero elements.
+///
+/// # Example
+///
+/// ```
+/// use manifoldb_vector::types::{EmbeddingName, SparseEmbeddingSpace};
+/// use manifoldb_vector::distance::sparse::SparseDistanceMetric;
+///
+/// let name = EmbeddingName::new("splade_embedding").unwrap();
+/// let space = SparseEmbeddingSpace::new(name, 30522, SparseDistanceMetric::DotProduct);
+///
+/// assert_eq!(space.max_dimension(), 30522); // BERT vocab size
+/// assert_eq!(space.distance_metric(), SparseDistanceMetric::DotProduct);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SparseEmbeddingSpace {
+    name: EmbeddingName,
+    /// Maximum dimension (exclusive upper bound on indices).
+    max_dimension: u32,
+    distance_metric: SparseDistanceMetric,
+}
+
+impl SparseEmbeddingSpace {
+    /// Create a new sparse embedding space.
+    #[must_use]
+    pub const fn new(
+        name: EmbeddingName,
+        max_dimension: u32,
+        distance_metric: SparseDistanceMetric,
+    ) -> Self {
+        Self { name, max_dimension, distance_metric }
+    }
+
+    /// Get the name of the embedding space.
+    #[must_use]
+    pub fn name(&self) -> &EmbeddingName {
+        &self.name
+    }
+
+    /// Get the maximum dimension (vocabulary size) for this space.
+    #[must_use]
+    pub fn max_dimension(&self) -> u32 {
+        self.max_dimension
+    }
+
+    /// Get the distance metric used for similarity search.
+    #[must_use]
+    pub fn distance_metric(&self) -> SparseDistanceMetric {
+        self.distance_metric
+    }
+
+    /// Encode the sparse embedding space to bytes.
+    ///
+    /// Format:
+    /// - 1 byte: version (2 for sparse)
+    /// - 2 bytes: name length (big-endian u16)
+    /// - N bytes: name (UTF-8)
+    /// - 4 bytes: max dimension (big-endian u32)
+    /// - 1 byte: distance metric
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name length exceeds u16::MAX.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, VectorError> {
+        let name_bytes = self.name.as_str().as_bytes();
+        let mut bytes = Vec::with_capacity(8 + name_bytes.len());
+
+        // Version (2 for sparse spaces)
+        bytes.push(2);
+
+        // Name length and name
+        let name_len = u16::try_from(name_bytes.len()).map_err(|_| {
+            VectorError::Encoding(format!(
+                "embedding name too long: {} bytes exceeds maximum of {}",
+                name_bytes.len(),
+                u16::MAX
+            ))
+        })?;
+        bytes.extend_from_slice(&name_len.to_be_bytes());
+        bytes.extend_from_slice(name_bytes);
+
+        // Max dimension
+        bytes.extend_from_slice(&self.max_dimension.to_be_bytes());
+
+        // Distance metric
+        bytes.push(match self.distance_metric {
+            SparseDistanceMetric::Euclidean => 0,
+            SparseDistanceMetric::Cosine => 1,
+            SparseDistanceMetric::DotProduct => 2,
+        });
+
+        Ok(bytes)
+    }
+
+    /// Decode a sparse embedding space from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bytes are invalid or truncated.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, VectorError> {
+        if bytes.is_empty() {
+            return Err(VectorError::Encoding("empty sparse embedding space data".to_string()));
+        }
+
+        let version = bytes[0];
+        if version != 2 {
+            return Err(VectorError::Encoding(format!(
+                "unsupported sparse embedding space version: {} (expected 2)",
+                version
+            )));
+        }
+
+        if bytes.len() < 3 {
+            return Err(VectorError::Encoding("truncated sparse embedding space data".to_string()));
+        }
+
+        // Name length
+        let name_len = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
+
+        if bytes.len() < 3 + name_len + 5 {
+            return Err(VectorError::Encoding("truncated sparse embedding space data".to_string()));
+        }
+
+        // Name
+        let name_bytes = &bytes[3..3 + name_len];
+        let name_str = std::str::from_utf8(name_bytes)
+            .map_err(|e| VectorError::Encoding(format!("invalid UTF-8 in name: {}", e)))?;
+        let name = EmbeddingName::new(name_str)?;
+
+        // Max dimension
+        let dim_offset = 3 + name_len;
+        let max_dimension = u32::from_be_bytes([
+            bytes[dim_offset],
+            bytes[dim_offset + 1],
+            bytes[dim_offset + 2],
+            bytes[dim_offset + 3],
+        ]);
+
+        // Distance metric
+        let metric_byte = bytes[dim_offset + 4];
+        let distance_metric = match metric_byte {
+            0 => SparseDistanceMetric::Euclidean,
+            1 => SparseDistanceMetric::Cosine,
+            2 => SparseDistanceMetric::DotProduct,
+            _ => {
+                return Err(VectorError::Encoding(format!(
+                    "unknown sparse distance metric: {}",
+                    metric_byte
+                )))
+            }
+        };
+
+        Ok(Self { name, max_dimension, distance_metric })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +479,49 @@ mod tests {
     #[test]
     fn embedding_space_from_invalid_version_fails() {
         let result = EmbeddingSpace::from_bytes(&[99, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sparse_embedding_space_roundtrip() {
+        let name = EmbeddingName::new("splade_space").unwrap();
+        let space = SparseEmbeddingSpace::new(name, 30522, SparseDistanceMetric::DotProduct);
+
+        let bytes = space.to_bytes().unwrap();
+        let restored = SparseEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+        assert_eq!(space.name().as_str(), restored.name().as_str());
+        assert_eq!(space.max_dimension(), restored.max_dimension());
+        assert_eq!(space.distance_metric(), restored.distance_metric());
+    }
+
+    #[test]
+    fn sparse_embedding_space_different_metrics() {
+        for metric in [
+            SparseDistanceMetric::Euclidean,
+            SparseDistanceMetric::Cosine,
+            SparseDistanceMetric::DotProduct,
+        ] {
+            let name = EmbeddingName::new("test").unwrap();
+            let space = SparseEmbeddingSpace::new(name, 10000, metric);
+
+            let bytes = space.to_bytes().unwrap();
+            let restored = SparseEmbeddingSpace::from_bytes(&bytes).unwrap();
+
+            assert_eq!(space.distance_metric(), restored.distance_metric());
+        }
+    }
+
+    #[test]
+    fn sparse_embedding_space_from_empty_bytes_fails() {
+        let result = SparseEmbeddingSpace::from_bytes(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sparse_embedding_space_from_wrong_version_fails() {
+        // Version 1 is for dense spaces, not sparse
+        let result = SparseEmbeddingSpace::from_bytes(&[1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert!(result.is_err());
     }
 }

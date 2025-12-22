@@ -81,5 +81,5 @@ pub use distance::{CachedNorm, DistanceMetric};
 pub use error::VectorError;
 pub use index::{HnswConfig, HnswIndex, SearchResult, VectorIndex};
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
-pub use store::VectorStore;
-pub use types::{Embedding, EmbeddingName, EmbeddingSpace};
+pub use store::{SparseVectorStore, VectorStore};
+pub use types::{Embedding, EmbeddingName, EmbeddingSpace, SparseEmbedding, SparseEmbeddingSpace};

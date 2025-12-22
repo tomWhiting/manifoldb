@@ -10,6 +10,11 @@
 //! - [`ExactKnn`] - Brute force k-NN search for small sets or validation
 //! - [`VectorFilter`] - Post-filter vector results by predicates
 //!
+//! # Hybrid Search
+//!
+//! The [`hybrid`] module provides support for combining dense and sparse vector
+//! similarity scores using weighted combinations or reciprocal rank fusion.
+//!
 //! # Iterator Design
 //!
 //! All operators implement the [`VectorOperator`] trait, which provides a
@@ -39,10 +44,12 @@
 mod ann_scan;
 mod exact_knn;
 mod filter;
+pub mod hybrid;
 
 pub use ann_scan::AnnScan;
 pub use exact_knn::ExactKnn;
 pub use filter::{FilterBuilder, VectorFilter};
+pub use hybrid::{merge_results, reciprocal_rank_fusion, HybridConfig, HybridMatch};
 
 use manifoldb_core::EntityId;
 

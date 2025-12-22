@@ -532,6 +532,7 @@ fn value_to_string(value: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::String(s) => s.clone(),
         Value::Vector(v) => format!("{v:?}"),
+        Value::SparseVector(v) => format!("{v:?}"),
         Value::Bytes(b) => format!("{b:?}"),
         Value::Array(a) => format!("{a:?}"),
     }

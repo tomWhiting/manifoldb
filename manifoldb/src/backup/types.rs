@@ -366,6 +366,20 @@ fn value_to_json(value: &manifoldb_core::Value) -> serde_json::Value {
                 })
                 .collect(),
         ),
+        manifoldb_core::Value::SparseVector(v) => {
+            // Serialize sparse vector as array of [index, value] pairs
+            serde_json::Value::Array(
+                v.iter()
+                    .map(|(idx, val)| {
+                        serde_json::Value::Array(vec![
+                            serde_json::Value::Number((*idx).into()),
+                            serde_json::Number::from_f64(f64::from(*val))
+                                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+                        ])
+                    })
+                    .collect(),
+            )
+        }
         manifoldb_core::Value::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(value_to_json).collect())
         }

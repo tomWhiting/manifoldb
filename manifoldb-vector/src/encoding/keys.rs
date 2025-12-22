@@ -10,6 +10,12 @@ pub const PREFIX_EMBEDDING_SPACE: u8 = 0x10;
 /// Key prefix for entity embeddings.
 pub const PREFIX_EMBEDDING: u8 = 0x11;
 
+/// Key prefix for sparse embedding space metadata.
+pub const PREFIX_SPARSE_EMBEDDING_SPACE: u8 = 0x12;
+
+/// Key prefix for sparse entity embeddings.
+pub const PREFIX_SPARSE_EMBEDDING: u8 = 0x13;
+
 /// Compute a hash for an embedding name.
 ///
 /// Uses FNV-1a hash for efficient computation.
@@ -109,6 +115,87 @@ pub fn decode_embedding_key(key: &[u8]) -> Option<EmbeddingKey> {
 #[must_use]
 pub fn decode_embedding_entity_id(key: &[u8]) -> Option<EntityId> {
     decode_embedding_key(key).map(|k| k.entity_id)
+}
+
+// --- Sparse embedding keys ---
+
+/// Encode a key for sparse embedding space metadata.
+///
+/// Key format: `[PREFIX_SPARSE_EMBEDDING_SPACE][name_hash]`
+#[must_use]
+pub fn encode_sparse_embedding_space_key(name: &EmbeddingName) -> Vec<u8> {
+    let mut key = Vec::with_capacity(9);
+    key.push(PREFIX_SPARSE_EMBEDDING_SPACE);
+    key.extend_from_slice(&hash_name(name.as_str()).to_be_bytes());
+    key
+}
+
+/// Decode a sparse embedding space name hash from a space key.
+///
+/// Returns `None` if the key doesn't have the correct format.
+#[must_use]
+pub fn decode_sparse_embedding_space_key(key: &[u8]) -> Option<u64> {
+    if key.len() != 9 || key[0] != PREFIX_SPARSE_EMBEDDING_SPACE {
+        return None;
+    }
+    let bytes: [u8; 8] = key[1..9].try_into().ok()?;
+    Some(u64::from_be_bytes(bytes))
+}
+
+/// Encode a key for an entity's sparse embedding in a space.
+///
+/// Key format: `[PREFIX_SPARSE_EMBEDDING][name_hash][entity_id]`
+#[must_use]
+pub fn encode_sparse_embedding_key(name: &EmbeddingName, entity_id: EntityId) -> Vec<u8> {
+    let mut key = Vec::with_capacity(17);
+    key.push(PREFIX_SPARSE_EMBEDDING);
+    key.extend_from_slice(&hash_name(name.as_str()).to_be_bytes());
+    key.extend_from_slice(&entity_id.as_u64().to_be_bytes());
+    key
+}
+
+/// Encode a prefix for scanning all sparse embeddings in a space.
+#[must_use]
+pub fn encode_sparse_embedding_prefix(name: &EmbeddingName) -> Vec<u8> {
+    let mut key = Vec::with_capacity(9);
+    key.push(PREFIX_SPARSE_EMBEDDING);
+    key.extend_from_slice(&hash_name(name.as_str()).to_be_bytes());
+    key
+}
+
+/// A decoded sparse embedding key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SparseEmbeddingKey {
+    /// The hash of the embedding space name.
+    pub name_hash: u64,
+    /// The entity ID.
+    pub entity_id: EntityId,
+}
+
+/// Decode a sparse embedding key.
+///
+/// Returns `None` if the key doesn't have the correct format.
+#[must_use]
+pub fn decode_sparse_embedding_key(key: &[u8]) -> Option<SparseEmbeddingKey> {
+    if key.len() != 17 || key[0] != PREFIX_SPARSE_EMBEDDING {
+        return None;
+    }
+
+    let name_hash_bytes: [u8; 8] = key[1..9].try_into().ok()?;
+    let entity_id_bytes: [u8; 8] = key[9..17].try_into().ok()?;
+
+    Some(SparseEmbeddingKey {
+        name_hash: u64::from_be_bytes(name_hash_bytes),
+        entity_id: EntityId::new(u64::from_be_bytes(entity_id_bytes)),
+    })
+}
+
+/// Decode an entity ID from a sparse embedding key.
+///
+/// Returns `None` if the key doesn't have the correct format.
+#[must_use]
+pub fn decode_sparse_embedding_entity_id(key: &[u8]) -> Option<EntityId> {
+    decode_sparse_embedding_key(key).map(|k| k.entity_id)
 }
 
 #[cfg(test)]
