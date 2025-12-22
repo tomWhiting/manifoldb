@@ -3,10 +3,6 @@
 //! This is the main HNSW (Hierarchical Navigable Small World) index implementation.
 //! It provides approximate nearest neighbor search with O(log N) complexity.
 
-// Allow unwrap on RwLock guards - a poisoned lock is unrecoverable and should panic
-// Allow unwrap on try_into for fixed-size slice conversions which are guaranteed to succeed
-#![allow(clippy::unwrap_used)]
-
 use std::sync::RwLock;
 
 use manifoldb_core::EntityId;
@@ -208,14 +204,20 @@ impl<E: StorageEngine> HnswIndex<E> {
     /// Get the distance metric for this index.
     #[must_use]
     pub fn distance_metric(&self) -> DistanceMetric {
-        self.graph.read().unwrap().distance_metric
+        self.graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable")
+            .distance_metric
     }
 
     /// Persist all changes to storage.
     ///
     /// This is useful after batch inserts to ensure all data is saved.
     pub fn flush(&self) -> Result<(), VectorError> {
-        let graph = self.graph.read().unwrap();
+        let graph = self
+            .graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
         save_graph(&self.engine, &self.table, &graph, &self.config)?;
         Ok(())
     }
@@ -230,7 +232,11 @@ impl<E: StorageEngine> HnswIndex<E> {
         embedding: &Embedding,
     ) -> Result<(), VectorError> {
         // Generate random level for this node
-        let node_level = self.level_gen.write().unwrap().generate_level();
+        let node_level = self
+            .level_gen
+            .write()
+            .expect("HNSW level generator lock poisoned - index is corrupted and unrecoverable")
+            .generate_level();
 
         // Create the new node
         let new_node = HnswNode::new(entity_id, embedding.clone(), node_level);
@@ -238,12 +244,16 @@ impl<E: StorageEngine> HnswIndex<E> {
         // If graph is empty, just insert as entry point
         if graph.is_empty() {
             graph.insert_node(new_node);
+            // SAFETY: We just inserted this node above, so it must exist
+            #[allow(clippy::unwrap_used)]
             save_node(&self.engine, &self.table, graph.get_node(entity_id).unwrap())?;
             self.update_metadata(graph)?;
             return Ok(());
         }
 
         // Get current entry point
+        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
+        #[allow(clippy::unwrap_used)]
         let entry_point = graph.entry_point.unwrap();
         let current_max_layer = graph.max_layer;
 
@@ -339,6 +349,8 @@ impl<E: StorageEngine> HnswIndex<E> {
         }
 
         // Save the new node
+        // SAFETY: We inserted this node at line 271, so it must exist
+        #[allow(clippy::unwrap_used)]
         save_node(&self.engine, &self.table, graph.get_node(entity_id).unwrap())?;
 
         // Update connections for all affected neighbors
@@ -389,7 +401,10 @@ impl<E: StorageEngine> HnswIndex<E> {
 impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
     fn insert(&mut self, entity_id: EntityId, embedding: &Embedding) -> Result<(), VectorError> {
         // Validate dimension
-        let mut graph = self.graph.write().unwrap();
+        let mut graph = self
+            .graph
+            .write()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
         if embedding.dimension() != graph.dimension {
             return Err(VectorError::DimensionMismatch {
                 expected: graph.dimension,
@@ -406,7 +421,10 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
     }
 
     fn delete(&mut self, entity_id: EntityId) -> Result<bool, VectorError> {
-        let mut graph = self.graph.write().unwrap();
+        let mut graph = self
+            .graph
+            .write()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
         self.delete_internal(&mut graph, entity_id)
     }
 
@@ -416,7 +434,10 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         k: usize,
         ef_search: Option<usize>,
     ) -> Result<Vec<SearchResult>, VectorError> {
-        let graph = self.graph.read().unwrap();
+        let graph = self
+            .graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
 
         // Validate dimension
         if query.dimension() != graph.dimension {
@@ -431,6 +452,8 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         }
 
         let ef = ef_search.unwrap_or(self.config.ef_search).max(k);
+        // SAFETY: We checked !graph.is_empty() above, so entry_point must exist
+        #[allow(clippy::unwrap_used)]
         let entry_point = graph.entry_point.unwrap();
 
         // Search from top layer to layer 1, using ef=1 (greedy)
@@ -458,17 +481,26 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
     }
 
     fn contains(&self, entity_id: EntityId) -> Result<bool, VectorError> {
-        let graph = self.graph.read().unwrap();
+        let graph = self
+            .graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
         Ok(graph.contains(entity_id))
     }
 
     fn len(&self) -> Result<usize, VectorError> {
-        let graph = self.graph.read().unwrap();
+        let graph = self
+            .graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable");
         Ok(graph.len())
     }
 
     fn dimension(&self) -> usize {
-        self.graph.read().unwrap().dimension
+        self.graph
+            .read()
+            .expect("HNSW graph lock poisoned - index is corrupted and unrecoverable")
+            .dimension
     }
 }
 
