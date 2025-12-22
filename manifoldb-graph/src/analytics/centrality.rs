@@ -186,12 +186,16 @@ impl BetweennessCentrality {
             return Ok(CentralityResult { scores: HashMap::new(), normalized: config.normalize });
         }
 
-        // Build node index for fast lookup
-        let node_index: HashMap<EntityId, usize> =
-            nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        // Build node index for fast lookup - pre-allocate with known size
+        let mut node_index: HashMap<EntityId, usize> = HashMap::with_capacity(n);
+        for (i, &id) in nodes.iter().enumerate() {
+            node_index.insert(id, i);
+        }
 
-        // Build adjacency lists
-        let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Build adjacency lists - pre-allocate with typical degree estimate
+        const AVG_DEGREE_ESTIMATE: usize = 8;
+        let mut neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         for (i, &node) in nodes.iter().enumerate() {
             let neighbor_ids = Self::get_neighbors(tx, node, config.direction)?;
             for neighbor_id in neighbor_ids {
@@ -296,13 +300,22 @@ impl BetweennessCentrality {
             return Ok(CentralityResult { scores: HashMap::new(), normalized: config.normalize });
         }
 
-        // Build node index and set for fast lookup
-        let node_set: std::collections::HashSet<EntityId> = nodes.iter().copied().collect();
-        let node_index: HashMap<EntityId, usize> =
-            nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        // Build node index and set for fast lookup - pre-allocate with known size
+        let mut node_set: std::collections::HashSet<EntityId> =
+            std::collections::HashSet::with_capacity(n);
+        for &id in nodes {
+            node_set.insert(id);
+        }
+        let mut node_index: HashMap<EntityId, usize> = HashMap::with_capacity(n);
+        for (i, &id) in nodes.iter().enumerate() {
+            node_index.insert(id, i);
+        }
 
         // Build adjacency lists (only including edges within the subgraph)
-        let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Pre-allocate with typical degree estimate
+        const AVG_DEGREE_ESTIMATE: usize = 8;
+        let mut neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         for (i, &node) in nodes.iter().enumerate() {
             let neighbor_ids = Self::get_neighbors(tx, node, config.direction)?;
             for neighbor_id in neighbor_ids {
@@ -389,7 +402,10 @@ impl BetweennessCentrality {
         node: EntityId,
         direction: Direction,
     ) -> GraphResult<Vec<EntityId>> {
-        let mut neighbors = Vec::new();
+        // Pre-allocate for typical node degree
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut neighbors = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         if direction.includes_outgoing() {
             let edges = AdjacencyIndex::get_outgoing_edge_ids(tx, node)?;

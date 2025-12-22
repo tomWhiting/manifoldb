@@ -240,8 +240,10 @@ impl HnswSearchOp {
             })?;
 
         // Build a map from entity IDs to input rows for efficient lookup
-        // First, collect all input rows
-        let mut rows_by_id: std::collections::HashMap<i64, Row> = std::collections::HashMap::new();
+        // First, collect all input rows - pre-allocate for typical result sizes
+        const INITIAL_CAPACITY: usize = 1000;
+        let mut rows_by_id: std::collections::HashMap<i64, Row> =
+            std::collections::HashMap::with_capacity(INITIAL_CAPACITY);
         while let Some(row) = self.input.next()? {
             // Try to extract an entity ID from the row
             // We look for "id" or "_id" columns

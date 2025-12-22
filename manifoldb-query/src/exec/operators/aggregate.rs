@@ -57,13 +57,16 @@ impl HashAggregateOp {
         }
         let schema = Arc::new(Schema::new(columns));
 
+        // Pre-allocate groups HashMap for typical query sizes
+        const INITIAL_GROUPS_CAPACITY: usize = 1000;
+
         Self {
             base: OperatorBase::new(schema),
             group_by,
             aggregates,
             having,
             input,
-            groups: HashMap::new(),
+            groups: HashMap::with_capacity(INITIAL_GROUPS_CAPACITY),
             results_iter: Vec::new().into_iter(),
             aggregated: false,
             key_buffer: Vec::with_capacity(64), // Pre-allocate for typical key sizes

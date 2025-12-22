@@ -301,7 +301,9 @@ impl HashJoinOp {
     /// Builds the hash table from the build side.
     fn build_hash_table(&mut self) -> OperatorResult<()> {
         // First, collect all rows into a temporary HashMap with Vec
-        let mut temp_table: HashMap<Vec<u8>, Vec<Row>> = HashMap::new();
+        // Pre-allocate for typical join sizes
+        const INITIAL_CAPACITY: usize = 1000;
+        let mut temp_table: HashMap<Vec<u8>, Vec<Row>> = HashMap::with_capacity(INITIAL_CAPACITY);
         let mut total_rows = 0usize;
         while let Some(row) = self.build.next()? {
             let key = self.compute_key(&row, &self.build_keys)?;

@@ -208,12 +208,17 @@ impl PageRank {
             });
         }
 
-        // Build node index for fast lookup
-        let node_index: HashMap<EntityId, usize> =
-            nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        // Build node index for fast lookup - pre-allocate with known size
+        let mut node_index: HashMap<EntityId, usize> = HashMap::with_capacity(n);
+        for (i, &id) in nodes.iter().enumerate() {
+            node_index.insert(id, i);
+        }
 
         // Build outgoing edge lists and compute out-degrees
-        let mut out_neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Pre-allocate inner vecs with typical degree estimate
+        const AVG_DEGREE_ESTIMATE: usize = 8;
+        let mut out_neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         let mut out_degrees: Vec<usize> = vec![0; n];
 
         for (i, &node) in nodes.iter().enumerate() {
@@ -231,7 +236,9 @@ impl PageRank {
         }
 
         // Build incoming edge lists for efficient iteration
-        let mut in_neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Pre-allocate inner vecs with typical degree estimate
+        let mut in_neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         for (i, neighbors) in out_neighbors.iter().enumerate() {
             for &j in neighbors {
                 in_neighbors[j].push(i);
@@ -333,13 +340,22 @@ impl PageRank {
             });
         }
 
-        // Build node index for fast lookup
-        let node_set: std::collections::HashSet<EntityId> = nodes.iter().copied().collect();
-        let node_index: HashMap<EntityId, usize> =
-            nodes.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        // Build node index for fast lookup - pre-allocate with known size
+        let mut node_set: std::collections::HashSet<EntityId> =
+            std::collections::HashSet::with_capacity(n);
+        for &id in nodes {
+            node_set.insert(id);
+        }
+        let mut node_index: HashMap<EntityId, usize> = HashMap::with_capacity(n);
+        for (i, &id) in nodes.iter().enumerate() {
+            node_index.insert(id, i);
+        }
 
         // Build adjacency information for the subgraph
-        let mut out_neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Pre-allocate inner vecs with typical degree estimate
+        const AVG_DEGREE_ESTIMATE: usize = 8;
+        let mut out_neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         let mut out_degrees: Vec<usize> = vec![0; n];
 
         for (i, &node) in nodes.iter().enumerate() {
@@ -359,7 +375,9 @@ impl PageRank {
         }
 
         // Build incoming edge lists
-        let mut in_neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Pre-allocate inner vecs with typical degree estimate
+        let mut in_neighbors: Vec<Vec<usize>> =
+            (0..n).map(|_| Vec::with_capacity(AVG_DEGREE_ESTIMATE)).collect();
         for (i, neighbors) in out_neighbors.iter().enumerate() {
             for &j in neighbors {
                 in_neighbors[j].push(i);

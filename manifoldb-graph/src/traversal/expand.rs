@@ -66,7 +66,10 @@ impl Expand {
         node: EntityId,
         direction: Direction,
     ) -> GraphResult<Vec<ExpandResult>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical node degree
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut results = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         // Get outgoing neighbors
         if direction.includes_outgoing() {
@@ -109,7 +112,10 @@ impl Expand {
         direction: Direction,
         edge_type: &EdgeType,
     ) -> GraphResult<Vec<ExpandResult>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical node degree per edge type
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 8;
+
+        let mut results = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         // Get outgoing neighbors by type
         if direction.includes_outgoing() {
@@ -152,7 +158,10 @@ impl Expand {
         node: EntityId,
         direction: Direction,
     ) -> GraphResult<Vec<(EntityId, Edge)>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical node degree
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut results = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         // Get outgoing neighbors
         if direction.includes_outgoing() {
@@ -191,7 +200,10 @@ impl Expand {
         node: EntityId,
         direction: Direction,
     ) -> GraphResult<Vec<EntityId>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical node degree
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut results = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         // Get outgoing neighbors
         if direction.includes_outgoing() {
@@ -234,7 +246,10 @@ impl Expand {
         direction: Direction,
         filter: &TraversalFilter,
     ) -> GraphResult<Vec<ExpandResult>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical node degree
+        const INITIAL_NEIGHBORS_CAPACITY: usize = 16;
+
+        let mut results = Vec::with_capacity(INITIAL_NEIGHBORS_CAPACITY);
 
         // Helper to process edges based on filter
         let process_edges = |edge_ids: &[EdgeId],
@@ -305,7 +320,10 @@ impl Expand {
         nodes: &[EntityId],
         direction: Direction,
     ) -> GraphResult<Vec<(EntityId, ExpandResult)>> {
-        let mut results = Vec::new();
+        // Pre-allocate for typical expansion (nodes * average degree)
+        const AVG_DEGREE_ESTIMATE: usize = 8;
+
+        let mut results = Vec::with_capacity(nodes.len() * AVG_DEGREE_ESTIMATE);
 
         for &node in nodes {
             let neighbors = Self::neighbors(tx, node, direction)?;
@@ -415,9 +433,13 @@ impl ExpandAll {
     ///
     /// Returns nodes with their discovery depth.
     pub fn execute<T: Transaction>(self, tx: &T) -> GraphResult<Vec<TraversalNode>> {
-        let mut visited: HashSet<EntityId> = HashSet::new();
-        let mut results: Vec<TraversalNode> = Vec::new();
-        let mut queue: VecDeque<(EntityId, usize)> = VecDeque::new();
+        // Estimate capacity based on max_depth and typical branching factor
+        // For BFS, nodes at depth d ~ branching_factor^d
+        const INITIAL_CAPACITY: usize = 256;
+
+        let mut visited: HashSet<EntityId> = HashSet::with_capacity(INITIAL_CAPACITY);
+        let mut results: Vec<TraversalNode> = Vec::with_capacity(INITIAL_CAPACITY);
+        let mut queue: VecDeque<(EntityId, usize)> = VecDeque::with_capacity(INITIAL_CAPACITY);
 
         // Start with the initial node
         visited.insert(self.start);
@@ -485,9 +507,12 @@ impl ExpandAll {
     /// Execute and count results without collecting.
     pub fn count<T: Transaction>(self, tx: &T) -> GraphResult<usize> {
         // For counting, we still need to traverse but don't need to store TraversalNodes
-        let mut visited: HashSet<EntityId> = HashSet::new();
+        // Estimate capacity based on typical BFS traversal
+        const INITIAL_CAPACITY: usize = 256;
+
+        let mut visited: HashSet<EntityId> = HashSet::with_capacity(INITIAL_CAPACITY);
         let mut count = 0usize;
-        let mut queue: VecDeque<(EntityId, usize)> = VecDeque::new();
+        let mut queue: VecDeque<(EntityId, usize)> = VecDeque::with_capacity(INITIAL_CAPACITY);
 
         visited.insert(self.start);
         queue.push_back((self.start, 0));
