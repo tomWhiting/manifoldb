@@ -46,11 +46,17 @@
 //!
 //! - [`engine`] - Storage engine traits and abstractions
 //! - [`backends`] - Concrete storage backend implementations
+//! - [`wal`] - Write-ahead logging for durability and recovery
 
 pub mod backends;
 pub mod engine;
+pub mod wal;
 
 pub use engine::{
     Cursor, CursorResult, ErrorContext, KeyValue, StorageEngine, StorageError, StorageResult,
     Transaction,
+};
+
+pub use wal::{
+    Lsn, Operation, TxnId, WalConfig, WalEntry, WalError, WalRecovery, WalResult, WalWriter,
 };

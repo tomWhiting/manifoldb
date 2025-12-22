@@ -1,0 +1,473 @@
+//! WAL recovery and replay functionality
+
+use super::entry::{Operation, WalEntry};
+use super::error::{WalError, WalResult};
+use super::Lsn;
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+/// Magic number for WAL files
+const WAL_MAGIC: [u8; 8] = [0x4D, 0x46, 0x4C, 0x44, 0x57, 0x41, 0x4C, 0x00];
+
+/// Expected WAL version
+const WAL_VERSION: u32 = 1;
+
+/// Size of the WAL header
+const HEADER_SIZE: u64 = 16;
+
+/// WAL recovery handler
+///
+/// Reads and validates WAL entries for crash recovery.
+/// Provides iterators for reading entries and filtering by commit status.
+pub struct WalRecovery {
+    /// Path to the WAL file
+    path: PathBuf,
+
+    /// Buffered file reader
+    reader: BufReader<File>,
+
+    /// Current position in the file
+    position: u64,
+
+    /// File size
+    file_size: u64,
+}
+
+impl WalRecovery {
+    /// Open a WAL file for recovery
+    pub fn open(path: impl AsRef<Path>) -> WalResult<Self> {
+        let path = path.as_ref().to_path_buf();
+        let file = File::open(&path)?;
+        let file_size = file.metadata()?.len();
+        let mut reader = BufReader::new(file);
+
+        // Validate header
+        Self::validate_header(&mut reader)?;
+
+        Ok(Self { path, reader, position: HEADER_SIZE, file_size })
+    }
+
+    /// Validate the WAL file header
+    fn validate_header(reader: &mut BufReader<File>) -> WalResult<()> {
+        reader.seek(SeekFrom::Start(0))?;
+
+        let mut magic = [0u8; 8];
+        if reader.read_exact(&mut magic).is_err() {
+            return Err(WalError::InvalidFormat("file too small for header".into()));
+        }
+
+        if magic != WAL_MAGIC {
+            return Err(WalError::InvalidFormat(format!("invalid magic number: {:?}", magic)));
+        }
+
+        let mut version_bytes = [0u8; 4];
+        reader.read_exact(&mut version_bytes)?;
+        let version = u32::from_le_bytes(version_bytes);
+
+        if version != WAL_VERSION {
+            return Err(WalError::InvalidFormat(format!(
+                "unsupported WAL version: {version}, expected {WAL_VERSION}"
+            )));
+        }
+
+        // Skip reserved bytes
+        reader.seek(SeekFrom::Current(4))?;
+
+        Ok(())
+    }
+
+    /// Read the next entry from the WAL
+    fn read_entry(&mut self) -> WalResult<Option<WalEntry>> {
+        if self.position >= self.file_size {
+            return Ok(None);
+        }
+
+        self.reader.seek(SeekFrom::Start(self.position))?;
+
+        // Read length prefix
+        let mut len_bytes = [0u8; 4];
+        match self.reader.read_exact(&mut len_bytes) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(WalError::Truncated { offset: self.position });
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if len == 0 || len > 100 * 1024 * 1024 {
+            // Sanity check: 100MB max entry
+            return Err(WalError::InvalidFormat(format!("invalid entry length: {len}")));
+        }
+
+        // Read entry data
+        let mut data = vec![0u8; len];
+        match self.reader.read_exact(&mut data) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(WalError::Truncated { offset: self.position });
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        // Read CRC
+        let mut crc_bytes = [0u8; 4];
+        match self.reader.read_exact(&mut crc_bytes) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(WalError::Truncated { offset: self.position });
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        let stored_crc = u32::from_le_bytes(crc_bytes);
+        let computed_crc = crc32_checksum(&data);
+
+        // Deserialize entry
+        let entry: WalEntry =
+            bincode::deserialize(&data).map_err(|e| WalError::Deserialize(e.to_string()))?;
+
+        if stored_crc != computed_crc {
+            return Err(WalError::ChecksumMismatch {
+                lsn: entry.lsn,
+                expected: stored_crc,
+                actual: computed_crc,
+            });
+        }
+
+        self.position += 4 + len as u64 + 4;
+
+        Ok(Some(entry))
+    }
+
+    /// Create an iterator over all entries in the WAL
+    pub fn iter(self) -> WalEntryIterator {
+        WalEntryIterator { recovery: self, finished: false }
+    }
+
+    /// Get an iterator over only committed entries
+    ///
+    /// This performs two passes:
+    /// 1. First pass identifies all committed transaction IDs
+    /// 2. Second pass yields only entries belonging to committed transactions
+    ///    or standalone entries (txn_id = 0)
+    pub fn committed_entries(self) -> CommittedEntryIterator {
+        CommittedEntryIterator::new(self.path)
+    }
+
+    /// Replay WAL entries to a storage engine
+    ///
+    /// This is the main recovery entry point. It:
+    /// 1. Reads all entries from the WAL
+    /// 2. Filters to only committed transactions
+    /// 3. Applies operations in order
+    pub fn replay<F>(&mut self, mut apply: F) -> WalResult<RecoveryStats>
+    where
+        F: FnMut(&WalEntry) -> WalResult<()>,
+    {
+        let path = self.path.clone();
+        let committed_iter = CommittedEntryIterator::new(path);
+
+        let mut stats = RecoveryStats::default();
+
+        for entry in committed_iter {
+            if entry.is_data_operation() {
+                apply(&entry)?;
+                stats.operations_applied += 1;
+            }
+            stats.entries_processed += 1;
+            stats.max_lsn = stats.max_lsn.max(entry.lsn);
+        }
+
+        Ok(stats)
+    }
+
+    /// Get the last checkpoint LSN in the WAL
+    pub fn last_checkpoint_lsn(&mut self) -> WalResult<Option<Lsn>> {
+        self.reader.seek(SeekFrom::Start(HEADER_SIZE))?;
+        self.position = HEADER_SIZE;
+
+        let mut last_checkpoint = None;
+
+        while let Some(entry) = self.read_entry()? {
+            if let Some(ckpt_lsn) = entry.checkpoint_lsn() {
+                last_checkpoint = Some(ckpt_lsn);
+            }
+        }
+
+        Ok(last_checkpoint)
+    }
+}
+
+/// Statistics from WAL recovery
+#[derive(Debug, Default)]
+pub struct RecoveryStats {
+    /// Total entries processed
+    pub entries_processed: usize,
+
+    /// Data operations applied (Put/Delete)
+    pub operations_applied: usize,
+
+    /// Highest LSN seen
+    pub max_lsn: Lsn,
+
+    /// Number of committed transactions
+    pub committed_txns: usize,
+
+    /// Number of aborted/incomplete transactions
+    pub aborted_txns: usize,
+}
+
+/// Iterator over WAL entries
+pub struct WalEntryIterator {
+    recovery: WalRecovery,
+    /// Set to true when corruption is detected, to stop iteration
+    finished: bool,
+}
+
+impl Iterator for WalEntryIterator {
+    type Item = WalResult<WalEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        match self.recovery.read_entry() {
+            Ok(Some(entry)) => Some(Ok(entry)),
+            Ok(None) => {
+                self.finished = true;
+                None
+            }
+            Err(e) => {
+                // On corruption, return the error and stop iteration
+                self.finished = true;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
+/// Iterator that yields only committed entries
+pub struct CommittedEntryIterator {
+    /// Path to WAL file
+    path: PathBuf,
+
+    /// Set of committed transaction IDs (populated in first pass)
+    committed_txns: HashSet<u64>,
+
+    /// Entries to yield (populated after first pass)
+    entries: std::vec::IntoIter<WalEntry>,
+
+    /// Whether initialization is complete
+    initialized: bool,
+}
+
+impl CommittedEntryIterator {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed_txns: HashSet::new(),
+            entries: Vec::new().into_iter(),
+            initialized: false,
+        }
+    }
+
+    fn initialize(&mut self) {
+        if self.initialized {
+            return;
+        }
+        self.initialized = true;
+
+        // First pass: identify committed transactions
+        if let Ok(recovery) = WalRecovery::open(&self.path) {
+            for entry in recovery.iter().flatten() {
+                if entry.operation == Operation::CommitTxn {
+                    self.committed_txns.insert(entry.txn_id);
+                }
+            }
+        }
+
+        // Second pass: collect committed entries
+        let mut committed_entries = Vec::new();
+        if let Ok(recovery) = WalRecovery::open(&self.path) {
+            for entry in recovery.iter().flatten() {
+                // Include if:
+                // - Standalone operation (txn_id = 0)
+                // - Part of a committed transaction
+                // - Transaction markers are skipped for data replay
+                if entry.is_data_operation()
+                    && (entry.txn_id == 0 || self.committed_txns.contains(&entry.txn_id))
+                {
+                    committed_entries.push(entry);
+                }
+            }
+        }
+
+        self.entries = committed_entries.into_iter();
+    }
+}
+
+impl Iterator for CommittedEntryIterator {
+    type Item = WalEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.initialize();
+        self.entries.next()
+    }
+}
+
+/// Calculate CRC32 checksum (must match writer.rs implementation)
+fn crc32_checksum(data: &[u8]) -> u32 {
+    const POLY: u32 = 0xEDB8_8320;
+    let mut crc = !0u32;
+
+    for &byte in data {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ POLY } else { crc >> 1 };
+        }
+    }
+
+    !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wal::{WalConfig, WalWriter};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_recovery_empty_wal() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("empty.wal");
+
+        // Create empty WAL
+        {
+            let config = WalConfig::default();
+            let _wal = WalWriter::open(&wal_path, config).unwrap();
+        }
+
+        // Recovery should work on empty WAL
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let entries: Vec<_> = recovery.iter().collect();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_recovery_with_entries() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Write entries
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::delete(3, "nodes", b"k1")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Recover and verify
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let entries: Vec<_> = recovery.iter().filter_map(Result::ok).collect();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].lsn, 1);
+        assert!(matches!(entries[0].operation, Operation::Put));
+        assert_eq!(entries[2].lsn, 3);
+        assert!(matches!(entries[2].operation, Operation::Delete));
+    }
+
+    #[test]
+    fn test_committed_entries_only() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("txn.wal");
+
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+
+            // Committed transaction
+            wal.append(WalEntry::begin_txn(1, 100)).unwrap();
+            wal.append(WalEntry::put_in_txn(2, 100, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put_in_txn(3, 100, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::commit_txn(4, 100)).unwrap();
+
+            // Uncommitted transaction
+            wal.append(WalEntry::begin_txn(5, 101)).unwrap();
+            wal.append(WalEntry::put_in_txn(6, 101, "nodes", b"k3", b"v3")).unwrap();
+            // No commit!
+
+            // Standalone operation
+            wal.append(WalEntry::put(7, "edges", b"e1", b"data")).unwrap();
+
+            wal.sync().unwrap();
+        }
+
+        let recovery = WalRecovery::open(&wal_path).unwrap();
+        let committed: Vec<_> = recovery.committed_entries().collect();
+
+        // Should have: 2 from txn 100 + 1 standalone
+        assert_eq!(committed.len(), 3);
+
+        // Verify entries
+        assert_eq!(committed[0].txn_id, 100);
+        assert_eq!(committed[1].txn_id, 100);
+        assert_eq!(committed[2].txn_id, 0); // Standalone
+    }
+
+    #[test]
+    fn test_replay() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("replay.wal");
+
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.sync().unwrap();
+        }
+
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+        let mut applied = Vec::new();
+
+        let stats = recovery
+            .replay(|entry| {
+                applied.push(entry.clone());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(stats.operations_applied, 2);
+        assert_eq!(stats.max_lsn, 2);
+        assert_eq!(applied.len(), 2);
+    }
+
+    #[test]
+    fn test_checkpoint_lsn() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("ckpt.wal");
+
+        {
+            let config = WalConfig::default();
+            let mut wal = WalWriter::open(&wal_path, config).unwrap();
+            wal.append(WalEntry::put(1, "nodes", b"k1", b"v1")).unwrap();
+            wal.append(WalEntry::put(2, "nodes", b"k2", b"v2")).unwrap();
+            wal.append(WalEntry::checkpoint(3, 1)).unwrap();
+            wal.append(WalEntry::put(4, "nodes", b"k3", b"v3")).unwrap();
+            wal.append(WalEntry::checkpoint(5, 3)).unwrap();
+            wal.sync().unwrap();
+        }
+
+        let mut recovery = WalRecovery::open(&wal_path).unwrap();
+        let last_ckpt = recovery.last_checkpoint_lsn().unwrap();
+
+        assert_eq!(last_ckpt, Some(3)); // Last checkpoint was at LSN 3
+    }
+}

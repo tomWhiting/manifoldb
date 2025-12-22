@@ -11,10 +11,13 @@ rust-version.workspace = true
 manifoldb-core = { workspace = true }
 redb = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 criterion = { workspace = true }
+tempfile = "3"
 
 [[bench]]
 name = "redb_bench"
