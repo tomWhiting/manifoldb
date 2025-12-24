@@ -50,7 +50,7 @@ use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
 use crate::cache::{extract_cache_hint, CacheHint, CacheMetrics, QueryCache, QueryCacheKey};
 use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
-use crate::execution::{execute_query, execute_statement, extract_tables_from_sql};
+use crate::execution::{execute_statement, extract_tables_from_sql};
 use crate::metrics::{CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot};
 use crate::prepared::{PreparedStatement, PreparedStatementCache};
 use crate::schema::SchemaManager;
