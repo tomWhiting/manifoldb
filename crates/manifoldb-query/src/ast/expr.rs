@@ -21,6 +21,11 @@ pub enum Literal {
     String(String),
     /// Vector literal (for embeddings).
     Vector(Vec<f32>),
+    /// Multi-vector literal (for ColBERT-style token embeddings).
+    ///
+    /// This represents a collection of vectors, typically used with MaxSim (<##>) operator.
+    /// Example: `[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]`
+    MultiVector(Vec<Vec<f32>>),
 }
 
 impl fmt::Display for Literal {
@@ -38,6 +43,23 @@ impl fmt::Display for Literal {
                         write!(f, ", ")?;
                     }
                     write!(f, "{val}")?;
+                }
+                write!(f, "]")
+            }
+            Self::MultiVector(vecs) => {
+                write!(f, "[")?;
+                for (i, vec) in vecs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "[")?;
+                    for (j, val) in vec.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{val}")?;
+                    }
+                    write!(f, "]")?;
                 }
                 write!(f, "]")
             }
@@ -696,6 +718,10 @@ mod tests {
         assert_eq!(Literal::Float(1.5).to_string(), "1.5");
         assert_eq!(Literal::String("hello".into()).to_string(), "'hello'");
         assert_eq!(Literal::Vector(vec![1.0, 2.0, 3.0]).to_string(), "[1, 2, 3]");
+        assert_eq!(
+            Literal::MultiVector(vec![vec![0.1, 0.2], vec![0.3, 0.4]]).to_string(),
+            "[[0.1, 0.2], [0.3, 0.4]]"
+        );
     }
 
     #[test]

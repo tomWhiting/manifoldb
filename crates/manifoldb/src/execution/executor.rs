@@ -2028,6 +2028,7 @@ fn literal_to_value(lit: &Literal) -> Value {
         Literal::Float(f) => Value::Float(*f),
         Literal::String(s) => Value::String(s.clone()),
         Literal::Vector(v) => Value::Vector(v.clone()),
+        Literal::MultiVector(v) => Value::MultiVector(v.clone()),
     }
 }
 

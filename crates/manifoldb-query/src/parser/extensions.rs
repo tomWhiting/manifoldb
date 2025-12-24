@@ -757,12 +757,17 @@ impl ExtendedParser {
                     }
                 }
                 ']' => {
-                    // Handle array subscripts - skip to matching '['
+                    // Handle array subscripts and literals (including nested arrays)
+                    let mut bracket_depth = 1;
                     pos -= 1;
-                    while pos > 0 && chars[pos - 1] != '[' {
+                    while pos > 0 && bracket_depth > 0 {
+                        match chars[pos - 1] {
+                            ']' => bracket_depth += 1,
+                            '[' => bracket_depth -= 1,
+                            _ => {}
+                        }
                         pos -= 1;
                     }
-                    pos = pos.saturating_sub(1);
                 }
                 _ if c.is_alphanumeric() || c == '_' || c == '.' || c == '$' => {
                     pos -= 1;
@@ -814,12 +819,15 @@ impl ExtendedParser {
                     }
                 }
                 '[' => {
-                    // Handle array subscripts
+                    // Handle array literals and subscripts (including nested arrays)
+                    let mut bracket_depth = 1;
                     pos += 1;
-                    while pos < chars.len() && chars[pos] != ']' {
-                        pos += 1;
-                    }
-                    if pos < chars.len() {
+                    while pos < chars.len() && bracket_depth > 0 {
+                        match chars[pos] {
+                            '[' => bracket_depth += 1,
+                            ']' => bracket_depth -= 1,
+                            _ => {}
+                        }
                         pos += 1;
                     }
                 }

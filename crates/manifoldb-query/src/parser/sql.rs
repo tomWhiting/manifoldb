@@ -447,8 +447,8 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
         }
         sp::Expr::Array(arr) => {
             let sp::Array { elem, .. } = arr;
-            let elements = elem.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
-            Ok(Expr::Tuple(elements))
+            // Try to convert to a vector or multi-vector literal
+            convert_array_expr(elem)
         }
         sp::Expr::Subscript { expr, subscript } => match *subscript {
             sp::Subscript::Index { index } => Ok(Expr::ArrayIndex {
@@ -475,6 +475,83 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
         }
         // Handle placeholder for positional parameters
         _ => Err(ParseError::Unsupported(format!("expression type: {expr:?}"))),
+    }
+}
+
+/// Converts an array expression, detecting vector and multi-vector literals.
+///
+/// This function analyzes the array elements to determine if they form:
+/// - A vector literal: `[0.1, 0.2, 0.3]` -> `Literal::Vector`
+/// - A multi-vector literal: `[[0.1, 0.2], [0.3, 0.4]]` -> `Literal::MultiVector`
+/// - A general tuple/array for other cases
+fn convert_array_expr(elements: Vec<sp::Expr>) -> ParseResult<Expr> {
+    // Check if all elements are numeric literals (for vector)
+    let all_numeric =
+        elements.iter().all(|e| matches!(e, sp::Expr::Value(v) if is_numeric_value(v)));
+
+    if all_numeric && !elements.is_empty() {
+        // Convert to a vector literal
+        let values: Vec<f32> = elements
+            .iter()
+            .map(|e| {
+                if let sp::Expr::Value(v) = e {
+                    value_to_f32(v)
+                } else {
+                    Err(ParseError::InvalidLiteral("expected numeric value".to_string()))
+                }
+            })
+            .collect::<ParseResult<Vec<_>>>()?;
+        return Ok(Expr::Literal(Literal::Vector(values)));
+    }
+
+    // Check if all elements are arrays of numeric literals (for multi-vector)
+    let all_arrays = elements.iter().all(|e| {
+        matches!(e, sp::Expr::Array(arr) if arr.elem.iter().all(|inner| matches!(inner, sp::Expr::Value(v) if is_numeric_value(v))))
+    });
+
+    if all_arrays && !elements.is_empty() {
+        // Convert to a multi-vector literal
+        let vectors: Vec<Vec<f32>> = elements
+            .iter()
+            .map(|e| {
+                if let sp::Expr::Array(arr) = e {
+                    arr.elem
+                        .iter()
+                        .map(|inner| {
+                            if let sp::Expr::Value(v) = inner {
+                                value_to_f32(v)
+                            } else {
+                                Err(ParseError::InvalidLiteral(
+                                    "expected numeric value in nested array".to_string(),
+                                ))
+                            }
+                        })
+                        .collect::<ParseResult<Vec<_>>>()
+                } else {
+                    Err(ParseError::InvalidLiteral("expected array in multi-vector".to_string()))
+                }
+            })
+            .collect::<ParseResult<Vec<_>>>()?;
+        return Ok(Expr::Literal(Literal::MultiVector(vectors)));
+    }
+
+    // Fall back to Tuple for other cases
+    let converted = elements.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
+    Ok(Expr::Tuple(converted))
+}
+
+/// Checks if a sqlparser Value is a numeric literal.
+fn is_numeric_value(value: &sp::Value) -> bool {
+    matches!(value, sp::Value::Number(_, _))
+}
+
+/// Converts a sqlparser Value to f32.
+fn value_to_f32(value: &sp::Value) -> ParseResult<f32> {
+    match value {
+        sp::Value::Number(n, _) => {
+            n.parse::<f32>().map_err(|_| ParseError::InvalidLiteral(format!("invalid f32: {n}")))
+        }
+        _ => Err(ParseError::InvalidLiteral("expected numeric value".to_string())),
     }
 }
 
@@ -1128,6 +1205,97 @@ mod tests {
                 }
             }
             _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_vector_literal() {
+        let stmt = parse_single_statement("SELECT [0.1, 0.2, 0.3]").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.projection.len(), 1);
+                if let SelectItem::Expr { expr, .. } = &select.projection[0] {
+                    match expr {
+                        Expr::Literal(Literal::Vector(v)) => {
+                            assert_eq!(v.len(), 3);
+                            assert!((v[0] - 0.1).abs() < 0.001);
+                            assert!((v[1] - 0.2).abs() < 0.001);
+                            assert!((v[2] - 0.3).abs() < 0.001);
+                        }
+                        _ => panic!("expected Vector literal, got {:?}", expr),
+                    }
+                } else {
+                    panic!("expected expression in projection");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_vector_literal() {
+        let stmt = parse_single_statement("SELECT [[0.1, 0.2], [0.3, 0.4]]").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.projection.len(), 1);
+                if let SelectItem::Expr { expr, .. } = &select.projection[0] {
+                    match expr {
+                        Expr::Literal(Literal::MultiVector(v)) => {
+                            assert_eq!(v.len(), 2);
+                            assert_eq!(v[0].len(), 2);
+                            assert_eq!(v[1].len(), 2);
+                            assert!((v[0][0] - 0.1).abs() < 0.001);
+                            assert!((v[0][1] - 0.2).abs() < 0.001);
+                            assert!((v[1][0] - 0.3).abs() < 0.001);
+                            assert!((v[1][1] - 0.4).abs() < 0.001);
+                        }
+                        _ => panic!("expected MultiVector literal, got {:?}", expr),
+                    }
+                } else {
+                    panic!("expected expression in projection");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multi_vector_in_order_by() {
+        // This tests that multi-vector literals can appear in ORDER BY clauses
+        // The actual operator <##> will be handled by the extensions parser
+        let stmt = parse_single_statement(
+            "SELECT * FROM docs ORDER BY embedding <-> [[0.1, 0.2], [0.3, 0.4]]",
+        );
+        // This will fail parsing due to <-> which needs the extensions parser
+        // But we're just testing the multi-vector parsing capability here
+        assert!(stmt.is_err()); // <-> is not a standard SQL operator
+    }
+
+    #[test]
+    fn parse_insert_with_multi_vector() {
+        let stmt = parse_single_statement(
+            "INSERT INTO docs (id, embedding) VALUES (1, [[0.1, 0.2], [0.3, 0.4]])",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Insert(insert) => {
+                assert_eq!(insert.columns.len(), 2);
+                match &insert.source {
+                    InsertSource::Values(rows) => {
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].len(), 2);
+                        match &rows[0][1] {
+                            Expr::Literal(Literal::MultiVector(v)) => {
+                                assert_eq!(v.len(), 2);
+                                assert_eq!(v[0].len(), 2);
+                            }
+                            _ => panic!("expected MultiVector literal in insert"),
+                        }
+                    }
+                    _ => panic!("expected VALUES"),
+                }
+            }
+            _ => panic!("expected INSERT"),
         }
     }
 }

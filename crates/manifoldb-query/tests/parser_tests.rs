@@ -8,8 +8,8 @@
 //! - Error handling
 
 use manifoldb_query::ast::{
-    BinaryOp, DataType, EdgeDirection, EdgeLength, Expr, JoinType, Literal, ParameterRef,
-    SelectItem, Statement, TableRef,
+    BinaryOp, DataType, EdgeDirection, EdgeLength, Expr, InsertSource, JoinType, Literal,
+    ParameterRef, SelectItem, Statement, TableRef,
 };
 use manifoldb_query::error::ParseError;
 use manifoldb_query::parser::{parse_single_statement, parse_sql, ExtendedParser};
@@ -897,6 +897,62 @@ mod vector_ops {
             }
         } else {
             panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn parse_maxsim_with_multi_vector_literal() {
+        // Parse MaxSim with a multi-vector literal instead of a parameter
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY embeddings <##> [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]] LIMIT 10",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            assert_eq!(select.order_by.len(), 1);
+            if let Expr::BinaryOp { op: BinaryOp::MaxSim, right, .. } =
+                select.order_by[0].expr.as_ref()
+            {
+                // The right operand should be a MultiVector literal
+                if let Expr::Literal(Literal::MultiVector(v)) = right.as_ref() {
+                    assert_eq!(v.len(), 2);
+                    assert_eq!(v[0].len(), 3);
+                    assert_eq!(v[1].len(), 3);
+                } else {
+                    panic!("expected MultiVector literal on right side, got {:?}", right);
+                }
+            } else {
+                panic!("expected MaxSim operator in ORDER BY");
+            }
+        } else {
+            panic!("expected SELECT");
+        }
+    }
+
+    #[test]
+    fn parse_insert_with_multi_vector_literal() {
+        // Parse INSERT with a multi-vector literal
+        let stmts = ExtendedParser::parse(
+            "INSERT INTO docs (id, embeddings) VALUES (1, [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])",
+        )
+        .unwrap();
+
+        if let Statement::Insert(insert) = &stmts[0] {
+            assert_eq!(insert.columns.len(), 2);
+            if let InsertSource::Values(rows) = &insert.source {
+                assert_eq!(rows.len(), 1);
+                // Second column value should be MultiVector
+                if let Expr::Literal(Literal::MultiVector(v)) = &rows[0][1] {
+                    assert_eq!(v.len(), 3);
+                    assert_eq!(v[0].len(), 2);
+                } else {
+                    panic!("expected MultiVector literal");
+                }
+            } else {
+                panic!("expected VALUES");
+            }
+        } else {
+            panic!("expected INSERT");
         }
     }
 
