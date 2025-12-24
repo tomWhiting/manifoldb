@@ -16,8 +16,8 @@ use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::logical::{
-    CreateIndexNode, CreateTableNode, DropIndexNode, DropTableNode, JoinType, LogicalExpr,
-    SetOpNode, UnionNode,
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
+    DropTableNode, JoinType, LogicalExpr, SetOpNode, UnionNode,
 };
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_query::ExtendedParser;
@@ -103,6 +103,8 @@ pub fn execute_statement<T: Transaction>(
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+        LogicalPlan::CreateCollection(node) => execute_create_collection(tx, node),
+        LogicalPlan::DropCollection(node) => execute_drop_collection(tx, node),
 
         _ => {
             // For SELECT, we shouldn't be here but handle gracefully
@@ -154,6 +156,8 @@ pub fn execute_prepared_statement<T: Transaction>(
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+        LogicalPlan::CreateCollection(node) => execute_create_collection(tx, node),
+        LogicalPlan::DropCollection(node) => execute_drop_collection(tx, node),
 
         _ => {
             // For SELECT, we shouldn't be here but handle gracefully
@@ -1954,6 +1958,124 @@ fn execute_drop_index<T: Transaction>(
 
         // Drop from schema manager
         SchemaManager::drop_index(tx, index_name, node.if_exists)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+    }
+    Ok(0)
+}
+
+/// Execute a CREATE COLLECTION statement.
+///
+/// Creates a vector collection with the specified vector configurations.
+fn execute_create_collection<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateCollectionNode,
+) -> Result<u64> {
+    use crate::collection::{
+        CollectionManager, CollectionName, DistanceType, HnswParams, IndexConfig,
+        InvertedIndexParams, VectorConfig, VectorType,
+    };
+    use manifoldb_vector::distance::DistanceMetric;
+
+    // Convert AST vector definitions to collection config
+    let mut vector_configs = Vec::new();
+
+    for vec_def in &node.vectors {
+        // Parse vector type
+        let vector_type = match &vec_def.vector_type {
+            manifoldb_query::ast::VectorTypeDef::Vector { dimension } => {
+                VectorType::Dense { dimension: *dimension as usize }
+            }
+            manifoldb_query::ast::VectorTypeDef::SparseVector { max_dimension } => {
+                VectorType::Sparse { max_dimension: max_dimension.unwrap_or(0) }
+            }
+            manifoldb_query::ast::VectorTypeDef::MultiVector { token_dim } => {
+                VectorType::Multi { token_dim: *token_dim as usize }
+            }
+            manifoldb_query::ast::VectorTypeDef::BinaryVector { bits } => {
+                VectorType::Binary { bits: *bits as usize }
+            }
+        };
+
+        // Parse distance metric from WITH options
+        let mut distance_metric = DistanceMetric::Cosine;
+        let mut m: Option<usize> = None;
+        let mut ef_construction: Option<usize> = None;
+
+        for (key, value) in &vec_def.with_options {
+            match key.as_str() {
+                "distance" => {
+                    distance_metric = match value.to_lowercase().as_str() {
+                        "euclidean" | "l2" => DistanceMetric::Euclidean,
+                        "cosine" => DistanceMetric::Cosine,
+                        "dot" | "dot_product" | "inner_product" => DistanceMetric::DotProduct,
+                        _ => DistanceMetric::Cosine,
+                    };
+                }
+                "m" => {
+                    m = value.parse().ok();
+                }
+                "ef_construction" => {
+                    ef_construction = value.parse().ok();
+                }
+                _ => {}
+            }
+        }
+
+        // Parse index method
+        let index_config = match vec_def.using.as_ref().map(|u| u.to_lowercase()).as_deref() {
+            Some("hnsw") => {
+                let mut hnsw_params = HnswParams::default();
+                if let Some(m_val) = m {
+                    hnsw_params = HnswParams::new(m_val);
+                }
+                if let Some(ef) = ef_construction {
+                    hnsw_params = hnsw_params.with_ef_construction(ef);
+                }
+                IndexConfig::hnsw(hnsw_params)
+            }
+            Some("inverted") => IndexConfig::inverted(InvertedIndexParams::default()),
+            Some("flat") | None => IndexConfig::flat(),
+            Some(_) => IndexConfig::flat(),
+        };
+
+        // Build the vector config
+        let config = VectorConfig {
+            vector_type,
+            distance: DistanceType::Dense(distance_metric),
+            index: index_config,
+        };
+
+        vector_configs.push((vec_def.name.name.clone(), config));
+    }
+
+    // Create collection name
+    let collection_name = CollectionName::new(&node.name)
+        .map_err(|e| Error::Execution(format!("invalid collection name: {e}")))?;
+
+    // Check if collection already exists and if_not_exists is set
+    if node.if_not_exists && CollectionManager::exists(tx, &collection_name).unwrap_or(false) {
+        return Ok(0);
+    }
+
+    // Create the collection using CollectionManager
+    CollectionManager::create(tx, &collection_name, vector_configs)
+        .map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(0)
+}
+
+/// Execute a DROP COLLECTION statement.
+fn execute_drop_collection<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &DropCollectionNode,
+) -> Result<u64> {
+    use crate::collection::{CollectionManager, CollectionName};
+
+    for name in &node.names {
+        let collection_name = CollectionName::new(name)
+            .map_err(|e| Error::Execution(format!("invalid collection name: {e}")))?;
+
+        CollectionManager::delete(tx, &collection_name, node.if_exists)
             .map_err(|e| Error::Execution(e.to_string()))?;
     }
     Ok(0)

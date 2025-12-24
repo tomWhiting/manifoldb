@@ -46,10 +46,10 @@
 //! ```
 
 use crate::ast::{
-    BinaryOp, DistanceMetric, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
-    Identifier, MatchStatement, NodePattern, OrderByExpr, ParameterRef, PathPattern,
-    PropertyCondition, QualifiedName, ReturnItem, SelectStatement, ShortestPathPattern, Statement,
-    WeightSpec,
+    BinaryOp, CreateCollectionStatement, DistanceMetric, EdgeDirection, EdgeLength, EdgePattern,
+    Expr, GraphPattern, Identifier, MatchStatement, NodePattern, OrderByExpr, ParameterRef,
+    PathPattern, PropertyCondition, QualifiedName, ReturnItem, SelectStatement,
+    ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -78,6 +78,11 @@ impl ExtendedParser {
         // Check for standalone MATCH statement (Cypher-style)
         if Self::is_standalone_match(input) {
             return Self::parse_standalone_match(input);
+        }
+
+        // Check for CREATE COLLECTION statement (not supported by sqlparser)
+        if Self::is_create_collection(input) {
+            return Self::parse_create_collection(input);
         }
 
         // Step 1: Extract MATCH clauses (they're not valid SQL)
@@ -114,6 +119,315 @@ impl ExtendedParser {
 
         // Must contain RETURN keyword
         upper.contains("RETURN")
+    }
+
+    /// Checks if the input is a CREATE COLLECTION statement.
+    fn is_create_collection(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+        upper.starts_with("CREATE COLLECTION")
+            || upper.starts_with("CREATE IF NOT EXISTS COLLECTION")
+    }
+
+    /// Parses a CREATE COLLECTION statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// CREATE COLLECTION [IF NOT EXISTS] name (
+    ///     vector_name VECTOR_TYPE USING index_method [WITH (options...)],
+    ///     ...
+    /// );
+    /// ```
+    ///
+    /// Vector types:
+    /// - `VECTOR(dim)` - dense vectors
+    /// - `SPARSE_VECTOR` or `SPARSE_VECTOR(max_dim)` - sparse vectors
+    /// - `MULTI_VECTOR(dim)` - multi-vectors (e.g., ColBERT)
+    /// - `BINARY_VECTOR(bits)` - binary vectors
+    fn parse_create_collection(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Parse CREATE keyword
+        if !upper.starts_with("CREATE") {
+            return Err(ParseError::SqlSyntax("expected CREATE keyword".to_string()));
+        }
+        let after_create = input[6..].trim_start();
+        let upper_after_create = after_create.to_uppercase();
+
+        // Parse optional IF NOT EXISTS
+        let (if_not_exists, after_if_not_exists) =
+            if upper_after_create.starts_with("IF NOT EXISTS") {
+                (true, after_create[13..].trim_start())
+            } else {
+                (false, after_create)
+            };
+
+        // Parse COLLECTION keyword
+        let upper_rest = after_if_not_exists.to_uppercase();
+        if !upper_rest.starts_with("COLLECTION") {
+            return Err(ParseError::SqlSyntax(
+                "expected COLLECTION keyword after CREATE".to_string(),
+            ));
+        }
+        let after_collection = after_if_not_exists[10..].trim_start();
+
+        // Parse collection name (identifier until '(' or whitespace)
+        let name_end = after_collection
+            .find(|c: char| c == '(' || c.is_whitespace())
+            .unwrap_or(after_collection.len());
+        let collection_name = &after_collection[..name_end];
+        if collection_name.is_empty() {
+            return Err(ParseError::SqlSyntax("expected collection name".to_string()));
+        }
+        let name = Identifier::new(collection_name.trim());
+
+        // Find the opening and closing parentheses
+        let after_name = after_collection[name_end..].trim_start();
+        if !after_name.starts_with('(') {
+            return Err(ParseError::SqlSyntax("expected '(' after collection name".to_string()));
+        }
+
+        // Find matching closing parenthesis
+        let close_paren = Self::find_matching_paren(after_name, 0).ok_or_else(|| {
+            ParseError::SqlSyntax("unclosed parenthesis in CREATE COLLECTION".to_string())
+        })?;
+
+        let vector_defs_str = &after_name[1..close_paren];
+
+        // Parse vector definitions
+        let vectors = Self::parse_vector_definitions(vector_defs_str)?;
+
+        if vectors.is_empty() {
+            return Err(ParseError::SqlSyntax(
+                "CREATE COLLECTION requires at least one vector definition".to_string(),
+            ));
+        }
+
+        let stmt = CreateCollectionStatement { if_not_exists, name, vectors };
+
+        Ok(vec![Statement::CreateCollection(Box::new(stmt))])
+    }
+
+    /// Parses the vector definitions inside CREATE COLLECTION parentheses.
+    fn parse_vector_definitions(input: &str) -> ParseResult<Vec<VectorDef>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut vectors = Vec::new();
+        let mut current = String::new();
+        let mut paren_depth: i32 = 0;
+
+        // Split by comma, respecting parentheses
+        for c in input.chars() {
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    current.push(c);
+                }
+                ')' => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    current.push(c);
+                }
+                ',' if paren_depth == 0 => {
+                    if !current.trim().is_empty() {
+                        vectors.push(Self::parse_single_vector_def(current.trim())?);
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        // Don't forget the last definition
+        if !current.trim().is_empty() {
+            vectors.push(Self::parse_single_vector_def(current.trim())?);
+        }
+
+        Ok(vectors)
+    }
+
+    /// Parses a single vector definition.
+    ///
+    /// Format: `name TYPE [USING method] [WITH (options)]`
+    fn parse_single_vector_def(input: &str) -> ParseResult<VectorDef> {
+        let input = input.trim();
+
+        // Find the name (first identifier)
+        let name_end = input.find(|c: char| c.is_whitespace()).unwrap_or(input.len());
+        let name_str = &input[..name_end];
+        if name_str.is_empty() {
+            return Err(ParseError::SqlSyntax("expected vector name in definition".to_string()));
+        }
+        let name = Identifier::new(name_str);
+
+        let after_name = input[name_end..].trim_start();
+        let upper_after_name = after_name.to_uppercase();
+
+        // Parse the vector type
+        let (vector_type, after_type) = Self::parse_vector_type(&upper_after_name, after_name)?;
+
+        // Parse optional USING clause
+        let after_type_trimmed = after_type.trim_start();
+        let upper_after_type = after_type_trimmed.to_uppercase();
+        let (using_method, after_using) = if upper_after_type.starts_with("USING") {
+            let after_using_kw = after_type_trimmed[5..].trim_start();
+            let upper_after_using_kw = after_using_kw.to_uppercase();
+
+            // Find the method name (until WITH or end)
+            let method_end =
+                if let Some(with_pos) = Self::find_keyword_pos(&upper_after_using_kw, "WITH") {
+                    with_pos
+                } else {
+                    after_using_kw.len()
+                };
+
+            let method = after_using_kw[..method_end].trim();
+            (Some(method.to_lowercase()), after_using_kw[method_end..].trim_start())
+        } else {
+            (None, after_type_trimmed)
+        };
+
+        // Parse optional WITH clause
+        let upper_after_using = after_using.to_uppercase();
+        let with_options = if upper_after_using.starts_with("WITH") {
+            let after_with = after_using[4..].trim_start();
+            Self::parse_with_options(after_with)?
+        } else {
+            vec![]
+        };
+
+        Ok(VectorDef { name, vector_type, using: using_method, with_options })
+    }
+
+    /// Parses a vector type (VECTOR, SPARSE_VECTOR, MULTI_VECTOR, BINARY_VECTOR).
+    fn parse_vector_type<'a>(
+        upper: &str,
+        original: &'a str,
+    ) -> ParseResult<(VectorTypeDef, &'a str)> {
+        // VECTOR(dim)
+        if upper.starts_with("VECTOR") {
+            let after_vector = original[6..].trim_start();
+            if after_vector.starts_with('(') {
+                let close = after_vector.find(')').ok_or_else(|| {
+                    ParseError::SqlSyntax("unclosed parenthesis in VECTOR type".to_string())
+                })?;
+                let dim_str = &after_vector[1..close];
+                let dimension = dim_str.trim().parse::<u32>().map_err(|_| {
+                    ParseError::SqlSyntax(format!("invalid dimension in VECTOR: {dim_str}"))
+                })?;
+                return Ok((VectorTypeDef::Vector { dimension }, &after_vector[close + 1..]));
+            }
+            return Err(ParseError::SqlSyntax(
+                "VECTOR type requires dimension: VECTOR(dim)".to_string(),
+            ));
+        }
+
+        // SPARSE_VECTOR or SPARSE_VECTOR(max_dim)
+        if upper.starts_with("SPARSE_VECTOR") {
+            let after_sparse = original[13..].trim_start();
+            if after_sparse.starts_with('(') {
+                let close = after_sparse.find(')').ok_or_else(|| {
+                    ParseError::SqlSyntax("unclosed parenthesis in SPARSE_VECTOR type".to_string())
+                })?;
+                let dim_str = &after_sparse[1..close];
+                let max_dimension = Some(dim_str.trim().parse::<u32>().map_err(|_| {
+                    ParseError::SqlSyntax(format!(
+                        "invalid max dimension in SPARSE_VECTOR: {dim_str}"
+                    ))
+                })?);
+                return Ok((
+                    VectorTypeDef::SparseVector { max_dimension },
+                    &after_sparse[close + 1..],
+                ));
+            }
+            return Ok((VectorTypeDef::SparseVector { max_dimension: None }, after_sparse));
+        }
+
+        // MULTI_VECTOR(dim)
+        if upper.starts_with("MULTI_VECTOR") {
+            let after_multi = original[12..].trim_start();
+            if after_multi.starts_with('(') {
+                let close = after_multi.find(')').ok_or_else(|| {
+                    ParseError::SqlSyntax("unclosed parenthesis in MULTI_VECTOR type".to_string())
+                })?;
+                let dim_str = &after_multi[1..close];
+                let token_dim = dim_str.trim().parse::<u32>().map_err(|_| {
+                    ParseError::SqlSyntax(format!("invalid dimension in MULTI_VECTOR: {dim_str}"))
+                })?;
+                return Ok((VectorTypeDef::MultiVector { token_dim }, &after_multi[close + 1..]));
+            }
+            return Err(ParseError::SqlSyntax(
+                "MULTI_VECTOR type requires dimension: MULTI_VECTOR(dim)".to_string(),
+            ));
+        }
+
+        // BINARY_VECTOR(bits)
+        if upper.starts_with("BINARY_VECTOR") {
+            let after_binary = original[13..].trim_start();
+            if after_binary.starts_with('(') {
+                let close = after_binary.find(')').ok_or_else(|| {
+                    ParseError::SqlSyntax("unclosed parenthesis in BINARY_VECTOR type".to_string())
+                })?;
+                let bits_str = &after_binary[1..close];
+                let bits = bits_str.trim().parse::<u32>().map_err(|_| {
+                    ParseError::SqlSyntax(format!("invalid bits in BINARY_VECTOR: {bits_str}"))
+                })?;
+                return Ok((VectorTypeDef::BinaryVector { bits }, &after_binary[close + 1..]));
+            }
+            return Err(ParseError::SqlSyntax(
+                "BINARY_VECTOR type requires bit count: BINARY_VECTOR(bits)".to_string(),
+            ));
+        }
+
+        Err(ParseError::SqlSyntax(format!(
+            "expected vector type (VECTOR, SPARSE_VECTOR, MULTI_VECTOR, BINARY_VECTOR), found: {}",
+            &original[..original.len().min(20)]
+        )))
+    }
+
+    /// Parses WITH options: `(key = 'value', key2 = 'value2', ...)`
+    fn parse_with_options(input: &str) -> ParseResult<Vec<(String, String)>> {
+        let input = input.trim();
+        if !input.starts_with('(') {
+            return Err(ParseError::SqlSyntax("expected '(' after WITH keyword".to_string()));
+        }
+
+        let close = input.find(')').ok_or_else(|| {
+            ParseError::SqlSyntax("unclosed parenthesis in WITH options".to_string())
+        })?;
+
+        let options_str = &input[1..close];
+        let mut options = Vec::new();
+
+        // Split by comma and parse each key = value pair
+        for pair in options_str.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+
+            let eq_pos = pair.find('=').ok_or_else(|| {
+                ParseError::SqlSyntax(format!("expected '=' in WITH option: {pair}"))
+            })?;
+
+            let key = pair[..eq_pos].trim().to_lowercase();
+            let value_part = pair[eq_pos + 1..].trim();
+
+            // Strip quotes from value if present
+            let value = if (value_part.starts_with('\'') && value_part.ends_with('\''))
+                || (value_part.starts_with('"') && value_part.ends_with('"'))
+            {
+                value_part[1..value_part.len() - 1].to_string()
+            } else {
+                value_part.to_string()
+            };
+
+            options.push((key, value));
+        }
+
+        Ok(options)
     }
 
     /// Parses a standalone MATCH statement (Cypher-style).
@@ -1899,5 +2213,174 @@ mod tests {
                 panic!("Expected HybridSearch expression");
             }
         }
+    }
+
+    // CREATE COLLECTION tests
+
+    #[test]
+    fn parse_create_collection_basic() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION documents (dense VECTOR(768) USING hnsw WITH (distance = 'cosine'))",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.name.name, "documents");
+            assert!(!create.if_not_exists);
+            assert_eq!(create.vectors.len(), 1);
+            assert_eq!(create.vectors[0].name.name, "dense");
+            assert!(matches!(
+                create.vectors[0].vector_type,
+                VectorTypeDef::Vector { dimension: 768 }
+            ));
+            assert_eq!(create.vectors[0].using, Some("hnsw".to_string()));
+            assert_eq!(create.vectors[0].with_options.len(), 1);
+            assert_eq!(
+                create.vectors[0].with_options[0],
+                ("distance".to_string(), "cosine".to_string())
+            );
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_if_not_exists() {
+        let stmts =
+            ExtendedParser::parse("CREATE IF NOT EXISTS COLLECTION docs (v VECTOR(128))").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert!(create.if_not_exists);
+            assert_eq!(create.name.name, "docs");
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_multiple_vectors() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION documents (
+                dense VECTOR(768) USING hnsw WITH (distance = 'cosine'),
+                sparse SPARSE_VECTOR USING inverted,
+                colbert MULTI_VECTOR(128) USING hnsw WITH (aggregation = 'maxsim')
+            )",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.vectors.len(), 3);
+
+            // Check dense vector
+            assert_eq!(create.vectors[0].name.name, "dense");
+            assert!(matches!(
+                create.vectors[0].vector_type,
+                VectorTypeDef::Vector { dimension: 768 }
+            ));
+
+            // Check sparse vector
+            assert_eq!(create.vectors[1].name.name, "sparse");
+            assert!(matches!(
+                create.vectors[1].vector_type,
+                VectorTypeDef::SparseVector { max_dimension: None }
+            ));
+            assert_eq!(create.vectors[1].using, Some("inverted".to_string()));
+
+            // Check multi-vector
+            assert_eq!(create.vectors[2].name.name, "colbert");
+            assert!(matches!(
+                create.vectors[2].vector_type,
+                VectorTypeDef::MultiVector { token_dim: 128 }
+            ));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_sparse_with_max_dim() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION docs (keywords SPARSE_VECTOR(30522) USING inverted)",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert!(matches!(
+                create.vectors[0].vector_type,
+                VectorTypeDef::SparseVector { max_dimension: Some(30522) }
+            ));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_binary_vector() {
+        let stmts =
+            ExtendedParser::parse("CREATE COLLECTION docs (hash BINARY_VECTOR(1024))").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert!(matches!(
+                create.vectors[0].vector_type,
+                VectorTypeDef::BinaryVector { bits: 1024 }
+            ));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_multiple_with_options() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION docs (vec VECTOR(768) USING hnsw WITH (distance = 'euclidean', m = 16, ef_construction = 200))",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.vectors[0].with_options.len(), 3);
+            assert!(create.vectors[0]
+                .with_options
+                .contains(&("distance".to_string(), "euclidean".to_string())));
+            assert!(create.vectors[0].with_options.contains(&("m".to_string(), "16".to_string())));
+            assert!(create.vectors[0]
+                .with_options
+                .contains(&("ef_construction".to_string(), "200".to_string())));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_flat_index() {
+        let stmts =
+            ExtendedParser::parse("CREATE COLLECTION docs (vec VECTOR(768) USING flat)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.vectors[0].using, Some("flat".to_string()));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_no_using() {
+        let stmts = ExtendedParser::parse("CREATE COLLECTION docs (vec VECTOR(768))").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert!(create.vectors[0].using.is_none());
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn is_create_collection_detection() {
+        assert!(ExtendedParser::is_create_collection("CREATE COLLECTION foo (v VECTOR(10))"));
+        assert!(ExtendedParser::is_create_collection("  CREATE COLLECTION foo (v VECTOR(10))  "));
+        assert!(ExtendedParser::is_create_collection(
+            "CREATE IF NOT EXISTS COLLECTION foo (v VECTOR(10))"
+        ));
+        assert!(!ExtendedParser::is_create_collection("CREATE TABLE foo (id INT)"));
+        assert!(!ExtendedParser::is_create_collection("SELECT * FROM foo"));
     }
 }
