@@ -1320,6 +1320,24 @@ fn execute_insert<T: Transaction>(
 ) -> Result<u64> {
     let mut count = 0;
 
+    // If columns not specified, look up from table schema
+    let resolved_columns: Vec<String> = if columns.is_empty() {
+        // Try to get table schema for column names
+        match SchemaManager::get_table(tx, table) {
+            Ok(Some(schema)) => schema.columns.iter().map(|c| c.name.clone()).collect(),
+            Ok(None) => {
+                // No schema exists - for backward compatibility with entity-only inserts,
+                // allow insertion but no properties will be set
+                Vec::new()
+            }
+            Err(e) => {
+                return Err(Error::Execution(format!("Failed to get table schema: {e}")));
+            }
+        }
+    } else {
+        columns.to_vec()
+    };
+
     // Extract values from the input plan
     if let LogicalPlan::Values(values_node) = input {
         for row_exprs in &values_node.rows {
@@ -1328,7 +1346,7 @@ fn execute_insert<T: Transaction>(
             entity = entity.with_label(table);
 
             // Set properties from columns and values
-            for (i, col) in columns.iter().enumerate() {
+            for (i, col) in resolved_columns.iter().enumerate() {
                 if let Some(expr) = row_exprs.get(i) {
                     let value = evaluate_literal_expr(expr, ctx)?;
                     entity = entity.with_property(col, value);

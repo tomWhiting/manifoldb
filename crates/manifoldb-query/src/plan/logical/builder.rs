@@ -903,9 +903,31 @@ impl PlanBuilder {
             }
 
             Expr::Tuple(exprs) => {
-                // Convert tuple to first element for now
-                // Full tuple support would need a Tuple variant
-                if let Some(first) = exprs.first() {
+                // Try to convert tuple of numeric literals to a vector
+                // This handles array literals like [0.1, 0.2, 0.3] used for vectors
+                let mut vec_elements = Vec::new();
+                let mut all_numeric = true;
+
+                for expr in exprs.iter() {
+                    match expr {
+                        Expr::Literal(ast::Literal::Integer(n)) => {
+                            vec_elements.push(*n as f32);
+                        }
+                        Expr::Literal(ast::Literal::Float(f)) => {
+                            vec_elements.push(*f as f32);
+                        }
+                        _ => {
+                            all_numeric = false;
+                            break;
+                        }
+                    }
+                }
+
+                if all_numeric && !vec_elements.is_empty() {
+                    // Convert numeric array to vector literal
+                    Ok(LogicalExpr::Literal(ast::Literal::Vector(vec_elements)))
+                } else if let Some(first) = exprs.first() {
+                    // Fall back to first element for non-numeric tuples
                     self.build_expr(first)
                 } else {
                     Ok(LogicalExpr::Literal(ast::Literal::Null))
