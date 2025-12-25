@@ -1248,6 +1248,253 @@ fn bulk_insert_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Upsert Benchmarks
+// ============================================================================
+
+fn bulk_upsert_benchmarks(c: &mut Criterion) {
+    use manifoldb_core::Entity;
+
+    let mut group = c.benchmark_group("bulk_upsert");
+
+    // Compare upsert scenarios: all inserts, all updates, mixed
+    for count in [100, 1000, 5000] {
+        group.throughput(Throughput::Elements(count));
+
+        // All inserts (no existing entities)
+        group.bench_with_input(
+            BenchmarkId::new("upsert_all_inserts", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        let entities: Vec<Entity> = (0..count)
+                            .map(|i| {
+                                Entity::new(EntityId::new(0))
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                            })
+                            .collect();
+                        (db, entities)
+                    },
+                    |(db, entities)| {
+                        let result = db.bulk_upsert_entities(&entities).expect("upsert failed");
+                        black_box((db, result))
+                    },
+                );
+            },
+        );
+
+        // All updates (all entities exist)
+        group.bench_with_input(
+            BenchmarkId::new("upsert_all_updates", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-insert entities
+                        let initial: Vec<Entity> = (0..count)
+                            .map(|i| {
+                                Entity::new(EntityId::new(0))
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                                    .with_property("version", 1i64)
+                            })
+                            .collect();
+                        let ids = db.bulk_insert_entities(&initial).expect("insert failed");
+
+                        // Create update entities with existing IDs
+                        let updates: Vec<Entity> = ids
+                            .iter()
+                            .enumerate()
+                            .map(|(i, id)| {
+                                Entity::new(*id)
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                                    .with_property("version", 2i64)
+                            })
+                            .collect();
+                        (db, updates)
+                    },
+                    |(db, entities)| {
+                        let result = db.bulk_upsert_entities(&entities).expect("upsert failed");
+                        black_box((db, result))
+                    },
+                );
+            },
+        );
+
+        // Mixed 50/50 (half inserts, half updates)
+        group.bench_with_input(
+            BenchmarkId::new("upsert_mixed_50_50", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-insert half the entities
+                        let half = count / 2;
+                        let initial: Vec<Entity> = (0..half)
+                            .map(|i| {
+                                Entity::new(EntityId::new(0))
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                                    .with_property("version", 1i64)
+                            })
+                            .collect();
+                        let ids = db.bulk_insert_entities(&initial).expect("insert failed");
+
+                        // Create mixed batch: updates for existing + new inserts
+                        let mut entities: Vec<Entity> = ids
+                            .iter()
+                            .enumerate()
+                            .map(|(i, id)| {
+                                Entity::new(*id)
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                                    .with_property("version", 2i64)
+                            })
+                            .collect();
+
+                        // Add new entities
+                        for i in half..count {
+                            entities.push(
+                                Entity::new(EntityId::new(0))
+                                    .with_label("Item")
+                                    .with_property("index", i as i64)
+                                    .with_property("version", 1i64),
+                            );
+                        }
+                        (db, entities)
+                    },
+                    |(db, entities)| {
+                        let result = db.bulk_upsert_entities(&entities).expect("upsert failed");
+                        black_box((db, result))
+                    },
+                );
+            },
+        );
+    }
+
+    // Compare bulk_upsert vs separate bulk_insert + individual updates
+    group.sample_size(20);
+    group.throughput(Throughput::Elements(2000)); // 1000 updates + 1000 inserts
+
+    group.bench_function("upsert_vs_manual_mixed_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                // Pre-insert 1000 entities
+                let initial: Vec<Entity> = (0..1000)
+                    .map(|i| {
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 1i64)
+                    })
+                    .collect();
+                let ids = db.bulk_insert_entities(&initial).expect("insert failed");
+
+                // Create mixed batch
+                let mut entities: Vec<Entity> = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, id)| {
+                        Entity::new(*id)
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 2i64)
+                    })
+                    .collect();
+
+                for i in 1000..2000 {
+                    entities.push(
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 1i64),
+                    );
+                }
+                (db, entities)
+            },
+            |(db, entities)| {
+                let result = db.bulk_upsert_entities(&entities).expect("upsert failed");
+                black_box((db, result))
+            },
+        );
+    });
+
+    // Compare with manual approach (separate check + insert/update)
+    group.bench_function("manual_check_update_insert_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                // Pre-insert 1000 entities
+                let initial: Vec<Entity> = (0..1000)
+                    .map(|i| {
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 1i64)
+                    })
+                    .collect();
+                let ids = db.bulk_insert_entities(&initial).expect("insert failed");
+
+                // Create mixed batch with IDs
+                let mut entities: Vec<Entity> = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, id)| {
+                        Entity::new(*id)
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 2i64)
+                    })
+                    .collect();
+
+                for i in 1000..2000 {
+                    entities.push(
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("version", 1i64),
+                    );
+                }
+                (db, entities, ids)
+            },
+            |(db, entities, existing_ids)| {
+                // Manual approach: separate inserts and updates
+                let mut to_insert = Vec::new();
+                let mut to_update = Vec::new();
+
+                for entity in &entities {
+                    if existing_ids.contains(&entity.id) {
+                        to_update.push(entity.clone());
+                    } else {
+                        to_insert.push(entity.clone());
+                    }
+                }
+
+                // Insert new entities
+                let new_ids = db.bulk_insert_entities(&to_insert).expect("insert failed");
+
+                // Update existing entities one by one
+                let mut tx = db.begin().expect("failed");
+                for entity in to_update {
+                    tx.put_entity(&entity).expect("failed");
+                }
+                tx.commit().expect("failed");
+
+                black_box((db, new_ids))
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -1260,6 +1507,7 @@ criterion_group!(
     bulk_vector_benchmarks,
     query_benchmarks,
     write_batching_benchmarks,
-    bulk_insert_benchmarks
+    bulk_insert_benchmarks,
+    bulk_upsert_benchmarks
 );
 criterion_main!(benches);
