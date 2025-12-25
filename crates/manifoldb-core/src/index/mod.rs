@@ -1,4 +1,4 @@
-//! Property index types and encoding.
+//! Property index types, encoding, and catalog.
 //!
 //! This module provides types for secondary property indexes that enable
 //! efficient queries like `WHERE property = value` and `WHERE property > value`.
@@ -11,6 +11,11 @@
 //! - **Point lookups**: `WHERE age = 30`
 //! - **Range scans**: `WHERE age > 18 AND age < 65`
 //! - **Prefix matching**: `WHERE name LIKE 'Alice%'`
+//!
+//! # Index Catalog
+//!
+//! The [`IndexCatalog`] tracks all user-created indexes and their metadata.
+//! It provides fast lookups by name, table, and column for query planning.
 //!
 //! # Key Format
 //!
@@ -44,7 +49,9 @@
 //! assert_eq!(decoded.entity_id, EntityId::new(42));
 //! ```
 
+mod catalog;
 mod property;
 
+pub use catalog::{CatalogError, CatalogIndexId, IndexCatalog, IndexDef, IndexDefBuilder, IndexType};
 pub use crate::encoding::keys::IndexId;
 pub use property::{PropertyIndexEntry, PropertyIndexScan};

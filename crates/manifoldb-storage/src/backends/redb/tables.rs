@@ -81,6 +81,9 @@ pub mod names {
 
     /// Table for storing HNSW index registry (maps index name to configuration).
     pub const HNSW_REGISTRY: &str = "hnsw_registry";
+
+    /// Table for storing index catalog (index definitions and metadata).
+    pub const INDEX_CATALOG: &str = "index_catalog";
 }
 
 /// Generate an HNSW index table name from the index name.
