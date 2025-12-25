@@ -1405,6 +1405,158 @@ impl Database {
     }
 
     // ========================================================================
+    // Bulk Delete Vector Operations
+    // ========================================================================
+
+    /// Delete specific vectors by entity ID and vector name.
+    ///
+    /// This method removes vector properties from entities. Each entry in the
+    /// `vectors` slice is a tuple of `(entity_id, vector_name)` specifying which
+    /// vector to delete from which entity.
+    ///
+    /// # Use Cases
+    ///
+    /// - Remove embeddings when re-embedding with a different model
+    /// - Clean up vectors for entities that no longer need them
+    /// - Selective vector removal (e.g., delete image embeddings, keep text embeddings)
+    ///
+    /// # Arguments
+    ///
+    /// * `vectors` - List of `(entity_id, vector_name)` tuples specifying which
+    ///   vectors to delete
+    ///
+    /// # Returns
+    ///
+    /// The number of vectors that were actually deleted. This may be less than
+    /// the input count if some vectors didn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - An entity referenced in the input does not exist
+    /// - The transaction cannot be committed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    /// use manifoldb_core::EntityId;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // First, insert some vectors
+    /// let vectors = vec![
+    ///     (entity1.id, "text_embedding".to_string(), vec![0.1f32; 384]),
+    ///     (entity1.id, "image_embedding".to_string(), vec![0.2f32; 512]),
+    ///     (entity2.id, "text_embedding".to_string(), vec![0.3f32; 384]),
+    /// ];
+    /// db.bulk_insert_vectors("documents", &vectors)?;
+    ///
+    /// // Now delete specific vectors
+    /// let to_delete = vec![
+    ///     (entity1.id, "image_embedding".to_string()),
+    ///     (entity2.id, "text_embedding".to_string()),
+    /// ];
+    /// let deleted = db.bulk_delete_vectors(&to_delete)?;
+    /// assert_eq!(deleted, 2);
+    /// ```
+    pub fn bulk_delete_vectors(
+        &self,
+        vectors: &[(manifoldb_core::EntityId, String)],
+    ) -> Result<usize> {
+        if vectors.is_empty() {
+            return Ok(0);
+        }
+
+        let start = std::time::Instant::now();
+
+        // Phase 1: Validate all entities exist
+        {
+            let tx = self.begin_read()?;
+            for (entity_id, _) in vectors {
+                if tx.get_entity(*entity_id)?.is_none() {
+                    return Err(Error::EntityNotFound(*entity_id));
+                }
+            }
+        }
+
+        // Phase 2: Delete vectors using a write transaction
+        let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
+
+        let mut deleted_count = 0;
+
+        for (entity_id, vector_name) in vectors {
+            // Get the existing entity
+            let mut entity =
+                tx.get_entity(*entity_id)?.ok_or_else(|| Error::EntityNotFound(*entity_id))?;
+
+            // Check if the vector property exists and remove it
+            let property_name = format!("_vector_{}", vector_name);
+            if entity.properties.remove(&property_name).is_some() {
+                deleted_count += 1;
+
+                // Update the entity
+                tx.put_entity(&entity).map_err(Error::Transaction)?;
+            }
+        }
+
+        // Commit the transaction
+        let commit_start = std::time::Instant::now();
+        tx.commit().map_err(Error::Transaction)?;
+        self.db_metrics.record_commit(commit_start.elapsed());
+
+        // Record successful operation
+        self.db_metrics.record_query(start.elapsed(), true);
+
+        Ok(deleted_count)
+    }
+
+    /// Delete all vectors with a given name across multiple entities.
+    ///
+    /// This is a convenience method for the common case where you want to
+    /// delete the same named vector from multiple entities.
+    ///
+    /// # Use Cases
+    ///
+    /// - Re-embed all documents with a new model (delete old embeddings first)
+    /// - Remove a deprecated embedding type across the dataset
+    /// - Clean up after changing vector dimension requirements
+    ///
+    /// # Arguments
+    ///
+    /// * `vector_name` - The name of the vector field to delete
+    /// * `entity_ids` - List of entity IDs from which to delete the vector
+    ///
+    /// # Returns
+    ///
+    /// The number of vectors that were actually deleted. This may be less than
+    /// the input count if some vectors didn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    /// use manifoldb_core::EntityId;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Delete text embeddings from multiple entities
+    /// let entity_ids = vec![entity1.id, entity2.id, entity3.id];
+    /// let deleted = db.bulk_delete_vectors_by_name("text_embedding", &entity_ids)?;
+    /// ```
+    pub fn bulk_delete_vectors_by_name(
+        &self,
+        vector_name: &str,
+        entity_ids: &[manifoldb_core::EntityId],
+    ) -> Result<usize> {
+        let expanded: Vec<(manifoldb_core::EntityId, String)> =
+            entity_ids.iter().map(|id| (*id, vector_name.to_string())).collect();
+
+        self.bulk_delete_vectors(&expanded)
+    }
+
+    // ========================================================================
     // Bulk Upsert Operations
     // ========================================================================
 

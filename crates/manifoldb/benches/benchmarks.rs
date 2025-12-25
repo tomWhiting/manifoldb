@@ -775,6 +775,114 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
         );
     });
 
+    // ========================================================================
+    // Bulk Delete Benchmarks
+    // ========================================================================
+
+    // Bulk delete throughput at different scales
+    for count in [1_000, 10_000, 100_000] {
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(BenchmarkId::new("bulk_delete", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    // Setup: create database, entities, and insert vectors
+                    let db = Database::in_memory().expect("failed to create database");
+                    let mut entity_ids = Vec::with_capacity(count);
+                    {
+                        let mut tx = db.begin().expect("failed");
+                        for _ in 0..count {
+                            let entity = tx.create_entity().expect("failed");
+                            entity_ids.push(entity.id);
+                            tx.put_entity(&entity).expect("failed");
+                        }
+                        tx.commit().expect("failed");
+                    }
+                    // Insert vectors to delete
+                    let vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                        .iter()
+                        .map(|&id| (id, "embedding".to_string(), vec![0.5f32; 128]))
+                        .collect();
+                    db.bulk_insert_vectors("documents", &vectors).expect("failed");
+                    (db, entity_ids)
+                },
+                |(db, entity_ids)| {
+                    // Benchmark: bulk delete vectors
+                    let to_delete: Vec<(EntityId, String)> =
+                        entity_ids.iter().map(|&id| (id, "embedding".to_string())).collect();
+                    let result = db.bulk_delete_vectors(&to_delete).expect("failed");
+                    black_box(result)
+                },
+            );
+        });
+    }
+
+    // Bulk delete by name convenience method
+    group.bench_function("bulk_delete_by_name_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create database");
+                let mut entity_ids = Vec::with_capacity(1000);
+                {
+                    let mut tx = db.begin().expect("failed");
+                    for _ in 0..1000 {
+                        let entity = tx.create_entity().expect("failed");
+                        entity_ids.push(entity.id);
+                        tx.put_entity(&entity).expect("failed");
+                    }
+                    tx.commit().expect("failed");
+                }
+                // Insert vectors to delete
+                let vectors: Vec<(EntityId, Vec<f32>)> =
+                    entity_ids.iter().map(|&id| (id, vec![0.5f32; 128])).collect();
+                db.bulk_insert_named_vectors("documents", "text_embedding", &vectors)
+                    .expect("failed");
+                (db, entity_ids)
+            },
+            |(db, entity_ids)| {
+                let result =
+                    db.bulk_delete_vectors_by_name("text_embedding", &entity_ids).expect("failed");
+                black_box(result)
+            },
+        );
+    });
+
+    // Compare delete with individual property removal
+    group.bench_function("individual_delete_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create database");
+                let mut entity_ids = Vec::with_capacity(1000);
+                {
+                    let mut tx = db.begin().expect("failed");
+                    for _ in 0..1000 {
+                        let entity = tx.create_entity().expect("failed");
+                        entity_ids.push(entity.id);
+                        tx.put_entity(&entity).expect("failed");
+                    }
+                    tx.commit().expect("failed");
+                }
+                // Insert vectors to delete
+                let vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                    .iter()
+                    .map(|&id| (id, "embedding".to_string(), vec![0.5f32; 128]))
+                    .collect();
+                db.bulk_insert_vectors("documents", &vectors).expect("failed");
+                (db, entity_ids)
+            },
+            |(db, entity_ids)| {
+                // Individual deletes via separate transactions
+                for id in entity_ids {
+                    let mut tx = db.begin().expect("failed");
+                    let mut entity = tx.get_entity(id).expect("failed").expect("entity not found");
+                    entity.properties.remove("_vector_embedding");
+                    tx.put_entity(&entity).expect("failed");
+                    tx.commit().expect("failed");
+                }
+                black_box(())
+            },
+        );
+    });
+
     group.finish();
 }
 
