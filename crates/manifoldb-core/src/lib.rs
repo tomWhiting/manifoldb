@@ -45,11 +45,13 @@
 //!
 //! - [`types`] - Core data types ([`Entity`], [`Edge`], [`Value`], IDs)
 //! - [`encoding`] - Serialization and key encoding utilities
+//! - [`index`] - Property index types for secondary indexes
 //! - [`error`] - Error types ([`CoreError`])
 //! - [`transaction`] - Transaction error types ([`TransactionError`])
 
 pub mod encoding;
 pub mod error;
+pub mod index;
 pub mod transaction;
 pub mod types;
 

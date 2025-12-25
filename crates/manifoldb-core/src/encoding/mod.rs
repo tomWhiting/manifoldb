@@ -43,10 +43,12 @@
 mod edge;
 mod entity;
 pub mod keys;
+pub mod sortable;
 mod traits;
 pub mod value;
 
 #[cfg(test)]
 mod proptest_tests;
 
+pub use sortable::{decode_sortable, decode_sortable_with_len, encode_sortable};
 pub use traits::{Decoder, Encoder, FORMAT_VERSION};
