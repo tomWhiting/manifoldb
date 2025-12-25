@@ -305,10 +305,7 @@ impl IndexDefBuilder {
     #[must_use]
     pub fn build(self) -> IndexDef {
         let created_at = self.created_at.unwrap_or_else(|| {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
         });
 
         IndexDef {
@@ -435,7 +432,9 @@ impl IndexCatalog {
             return Err(CatalogError::InvalidDefinition("table name cannot be empty".into()));
         }
         if def.columns.is_empty() {
-            return Err(CatalogError::InvalidDefinition("index must have at least one column".into()));
+            return Err(CatalogError::InvalidDefinition(
+                "index must have at least one column".into(),
+            ));
         }
 
         // Check for duplicate name
@@ -469,7 +468,8 @@ impl IndexCatalog {
     ///
     /// Returns an error if no index exists with the given name.
     pub fn drop_index(&mut self, name: &str) -> Result<IndexDef, CatalogError> {
-        let def = self.by_name.remove(name).ok_or_else(|| CatalogError::IndexNotFound(name.into()))?;
+        let def =
+            self.by_name.remove(name).ok_or_else(|| CatalogError::IndexNotFound(name.into()))?;
 
         // Remove from table index
         if let Some(indexes) = self.by_table.get_mut(&def.table_name) {
@@ -528,10 +528,7 @@ impl IndexCatalog {
     /// A vector of references to matching index definitions.
     #[must_use]
     pub fn find_indexes_for_column(&self, table_name: &str, column: &str) -> Vec<&IndexDef> {
-        self.list_indexes(table_name)
-            .into_iter()
-            .filter(|def| def.covers_column(column))
-            .collect()
+        self.list_indexes(table_name).into_iter().filter(|def| def.covers_column(column)).collect()
     }
 
     /// Get all index definitions.
@@ -569,10 +566,8 @@ mod tests {
 
     #[test]
     fn index_def_builder_basic() {
-        let def = IndexDef::builder("idx_users_email", "users")
-            .column("email")
-            .unique(true)
-            .build();
+        let def =
+            IndexDef::builder("idx_users_email", "users").column("email").unique(true).build();
 
         assert_eq!(def.name, "idx_users_email");
         assert_eq!(def.table_name, "users");
@@ -595,9 +590,7 @@ mod tests {
 
     #[test]
     fn index_def_covers_column() {
-        let def = IndexDef::builder("idx_test", "test")
-            .columns(["a", "b", "c"])
-            .build();
+        let def = IndexDef::builder("idx_test", "test").columns(["a", "b", "c"]).build();
 
         assert!(def.covers_column("a"));
         assert!(def.covers_column("b"));
@@ -652,9 +645,7 @@ mod tests {
     fn catalog_create_and_get() {
         let mut catalog = IndexCatalog::new();
 
-        let def = IndexDef::builder("idx_users_email", "users")
-            .column("email")
-            .build();
+        let def = IndexDef::builder("idx_users_email", "users").column("email").build();
 
         let id = catalog.create_index(def).unwrap();
         assert_eq!(id, CatalogIndexId::new(0));
@@ -745,9 +736,7 @@ mod tests {
         let mut catalog = IndexCatalog::new();
 
         let def1 = IndexDef::builder("idx_single", "users").column("email").build();
-        let def2 = IndexDef::builder("idx_composite", "users")
-            .columns(["email", "name"])
-            .build();
+        let def2 = IndexDef::builder("idx_composite", "users").columns(["email", "name"]).build();
         let def3 = IndexDef::builder("idx_other", "users").column("age").build();
 
         catalog.create_index(def1).unwrap();
