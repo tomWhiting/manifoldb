@@ -629,25 +629,51 @@ where
     }
 }
 
-/// Simple LIKE pattern matching.
+/// SQL LIKE pattern matching.
+///
+/// Supports:
+/// - `%` matches any sequence of characters (including empty)
+/// - `_` matches exactly one character
 fn like_match(s: &str, pattern: &str) -> bool {
-    // Convert SQL LIKE pattern to simple matching
-    // % matches any sequence, _ matches single char
-    let regex_pattern = pattern.replace('%', ".*").replace('_', ".");
+    let s_chars: Vec<char> = s.chars().collect();
+    let p_chars: Vec<char> = pattern.chars().collect();
 
-    // Simple check - in production would use proper regex
-    if pattern.starts_with('%') && pattern.ends_with('%') {
-        let inner = &pattern[1..pattern.len() - 1];
-        s.contains(inner)
-    } else if pattern.starts_with('%') {
-        let suffix = &pattern[1..];
-        s.ends_with(suffix)
-    } else if pattern.ends_with('%') {
-        let prefix = &pattern[..pattern.len() - 1];
-        s.starts_with(prefix)
-    } else {
-        s == pattern || regex_pattern == format!(".*{}.*", s)
+    let s_len = s_chars.len();
+    let p_len = p_chars.len();
+
+    // dp[i][j] = true if s[0..i] matches pattern[0..j]
+    let mut dp = vec![vec![false; p_len + 1]; s_len + 1];
+
+    // Empty pattern matches empty string
+    dp[0][0] = true;
+
+    // Handle patterns starting with %
+    for j in 1..=p_len {
+        if p_chars[j - 1] == '%' {
+            dp[0][j] = dp[0][j - 1];
+        } else {
+            break;
+        }
     }
+
+    for i in 1..=s_len {
+        for j in 1..=p_len {
+            let p_char = p_chars[j - 1];
+
+            if p_char == '%' {
+                // % matches zero or more characters
+                dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
+            } else if p_char == '_' {
+                // _ matches exactly one character
+                dp[i][j] = dp[i - 1][j - 1];
+            } else {
+                // Regular character - must match exactly
+                dp[i][j] = dp[i - 1][j - 1] && s_chars[i - 1] == p_char;
+            }
+        }
+    }
+
+    dp[s_len][p_len]
 }
 
 /// Euclidean distance between vectors.
@@ -920,5 +946,68 @@ mod tests {
 
         let result = evaluate_expr(&expr, &row).unwrap();
         assert!(matches!(result, Value::Null), "Expected Null for type mismatch");
+    }
+
+    #[test]
+    fn like_match_percent_wildcard() {
+        // % matches any sequence of characters
+        assert!(like_match("hello", "hello"));
+        assert!(like_match("hello", "%"));
+        assert!(like_match("hello", "h%"));
+        assert!(like_match("hello", "%o"));
+        assert!(like_match("hello", "%ell%"));
+        assert!(like_match("hello", "h%o"));
+        assert!(like_match("hello world", "hello%world"));
+        assert!(!like_match("hello", "world%"));
+        assert!(!like_match("hello", "%world"));
+    }
+
+    #[test]
+    fn like_match_underscore_wildcard() {
+        // _ matches exactly one character
+        assert!(like_match("hello", "h_llo"));
+        assert!(like_match("hello", "_ello"));
+        assert!(like_match("hello", "hell_"));
+        assert!(like_match("hello", "_____"));
+        assert!(like_match("ab", "a_"));
+        assert!(like_match("ab", "_b"));
+        assert!(!like_match("hello", "h_lo")); // _ is one char, not two
+        assert!(!like_match("hello", "______")); // too many underscores
+        assert!(!like_match("hello", "____")); // too few underscores
+    }
+
+    #[test]
+    fn like_match_mixed_wildcards() {
+        // Mix of % and _
+        assert!(like_match("hello", "h_%"));
+        assert!(like_match("hello", "%_o"));
+        assert!(like_match("hello", "h_ll%"));
+        assert!(like_match("hello world", "h%_d"));
+        assert!(like_match("abc", "a%_"));
+        assert!(like_match("abc", "_%c"));
+        assert!(!like_match("a", "a%_")); // needs at least one char after a
+    }
+
+    #[test]
+    fn like_match_empty_strings() {
+        assert!(like_match("", ""));
+        assert!(like_match("", "%"));
+        assert!(!like_match("", "_"));
+        assert!(!like_match("", "a"));
+        assert!(!like_match("a", ""));
+    }
+
+    #[test]
+    fn like_match_special_cases() {
+        // Multiple consecutive wildcards
+        assert!(like_match("hello", "%%"));
+        assert!(like_match("hello", "%%%"));
+        assert!(like_match("hello", "%_%"));
+        assert!(like_match("h", "%_%"));
+        assert!(!like_match("", "%_%")); // needs at least one char
+
+        // Pattern at exact boundaries
+        assert!(like_match("test", "test"));
+        assert!(!like_match("test", "Test")); // case sensitive
     }
 }
