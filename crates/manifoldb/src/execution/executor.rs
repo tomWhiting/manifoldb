@@ -1324,7 +1324,15 @@ fn execute_insert<T: Transaction>(
     input: &LogicalPlan,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
+    use crate::collection::{CollectionManager, CollectionName};
+    use manifoldb_vector::types::VectorData;
+
     let mut count = 0;
+
+    // Check if this is a collection with named vectors
+    let collection = CollectionName::new(table)
+        .ok()
+        .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
 
     // If columns not specified, look up from table schema
     let resolved_columns: Vec<String> = if columns.is_empty() {
@@ -1351,10 +1359,26 @@ fn execute_insert<T: Transaction>(
             let mut entity = tx.create_entity().map_err(Error::Transaction)?;
             entity = entity.with_label(table);
 
+            // Collect vectors to store separately (for collections)
+            let mut vectors_to_store: Vec<(String, VectorData)> = Vec::new();
+
             // Set properties from columns and values
             for (i, col) in resolved_columns.iter().enumerate() {
                 if let Some(expr) = row_exprs.get(i) {
                     let value = evaluate_literal_expr(expr, ctx)?;
+
+                    // For collections, check if this column is a named vector
+                    if let Some(ref coll) = collection {
+                        if coll.has_vector(col) {
+                            // Convert Value to VectorData and store separately
+                            if let Some(vector_data) = value_to_vector_data(&value) {
+                                vectors_to_store.push((col.clone(), vector_data));
+                            }
+                            // Don't store vector in entity properties for collections
+                            continue;
+                        }
+                    }
+
                     entity = entity.with_property(col, value);
                 }
             }
@@ -1365,15 +1389,38 @@ fn execute_insert<T: Transaction>(
             super::index_maintenance::EntityIndexMaintenance::on_insert(tx, &entity)
                 .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
 
-            // Update HNSW indexes for this entity
-            crate::vector::update_entity_in_indexes(tx, &entity, None)
-                .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
+            // For collections: store vectors via CollectionVectorProvider
+            if let Some(ref coll) = collection {
+                if let Some(provider) = ctx.collection_vector_provider() {
+                    for (vector_name, vector_data) in vectors_to_store {
+                        provider
+                            .upsert_vector(coll.id(), entity.id, table, &vector_name, &vector_data)
+                            .map_err(|e| Error::Execution(format!("vector storage failed: {e}")))?;
+                    }
+                }
+            } else {
+                // For regular tables: update HNSW indexes via legacy mechanism
+                crate::vector::update_entity_in_indexes(tx, &entity, None)
+                    .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
+            }
 
             count += 1;
         }
     }
 
     Ok(count)
+}
+
+/// Convert a Value to VectorData if it's a vector type.
+fn value_to_vector_data(value: &Value) -> Option<manifoldb_vector::types::VectorData> {
+    use manifoldb_vector::types::VectorData;
+
+    match value {
+        Value::Vector(v) => Some(VectorData::Dense(v.clone())),
+        Value::SparseVector(v) => Some(VectorData::Sparse(v.clone())),
+        Value::MultiVector(v) => Some(VectorData::Multi(v.clone())),
+        _ => None,
+    }
 }
 
 /// Execute an UPDATE statement.
@@ -1384,6 +1431,13 @@ fn execute_update<T: Transaction>(
     filter: &Option<LogicalExpr>,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
+    use crate::collection::{CollectionManager, CollectionName};
+
+    // Check if this is a collection with named vectors
+    let collection = CollectionName::new(table)
+        .ok()
+        .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
+
     // Get all entities with this label
     let entities = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
 
@@ -1401,9 +1455,27 @@ fn execute_update<T: Transaction>(
             let old_entity = entity.clone();
             let mut updated_entity = entity;
 
+            // Collect vectors to update separately (for collections)
+            let mut vectors_to_update: Vec<(String, manifoldb_vector::types::VectorData)> =
+                Vec::new();
+
             // Apply assignments
             for (col, expr) in assignments {
                 let value = evaluate_expr(expr, &updated_entity, ctx);
+
+                // For collections, check if this column is a named vector
+                if let Some(ref coll) = collection {
+                    if coll.has_vector(col) {
+                        // Convert Value to VectorData and update separately
+                        if let Some(vector_data) = value_to_vector_data(&value) {
+                            vectors_to_update.push((col.clone(), vector_data));
+                        }
+                        // Remove from entity properties (if it was there)
+                        updated_entity.properties.remove(col);
+                        continue;
+                    }
+                }
+
                 updated_entity.set_property(col, value);
             }
 
@@ -1417,9 +1489,26 @@ fn execute_update<T: Transaction>(
             )
             .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
 
-            // Update HNSW indexes for this entity
-            crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
-                .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
+            // For collections: update vectors via CollectionVectorProvider
+            if let Some(ref coll) = collection {
+                if let Some(provider) = ctx.collection_vector_provider() {
+                    for (vector_name, vector_data) in vectors_to_update {
+                        provider
+                            .upsert_vector(
+                                coll.id(),
+                                updated_entity.id,
+                                table,
+                                &vector_name,
+                                &vector_data,
+                            )
+                            .map_err(|e| Error::Execution(format!("vector storage failed: {e}")))?;
+                    }
+                }
+            } else {
+                // For regular tables: update HNSW indexes via legacy mechanism
+                crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
+                    .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
+            }
 
             count += 1;
         }
@@ -1435,6 +1524,13 @@ fn execute_delete<T: Transaction>(
     filter: &Option<LogicalExpr>,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
+    use crate::collection::{CollectionManager, CollectionName};
+
+    // Check if this is a collection with named vectors
+    let collection = CollectionName::new(table)
+        .ok()
+        .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
+
     // Get all entities with this label
     let entities = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
 
@@ -1452,9 +1548,18 @@ fn execute_delete<T: Transaction>(
             super::index_maintenance::EntityIndexMaintenance::on_delete(tx, &entity)
                 .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
 
-            // Remove from HNSW indexes before deleting
-            crate::vector::remove_entity_from_indexes(tx, &entity)
-                .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
+            // For collections: delete all vectors via CollectionVectorProvider
+            if let Some(ref coll) = collection {
+                if let Some(provider) = ctx.collection_vector_provider() {
+                    provider
+                        .delete_entity_vectors(coll.id(), entity.id, table)
+                        .map_err(|e| Error::Execution(format!("vector deletion failed: {e}")))?;
+                }
+            } else {
+                // For regular tables: remove from HNSW indexes before deleting
+                crate::vector::remove_entity_from_indexes(tx, &entity)
+                    .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
+            }
 
             tx.delete_entity(entity.id).map_err(Error::Transaction)?;
             count += 1;

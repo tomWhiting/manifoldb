@@ -1176,6 +1176,109 @@ where
     search_index_filtered(tx, &index_name, query, k, predicate, ef_search, filter_config)
 }
 
+// ============================================================================
+// CollectionVectorProvider adapter for VectorIndexCoordinator
+// ============================================================================
+
+use manifoldb_core::CollectionId;
+use manifoldb_query::exec::CollectionVectorProvider;
+use manifoldb_storage::StorageEngine;
+use manifoldb_vector::error::VectorError;
+use manifoldb_vector::index::VectorIndexCoordinator;
+use manifoldb_vector::types::VectorData;
+
+/// An adapter that implements [`CollectionVectorProvider`] for [`VectorIndexCoordinator`].
+///
+/// This allows the query executor to interact with the collection-based vector
+/// storage through the standard provider interface.
+pub struct CollectionVectorAdapter<E: StorageEngine> {
+    coordinator: VectorIndexCoordinator<E>,
+}
+
+impl<E: StorageEngine> CollectionVectorAdapter<E> {
+    /// Create a new adapter wrapping a `VectorIndexCoordinator`.
+    pub fn new(coordinator: VectorIndexCoordinator<E>) -> Self {
+        Self { coordinator }
+    }
+
+    /// Get a reference to the underlying coordinator.
+    pub fn coordinator(&self) -> &VectorIndexCoordinator<E> {
+        &self.coordinator
+    }
+
+    /// Get a mutable reference to the underlying coordinator.
+    pub fn coordinator_mut(&mut self) -> &mut VectorIndexCoordinator<E> {
+        &mut self.coordinator
+    }
+
+    /// Consume the adapter and return the underlying coordinator.
+    pub fn into_coordinator(self) -> VectorIndexCoordinator<E> {
+        self.coordinator
+    }
+}
+
+impl<E: StorageEngine + Send + Sync + 'static> CollectionVectorProvider
+    for CollectionVectorAdapter<E>
+{
+    fn upsert_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+        vector_name: &str,
+        data: &VectorData,
+    ) -> Result<(), VectorError> {
+        self.coordinator.upsert_vector(collection_id, entity_id, collection_name, vector_name, data)
+    }
+
+    fn delete_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+        vector_name: &str,
+    ) -> Result<bool, VectorError> {
+        self.coordinator.delete_vector(collection_id, entity_id, collection_name, vector_name)
+    }
+
+    fn delete_entity_vectors(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+    ) -> Result<usize, VectorError> {
+        self.coordinator.delete_entity_vectors(collection_id, entity_id, collection_name)
+    }
+
+    fn get_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        vector_name: &str,
+    ) -> Result<Option<VectorData>, VectorError> {
+        self.coordinator.get_vector(collection_id, entity_id, vector_name)
+    }
+
+    fn get_all_vectors(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+    ) -> Result<std::collections::HashMap<String, VectorData>, VectorError> {
+        self.coordinator.get_all_vectors(collection_id, entity_id)
+    }
+
+    fn search(
+        &self,
+        collection_name: &str,
+        vector_name: &str,
+        query: &Embedding,
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> Result<Vec<SearchResult>, VectorError> {
+        self.coordinator.search(collection_name, vector_name, query, k, ef_search)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

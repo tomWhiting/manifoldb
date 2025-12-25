@@ -46,10 +46,11 @@
 //! ```
 
 use crate::ast::{
-    BinaryOp, CreateCollectionStatement, DataType, DistanceMetric, EdgeDirection, EdgeLength,
-    EdgePattern, Expr, GraphPattern, Identifier, MatchStatement, NodePattern, OrderByExpr,
-    ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition, QualifiedName, ReturnItem,
-    SelectStatement, ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
+    BinaryOp, CreateCollectionStatement, DataType, DistanceMetric, DropCollectionStatement,
+    EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern, Identifier, MatchStatement,
+    NodePattern, OrderByExpr, ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition,
+    QualifiedName, ReturnItem, SelectStatement, ShortestPathPattern, Statement, VectorDef,
+    VectorTypeDef, WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -83,6 +84,11 @@ impl ExtendedParser {
         // Check for CREATE COLLECTION statement (not supported by sqlparser)
         if Self::is_create_collection(input) {
             return Self::parse_create_collection(input);
+        }
+
+        // Check for DROP COLLECTION statement (not supported by sqlparser)
+        if Self::is_drop_collection(input) {
+            return Self::parse_drop_collection(input);
         }
 
         // Step 1: Extract MATCH clauses (they're not valid SQL)
@@ -126,6 +132,56 @@ impl ExtendedParser {
         let upper = input.trim().to_uppercase();
         upper.starts_with("CREATE COLLECTION")
             || upper.starts_with("CREATE IF NOT EXISTS COLLECTION")
+    }
+
+    /// Checks if the input is a DROP COLLECTION statement.
+    fn is_drop_collection(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+        upper.starts_with("DROP COLLECTION") || upper.starts_with("DROP IF EXISTS COLLECTION")
+    }
+
+    /// Parses a DROP COLLECTION statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// DROP COLLECTION [IF EXISTS] name [, name2, ...];
+    /// ```
+    fn parse_drop_collection(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        // Parse IF EXISTS
+        let (if_exists, after_if_exists) = if upper.starts_with("DROP IF EXISTS") {
+            (true, input[14..].trim_start()) // "DROP IF EXISTS" = 14 chars
+        } else if upper.starts_with("DROP") {
+            (false, input[4..].trim_start()) // "DROP" = 4 chars
+        } else {
+            return Err(ParseError::SqlSyntax("expected DROP keyword".to_string()));
+        };
+
+        // Parse COLLECTION keyword
+        let upper_rest = after_if_exists.to_uppercase();
+        if !upper_rest.starts_with("COLLECTION") {
+            return Err(ParseError::SqlSyntax(
+                "expected COLLECTION keyword after DROP".to_string(),
+            ));
+        }
+        let after_collection = after_if_exists[10..].trim_start(); // "COLLECTION" = 10 chars
+
+        // Parse collection names (comma-separated)
+        let names: Vec<Identifier> =
+            after_collection.split(',').map(|s| Identifier::new(s.trim())).collect();
+
+        if names.is_empty() || names.iter().any(|n| n.name.is_empty()) {
+            return Err(ParseError::SqlSyntax("expected collection name(s)".to_string()));
+        }
+
+        let mut stmt = DropCollectionStatement::new(names);
+        if if_exists {
+            stmt = stmt.if_exists();
+        }
+
+        Ok(vec![Statement::DropCollection(stmt)])
     }
 
     /// Parses a CREATE COLLECTION statement.

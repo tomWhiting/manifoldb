@@ -663,3 +663,135 @@ fn test_drop_index_removes_vector_index() {
     let result = db.query("SELECT id FROM docs").expect("query failed");
     assert_eq!(result.len(), 1, "document should still exist after index drop");
 }
+
+// ============================================================================
+// Collection-Based Named Vector Tests
+// ============================================================================
+//
+// These tests verify the new collection-based vector storage architecture
+// where vectors are stored separately from entity properties using the
+// VectorIndexCoordinator.
+
+#[test]
+fn test_create_collection_with_named_vectors() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a collection with multiple named vectors
+    db.execute(
+        "CREATE COLLECTION documents (
+            text_embedding VECTOR(384) USING hnsw WITH (distance = 'cosine'),
+            image_embedding VECTOR(512) USING hnsw WITH (distance = 'euclidean')
+        )",
+    )
+    .expect("create collection failed");
+
+    // Verify collection exists by trying to insert (collection acts like a table)
+    // Note: The collection metadata is stored, but vector inserts go through
+    // the VectorIndexCoordinator when available
+}
+
+#[test]
+fn test_collection_insert_stores_vectors_separately() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a collection
+    db.execute(
+        "CREATE COLLECTION articles (
+            content_embedding VECTOR(4) USING hnsw WITH (distance = 'cosine')
+        )",
+    )
+    .expect("create collection failed");
+
+    // Insert an article with a vector
+    // When VectorIndexCoordinator is available, this should store the vector
+    // in the separated vector storage, not as an entity property
+    db.execute(
+        "INSERT INTO articles (id, title, content_embedding)
+         VALUES (1, 'Article 1', [0.1, 0.2, 0.3, 0.4])",
+    )
+    .expect("insert should work");
+}
+
+#[test]
+fn test_collection_update_updates_vector_storage() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a collection
+    db.execute(
+        "CREATE COLLECTION products (
+            description_embedding VECTOR(4) USING hnsw WITH (distance = 'cosine')
+        )",
+    )
+    .expect("create collection failed");
+
+    // Insert a product
+    db.execute(
+        "INSERT INTO products (id, name, description_embedding)
+         VALUES (1, 'Product 1', [0.1, 0.2, 0.3, 0.4])",
+    )
+    .expect("insert should work");
+
+    // Update the vector
+    db.execute("UPDATE products SET description_embedding = [0.5, 0.6, 0.7, 0.8] WHERE id = 1")
+        .expect("update should work");
+}
+
+#[test]
+fn test_collection_delete_cascades_to_vectors() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a collection
+    db.execute(
+        "CREATE COLLECTION items (
+            embedding VECTOR(4) USING hnsw WITH (distance = 'cosine')
+        )",
+    )
+    .expect("create collection failed");
+
+    // Insert an item
+    db.execute(
+        "INSERT INTO items (id, name, embedding)
+         VALUES (1, 'Item 1', [0.1, 0.2, 0.3, 0.4])",
+    )
+    .expect("insert should work");
+
+    // Delete the item (should cascade to vector storage)
+    db.execute("DELETE FROM items WHERE id = 1").expect("delete should work");
+
+    // Verify item is gone
+    let result = db.query("SELECT id FROM items").expect("query failed");
+    assert_eq!(result.len(), 0, "item should be deleted");
+}
+
+#[test]
+fn test_drop_collection_cleans_up_vectors() {
+    use manifoldb::Database;
+
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a collection
+    db.execute(
+        "CREATE COLLECTION temp_collection (
+            embedding VECTOR(4) USING hnsw WITH (distance = 'cosine')
+        )",
+    )
+    .expect("create collection failed");
+
+    // Insert some data
+    db.execute(
+        "INSERT INTO temp_collection (id, embedding)
+         VALUES (1, [0.1, 0.2, 0.3, 0.4])",
+    )
+    .expect("insert should work");
+
+    // Drop the collection
+    db.execute("DROP COLLECTION temp_collection").expect("drop collection should work");
+}

@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use manifoldb_core::Value;
-use manifoldb_vector::{Embedding, SearchResult, VectorError};
+use manifoldb_core::{CollectionId, EntityId, Value};
+use manifoldb_vector::{Embedding, SearchResult, VectorData, VectorError};
 
 /// A trait for providing access to vector indexes.
 ///
@@ -44,6 +44,74 @@ pub trait VectorIndexProvider: Send + Sync {
     fn dimension(&self, index_name: &str) -> Option<usize>;
 }
 
+/// A trait for providing collection-based vector operations.
+///
+/// This trait allows type-erased access to the separated vector storage
+/// used by collections with named vectors. Unlike `VectorIndexProvider` which
+/// works with entity-property-based vectors, this trait works with the new
+/// collection-based vector storage architecture.
+pub trait CollectionVectorProvider: Send + Sync {
+    /// Store a vector for an entity in a collection.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_id` - The collection ID
+    /// * `entity_id` - The entity ID
+    /// * `collection_name` - The collection name (for index lookup)
+    /// * `vector_name` - The named vector within the collection
+    /// * `data` - The vector data to store
+    fn upsert_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+        vector_name: &str,
+        data: &VectorData,
+    ) -> Result<(), VectorError>;
+
+    /// Delete a vector from storage and any associated index.
+    fn delete_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+        vector_name: &str,
+    ) -> Result<bool, VectorError>;
+
+    /// Delete all vectors for an entity in a collection.
+    fn delete_entity_vectors(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        collection_name: &str,
+    ) -> Result<usize, VectorError>;
+
+    /// Get a vector from storage.
+    fn get_vector(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+        vector_name: &str,
+    ) -> Result<Option<VectorData>, VectorError>;
+
+    /// Get all vectors for an entity.
+    fn get_all_vectors(
+        &self,
+        collection_id: CollectionId,
+        entity_id: EntityId,
+    ) -> Result<std::collections::HashMap<String, VectorData>, VectorError>;
+
+    /// Search for similar vectors using HNSW (if index exists).
+    fn search(
+        &self,
+        collection_name: &str,
+        vector_name: &str,
+        query: &Embedding,
+        k: usize,
+        ef_search: Option<usize>,
+    ) -> Result<Vec<SearchResult>, VectorError>;
+}
+
 use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
 
 /// Execution context for a query.
@@ -55,6 +123,7 @@ use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
 /// - Runtime configuration
 /// - Graph storage access (for graph traversal queries)
 /// - Vector index access (optional)
+/// - Collection vector storage access (for named vectors)
 pub struct ExecutionContext {
     /// Query parameters (1-indexed).
     parameters: HashMap<u32, Value>,
@@ -66,8 +135,10 @@ pub struct ExecutionContext {
     config: ExecutionConfig,
     /// Graph accessor for graph traversal operations.
     graph: Arc<dyn GraphAccessor>,
-    /// Optional vector index provider for HNSW searches.
+    /// Optional vector index provider for HNSW searches (entity-property based).
     vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
+    /// Optional collection vector provider for named vector storage.
+    collection_vector_provider: Option<Arc<dyn CollectionVectorProvider>>,
 }
 
 impl ExecutionContext {
@@ -83,6 +154,7 @@ impl ExecutionContext {
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
             vector_index_provider: None,
+            collection_vector_provider: None,
         }
     }
 
@@ -96,6 +168,7 @@ impl ExecutionContext {
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
             vector_index_provider: None,
+            collection_vector_provider: None,
         }
     }
 
@@ -148,6 +221,33 @@ impl ExecutionContext {
     #[must_use]
     pub fn vector_index_provider_arc(&self) -> Option<Arc<dyn VectorIndexProvider>> {
         self.vector_index_provider.clone()
+    }
+
+    /// Sets the collection vector provider for named vector storage.
+    #[must_use]
+    pub fn with_collection_vector_provider(
+        mut self,
+        provider: Arc<dyn CollectionVectorProvider>,
+    ) -> Self {
+        self.collection_vector_provider = Some(provider);
+        self
+    }
+
+    /// Sets the collection vector provider.
+    pub fn set_collection_vector_provider(&mut self, provider: Arc<dyn CollectionVectorProvider>) {
+        self.collection_vector_provider = Some(provider);
+    }
+
+    /// Returns a reference to the collection vector provider if one is set.
+    #[must_use]
+    pub fn collection_vector_provider(&self) -> Option<&dyn CollectionVectorProvider> {
+        self.collection_vector_provider.as_deref()
+    }
+
+    /// Returns a clone of the collection vector provider Arc if one is set.
+    #[must_use]
+    pub fn collection_vector_provider_arc(&self) -> Option<Arc<dyn CollectionVectorProvider>> {
+        self.collection_vector_provider.clone()
     }
 
     /// Adds a parameter value.
