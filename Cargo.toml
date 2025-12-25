@@ -39,6 +39,9 @@ base64 = "0.22"
 # Error handling
 thiserror = "2"
 
+# Parallelism
+rayon = "1.10"
+
 # Async runtime (for future use)
 tokio = { version = "1", features = ["full"] }
 

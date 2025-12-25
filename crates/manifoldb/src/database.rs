@@ -45,7 +45,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use manifoldb_core::{Entity, EntityId};
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
+use manifoldb_storage::Transaction;
 
 use crate::cache::{extract_cache_hint, CacheHint, CacheMetrics, QueryCache, QueryCacheKey};
 use crate::config::{Config, DatabaseBuilder};
@@ -871,6 +873,168 @@ impl Database {
     pub fn clear_prepared_cache(&self) -> Result<()> {
         self.prepared_cache.clear()
     }
+
+    /// Bulk insert entities with maximum throughput.
+    ///
+    /// All entities are inserted in a single transaction, with serialization
+    /// parallelized across CPU cores using rayon. This is the most efficient
+    /// way to insert many entities.
+    ///
+    /// # Performance
+    ///
+    /// This method achieves high throughput by:
+    /// 1. **Parallel serialization**: Entities are serialized to binary format in parallel
+    /// 2. **Single transaction**: All writes occur within one transaction (one fsync)
+    /// 3. **Bulk ID allocation**: Entity IDs are allocated in a single atomic batch
+    /// 4. **Index maintenance**: All indexes are updated within the same transaction
+    ///
+    /// # Arguments
+    ///
+    /// * `entities` - The entities to insert. All entities should have their labels
+    ///   and properties set. The `id` field will be overwritten with auto-generated IDs.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`EntityId`] for the inserted entities, in the same order as the input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any entity fails validation (the entire batch is aborted, no entities are inserted)
+    /// - Serialization fails for any entity
+    /// - The transaction cannot be committed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, Entity, EntityId};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create many entities (note: IDs will be assigned by bulk_insert_entities)
+    /// let entities: Vec<Entity> = (0..10_000)
+    ///     .map(|i| {
+    ///         Entity::new(EntityId::new(0)) // ID is placeholder, will be overwritten
+    ///             .with_label("Document")
+    ///             .with_property("index", i as i64)
+    ///             .with_property("content", format!("Document {}", i))
+    ///     })
+    ///     .collect();
+    ///
+    /// // Insert all at once - much faster than individual inserts
+    /// let ids = db.bulk_insert_entities(&entities)?;
+    /// assert_eq!(ids.len(), 10_000);
+    /// ```
+    pub fn bulk_insert_entities(&self, entities: &[Entity]) -> Result<Vec<EntityId>> {
+        use crate::execution::EntityIndexMaintenance;
+        use rayon::prelude::*;
+
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let start = std::time::Instant::now();
+
+        // Phase 1: Parallel serialization
+        // Serialize all entities in parallel, storing (original_index, serialized_bytes)
+        // We serialize first (before IDs are assigned) to catch serialization errors early
+        // The ID field will be updated in phase 3
+        let serialized: std::result::Result<Vec<(usize, Vec<u8>)>, Error> = entities
+            .par_iter()
+            .enumerate()
+            .map(|(idx, entity)| {
+                // Create a temporary entity with the correct structure for serialization validation
+                // Actual ID will be assigned in the write phase
+                bincode::serde::encode_to_vec(entity, bincode::config::standard())
+                    .map(|bytes| (idx, bytes))
+                    .map_err(|e| {
+                        Error::Execution(format!(
+                            "Failed to serialize entity at index {}: {}",
+                            idx, e
+                        ))
+                    })
+            })
+            .collect();
+
+        let serialized = serialized?;
+
+        // Phase 2: Begin transaction and allocate IDs
+        let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
+
+        // Get the starting entity ID and reserve a range
+        let entity_count = entities.len() as u64;
+        let start_id = {
+            // Read current counter
+            let current = match tx.get_metadata(b"next_entity_id")? {
+                Some(bytes) if bytes.len() == 8 => {
+                    let arr: [u8; 8] = bytes
+                        .try_into()
+                        .map_err(|_| Error::Execution("invalid entity counter".to_string()))?;
+                    u64::from_be_bytes(arr)
+                }
+                _ => 1, // Start from 1 if not set
+            };
+
+            // Update counter to reserve the range
+            let next = current + entity_count;
+            tx.put_metadata(b"next_entity_id", &next.to_be_bytes())?;
+
+            current
+        };
+
+        // Phase 3: Re-serialize with correct IDs (in parallel) and write
+        // Now we have the IDs, we need to serialize again with the correct IDs
+        let entities_with_ids: std::result::Result<Vec<(EntityId, Entity, Vec<u8>)>, Error> =
+            entities
+                .par_iter()
+                .enumerate()
+                .map(|(idx, entity)| {
+                    let id = EntityId::new(start_id + idx as u64);
+                    let mut entity_with_id = entity.clone();
+                    entity_with_id.id = id;
+
+                    bincode::serde::encode_to_vec(&entity_with_id, bincode::config::standard())
+                        .map(|bytes| (id, entity_with_id, bytes))
+                        .map_err(|e| {
+                            Error::Execution(format!(
+                                "Failed to serialize entity at index {}: {}",
+                                idx, e
+                            ))
+                        })
+                })
+                .collect();
+
+        let entities_with_ids = entities_with_ids?;
+
+        // Drop the initial serialized results - we only needed them for validation
+        drop(serialized);
+
+        // Phase 4: Sequential writes (fast - just memcpy to transaction buffer)
+        let ids: Vec<EntityId> = entities_with_ids.iter().map(|(id, _, _)| *id).collect();
+
+        for (id, entity, bytes) in &entities_with_ids {
+            let key = id.as_u64().to_be_bytes();
+            tx.storage_mut_ref()
+                .map_err(Error::Transaction)?
+                .put("nodes", &key, bytes)
+                .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
+
+            // Phase 5: Index maintenance
+            EntityIndexMaintenance::on_insert(&mut tx, entity)
+                .map_err(|e| Error::Execution(format!("Index maintenance failed: {}", e)))?;
+        }
+
+        // Phase 6: Commit
+        let commit_start = std::time::Instant::now();
+        tx.commit().map_err(Error::Transaction)?;
+        self.db_metrics.record_commit(commit_start.elapsed());
+
+        // Record successful bulk insert
+        self.db_metrics.record_query(start.elapsed(), true);
+
+        Ok(ids)
+    }
 }
 
 // Note: Database automatically implements Send + Sync through its fields
@@ -1525,5 +1689,172 @@ mod tests {
 
         let hit_rate = metrics.hit_rate().expect("should have hit rate");
         assert!((hit_rate - 50.0).abs() < 0.1); // 50% hit rate
+    }
+
+    // ========================================================================
+    // Bulk Insert Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bulk_insert_empty() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        let entities: Vec<Entity> = Vec::new();
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_bulk_insert_single_entity() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        let entities =
+            vec![Entity::new(EntityId::new(0)).with_label("Person").with_property("name", "Alice")];
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        assert_eq!(ids.len(), 1);
+
+        // Verify entity was persisted correctly
+        let tx = db.begin_read().expect("failed to begin read");
+        let retrieved = tx.get_entity(ids[0]).expect("get failed").expect("entity not found");
+        assert!(retrieved.has_label("Person"));
+        assert_eq!(
+            retrieved.get_property("name"),
+            Some(&manifoldb_core::Value::String("Alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_bulk_insert_multiple_entities() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        let entities: Vec<Entity> = (0..100)
+            .map(|i| {
+                Entity::new(EntityId::new(0))
+                    .with_label("Document")
+                    .with_property("index", i as i64)
+            })
+            .collect();
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        assert_eq!(ids.len(), 100);
+
+        // Verify IDs are sequential
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(id.as_u64(), (i + 1) as u64);
+        }
+
+        // Verify all entities were persisted correctly
+        let tx = db.begin_read().expect("failed to begin read");
+        for (i, id) in ids.iter().enumerate() {
+            let entity = tx.get_entity(*id).expect("get failed").expect("entity not found");
+            assert!(entity.has_label("Document"));
+            assert_eq!(entity.get_property("index"), Some(&manifoldb_core::Value::Int(i as i64)));
+        }
+    }
+
+    #[test]
+    fn test_bulk_insert_preserves_existing_id_sequence() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Create some entities first using regular inserts
+        {
+            let mut tx = db.begin().expect("failed to begin");
+            for _ in 0..5 {
+                let entity = tx.create_entity().expect("failed to create");
+                tx.put_entity(&entity).expect("failed to put");
+            }
+            tx.commit().expect("failed to commit");
+        }
+
+        // Now do a bulk insert
+        let entities: Vec<Entity> = (0..10)
+            .map(|i| Entity::new(EntityId::new(0)).with_property("bulk_index", i as i64))
+            .collect();
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        // IDs should start from 6 (after the 5 we created)
+        assert_eq!(ids[0].as_u64(), 6);
+        assert_eq!(ids[9].as_u64(), 15);
+    }
+
+    #[test]
+    fn test_bulk_insert_with_multiple_labels() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        let entities = vec![Entity::new(EntityId::new(0))
+            .with_label("Person")
+            .with_label("Employee")
+            .with_label("Manager")
+            .with_property("name", "Alice")];
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        let tx = db.begin_read().expect("failed to begin read");
+        let retrieved = tx.get_entity(ids[0]).expect("get failed").expect("entity not found");
+
+        assert!(retrieved.has_label("Person"));
+        assert!(retrieved.has_label("Employee"));
+        assert!(retrieved.has_label("Manager"));
+    }
+
+    #[test]
+    fn test_bulk_insert_large_batch() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Insert 10,000 entities to test performance characteristics
+        let entities: Vec<Entity> = (0..10_000)
+            .map(|i| {
+                Entity::new(EntityId::new(0))
+                    .with_label("Item")
+                    .with_property("id", i as i64)
+                    .with_property("data", format!("item_{}", i))
+            })
+            .collect();
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        assert_eq!(ids.len(), 10_000);
+
+        // Spot check some entities
+        let tx = db.begin_read().expect("failed to begin read");
+        for check_idx in [0, 100, 5000, 9999] {
+            let entity =
+                tx.get_entity(ids[check_idx]).expect("get failed").expect("entity not found");
+            assert!(entity.has_label("Item"));
+            assert_eq!(
+                entity.get_property("id"),
+                Some(&manifoldb_core::Value::Int(check_idx as i64))
+            );
+        }
+    }
+
+    #[test]
+    fn test_bulk_insert_returns_correct_order() {
+        let db = Database::in_memory().expect("failed to create in-memory db");
+
+        // Create entities with unique identifiable properties
+        let entities: Vec<Entity> = (0..50)
+            .map(|i| Entity::new(EntityId::new(0)).with_property("unique_marker", i * 1000 + 42))
+            .collect();
+
+        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+
+        // Verify each ID corresponds to the correct entity by checking the marker
+        let tx = db.begin_read().expect("failed to begin read");
+        for (i, id) in ids.iter().enumerate() {
+            let entity = tx.get_entity(*id).expect("get failed").expect("entity not found");
+            let expected_marker = i as i64 * 1000 + 42;
+            assert_eq!(
+                entity.get_property("unique_marker"),
+                Some(&manifoldb_core::Value::Int(expected_marker)),
+                "Entity at position {} has wrong marker",
+                i
+            );
+        }
     }
 }

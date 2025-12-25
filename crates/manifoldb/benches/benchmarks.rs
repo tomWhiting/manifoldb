@@ -970,6 +970,149 @@ fn write_batching_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Insert Benchmarks
+// ============================================================================
+
+fn bulk_insert_benchmarks(c: &mut Criterion) {
+    use manifoldb_core::Entity;
+
+    let mut group = c.benchmark_group("bulk_insert");
+
+    // Compare individual inserts vs bulk insert
+    for count in [100, 1000, 10_000] {
+        group.throughput(Throughput::Elements(count));
+
+        // Individual inserts (one transaction per entity)
+        group.bench_with_input(
+            BenchmarkId::new("individual_inserts", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || Database::in_memory().expect("failed to create db"),
+                    |db| {
+                        for i in 0..count {
+                            let mut tx = db.begin().expect("failed");
+                            let entity = tx
+                                .create_entity()
+                                .expect("failed")
+                                .with_label("Item")
+                                .with_property("index", i as i64);
+                            tx.put_entity(&entity).expect("failed");
+                            tx.commit().expect("failed");
+                        }
+                        black_box(db)
+                    },
+                );
+            },
+        );
+
+        // Individual inserts in single transaction (baseline for bulk)
+        group.bench_with_input(
+            BenchmarkId::new("single_tx_inserts", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || Database::in_memory().expect("failed to create db"),
+                    |db| {
+                        let mut tx = db.begin().expect("failed");
+                        for i in 0..count {
+                            let entity = tx
+                                .create_entity()
+                                .expect("failed")
+                                .with_label("Item")
+                                .with_property("index", i as i64);
+                            tx.put_entity(&entity).expect("failed");
+                        }
+                        tx.commit().expect("failed");
+                        black_box(db)
+                    },
+                );
+            },
+        );
+
+        // Bulk insert (parallel serialization + single transaction)
+        group.bench_with_input(BenchmarkId::new("bulk_insert", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    let db = Database::in_memory().expect("failed to create db");
+                    let entities: Vec<Entity> = (0..count)
+                        .map(|i| {
+                            Entity::new(EntityId::new(0))
+                                .with_label("Item")
+                                .with_property("index", i as i64)
+                        })
+                        .collect();
+                    (db, entities)
+                },
+                |(db, entities)| {
+                    let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+                    black_box((db, ids))
+                },
+            );
+        });
+    }
+
+    // Bulk insert with varying entity sizes (more properties)
+    for num_props in [1, 5, 10, 20] {
+        group.bench_with_input(
+            BenchmarkId::new("bulk_insert_props", num_props),
+            &num_props,
+            |b, &num_props| {
+                let count = 1000;
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        let entities: Vec<Entity> = (0..count)
+                            .map(|i| {
+                                let mut entity = Entity::new(EntityId::new(0)).with_label("Item");
+                                for p in 0..num_props {
+                                    entity = entity.with_property(
+                                        format!("prop_{}", p),
+                                        format!("value_{}_{}", i, p),
+                                    );
+                                }
+                                entity
+                            })
+                            .collect();
+                        (db, entities)
+                    },
+                    |(db, entities)| {
+                        let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+                        black_box((db, ids))
+                    },
+                );
+            },
+        );
+    }
+
+    // Very large bulk insert (stress test)
+    group.sample_size(10); // Fewer samples for large tests
+    group.throughput(Throughput::Elements(50_000));
+    group.bench_function("bulk_insert_50k", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                let entities: Vec<Entity> = (0..50_000)
+                    .map(|i| {
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                            .with_property("data", format!("item_{}", i))
+                    })
+                    .collect();
+                (db, entities)
+            },
+            |(db, entities)| {
+                let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+                black_box((db, ids))
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -980,6 +1123,7 @@ criterion_group!(
     wide_graph_benchmarks,
     vector_benchmarks,
     query_benchmarks,
-    write_batching_benchmarks
+    write_batching_benchmarks,
+    bulk_insert_benchmarks
 );
 criterion_main!(benches);
