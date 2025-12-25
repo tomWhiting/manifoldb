@@ -1255,3 +1255,254 @@ fn test_get_vector_collection_not_found() {
     let err_str = err.to_string();
     assert!(err_str.contains("not found"), "error message should mention 'not found': {}", err_str);
 }
+
+// ============================================================================
+// HNSW Index Integration Tests
+// ============================================================================
+
+/// Test that bulk_insert_vectors automatically updates HNSW index
+#[test]
+fn test_bulk_insert_vectors_updates_hnsw_index() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create the table first via SQL
+    db.execute("CREATE TABLE docs (title TEXT)").expect("failed to create table");
+
+    // Create entities
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let mut entity_ids = Vec::new();
+    for i in 0..5 {
+        let entity = tx
+            .create_entity()
+            .expect("failed to create entity")
+            .with_label("docs")
+            .with_property("title", format!("Doc {}", i));
+        entity_ids.push(entity.id);
+        tx.put_entity(&entity).expect("failed to put entity");
+    }
+    tx.commit().expect("failed to commit");
+
+    // Create HNSW index BEFORE inserting vectors using the conventional naming
+    // The index name format is: {collection}_{vector_name}_hnsw
+    {
+        let mut tx = db.begin().expect("failed to begin transaction");
+        manifoldb::vector::HnswIndexBuilder::new("docs_embedding_hnsw", "docs", "embedding")
+            .dimension(64)
+            .m(4)
+            .ef_construction(16)
+            .build(&mut tx)
+            .expect("failed to create HNSW index");
+        tx.commit().expect("failed to commit");
+    }
+
+    // Bulk insert vectors - this should automatically update the HNSW index
+    let vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            // Create distinct vectors for each entity
+            let mut vec = vec![0.0f32; 64];
+            vec[i] = 1.0; // Each entity has a 1.0 at a different position
+            (id, "embedding".to_string(), vec)
+        })
+        .collect();
+    db.bulk_insert_vectors("docs", &vectors).expect("failed to bulk insert vectors");
+
+    // Search for the first entity's vector - should find it
+    let query = {
+        let mut q = vec![0.0f32; 64];
+        q[0] = 1.0;
+        q
+    };
+
+    // Use vector search via the vector module
+    let search_results = {
+        let tx = db.begin_read().expect("failed to begin read transaction");
+        manifoldb::vector::search_named_vector_index(
+            &tx,
+            "docs",
+            "embedding",
+            &manifoldb_vector::Embedding::new(query).expect("invalid embedding"),
+            5,
+            None,
+        )
+        .expect("failed to search HNSW index")
+    };
+
+    // The first result should be the first entity (closest to query)
+    assert!(!search_results.is_empty(), "search should return results");
+    assert_eq!(
+        search_results[0].entity_id, entity_ids[0],
+        "first result should be the entity with the matching vector"
+    );
+}
+
+/// Test that bulk_delete_vectors removes entries from HNSW index
+#[test]
+fn test_bulk_delete_vectors_updates_hnsw_index() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create the table first via SQL
+    db.execute("CREATE TABLE docs (title TEXT)").expect("failed to create table");
+
+    // Create entities
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let mut entity_ids = Vec::new();
+    for i in 0..3 {
+        let entity = tx
+            .create_entity()
+            .expect("failed to create entity")
+            .with_label("docs")
+            .with_property("title", format!("Doc {}", i));
+        entity_ids.push(entity.id);
+        tx.put_entity(&entity).expect("failed to put entity");
+    }
+    tx.commit().expect("failed to commit");
+
+    // Bulk insert vectors first
+    let vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let mut vec = vec![0.0f32; 32];
+            vec[i] = 1.0;
+            (id, "embedding".to_string(), vec)
+        })
+        .collect();
+    db.bulk_insert_vectors("docs", &vectors).expect("failed to bulk insert vectors");
+
+    // Create HNSW index AFTER inserting vectors - should include all 3 vectors
+    {
+        let mut tx = db.begin().expect("failed to begin transaction");
+        manifoldb::vector::HnswIndexBuilder::new("docs_embedding_hnsw", "docs", "embedding")
+            .dimension(32)
+            .m(4)
+            .ef_construction(16)
+            .build(&mut tx)
+            .expect("failed to create HNSW index");
+        tx.commit().expect("failed to commit");
+    }
+
+    // Verify all 3 are searchable
+    {
+        let tx = db.begin_read().expect("failed to begin read transaction");
+        let query = manifoldb_vector::Embedding::new(vec![1.0f32; 32]).expect("invalid embedding");
+        let results = manifoldb::vector::search_named_vector_index(
+            &tx,
+            "docs",
+            "embedding",
+            &query,
+            10,
+            None,
+        )
+        .expect("failed to search");
+        assert_eq!(results.len(), 3, "should find all 3 vectors");
+    }
+
+    // Delete one vector
+    let to_delete = vec![(entity_ids[1], "embedding".to_string())];
+    db.bulk_delete_vectors(&to_delete).expect("failed to delete vector");
+
+    // Search again - should only find 2 vectors now
+    {
+        let tx = db.begin_read().expect("failed to begin read transaction");
+        let query = manifoldb_vector::Embedding::new(vec![1.0f32; 32]).expect("invalid embedding");
+        let results = manifoldb::vector::search_named_vector_index(
+            &tx,
+            "docs",
+            "embedding",
+            &query,
+            10,
+            None,
+        )
+        .expect("failed to search after delete");
+        assert_eq!(results.len(), 2, "should only find 2 vectors after delete");
+        // Verify the deleted entity is not in results
+        assert!(
+            !results.iter().any(|r| r.entity_id == entity_ids[1]),
+            "deleted entity should not appear in search results"
+        );
+    }
+}
+
+/// Test that bulk_update_vectors updates HNSW index entries
+#[test]
+fn test_bulk_update_vectors_updates_hnsw_index() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create the table first via SQL
+    db.execute("CREATE TABLE docs (title TEXT)").expect("failed to create table");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx
+        .create_entity()
+        .expect("failed to create entity")
+        .with_label("docs")
+        .with_property("title", "Doc");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert initial vector (pointing in direction [1, 0, 0, ...])
+    let initial = vec![(entity_id, "embedding".to_string(), {
+        let mut v = vec![0.0f32; 32];
+        v[0] = 1.0;
+        v
+    })];
+    db.bulk_insert_vectors("docs", &initial).expect("failed to insert initial vector");
+
+    // Create HNSW index
+    {
+        let mut tx = db.begin().expect("failed to begin transaction");
+        manifoldb::vector::HnswIndexBuilder::new("docs_embedding_hnsw", "docs", "embedding")
+            .dimension(32)
+            .m(4)
+            .ef_construction(16)
+            .build(&mut tx)
+            .expect("failed to create HNSW index");
+        tx.commit().expect("failed to commit");
+    }
+
+    // Search with query similar to initial vector - should find it
+    {
+        let tx = db.begin_read().expect("failed to begin read transaction");
+        let query = {
+            let mut v = vec![0.0f32; 32];
+            v[0] = 1.0;
+            manifoldb_vector::Embedding::new(v).expect("invalid embedding")
+        };
+        let results =
+            manifoldb::vector::search_named_vector_index(&tx, "docs", "embedding", &query, 1, None)
+                .expect("failed to search");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].distance < 0.01, "should be very close to query");
+    }
+
+    // Update vector to point in a different direction [0, 1, 0, ...]
+    let updated = vec![(entity_id, "embedding".to_string(), {
+        let mut v = vec![0.0f32; 32];
+        v[1] = 1.0;
+        v
+    })];
+    db.bulk_update_vectors("docs", &updated).expect("failed to update vector");
+
+    // Search with query similar to NEW vector - should find it with low distance
+    {
+        let tx = db.begin_read().expect("failed to begin read transaction");
+        let query = {
+            let mut v = vec![0.0f32; 32];
+            v[1] = 1.0;
+            manifoldb_vector::Embedding::new(v).expect("invalid embedding")
+        };
+        let results =
+            manifoldb::vector::search_named_vector_index(&tx, "docs", "embedding", &query, 1, None)
+                .expect("failed to search after update");
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].distance < 0.01,
+            "should be very close to updated vector, but got distance {}",
+            results[0].distance
+        );
+    }
+}

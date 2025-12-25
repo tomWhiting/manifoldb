@@ -80,6 +80,10 @@ pub enum VectorIndexError {
     /// Storage error.
     #[error("Storage error: {0}")]
     Storage(String),
+
+    /// Direct storage error.
+    #[error("Storage error: {0}")]
+    StorageError(#[from] manifoldb_storage::StorageError),
 }
 
 /// Builder for creating HNSW indexes.
@@ -156,39 +160,97 @@ impl HnswIndexBuilder {
 
     /// Build the index, inserting all existing data.
     ///
-    /// This scans all entities with the specified label and inserts their
-    /// vector values into the HNSW index.
+    /// This reads vectors from the `CollectionVectorStore` for the specified
+    /// collection and vector name, then inserts them into the HNSW index.
+    ///
+    /// # Vector Source
+    ///
+    /// Vectors are read from the `collection_vectors` table, NOT from entity
+    /// properties. This aligns with the architecture where vectors are stored
+    /// separately from entities for efficiency.
     pub fn build<T: Transaction>(
         self,
         tx: &mut DatabaseTransaction<T>,
     ) -> Result<(), VectorIndexError> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_storage::Cursor;
+        use manifoldb_vector::{
+            encoding::{decode_collection_vector_key, encode_collection_vector_prefix},
+            TABLE_COLLECTION_VECTORS,
+        };
+        use std::ops::Bound;
+
         // Check if index already exists
         let storage = tx.storage_ref()?;
         if HnswRegistry::exists(storage, &self.name)? {
             return Err(VectorIndexError::IndexExists(self.name));
         }
 
-        // Get all entities with this label
-        let entities = tx.iter_entities(Some(&self.table))?;
+        // Parse collection name
+        let collection_name = CollectionName::new(&self.table)
+            .map_err(|e| VectorIndexError::Storage(e.to_string()))?;
 
-        // Collect vectors and determine dimension
+        // Get collection to get its ID
+        let collection_id = CollectionManager::get(tx, &collection_name)
+            .map_err(|e| VectorIndexError::Storage(e.to_string()))?
+            .map(|c| c.id());
+
+        // Collect vectors from CollectionVectorStore
         let mut vectors: Vec<(EntityId, Embedding)> = Vec::new();
         let mut inferred_dimension: Option<usize> = self.dimension;
 
-        for entity in &entities {
-            if let Some(embedding) = extract_embedding(entity, &self.column)? {
-                // Check/infer dimension
-                match inferred_dimension {
-                    None => inferred_dimension = Some(embedding.len()),
-                    Some(dim) if dim != embedding.len() => {
-                        return Err(VectorIndexError::DimensionMismatch {
-                            expected: dim,
-                            actual: embedding.len(),
-                        });
+        // If collection exists, read vectors from it
+        if let Some(coll_id) = collection_id {
+            let prefix = encode_collection_vector_prefix(coll_id);
+            let prefix_end = {
+                let mut end = prefix.clone();
+                for byte in end.iter_mut().rev() {
+                    if *byte < 0xFF {
+                        *byte += 1;
+                        break;
                     }
-                    _ => {}
                 }
-                vectors.push((entity.id, embedding));
+                end
+            };
+
+            // Use the hash of the vector name for filtering
+            let target_hash = manifoldb_vector::encoding::hash_name(&self.column);
+
+            let storage = tx.storage_ref()?;
+            let mut cursor = storage.range(
+                TABLE_COLLECTION_VECTORS,
+                Bound::Included(prefix.as_slice()),
+                Bound::Excluded(prefix_end.as_slice()),
+            )?;
+
+            while let Some((ref key, ref value)) = cursor.next()? {
+                // Decode key to check if it matches our vector name
+                if let Some(decoded) = decode_collection_vector_key(&key) {
+                    if decoded.vector_name_hash == target_hash {
+                        // Decode the vector data
+                        if let Ok((vector_data, _)) = manifoldb_vector::decode_vector_value(&value)
+                        {
+                            if let Some(dense) = vector_data.as_dense() {
+                                let embedding = Embedding::new(dense.to_vec())
+                                    .map_err(|e| VectorIndexError::Vector(e))?;
+
+                                // Check/infer dimension
+                                match inferred_dimension {
+                                    None => inferred_dimension = Some(embedding.len()),
+                                    Some(dim) if dim != embedding.len() => {
+                                        return Err(VectorIndexError::DimensionMismatch {
+                                            expected: dim,
+                                            actual: embedding.len(),
+                                        });
+                                    }
+                                    _ => {}
+                                }
+
+                                vectors.push((decoded.entity_id, embedding));
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1282,38 +1344,79 @@ impl<E: StorageEngine + Send + Sync + 'static> CollectionVectorProvider
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collection::{CollectionManager, CollectionName};
     use crate::transaction::TransactionManager;
     use manifoldb_storage::backends::RedbEngine;
+    use manifoldb_vector::{
+        encode_vector_value, encoding::encode_collection_vector_key, VectorData,
+        TABLE_COLLECTION_VECTORS,
+    };
+
+    /// Helper to store a vector in the CollectionVectorStore for testing
+    fn store_vector_for_test<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+        collection_name: &str,
+        entity_id: EntityId,
+        vector_name: &str,
+        data: &[f32],
+    ) {
+        let coll_name = CollectionName::new(collection_name).unwrap();
+
+        // Get or create collection
+        let collection_id = match CollectionManager::get(tx, &coll_name).unwrap() {
+            Some(collection) => collection.id(),
+            None => {
+                let collection =
+                    CollectionManager::create(tx, &coll_name, std::iter::empty()).unwrap();
+                collection.id()
+            }
+        };
+
+        // Store vector
+        let key = encode_collection_vector_key(collection_id, entity_id, vector_name);
+        let value = encode_vector_value(&VectorData::Dense(data.to_vec()), vector_name);
+        let storage = tx.storage_mut().unwrap();
+        storage.put(TABLE_COLLECTION_VECTORS, &key, &value).unwrap();
+    }
 
     #[test]
     fn test_hnsw_index_builder() {
         let engine = RedbEngine::in_memory().unwrap();
         let manager = TransactionManager::new(engine);
 
-        // Create some entities with vectors
+        // Create some entities with vectors stored in CollectionVectorStore
         {
             let mut tx = manager.begin_write().unwrap();
 
-            let entity1 = tx
-                .create_entity()
-                .unwrap()
-                .with_label("documents")
-                .with_property("embedding", vec![0.1f32, 0.2, 0.3, 0.4]);
+            let entity1 = tx.create_entity().unwrap().with_label("documents");
             tx.put_entity(&entity1).unwrap();
+            store_vector_for_test(
+                &mut tx,
+                "documents",
+                entity1.id,
+                "embedding",
+                &[0.1f32, 0.2, 0.3, 0.4],
+            );
 
-            let entity2 = tx
-                .create_entity()
-                .unwrap()
-                .with_label("documents")
-                .with_property("embedding", vec![0.2f32, 0.3, 0.4, 0.5]);
+            let entity2 = tx.create_entity().unwrap().with_label("documents");
             tx.put_entity(&entity2).unwrap();
+            store_vector_for_test(
+                &mut tx,
+                "documents",
+                entity2.id,
+                "embedding",
+                &[0.2f32, 0.3, 0.4, 0.5],
+            );
 
-            let entity3 = tx
-                .create_entity()
-                .unwrap()
-                .with_label("documents")
-                .with_property("embedding", vec![0.3f32, 0.4, 0.5, 0.6]);
+            let entity3 = tx.create_entity().unwrap().with_label("documents");
             tx.put_entity(&entity3).unwrap();
+            store_vector_for_test(
+                &mut tx,
+                "documents",
+                entity3.id,
+                "embedding",
+                &[0.3f32, 0.4, 0.5, 0.6],
+            );
 
             tx.commit().unwrap();
         }
@@ -1389,18 +1492,23 @@ mod tests {
         let engine = RedbEngine::in_memory().unwrap();
         let manager = TransactionManager::new(engine);
 
-        // Step 1: Create a single entity with a vector
+        // Step 1: Create a single entity with a vector stored in CollectionVectorStore
         let entity_id;
         {
             let mut tx = manager.begin_write().unwrap();
 
-            let entity = tx
-                .create_entity()
-                .unwrap()
-                .with_label("docs")
-                .with_property("embedding", vec![1.0f32, 0.0, 0.0, 0.0]);
+            let entity = tx.create_entity().unwrap().with_label("docs");
             entity_id = entity.id;
             tx.put_entity(&entity).unwrap();
+
+            // Store vector in CollectionVectorStore
+            store_vector_for_test(
+                &mut tx,
+                "docs",
+                entity_id,
+                "embedding",
+                &[1.0f32, 0.0, 0.0, 0.0],
+            );
 
             tx.commit().unwrap();
         }
