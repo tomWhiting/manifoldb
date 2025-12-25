@@ -1318,6 +1318,8 @@ impl Database {
         vectors: &[(manifoldb_core::EntityId, String, Vec<f32>)],
     ) -> Result<usize> {
         use crate::collection::{CollectionManager, CollectionName};
+        use crate::vector::update_point_vector_in_index;
+        use manifoldb_core::PointId;
         use manifoldb_vector::{
             encode_vector_value, encoding::encode_collection_vector_key, VectorData,
             TABLE_COLLECTION_VECTORS,
@@ -1331,8 +1333,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist
         {
@@ -1344,7 +1346,7 @@ impl Database {
             }
         }
 
-        // Phase 2: Store vectors in the CollectionVectorStore
+        // Phase 2: Store vectors in the CollectionVectorStore and update HNSW indexes
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
 
@@ -1374,10 +1376,16 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
+        }
+
+        // Phase 3: Update HNSW indexes for each vector
+        for (entity_id, vector_name, data) in vectors {
+            let point_id = PointId::new(entity_id.as_u64());
+            // update_point_vector_in_index checks if an index exists and only updates if it does
+            update_point_vector_in_index(&mut tx, collection_name, vector_name, point_id, data)
+                .map_err(|e| Error::Vector(e.to_string()))?;
         }
 
         // Commit the transaction
@@ -1488,7 +1496,9 @@ impl Database {
         &self,
         vectors: &[(manifoldb_core::EntityId, String)],
     ) -> Result<usize> {
-        use crate::collection::CollectionManager;
+        use crate::collection::{CollectionManager, CollectionName};
+        use crate::vector::remove_point_vector_from_index;
+        use manifoldb_core::PointId;
         use manifoldb_vector::{encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
 
         if vectors.is_empty() {
@@ -1514,42 +1524,52 @@ impl Database {
 
         let mut deleted_count = 0;
 
-        // Get all collection IDs by listing collection names and looking them up
-        let collection_ids: Vec<_> = {
-            let names = CollectionManager::list(&tx)
-                .map_err(|e| Error::Collection(e.to_string()))?;
-            let mut ids = Vec::new();
+        // Get all collection names and IDs by listing collection names and looking them up
+        let collections: Vec<(CollectionName, manifoldb_core::CollectionId)> = {
+            let names =
+                CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
+            let mut result = Vec::new();
             for name in names {
                 if let Some(collection) = CollectionManager::get(&tx, &name)
                     .map_err(|e| Error::Collection(e.to_string()))?
                 {
-                    ids.push(collection.id());
+                    result.push((name, collection.id()));
                 }
             }
-            ids
+            result
         };
+
+        // Track which vectors were deleted from which collections for HNSW updates
+        let mut hnsw_updates: Vec<(&str, manifoldb_core::EntityId, &str)> = Vec::new();
 
         {
             let storage = tx.storage_mut().map_err(Error::Transaction)?;
 
             for (entity_id, vector_name) in vectors {
                 // Try to delete from each collection
-                for &collection_id in &collection_ids {
-                    let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
+                for (collection_name, collection_id) in &collections {
+                    let key = encode_collection_vector_key(*collection_id, *entity_id, vector_name);
                     // Check if key exists and delete it
                     if storage
                         .get(TABLE_COLLECTION_VECTORS, &key)
                         .map_err(Error::Storage)?
                         .is_some()
                     {
-                        storage
-                            .delete(TABLE_COLLECTION_VECTORS, &key)
-                            .map_err(Error::Storage)?;
+                        storage.delete(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?;
                         deleted_count += 1;
+                        // Track for HNSW update
+                        hnsw_updates.push((collection_name.as_str(), *entity_id, vector_name));
                         break; // Found and deleted, no need to check other collections
                     }
                 }
             }
+        }
+
+        // Phase 3: Update HNSW indexes - remove deleted vectors
+        for (collection_name, entity_id, vector_name) in hnsw_updates {
+            let point_id = PointId::new(entity_id.as_u64());
+            remove_point_vector_from_index(&mut tx, collection_name, vector_name, point_id)
+                .map_err(|e| Error::Vector(e.to_string()))?;
         }
 
         // Commit the transaction
@@ -1663,6 +1683,8 @@ impl Database {
         vectors: &[(manifoldb_core::EntityId, String, Vec<f32>)],
     ) -> Result<usize> {
         use crate::collection::{CollectionManager, CollectionName};
+        use crate::vector::update_point_vector_in_index;
+        use manifoldb_core::PointId;
         use manifoldb_vector::{
             encode_vector_value, encoding::encode_collection_vector_key, VectorData,
             TABLE_COLLECTION_VECTORS,
@@ -1676,8 +1698,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist AND have vectors with the specified names in the collection
         {
@@ -1701,11 +1723,7 @@ impl Database {
 
                 // Check that the vector exists in collection_vectors table
                 let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
-                if storage
-                    .get(TABLE_COLLECTION_VECTORS, &key)
-                    .map_err(Error::Storage)?
-                    .is_none()
-                {
+                if storage.get(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?.is_none() {
                     return Err(Error::Vector(format!(
                         "Entity {} does not have vector '{}' to update",
                         entity_id, vector_name
@@ -1714,7 +1732,7 @@ impl Database {
             }
         }
 
-        // Phase 2: Update vectors in the collection_vectors table
+        // Phase 2: Update vectors in the collection_vectors table and HNSW indexes
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
 
@@ -1738,10 +1756,16 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table (overwrites existing)
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
+        }
+
+        // Phase 3: Update HNSW indexes for each vector
+        // update_point_vector_in_index handles updating existing entries in HNSW
+        for (entity_id, vector_name, data) in vectors {
+            let point_id = PointId::new(entity_id.as_u64());
+            update_point_vector_in_index(&mut tx, collection_name, vector_name, point_id, data)
+                .map_err(|e| Error::Vector(e.to_string()))?;
         }
 
         // Commit the transaction
