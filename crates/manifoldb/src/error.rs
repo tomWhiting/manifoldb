@@ -49,6 +49,29 @@ pub enum Error {
     /// An internal lock was poisoned (a thread panicked while holding it).
     #[error("internal lock poisoned: {0}")]
     LockPoisoned(String),
+
+    /// A vector operation error occurred.
+    #[error("vector error: {0}")]
+    Vector(String),
+
+    /// A bulk operation failed.
+    #[error("bulk operation error: {0}")]
+    BulkOperation(String),
+
+    /// An entity was not found when required.
+    #[error("entity not found: {0}")]
+    EntityNotFound(manifoldb_core::EntityId),
+
+    /// Vector dimension mismatch.
+    #[error("dimension mismatch for vector '{vector_name}': expected {expected}, got {actual}")]
+    DimensionMismatch {
+        /// The name of the vector that had the wrong dimension.
+        vector_name: String,
+        /// Expected dimension.
+        expected: usize,
+        /// Actual dimension provided.
+        actual: usize,
+    },
 }
 
 impl Error {
@@ -59,7 +82,12 @@ impl Error {
     pub const fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            Self::Parse(_) | Self::InvalidParameter(_) | Self::Type(_) | Self::Execution(_)
+            Self::Parse(_)
+                | Self::InvalidParameter(_)
+                | Self::Type(_)
+                | Self::Execution(_)
+                | Self::Vector(_)
+                | Self::BulkOperation(_)
         )
     }
 
@@ -97,6 +125,18 @@ impl Error {
     #[must_use]
     pub fn lock_poisoned(msg: impl Into<String>) -> Self {
         Self::LockPoisoned(msg.into())
+    }
+
+    /// Create a vector error.
+    #[must_use]
+    pub fn vector(msg: impl Into<String>) -> Self {
+        Self::Vector(msg.into())
+    }
+
+    /// Create a bulk operation error.
+    #[must_use]
+    pub fn bulk_operation(msg: impl Into<String>) -> Self {
+        Self::BulkOperation(msg.into())
     }
 }
 
