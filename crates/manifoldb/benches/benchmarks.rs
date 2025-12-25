@@ -713,7 +713,7 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
         });
     }
 
-    // Compare with individual inserts
+    // Compare with individual inserts via bulk_insert_vectors with single-element batches
     group.bench_function("individual_insert_1000", |b| {
         b.iter_with_setup(
             || {
@@ -731,16 +731,10 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
                 (db, entity_ids)
             },
             |(db, entity_ids)| {
-                // Individual inserts via separate transactions
+                // Individual inserts via bulk_insert_vectors with single-element batches
                 for id in entity_ids {
-                    let mut tx = db.begin().expect("failed");
-                    let entity = tx.get_entity(id).expect("failed").expect("entity not found");
-                    let updated = entity.with_property(
-                        "_vector_embedding",
-                        manifoldb_core::Value::from(vec![0.5f32; 128]),
-                    );
-                    tx.put_entity(&updated).expect("failed");
-                    tx.commit().expect("failed");
+                    let vectors = vec![(id, "embedding".to_string(), vec![0.5f32; 128])];
+                    db.bulk_insert_vectors("documents", &vectors).expect("failed");
                 }
                 black_box(())
             },
@@ -846,7 +840,7 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
         );
     });
 
-    // Compare delete with individual property removal
+    // Compare bulk delete with individual delete calls
     group.bench_function("individual_delete_1000", |b| {
         b.iter_with_setup(
             || {
@@ -870,13 +864,9 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
                 (db, entity_ids)
             },
             |(db, entity_ids)| {
-                // Individual deletes via separate transactions
+                // Individual deletes via bulk_delete_vectors_by_name with single-element batches
                 for id in entity_ids {
-                    let mut tx = db.begin().expect("failed");
-                    let mut entity = tx.get_entity(id).expect("failed").expect("entity not found");
-                    entity.properties.remove("_vector_embedding");
-                    tx.put_entity(&entity).expect("failed");
-                    tx.commit().expect("failed");
+                    db.bulk_delete_vectors_by_name("embedding", &[id]).expect("failed");
                 }
                 black_box(())
             },
