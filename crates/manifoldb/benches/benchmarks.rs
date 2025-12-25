@@ -1871,6 +1871,168 @@ fn bulk_delete_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Delete Edges Benchmarks
+// ============================================================================
+
+fn bulk_delete_edge_benchmarks(c: &mut Criterion) {
+    use manifoldb_core::{Edge, EdgeId, Entity};
+
+    let mut group = c.benchmark_group("bulk_delete_edges");
+
+    // Compare individual deletes vs bulk delete for edges
+    for count in [100, 1000, 10_000] {
+        group.throughput(Throughput::Elements(count));
+
+        // Bulk delete edges
+        group.bench_with_input(BenchmarkId::new("bulk_delete", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    let db = Database::in_memory().expect("failed to create db");
+                    // Pre-create entities
+                    let entity_ids: Vec<EntityId> = {
+                        let entities: Vec<Entity> = (0..100)
+                            .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                            .collect();
+                        db.bulk_insert_entities(&entities).expect("failed")
+                    };
+
+                    // Create edges
+                    let mut rng = Rng::new(42);
+                    let edges: Vec<Edge> = (0..count)
+                        .map(|_| {
+                            let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            Edge::new(EdgeId::new(0), entity_ids[src], entity_ids[dst], "LINKS")
+                        })
+                        .collect();
+                    let edge_ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                    (db, edge_ids)
+                },
+                |(db, edge_ids)| {
+                    let deleted = db.bulk_delete_edges(&edge_ids).expect("bulk delete failed");
+                    black_box((db, deleted))
+                },
+            );
+        });
+
+        // Individual edge deletes (one transaction per edge)
+        group.bench_with_input(
+            BenchmarkId::new("individual_delete", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-create entities
+                        let entity_ids: Vec<EntityId> = {
+                            let entities: Vec<Entity> = (0..100)
+                                .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                                .collect();
+                            db.bulk_insert_entities(&entities).expect("failed")
+                        };
+
+                        // Create edges
+                        let mut rng = Rng::new(42);
+                        let edges: Vec<Edge> = (0..count)
+                            .map(|_| {
+                                let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                                let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                                Edge::new(EdgeId::new(0), entity_ids[src], entity_ids[dst], "LINKS")
+                            })
+                            .collect();
+                        let edge_ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                        (db, edge_ids)
+                    },
+                    |(db, edge_ids)| {
+                        for edge_id in edge_ids {
+                            let mut tx = db.begin().expect("failed");
+                            tx.delete_edge(edge_id).expect("delete failed");
+                            tx.commit().expect("commit failed");
+                        }
+                        black_box(db)
+                    },
+                );
+            },
+        );
+    }
+
+    // Bulk delete star pattern (one center with many edges)
+    for edge_count in [50, 100, 500] {
+        group.bench_with_input(
+            BenchmarkId::new("bulk_delete_star", edge_count),
+            &edge_count,
+            |b, &edge_count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Create center and leaf entities
+                        let mut tx = db.begin().expect("failed");
+
+                        let center = tx.create_entity().expect("failed").with_label("Center");
+                        tx.put_entity(&center).expect("put failed");
+
+                        let mut edge_ids = Vec::with_capacity(edge_count as usize);
+                        for _ in 0..edge_count {
+                            let leaf = tx.create_entity().expect("failed").with_label("Leaf");
+                            tx.put_entity(&leaf).expect("put failed");
+
+                            let edge = tx
+                                .create_edge(center.id, leaf.id, "RADIATES")
+                                .expect("create edge");
+                            tx.put_edge(&edge).expect("put edge");
+                            edge_ids.push(edge.id);
+                        }
+
+                        tx.commit().expect("commit failed");
+                        (db, edge_ids)
+                    },
+                    |(db, edge_ids)| {
+                        let deleted = db.bulk_delete_edges(&edge_ids).expect("bulk delete failed");
+                        black_box((db, deleted))
+                    },
+                );
+            },
+        );
+    }
+
+    // Large batch delete stress test
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(50_000));
+    group.bench_function("bulk_delete_50k", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                // Pre-create entities
+                let entity_ids: Vec<EntityId> = {
+                    let entities: Vec<Entity> = (0..500)
+                        .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                        .collect();
+                    db.bulk_insert_entities(&entities).expect("failed")
+                };
+
+                // Create 50k edges
+                let mut rng = Rng::new(42);
+                let edges: Vec<Edge> = (0..50_000)
+                    .map(|_| {
+                        let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                        let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                        Edge::new(EdgeId::new(0), entity_ids[src], entity_ids[dst], "LINKS")
+                    })
+                    .collect();
+                let edge_ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                (db, edge_ids)
+            },
+            |(db, edge_ids)| {
+                let deleted = db.bulk_delete_edges(&edge_ids).expect("bulk delete failed");
+                black_box((db, deleted))
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -1886,6 +2048,7 @@ criterion_group!(
     bulk_insert_benchmarks,
     bulk_upsert_benchmarks,
     bulk_insert_edge_benchmarks,
-    bulk_delete_benchmarks
+    bulk_delete_benchmarks,
+    bulk_delete_edge_benchmarks
 );
 criterion_main!(benches);

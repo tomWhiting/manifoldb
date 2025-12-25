@@ -1833,6 +1833,69 @@ impl Database {
 
         Ok(deleted_count)
     }
+
+    /// Bulk delete edges by ID.
+    ///
+    /// All deletions happen in a single transaction with one fsync for
+    /// maximum performance. Edge indexes are properly cleaned up.
+    ///
+    /// # Arguments
+    ///
+    /// * `edge_ids` - The IDs of edges to delete
+    ///
+    /// # Returns
+    ///
+    /// The number of edges that were actually deleted. This may be less
+    /// than the input length if some edges didn't exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, EdgeId};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create some edges...
+    /// let edge_ids: Vec<EdgeId> = /* ... */;
+    ///
+    /// // Delete them all in one transaction
+    /// let deleted = db.bulk_delete_edges(&edge_ids)?;
+    /// assert_eq!(deleted, edge_ids.len());
+    /// ```
+    pub fn bulk_delete_edges(&self, edge_ids: &[EdgeId]) -> Result<usize> {
+        if edge_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let start = std::time::Instant::now();
+
+        // Begin a write transaction
+        let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
+
+        let mut deleted_count = 0;
+
+        for &edge_id in edge_ids {
+            // delete_edge handles:
+            // - Loading the edge to get source/target
+            // - Deleting from main edges table
+            // - Removing from EDGES_OUT and EDGES_IN adjacency indexes
+            // - Removing from graph layer indexes (edges_by_source, edges_by_target, edge_types)
+            if tx.delete_edge(edge_id)? {
+                deleted_count += 1;
+            }
+        }
+
+        // Commit the transaction
+        let commit_start = std::time::Instant::now();
+        tx.commit().map_err(Error::Transaction)?;
+        self.db_metrics.record_commit(commit_start.elapsed());
+
+        // Record successful operation
+        self.db_metrics.record_query(start.elapsed(), true);
+
+        Ok(deleted_count)
+    }
 }
 
 // Note: Database automatically implements Send + Sync through its fields

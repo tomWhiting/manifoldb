@@ -4,6 +4,7 @@
 //! the database across multiple features and at various scales.
 
 pub mod bulk_delete;
+pub mod bulk_delete_edges;
 pub mod bulk_vectors;
 pub mod combined;
 pub mod concurrency;
