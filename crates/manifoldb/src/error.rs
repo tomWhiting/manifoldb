@@ -62,6 +62,10 @@ pub enum Error {
     #[error("entity not found: {0}")]
     EntityNotFound(manifoldb_core::EntityId),
 
+    /// An entity reference in an edge is invalid (source or target doesn't exist).
+    #[error("invalid entity reference in edge: {0}")]
+    InvalidEntityReference(manifoldb_core::EntityId),
+
     /// Vector dimension mismatch.
     #[error("dimension mismatch for vector '{vector_name}': expected {expected}, got {actual}")]
     DimensionMismatch {
