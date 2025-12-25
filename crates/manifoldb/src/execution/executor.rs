@@ -2192,21 +2192,55 @@ fn evaluate_predicate(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContex
 
             use manifoldb_query::ast::BinaryOp;
             match op {
-                BinaryOp::Eq => values_equal(&lval, &rval),
-                BinaryOp::NotEq => !values_equal(&lval, &rval),
-                BinaryOp::Lt => compare_values(&lval, &rval) == std::cmp::Ordering::Less,
-                BinaryOp::LtEq => {
-                    matches!(
-                        compare_values(&lval, &rval),
-                        std::cmp::Ordering::Less | std::cmp::Ordering::Equal
-                    )
+                // Comparison operators - return false if either operand is NULL (SQL semantics)
+                // In SQL, NULL compared to anything returns NULL, which is treated as false in WHERE
+                BinaryOp::Eq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        values_equal(&lval, &rval)
+                    }
                 }
-                BinaryOp::Gt => compare_values(&lval, &rval) == std::cmp::Ordering::Greater,
+                BinaryOp::NotEq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        !values_equal(&lval, &rval)
+                    }
+                }
+                BinaryOp::Lt => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        compare_values(&lval, &rval) == std::cmp::Ordering::Less
+                    }
+                }
+                BinaryOp::LtEq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        matches!(
+                            compare_values(&lval, &rval),
+                            std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+                        )
+                    }
+                }
+                BinaryOp::Gt => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        compare_values(&lval, &rval) == std::cmp::Ordering::Greater
+                    }
+                }
                 BinaryOp::GtEq => {
-                    matches!(
-                        compare_values(&lval, &rval),
-                        std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
-                    )
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        matches!(
+                            compare_values(&lval, &rval),
+                            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+                        )
+                    }
                 }
                 BinaryOp::And => {
                     evaluate_predicate(left, entity, ctx) && evaluate_predicate(right, entity, ctx)
@@ -2215,7 +2249,7 @@ fn evaluate_predicate(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContex
                     evaluate_predicate(left, entity, ctx) || evaluate_predicate(right, entity, ctx)
                 }
                 BinaryOp::Like => {
-                    // Simple LIKE implementation (just prefix/suffix for now)
+                    // Simple LIKE implementation
                     if let (Value::String(s), Value::String(pattern)) = (&lval, &rval) {
                         simple_like_match(s, pattern)
                     } else {
@@ -2372,22 +2406,51 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Simple LIKE pattern matching.
+/// SQL LIKE pattern matching.
+///
+/// Supports:
+/// - `%` matches any sequence of characters (including empty)
+/// - `_` matches exactly one character
 fn simple_like_match(s: &str, pattern: &str) -> bool {
-    if pattern.starts_with('%') && pattern.ends_with('%') {
-        // Contains
-        let needle = &pattern[1..pattern.len() - 1];
-        s.contains(needle)
-    } else if pattern.starts_with('%') {
-        // Ends with
-        s.ends_with(&pattern[1..])
-    } else if pattern.ends_with('%') {
-        // Starts with
-        s.starts_with(&pattern[..pattern.len() - 1])
-    } else {
-        // Exact match
-        s == pattern
+    let s_chars: Vec<char> = s.chars().collect();
+    let p_chars: Vec<char> = pattern.chars().collect();
+
+    let s_len = s_chars.len();
+    let p_len = p_chars.len();
+
+    // dp[i][j] = true if s[0..i] matches pattern[0..j]
+    let mut dp = vec![vec![false; p_len + 1]; s_len + 1];
+
+    // Empty pattern matches empty string
+    dp[0][0] = true;
+
+    // Handle patterns starting with %
+    for j in 1..=p_len {
+        if p_chars[j - 1] == '%' {
+            dp[0][j] = dp[0][j - 1];
+        } else {
+            break;
+        }
     }
+
+    for i in 1..=s_len {
+        for j in 1..=p_len {
+            let p_char = p_chars[j - 1];
+
+            if p_char == '%' {
+                // % matches zero or more characters
+                dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
+            } else if p_char == '_' {
+                // _ matches exactly one character
+                dp[i][j] = dp[i - 1][j - 1];
+            } else {
+                // Regular character - must match exactly
+                dp[i][j] = dp[i - 1][j - 1] && s_chars[i - 1] == p_char;
+            }
+        }
+    }
+
+    dp[s_len][p_len]
 }
 
 /// Extract column name from an expression.
@@ -2420,12 +2483,26 @@ mod tests {
 
     #[test]
     fn test_simple_like_match() {
+        // % wildcard
         assert!(simple_like_match("hello", "hello"));
         assert!(simple_like_match("hello", "hel%"));
         assert!(simple_like_match("hello", "%llo"));
         assert!(simple_like_match("hello", "%ell%"));
         assert!(!simple_like_match("hello", "world"));
         assert!(!simple_like_match("hello", "hi%"));
+
+        // _ wildcard (single character)
+        assert!(simple_like_match("hello", "h_llo"));
+        assert!(simple_like_match("hello", "_ello"));
+        assert!(simple_like_match("hello", "hell_"));
+        assert!(simple_like_match("hello", "_____"));
+        assert!(simple_like_match("Bob", "B_b"));
+        assert!(!simple_like_match("hello", "h_lo")); // _ is one char, not two
+        assert!(!simple_like_match("hello", "______")); // too many
+
+        // Mixed wildcards
+        assert!(simple_like_match("hello", "h_%"));
+        assert!(simple_like_match("hello", "%_o"));
     }
 
     #[test]
