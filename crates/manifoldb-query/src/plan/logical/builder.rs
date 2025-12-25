@@ -911,8 +911,12 @@ impl PlanBuilder {
 
                 // Convert the combination method
                 let logical_method = match method {
-                    ast::HybridCombinationMethod::WeightedSum => HybridCombinationMethod::WeightedSum,
-                    ast::HybridCombinationMethod::RRF { k } => HybridCombinationMethod::RRF { k: *k },
+                    ast::HybridCombinationMethod::WeightedSum => {
+                        HybridCombinationMethod::WeightedSum
+                    }
+                    ast::HybridCombinationMethod::RRF { k } => {
+                        HybridCombinationMethod::RRF { k: *k }
+                    }
                 };
 
                 Ok(LogicalExpr::HybridSearch {

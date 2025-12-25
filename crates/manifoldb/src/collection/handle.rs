@@ -105,11 +105,12 @@ impl<E: StorageEngine> CollectionHandle<E> {
         // Create the point store
         // We need to unwrap the Arc to get the engine
         // Since PointStore takes ownership, we'll store the engine directly
-        let point_store = PointStore::new(Arc::try_unwrap(engine).unwrap_or_else(|_arc| {
-            // If there are multiple references, we need to clone
-            // This shouldn't happen in normal usage
-            panic!("Cannot create collection handle: engine has multiple references")
-        }));
+        let engine = Arc::try_unwrap(engine).map_err(|_| {
+            ApiError::InvalidState(
+                "Cannot create collection handle: engine has multiple references".into(),
+            )
+        })?;
+        let point_store = PointStore::new(engine);
 
         // Create the collection in the point store
         point_store.create_collection(&vector_name, schema)?;
@@ -669,6 +670,35 @@ fn fuse_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_create_with_multiple_arc_references_returns_error() {
+        use manifoldb_storage::backends::RedbEngine;
+
+        // Create an engine wrapped in Arc
+        let engine = Arc::new(RedbEngine::in_memory().unwrap());
+
+        // Clone the Arc to create multiple references
+        let _engine_clone = Arc::clone(&engine);
+
+        // Now try to create a collection handle - this should return an error,
+        // not panic, since there are multiple Arc references
+        let name = CollectionName::new("test_collection").unwrap();
+        let vectors = vec![];
+
+        let result = CollectionHandle::create(engine, name, vectors);
+
+        match result {
+            Err(ApiError::InvalidState(msg)) => {
+                assert!(
+                    msg.contains("multiple references"),
+                    "Error message should mention multiple references: {msg}"
+                );
+            }
+            Err(other) => panic!("Expected InvalidState error, got: {other:?}"),
+            Ok(_) => panic!("Expected error when creating handle with multiple Arc references"),
+        }
+    }
 
     #[test]
     fn test_cosine_similarity() {

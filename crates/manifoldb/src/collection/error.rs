@@ -90,6 +90,10 @@ pub enum ApiError {
     /// Hybrid search requires multiple vectors.
     #[error("hybrid search requires at least two vector names")]
     InsufficientVectorsForHybrid,
+
+    /// Invalid state for the requested operation.
+    #[error("invalid state: {0}")]
+    InvalidState(String),
 }
 
 impl From<manifoldb_vector::error::VectorError> for ApiError {
