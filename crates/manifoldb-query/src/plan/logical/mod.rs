@@ -42,7 +42,10 @@ pub use ddl::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
     DropTableNode,
 };
-pub use expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
+pub use expr::{
+    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
+    SortOrder,
+};
 pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
 pub use node::LogicalPlan;
 pub use relational::{

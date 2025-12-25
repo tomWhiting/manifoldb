@@ -8,7 +8,7 @@ use crate::ast::{BinaryOp, Literal, UnaryOp};
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
-use crate::plan::logical::LogicalExpr;
+use crate::plan::logical::{HybridCombinationMethod, LogicalExpr};
 
 /// Filter operator.
 ///
@@ -214,6 +214,66 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
         }
 
         LogicalExpr::Wildcard | LogicalExpr::QualifiedWildcard(_) => Ok(Value::Null),
+
+        LogicalExpr::HybridSearch { components, method } => {
+            // Evaluate hybrid search by combining component distances
+            if components.is_empty() {
+                return Ok(Value::Null);
+            }
+
+            // Evaluate each component's distance expression
+            let mut distances: Vec<(f64, f64)> = Vec::with_capacity(components.len());
+            for comp in components {
+                let dist_value = evaluate_expr(&comp.distance_expr, row)?;
+                let dist = match dist_value {
+                    Value::Float(f) => f,
+                    Value::Int(i) => i as f64,
+                    Value::Null => continue, // Skip null distances
+                    _ => continue,
+                };
+                distances.push((dist, comp.weight));
+            }
+
+            if distances.is_empty() {
+                return Ok(Value::Null);
+            }
+
+            // Combine distances based on method
+            let combined_score = match method {
+                HybridCombinationMethod::WeightedSum => {
+                    // Weighted sum: sum(weight_i * distance_i)
+                    // For distances (lower is better), we compute weighted average
+                    let total_weight: f64 = distances.iter().map(|(_, w)| w).sum();
+                    if total_weight == 0.0 {
+                        return Ok(Value::Null);
+                    }
+                    let weighted_sum: f64 =
+                        distances.iter().map(|(d, w)| d * w).sum::<f64>() / total_weight;
+                    weighted_sum
+                }
+                HybridCombinationMethod::RRF { k } => {
+                    // For RRF at the row level (without global ranking), we use a simplified approach:
+                    // Convert distances to pseudo-ranks by normalizing and inverting
+                    // RRF formula: sum(1 / (k + rank_i))
+                    // Since we don't have actual ranks, we use the distance as a proxy
+                    // Lower distance = better, so we use 1 / (k + distance * scale_factor)
+                    let k_f64 = f64::from(*k);
+                    let rrf_score: f64 = distances
+                        .iter()
+                        .map(|(d, w)| {
+                            // Use weight to scale the contribution
+                            // Lower distance = higher contribution
+                            w / (k_f64 + d.abs())
+                        })
+                        .sum();
+                    // RRF produces higher scores for better matches, but we need
+                    // lower = better for sorting, so we negate
+                    -rrf_score
+                }
+            };
+
+            Ok(Value::Float(combined_score))
+        }
     }
 }
 

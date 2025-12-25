@@ -30,7 +30,10 @@ use super::ddl::{
     DropTableNode,
 };
 
-use super::expr::{AggregateFunction, LogicalExpr, ScalarFunction, SortOrder};
+use super::expr::{
+    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
+    SortOrder,
+};
 use super::graph::{ExpandDirection, ExpandLength, ExpandNode};
 use super::node::LogicalPlan;
 use super::relational::{
@@ -890,16 +893,32 @@ impl PlanBuilder {
                 Ok(LogicalExpr::QualifiedWildcard(qualifier))
             }
 
-            Expr::HybridSearch { components, method: _ } => {
-                // Convert AST HybridSearch to a logical expression
-                // For now, return the first component's distance expression
-                // The full hybrid search is handled at the plan level
-                if let Some(first) = components.first() {
-                    self.build_expr(&first.distance_expr)
-                } else {
-                    // Empty hybrid search - return a null literal
-                    Ok(LogicalExpr::Literal(ast::Literal::Null))
+            Expr::HybridSearch { components, method } => {
+                // Convert AST HybridSearch to a logical HybridSearch expression
+                // This properly handles all components for weighted sum or RRF combination
+                if components.is_empty() {
+                    return Ok(LogicalExpr::Literal(ast::Literal::Null));
                 }
+
+                // Convert each AST component to a logical component
+                let logical_components: Vec<HybridExprComponent> = components
+                    .iter()
+                    .map(|c| {
+                        let distance_expr = self.build_expr(&c.distance_expr)?;
+                        Ok(HybridExprComponent::new(distance_expr, c.weight))
+                    })
+                    .collect::<PlanResult<Vec<_>>>()?;
+
+                // Convert the combination method
+                let logical_method = match method {
+                    ast::HybridCombinationMethod::WeightedSum => HybridCombinationMethod::WeightedSum,
+                    ast::HybridCombinationMethod::RRF { k } => HybridCombinationMethod::RRF { k: *k },
+                };
+
+                Ok(LogicalExpr::HybridSearch {
+                    components: logical_components,
+                    method: logical_method,
+                })
             }
 
             Expr::Tuple(exprs) => {

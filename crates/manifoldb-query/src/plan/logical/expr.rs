@@ -147,6 +147,49 @@ pub enum LogicalExpr {
 
     /// A parameter placeholder.
     Parameter(u32),
+
+    /// Hybrid vector search expression.
+    ///
+    /// Combines multiple vector distance operations with weights.
+    /// Example: `HYBRID(dense <=> $q1, 0.7, sparse <#> $q2, 0.3)`
+    HybridSearch {
+        /// Vector search components (each has distance expr and weight).
+        components: Vec<HybridExprComponent>,
+        /// Combination method (WeightedSum, RRF).
+        method: HybridCombinationMethod,
+    },
+}
+
+/// A component of a hybrid vector search expression.
+///
+/// This is used within `LogicalExpr::HybridSearch` to represent each
+/// weighted distance computation in a hybrid search.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridExprComponent {
+    /// The vector distance expression (e.g., `column <=> $query`).
+    pub distance_expr: Box<LogicalExpr>,
+    /// Weight for this component (0.0 to 1.0).
+    pub weight: f64,
+}
+
+impl HybridExprComponent {
+    /// Creates a new hybrid expression component.
+    #[must_use]
+    pub fn new(distance_expr: LogicalExpr, weight: f64) -> Self {
+        Self { distance_expr: Box::new(distance_expr), weight }
+    }
+}
+
+/// Combination method for hybrid vector search.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HybridCombinationMethod {
+    /// Weighted sum of distances: `w1*d1 + w2*d2`.
+    WeightedSum,
+    /// Reciprocal Rank Fusion with k parameter.
+    RRF {
+        /// The k parameter (typically 60).
+        k: u32,
+    },
 }
 
 impl LogicalExpr {
@@ -471,6 +514,9 @@ impl LogicalExpr {
             Self::Between { expr, low, high, .. } => {
                 expr.contains_aggregate() || low.contains_aggregate() || high.contains_aggregate()
             }
+            Self::HybridSearch { components, .. } => {
+                components.iter().any(|c| c.distance_expr.contains_aggregate())
+            }
             _ => false,
         }
     }
@@ -584,6 +630,20 @@ impl fmt::Display for LogicalExpr {
             Self::QualifiedWildcard(qualifier) => write!(f, "{qualifier}.*"),
             Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
             Self::Parameter(idx) => write!(f, "${idx}"),
+            Self::HybridSearch { components, method } => {
+                let method_name = match method {
+                    HybridCombinationMethod::WeightedSum => "HYBRID",
+                    HybridCombinationMethod::RRF { .. } => "RRF",
+                };
+                write!(f, "{method_name}(")?;
+                for (i, comp) in components.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}, {}", comp.distance_expr, comp.weight)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
