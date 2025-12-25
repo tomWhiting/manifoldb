@@ -51,6 +51,7 @@
 //! ```
 
 mod config;
+mod coordinator;
 mod graph;
 mod hnsw;
 mod manager;
@@ -59,6 +60,7 @@ pub mod registry;
 mod traits;
 
 pub use config::HnswConfig;
+pub use coordinator::VectorIndexCoordinator;
 pub use graph::{
     search_layer, search_layer_filtered, select_neighbors_heuristic, select_neighbors_simple,
     Candidate, HnswGraph, HnswNode,

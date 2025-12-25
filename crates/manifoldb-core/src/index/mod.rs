@@ -52,6 +52,8 @@
 mod catalog;
 mod property;
 
-pub use catalog::{CatalogError, CatalogIndexId, IndexCatalog, IndexDef, IndexDefBuilder, IndexType};
 pub use crate::encoding::keys::IndexId;
+pub use catalog::{
+    CatalogError, CatalogIndexId, IndexCatalog, IndexDef, IndexDefBuilder, IndexType,
+};
 pub use property::{PropertyIndexEntry, PropertyIndexScan};
