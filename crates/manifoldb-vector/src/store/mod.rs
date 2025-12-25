@@ -15,6 +15,15 @@
 //! Each entity can have embeddings in multiple spaces (e.g., `text_embedding`,
 //! `image_embedding`), and each space has a fixed dimension and distance metric.
 //!
+//! ## Collection vector store (entity-to-vector mapping)
+//!
+//! The [`CollectionVectorStore`] provides dedicated vector storage separate from
+//! entity properties. This enables:
+//! - Storage efficiency: Read entities without loading vector data
+//! - Multiple embeddings per entity: Support text, image, summary embeddings
+//! - Independent operations: Update vectors without touching entities
+//! - Cascade deletion: Delete all vectors when entity is removed
+//!
 //! ## Point collections (Qdrant-style)
 //!
 //! The [`PointStore`] manages points with multiple named vectors and JSON payloads.
@@ -80,12 +89,14 @@
 //! store.upsert_point(&name, PointId::new(1), payload, vectors)?;
 //! ```
 
+mod collection_vector_store;
 mod inverted_index;
 mod multi_vector_store;
 mod point_store;
 mod sparse_store;
 mod vector_store;
 
+pub use collection_vector_store::CollectionVectorStore;
 pub use inverted_index::{
     InvertedIndex, InvertedIndexMeta, PostingEntry, PostingList, ScoringFunction, SearchResult,
 };
