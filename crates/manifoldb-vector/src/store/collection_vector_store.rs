@@ -418,7 +418,11 @@ pub fn encode_vector_value(data: &VectorData, vector_name: &str) -> Vec<u8> {
 /// Decode a vector value from storage.
 ///
 /// Returns the vector data and the vector name.
-fn decode_vector_value(bytes: &[u8]) -> Result<(VectorData, String), VectorError> {
+///
+/// # Errors
+///
+/// Returns an error if the byte slice is malformed or uses an unsupported format version.
+pub fn decode_vector_value(bytes: &[u8]) -> Result<(VectorData, String), VectorError> {
     if bytes.len() < 12 {
         return Err(VectorError::Encoding("truncated vector value".to_string()));
     }
