@@ -1331,8 +1331,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist
         {
@@ -1374,9 +1374,7 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
         }
 
@@ -1516,8 +1514,8 @@ impl Database {
 
         // Get all collection IDs by listing collection names and looking them up
         let collection_ids: Vec<_> = {
-            let names = CollectionManager::list(&tx)
-                .map_err(|e| Error::Collection(e.to_string()))?;
+            let names =
+                CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
             let mut ids = Vec::new();
             for name in names {
                 if let Some(collection) = CollectionManager::get(&tx, &name)
@@ -1542,9 +1540,7 @@ impl Database {
                         .map_err(Error::Storage)?
                         .is_some()
                     {
-                        storage
-                            .delete(TABLE_COLLECTION_VECTORS, &key)
-                            .map_err(Error::Storage)?;
+                        storage.delete(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?;
                         deleted_count += 1;
                         break; // Found and deleted, no need to check other collections
                     }
@@ -1676,8 +1672,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist AND have vectors with the specified names in the collection
         {
@@ -1701,11 +1697,7 @@ impl Database {
 
                 // Check that the vector exists in collection_vectors table
                 let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
-                if storage
-                    .get(TABLE_COLLECTION_VECTORS, &key)
-                    .map_err(Error::Storage)?
-                    .is_none()
-                {
+                if storage.get(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?.is_none() {
                     return Err(Error::Vector(format!(
                         "Entity {} does not have vector '{}' to update",
                         entity_id, vector_name
@@ -1738,9 +1730,7 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table (overwrites existing)
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
         }
 
@@ -2145,8 +2135,12 @@ impl Database {
         entity_ids: &[EntityId],
         cascade_edges: bool,
     ) -> Result<usize> {
+        use crate::collection::CollectionManager;
         use crate::execution::EntityIndexMaintenance;
+        use manifoldb_storage::Cursor;
+        use manifoldb_vector::{encoding::encode_entity_vector_prefix, TABLE_COLLECTION_VECTORS};
         use std::collections::HashSet;
+        use std::ops::Bound;
 
         if entity_ids.is_empty() {
             return Ok(0);
@@ -2160,6 +2154,21 @@ impl Database {
 
         let mut deleted_count = 0;
         let mut affected_tables: HashSet<String> = HashSet::new();
+
+        // Get all collection IDs for vector cascade deletion
+        let collection_ids: Vec<_> = {
+            let names =
+                CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
+            let mut ids = Vec::new();
+            for name in names {
+                if let Some(collection) = CollectionManager::get(&tx, &name)
+                    .map_err(|e| Error::Collection(e.to_string()))?
+                {
+                    ids.push(collection.id());
+                }
+            }
+            ids
+        };
 
         for &entity_id in entity_ids {
             // Load the entity to get property values for index cleanup
@@ -2197,6 +2206,48 @@ impl Database {
                         "entity {} has connected edges; use bulk_delete_entities for cascade delete",
                         entity_id.as_u64()
                     )));
+                }
+            }
+
+            // Cascade delete: delete all vectors for this entity from all collections
+            {
+                let storage = tx.storage_mut().map_err(Error::Transaction)?;
+                for &collection_id in &collection_ids {
+                    // Create prefix for all vectors of this entity in this collection
+                    let prefix = encode_entity_vector_prefix(collection_id, entity_id);
+
+                    // Calculate next prefix for range scan
+                    let prefix_end = {
+                        let mut result = prefix.clone();
+                        for byte in result.iter_mut().rev() {
+                            if *byte < 0xFF {
+                                *byte += 1;
+                                break;
+                            }
+                        }
+                        result
+                    };
+
+                    // Collect keys to delete (can't delete while iterating)
+                    let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+                    {
+                        let mut cursor = storage
+                            .range(
+                                TABLE_COLLECTION_VECTORS,
+                                Bound::Included(prefix.as_slice()),
+                                Bound::Excluded(prefix_end.as_slice()),
+                            )
+                            .map_err(Error::Storage)?;
+
+                        while let Some((key, _)) = cursor.next().map_err(Error::Storage)? {
+                            keys_to_delete.push(key.to_vec());
+                        }
+                    }
+
+                    // Delete collected keys
+                    for key in keys_to_delete {
+                        storage.delete(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?;
+                    }
                 }
             }
 

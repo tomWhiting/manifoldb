@@ -37,7 +37,6 @@ use crate::encoding::{encode_collection_vector_key, encode_entity_vector_prefix,
 use crate::error::VectorError;
 use crate::types::VectorData;
 
-
 /// Version byte for vector storage format.
 const VECTOR_FORMAT_VERSION: u8 = 1;
 
