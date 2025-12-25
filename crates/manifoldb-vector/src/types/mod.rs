@@ -13,6 +13,10 @@
 //! - [`MultiVectorEmbeddingSpace`] - Metadata about a multi-vector embedding space
 //! - [`BinaryEmbeddingSpace`] - Metadata about a binary embedding space
 //!
+//! ## Separated vector storage
+//! - [`VectorData`] - Vector data supporting dense, sparse, multi-vector, and binary formats
+//! - [`VectorRef`] - Reference to a vector attached to an entity
+//!
 //! ## Point collections (Qdrant-style)
 //! - [`Collection`] - A named collection of points with a defined schema
 //! - [`CollectionName`] - A validated collection name
@@ -28,6 +32,8 @@ mod multi;
 mod point;
 mod space;
 mod sparse;
+mod vector_data;
+mod vector_ref;
 
 pub use binary::BinaryEmbedding;
 pub use embedding::Embedding;
@@ -41,3 +47,5 @@ pub use space::{
     SparseEmbeddingSpace,
 };
 pub use sparse::SparseEmbedding;
+pub use vector_data::VectorData;
+pub use vector_ref::VectorRef;

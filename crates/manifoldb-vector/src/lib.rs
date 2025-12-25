@@ -85,9 +85,9 @@ pub use index::{
 };
 pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, VectorOperator};
 pub use quantization::{KMeans, KMeansConfig, PQCode, PQConfig, ProductQuantizer};
-pub use store::{PointStore, SparseVectorStore, VectorStore};
+pub use store::{CollectionVectorStore, PointStore, SparseVectorStore, VectorStore};
 pub use types::{
     BinaryEmbedding, BinaryEmbeddingSpace, Collection, CollectionName, CollectionSchema, Embedding,
     EmbeddingName, EmbeddingSpace, NamedVector, Payload, SparseEmbedding, SparseEmbeddingSpace,
-    VectorConfig, VectorName, VectorType,
+    VectorConfig, VectorData, VectorName, VectorRef, VectorType,
 };
