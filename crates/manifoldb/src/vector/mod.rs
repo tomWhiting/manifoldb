@@ -23,9 +23,9 @@ use manifoldb_core::{Entity, EntityId, PointId, TransactionError, Value};
 use manifoldb_storage::Transaction;
 use manifoldb_vector::distance::DistanceMetric;
 use manifoldb_vector::index::{
-    clear_index_tx, hnsw_table_name, load_graph_tx, load_metadata_tx, save_graph_tx,
-    search_layer_filtered, FilteredSearchConfig, HnswConfig, HnswGraph, HnswIndexEntry, HnswNode,
-    HnswRegistry, SearchResult,
+    clear_index_tx, delete_node_tx, hnsw_table_name, load_graph_tx, load_metadata_tx,
+    save_graph_tx, search_layer_filtered, FilteredSearchConfig, HnswConfig, HnswGraph,
+    HnswIndexEntry, HnswNode, HnswRegistry, SearchResult,
 };
 use manifoldb_vector::types::Embedding;
 
@@ -538,12 +538,21 @@ fn remove_from_index<T: Transaction>(
 ) -> Result<(), VectorIndexError> {
     let (mut graph, config) = load_index(tx, index_name)?;
 
-    // Remove the node
+    // Get node's max_layer before removing (needed for storage deletion)
+    let max_layer = graph.nodes.get(&entity_id).map(|n| n.max_layer);
+
+    // Remove the node from the in-memory graph
     remove_from_graph(&mut graph, entity_id)?;
 
-    // Save updated graph
     let table_name = hnsw_table_name(index_name);
     let storage = tx.storage_mut_ref()?;
+
+    // Delete the node from storage (if it existed)
+    if let Some(max_layer) = max_layer {
+        delete_node_tx(storage, &table_name, entity_id, max_layer)?;
+    }
+
+    // Save updated graph (metadata and any modified neighbor connections)
     save_graph_tx(storage, &table_name, &graph, &config)?;
 
     Ok(())
@@ -1263,6 +1272,101 @@ mod tests {
         {
             let tx = manager.begin_read().unwrap();
             assert!(load_index(&tx, "to_drop").is_err());
+        }
+    }
+
+    /// Test that UPDATE works correctly when HNSW index has only one entity.
+    ///
+    /// This tests the fix for the "no entry point" error that occurs when:
+    /// 1. A single entity is inserted into an HNSW index
+    /// 2. That entity is removed (UPDATE = remove old + insert new)
+    /// 3. The old node was not deleted from storage, causing reload to fail
+    #[test]
+    fn test_update_single_entity_hnsw() {
+        let engine = RedbEngine::in_memory().unwrap();
+        let manager = TransactionManager::new(engine);
+
+        // Step 1: Create a single entity with a vector
+        let entity_id;
+        {
+            let mut tx = manager.begin_write().unwrap();
+
+            let entity = tx
+                .create_entity()
+                .unwrap()
+                .with_label("docs")
+                .with_property("embedding", vec![1.0f32, 0.0, 0.0, 0.0]);
+            entity_id = entity.id;
+            tx.put_entity(&entity).unwrap();
+
+            tx.commit().unwrap();
+        }
+
+        // Step 2: Create an HNSW index on the embedding column
+        {
+            let mut tx = manager.begin_write().unwrap();
+
+            HnswIndexBuilder::new("single_entity_idx", "docs", "embedding")
+                .dimension(4)
+                .distance_metric(DistanceMetric::Cosine)
+                .m(4)
+                .ef_construction(16)
+                .build(&mut tx)
+                .unwrap();
+
+            tx.commit().unwrap();
+        }
+
+        // Verify index has exactly one node and one entry point
+        {
+            let tx = manager.begin_read().unwrap();
+            let (graph, _) = load_index(&tx, "single_entity_idx").unwrap();
+
+            assert_eq!(graph.nodes.len(), 1);
+            assert_eq!(graph.entry_point, Some(entity_id));
+        }
+
+        // Step 3: Simulate UPDATE by removing and re-adding with new vector
+        // This is what happens when an entity's vector is updated
+        {
+            let mut tx = manager.begin_write().unwrap();
+
+            // Remove the old vector
+            remove_from_index(&mut tx, "single_entity_idx", entity_id).unwrap();
+
+            // Add the new vector
+            let new_embedding = Embedding::new(vec![0.0f32, 0.0, 0.0, 1.0]).unwrap();
+            add_to_index(&mut tx, "single_entity_idx", entity_id, new_embedding).unwrap();
+
+            tx.commit().unwrap();
+        }
+
+        // Step 4: Verify the index can be loaded and searched after the update
+        // This is where the bug would manifest - loading would fail with "no entry point"
+        {
+            let tx = manager.begin_read().unwrap();
+            let (graph, _) = load_index(&tx, "single_entity_idx").unwrap();
+
+            // Should still have one node
+            assert_eq!(graph.nodes.len(), 1);
+            // Entry point should be set
+            assert_eq!(graph.entry_point, Some(entity_id));
+
+            // The vector should be the new value
+            let node = graph.nodes.get(&entity_id).unwrap();
+            assert_eq!(node.embedding.as_slice(), &[0.0f32, 0.0, 0.0, 1.0]);
+        }
+
+        // Step 5: Verify search works with the updated vector
+        {
+            let tx = manager.begin_read().unwrap();
+            let query = Embedding::new(vec![0.0f32, 0.0, 0.0, 1.0]).unwrap();
+            let results = search_index(&tx, "single_entity_idx", &query, 1, None).unwrap();
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].entity_id, entity_id);
+            // Distance should be 0 (same vector)
+            assert!(results[0].distance < 0.0001);
         }
     }
 }
