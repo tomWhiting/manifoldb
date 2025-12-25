@@ -461,6 +461,8 @@ impl GroupState {
 /// Accumulator for aggregate functions.
 #[derive(Debug, Default)]
 struct Accumulator {
+    /// The aggregate function being computed.
+    func: Option<AggregateFunction>,
     count: i64,
     sum: f64,
     min: Option<Value>,
@@ -473,6 +475,11 @@ impl Accumulator {
     }
 
     fn update(&mut self, func: &AggregateFunction, value: &Value, is_wildcard: bool) {
+        // Store the function type on first update
+        if self.func.is_none() {
+            self.func = Some(func.clone());
+        }
+
         // For COUNT(*), always count (even NULLs)
         if matches!(func, AggregateFunction::Count) && is_wildcard {
             self.count += 1;
@@ -522,17 +529,35 @@ impl Accumulator {
     }
 
     fn result(&self) -> Value {
-        // Default result based on what was accumulated
-        if self.min.is_some() {
-            return self.min.clone().unwrap_or(Value::Null);
+        match &self.func {
+            Some(AggregateFunction::Count) => Value::Int(self.count),
+            Some(AggregateFunction::Sum) => {
+                if self.count > 0 {
+                    Value::Float(self.sum)
+                } else {
+                    Value::Null
+                }
+            }
+            Some(AggregateFunction::Avg) => {
+                if self.count > 0 {
+                    Value::Float(self.sum / self.count as f64)
+                } else {
+                    Value::Null
+                }
+            }
+            Some(AggregateFunction::Min) => self.min.clone().unwrap_or(Value::Null),
+            Some(AggregateFunction::Max) => self.max.clone().unwrap_or(Value::Null),
+            _ => {
+                // Fallback for unknown or unset function type
+                if self.min.is_some() {
+                    return self.min.clone().unwrap_or(Value::Null);
+                }
+                if self.max.is_some() {
+                    return self.max.clone().unwrap_or(Value::Null);
+                }
+                Value::Int(self.count)
+            }
         }
-        if self.max.is_some() {
-            return self.max.clone().unwrap_or(Value::Null);
-        }
-        if self.count > 0 && self.sum != 0.0 {
-            return Value::Float(self.sum);
-        }
-        Value::Int(self.count)
     }
 
     fn default_for(&self, func: &AggregateFunction) -> Value {
@@ -738,6 +763,57 @@ mod tests {
         let row = op.next().unwrap().unwrap();
         assert_eq!(row.get(0), Some(&Value::Int(3))); // count
         assert_eq!(row.get(1), Some(&Value::Float(6.0))); // sum
+
+        assert!(op.next().unwrap().is_none());
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_avg_with_nulls() {
+        // Test AVG with NULL values: AVG(10, NULL, 20) = 15.0
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["val".to_string()],
+            vec![vec![Value::Int(10)], vec![Value::Null], vec![Value::Int(20)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::avg(LogicalExpr::column("val"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // AVG should be (10 + 20) / 2 = 15.0, NOT 30.0 (the sum)
+        assert_eq!(row.get(0), Some(&Value::Float(15.0)));
+
+        assert!(op.next().unwrap().is_none());
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_avg_vs_sum() {
+        // Ensure AVG and SUM return different values
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![vec![Value::Int(10)], vec![Value::Int(20)], vec![Value::Int(30)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![
+            LogicalExpr::sum(LogicalExpr::column("n"), false),
+            LogicalExpr::avg(LogicalExpr::column("n"), false),
+        ];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0), Some(&Value::Float(60.0))); // SUM = 60
+        assert_eq!(row.get(1), Some(&Value::Float(20.0))); // AVG = 60/3 = 20
 
         assert!(op.next().unwrap().is_none());
         op.close().unwrap();
