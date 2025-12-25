@@ -385,12 +385,16 @@ fn test_create_index_backfills_existing_data() {
         .expect("create table failed");
 
     // Insert some data
-    db.execute("INSERT INTO backfill_users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
-        .expect("insert 1 failed");
+    db.execute(
+        "INSERT INTO backfill_users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')",
+    )
+    .expect("insert 1 failed");
     db.execute("INSERT INTO backfill_users (id, name, email) VALUES (2, 'Bob', 'bob@example.com')")
         .expect("insert 2 failed");
-    db.execute("INSERT INTO backfill_users (id, name, email) VALUES (3, 'Charlie', 'charlie@example.com')")
-        .expect("insert 3 failed");
+    db.execute(
+        "INSERT INTO backfill_users (id, name, email) VALUES (3, 'Charlie', 'charlie@example.com')",
+    )
+    .expect("insert 3 failed");
 
     // Now create an index on the email column
     // This should backfill the existing 3 rows into the index
@@ -402,7 +406,9 @@ fn test_create_index_backfills_existing_data() {
     assert_eq!(affected, 3);
 
     // Verify the data can still be queried
-    let result = db.query("SELECT * FROM backfill_users WHERE email = 'alice@example.com'").expect("query failed");
+    let result = db
+        .query("SELECT * FROM backfill_users WHERE email = 'alice@example.com'")
+        .expect("query failed");
     assert_eq!(result.len(), 1);
 }
 
@@ -426,16 +432,13 @@ fn test_create_index_skips_missing_column() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create table
-    db.execute("CREATE TABLE nulltest (id BIGINT, name TEXT)")
-        .expect("create table failed");
+    db.execute("CREATE TABLE nulltest (id BIGINT, name TEXT)").expect("create table failed");
 
     // Insert some data - some rows have name, some don't
-    db.execute("INSERT INTO nulltest (id, name) VALUES (1, 'Alice')")
-        .expect("insert 1 failed");
+    db.execute("INSERT INTO nulltest (id, name) VALUES (1, 'Alice')").expect("insert 1 failed");
     db.execute("INSERT INTO nulltest (id) VALUES (2)")  // name is missing (not stored)
         .expect("insert 2 failed");
-    db.execute("INSERT INTO nulltest (id, name) VALUES (3, 'Charlie')")
-        .expect("insert 3 failed");
+    db.execute("INSERT INTO nulltest (id, name) VALUES (3, 'Charlie')").expect("insert 3 failed");
 
     // Create an index on name column
     // Only rows with the property set get indexed
@@ -452,14 +455,11 @@ fn test_drop_index_and_recreate() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create table
-    db.execute("CREATE TABLE cleanup_test (id BIGINT, value TEXT)")
-        .expect("create table failed");
+    db.execute("CREATE TABLE cleanup_test (id BIGINT, value TEXT)").expect("create table failed");
 
     // Insert data
-    db.execute("INSERT INTO cleanup_test (id, value) VALUES (1, 'one')")
-        .expect("insert 1 failed");
-    db.execute("INSERT INTO cleanup_test (id, value) VALUES (2, 'two')")
-        .expect("insert 2 failed");
+    db.execute("INSERT INTO cleanup_test (id, value) VALUES (1, 'one')").expect("insert 1 failed");
+    db.execute("INSERT INTO cleanup_test (id, value) VALUES (2, 'two')").expect("insert 2 failed");
 
     // Create index (backfills 2 entries)
     let created = db
@@ -487,25 +487,20 @@ fn test_create_index_with_numeric_types() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create table
-    db.execute("CREATE TABLE mixed (id BIGINT, score INTEGER)")
-        .expect("create table failed");
+    db.execute("CREATE TABLE mixed (id BIGINT, score INTEGER)").expect("create table failed");
 
     // Insert data with numeric values
-    db.execute("INSERT INTO mixed (id, score) VALUES (1, 100)")
-        .expect("insert 1 failed");
-    db.execute("INSERT INTO mixed (id, score) VALUES (2, 200)")
-        .expect("insert 2 failed");
-    db.execute("INSERT INTO mixed (id, score) VALUES (3, 150)")
-        .expect("insert 3 failed");
+    db.execute("INSERT INTO mixed (id, score) VALUES (1, 100)").expect("insert 1 failed");
+    db.execute("INSERT INTO mixed (id, score) VALUES (2, 200)").expect("insert 2 failed");
+    db.execute("INSERT INTO mixed (id, score) VALUES (3, 150)").expect("insert 3 failed");
 
     // Create index on numeric column
-    let affected = db
-        .execute("CREATE INDEX idx_mixed_score ON mixed (score)")
-        .expect("create index failed");
+    let affected =
+        db.execute("CREATE INDEX idx_mixed_score ON mixed (score)").expect("create index failed");
 
     assert_eq!(affected, 3);
 
     // Query should still work
     let result = db.query("SELECT * FROM mixed WHERE score > 120").expect("query failed");
-    assert_eq!(result.len(), 2);  // 200 and 150
+    assert_eq!(result.len(), 2); // 200 and 150
 }

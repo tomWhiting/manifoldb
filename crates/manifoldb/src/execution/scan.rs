@@ -2,8 +2,19 @@
 
 use std::sync::Arc;
 
-use manifoldb_core::{Entity, Value};
+use manifoldb_core::{CollectionId, Entity, Value};
 use manifoldb_query::exec::row::{Row, Schema};
+use manifoldb_query::exec::CollectionVectorProvider;
+
+/// Collection context for scanning entities with named vectors.
+pub struct CollectionContext {
+    /// The collection ID.
+    pub collection_id: CollectionId,
+    /// Named vectors defined in the collection.
+    pub vector_names: Vec<String>,
+    /// Provider for fetching vectors.
+    pub provider: Arc<dyn CollectionVectorProvider>,
+}
 
 /// A scan result that contains entities loaded from storage.
 pub struct StorageScan {
@@ -15,6 +26,8 @@ pub struct StorageScan {
     schema: Arc<Schema>,
     /// Current position in the scan.
     position: usize,
+    /// Optional collection context for vector lookup.
+    collection_context: Option<CollectionContext>,
 }
 
 impl StorageScan {
@@ -25,7 +38,14 @@ impl StorageScan {
     #[must_use]
     pub fn new(entities: Vec<Entity>, columns: Vec<String>) -> Self {
         let schema = Arc::new(Schema::new(columns.clone()));
-        Self { entities, columns, schema, position: 0 }
+        Self { entities, columns, schema, position: 0, collection_context: None }
+    }
+
+    /// Set the collection context for looking up named vectors.
+    #[must_use]
+    pub fn with_collection_context(mut self, context: CollectionContext) -> Self {
+        self.collection_context = Some(context);
+        self
     }
 
     /// Returns the schema for this scan.
@@ -66,6 +86,19 @@ impl StorageScan {
                     Value::String(
                         entity.labels.iter().map(|l| l.as_str()).collect::<Vec<_>>().join(","),
                     )
+                } else if let Some(ref ctx) = self.collection_context {
+                    // Check if this column is a named vector
+                    if ctx.vector_names.contains(col) {
+                        // Fetch vector from collection storage
+                        match ctx.provider.get_vector(ctx.collection_id, entity.id, col) {
+                            Ok(Some(data)) => vector_data_to_value(&data),
+                            Ok(None) => Value::Null,
+                            Err(_) => Value::Null,
+                        }
+                    } else {
+                        // Regular property
+                        entity.get_property(col).cloned().unwrap_or(Value::Null)
+                    }
                 } else {
                     // Regular property
                     entity.get_property(col).cloned().unwrap_or(Value::Null)
@@ -97,6 +130,18 @@ impl StorageScan {
     #[must_use]
     pub fn collect_values(&self) -> Vec<Vec<Value>> {
         self.collect_rows().into_iter().map(|r| r.values().to_vec()).collect()
+    }
+}
+
+/// Convert VectorData to Value.
+fn vector_data_to_value(data: &manifoldb_vector::types::VectorData) -> Value {
+    use manifoldb_vector::types::VectorData;
+
+    match data {
+        VectorData::Dense(v) => Value::Vector(v.clone()),
+        VectorData::Sparse(v) => Value::SparseVector(v.clone()),
+        VectorData::Multi(v) => Value::MultiVector(v.clone()),
+        VectorData::Binary(v) => Value::Bytes(v.clone()), // Binary vectors stored as raw bytes
     }
 }
 
