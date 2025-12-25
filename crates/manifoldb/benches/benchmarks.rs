@@ -890,6 +890,35 @@ fn write_batching_benchmarks(c: &mut Criterion) {
         );
     }
 
+    // TRUE BATCH: Multiple writes in single transaction, one commit
+    // This is the correct way to batch writes for maximum throughput
+    for count in [100, 500, 1000] {
+        group.throughput(Throughput::Elements(count));
+        group.bench_with_input(
+            BenchmarkId::new("true_batch_single_tx", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let engine = Arc::new(RedbEngine::in_memory().expect("failed"));
+                        BatchWriter::new(engine, BatchWriterConfig::disabled())
+                    },
+                    |writer| {
+                        // ONE transaction with ALL writes
+                        let mut tx = writer.begin();
+                        for i in 0..count {
+                            let key = format!("key_{i}");
+                            let value = format!("value_{i}");
+                            tx.put("test", key.as_bytes(), value.as_bytes()).expect("put failed");
+                        }
+                        tx.commit().expect("commit failed"); // ONE commit!
+                        black_box(writer)
+                    },
+                );
+            },
+        );
+    }
+
     // Batch size tuning benchmark
     for batch_size in [10, 25, 50, 100, 200] {
         group.bench_with_input(
