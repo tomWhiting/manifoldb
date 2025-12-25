@@ -51,9 +51,7 @@ fn test_bulk_delete_multiple_entities() {
     // Create 100 entities
     let entities: Vec<Entity> = (0..100)
         .map(|i| {
-            Entity::new(EntityId::new(0))
-                .with_label("Document")
-                .with_property("index", i as i64)
+            Entity::new(EntityId::new(0)).with_label("Document").with_property("index", i as i64)
         })
         .collect();
 
@@ -79,11 +77,7 @@ fn test_bulk_delete_partial() {
 
     // Create 100 entities
     let entities: Vec<Entity> = (0..100)
-        .map(|i| {
-            Entity::new(EntityId::new(0))
-                .with_label("Item")
-                .with_property("index", i as i64)
-        })
+        .map(|i| Entity::new(EntityId::new(0)).with_label("Item").with_property("index", i as i64))
         .collect();
 
     let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
@@ -124,9 +118,8 @@ fn test_bulk_delete_mixed_existing_nonexisting() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create 5 entities
-    let entities: Vec<Entity> = (0..5)
-        .map(|i| Entity::new(EntityId::new(0)).with_property("index", i as i64))
-        .collect();
+    let entities: Vec<Entity> =
+        (0..5).map(|i| Entity::new(EntityId::new(0)).with_property("index", i as i64)).collect();
 
     let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
 
@@ -163,10 +156,8 @@ fn test_bulk_delete_cleans_property_indexes() {
 
     // This test verifies that index entries are properly cleaned up.
     // We use SQL inserts to ensure both entity and index are properly populated.
-    db.execute("CREATE TABLE products (sku TEXT, name TEXT)")
-        .expect("create table failed");
-    db.execute("CREATE INDEX idx_products_sku ON products (sku)")
-        .expect("create index failed");
+    db.execute("CREATE TABLE products (sku TEXT, name TEXT)").expect("create table failed");
+    db.execute("CREATE INDEX idx_products_sku ON products (sku)").expect("create index failed");
 
     // Insert via SQL
     db.execute("INSERT INTO products (sku, name) VALUES ('SKU-001', 'Widget')")
@@ -186,13 +177,9 @@ fn test_bulk_delete_cleans_property_indexes() {
         // Scan all entities and find the one with sku = SKU-001
         let mut found_id = None;
         for i in 1..=10 {
-            if let Some(entity) =
-                tx.get_entity(EntityId::new(i)).expect("get entity")
-            {
+            if let Some(entity) = tx.get_entity(EntityId::new(i)).expect("get entity") {
                 eprintln!("Entity {}: {:?}", i, entity.properties);
-                if entity.get_property("sku")
-                    == Some(&Value::String("SKU-001".to_string()))
-                {
+                if entity.get_property("sku") == Some(&Value::String("SKU-001".to_string())) {
                     found_id = Some(entity.id);
                     eprintln!("Found SKU-001 at entity ID {}", i);
                 }
@@ -211,10 +198,7 @@ fn test_bulk_delete_cleans_property_indexes() {
         eprintln!("After delete, checking entity {}:", entity_id.as_u64());
         let entity_check = tx.get_entity(entity_id).expect("get entity");
         eprintln!("Result: {:?}", entity_check);
-        assert!(
-            entity_check.is_none(),
-            "entity should be deleted"
-        );
+        assert!(entity_check.is_none(), "entity should be deleted");
     }
 
     // Verify index is updated - SKU-001 should no longer be found
@@ -242,18 +226,13 @@ fn test_bulk_delete_all_cleans_index() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create table with index
-    db.execute("CREATE TABLE items (category TEXT)")
-        .expect("create table failed");
-    db.execute("CREATE INDEX idx_items_category ON items (category)")
-        .expect("create index failed");
+    db.execute("CREATE TABLE items (category TEXT)").expect("create table failed");
+    db.execute("CREATE INDEX idx_items_category ON items (category)").expect("create index failed");
 
     // Insert via SQL
-    db.execute("INSERT INTO items (category) VALUES ('electronics')")
-        .expect("insert 1 failed");
-    db.execute("INSERT INTO items (category) VALUES ('electronics')")
-        .expect("insert 2 failed");
-    db.execute("INSERT INTO items (category) VALUES ('clothing')")
-        .expect("insert 3 failed");
+    db.execute("INSERT INTO items (category) VALUES ('electronics')").expect("insert 1 failed");
+    db.execute("INSERT INTO items (category) VALUES ('electronics')").expect("insert 2 failed");
+    db.execute("INSERT INTO items (category) VALUES ('clothing')").expect("insert 3 failed");
 
     // Verify initial state
     let result =
@@ -415,9 +394,8 @@ fn test_bulk_delete_checked_no_edges() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create entities without edges
-    let entities: Vec<Entity> = (0..3)
-        .map(|i| Entity::new(EntityId::new(0)).with_property("index", i as i64))
-        .collect();
+    let entities: Vec<Entity> =
+        (0..3).map(|i| Entity::new(EntityId::new(0)).with_property("index", i as i64)).collect();
 
     let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
 
@@ -513,11 +491,7 @@ fn test_bulk_delete_large_batch() {
 
     // Create 10,000 entities
     let entities: Vec<Entity> = (0..10_000)
-        .map(|i| {
-            Entity::new(EntityId::new(0))
-                .with_label("Item")
-                .with_property("index", i as i64)
-        })
+        .map(|i| Entity::new(EntityId::new(0)).with_label("Item").with_property("index", i as i64))
         .collect();
 
     let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
@@ -549,9 +523,7 @@ fn test_bulk_delete_with_many_edges() {
         let leaf = tx.create_entity().expect("failed").with_label("Leaf");
         tx.put_entity(&leaf).expect("put failed");
 
-        let edge = tx
-            .create_edge(center.id, leaf.id, "CONNECTS")
-            .expect("create edge");
+        let edge = tx.create_edge(center.id, leaf.id, "CONNECTS").expect("create edge");
         tx.put_edge(&edge).expect("put edge");
     }
 
@@ -581,9 +553,8 @@ fn test_bulk_delete_preserves_id_sequence() {
     let db = Database::in_memory().expect("failed to create db");
 
     // Create 5 entities
-    let entities: Vec<Entity> = (0..5)
-        .map(|_| Entity::new(EntityId::new(0)).with_label("Item"))
-        .collect();
+    let entities: Vec<Entity> =
+        (0..5).map(|_| Entity::new(EntityId::new(0)).with_label("Item")).collect();
     let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
 
     // IDs should be 1-5
@@ -594,9 +565,8 @@ fn test_bulk_delete_preserves_id_sequence() {
     db.bulk_delete_entities(&ids).expect("bulk delete failed");
 
     // Create 3 more entities
-    let more_entities: Vec<Entity> = (0..3)
-        .map(|_| Entity::new(EntityId::new(0)).with_label("NewItem"))
-        .collect();
+    let more_entities: Vec<Entity> =
+        (0..3).map(|_| Entity::new(EntityId::new(0)).with_label("NewItem")).collect();
     let new_ids = db.bulk_insert_entities(&more_entities).expect("bulk insert failed");
 
     // IDs should continue from 6 (IDs are not reused)
