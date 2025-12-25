@@ -27,8 +27,8 @@ pub use statement::{
     CreateCollectionStatement, CreateIndexStatement, CreateTableStatement, DataType,
     DeleteStatement, DropCollectionStatement, DropIndexStatement, DropTableStatement, IndexColumn,
     InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, MatchStatement, OnConflict,
-    ReturnItem, SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias,
-    TableConstraint, TableRef, UpdateStatement, VectorDef, VectorTypeDef,
+    PayloadFieldDef, ReturnItem, SelectItem, SelectStatement, SetOperation, SetOperator, Statement,
+    TableAlias, TableConstraint, TableRef, UpdateStatement, VectorDef, VectorTypeDef,
 };
 pub use vector::{
     DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,

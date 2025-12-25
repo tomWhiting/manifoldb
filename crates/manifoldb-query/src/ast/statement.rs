@@ -934,7 +934,19 @@ pub struct DropIndexStatement {
 
 /// A CREATE COLLECTION statement for vector collections.
 ///
-/// Creates a collection with named vector configurations:
+/// Creates a collection with named vector configurations and optional payload fields:
+///
+/// ```sql
+/// CREATE COLLECTION documents (
+///     title TEXT,
+///     content TEXT,
+///     VECTOR text_embedding DIMENSION 1536,
+///     VECTOR image_embedding DIMENSION 512,
+///     VECTOR summary_embedding DIMENSION 1536
+/// );
+/// ```
+///
+/// Alternative syntax with USING and WITH clauses:
 ///
 /// ```sql
 /// CREATE COLLECTION documents (
@@ -951,19 +963,66 @@ pub struct CreateCollectionStatement {
     pub name: Identifier,
     /// Named vector definitions.
     pub vectors: Vec<VectorDef>,
+    /// Payload field definitions.
+    pub payload_fields: Vec<PayloadFieldDef>,
+}
+
+/// A payload field definition in a collection.
+///
+/// Defines a field in the collection's payload schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PayloadFieldDef {
+    /// The field name.
+    pub name: Identifier,
+    /// The field data type.
+    pub data_type: DataType,
+    /// Whether the field is indexed.
+    pub indexed: bool,
 }
 
 impl CreateCollectionStatement {
     /// Creates a new CREATE COLLECTION statement.
     #[must_use]
     pub fn new(name: impl Into<Identifier>, vectors: Vec<VectorDef>) -> Self {
-        Self { if_not_exists: false, name: name.into(), vectors }
+        Self { if_not_exists: false, name: name.into(), vectors, payload_fields: vec![] }
+    }
+
+    /// Creates a CREATE COLLECTION statement with vectors and payload fields.
+    #[must_use]
+    pub fn with_payload(
+        name: impl Into<Identifier>,
+        vectors: Vec<VectorDef>,
+        payload_fields: Vec<PayloadFieldDef>,
+    ) -> Self {
+        Self { if_not_exists: false, name: name.into(), vectors, payload_fields }
     }
 
     /// Set IF NOT EXISTS flag.
     #[must_use]
     pub const fn if_not_exists(mut self) -> Self {
         self.if_not_exists = true;
+        self
+    }
+
+    /// Add a payload field definition.
+    #[must_use]
+    pub fn with_field(mut self, field: PayloadFieldDef) -> Self {
+        self.payload_fields.push(field);
+        self
+    }
+}
+
+impl PayloadFieldDef {
+    /// Creates a new payload field definition.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, data_type: DataType) -> Self {
+        Self { name: name.into(), data_type, indexed: false }
+    }
+
+    /// Set the field as indexed.
+    #[must_use]
+    pub const fn indexed(mut self) -> Self {
+        self.indexed = true;
         self
     }
 }
