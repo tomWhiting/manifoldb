@@ -316,13 +316,49 @@ fn evaluate_binary_op(left: &Value, op: &BinaryOp, right: &Value) -> OperatorRes
     }
 
     match op {
-        // Comparison operators
-        BinaryOp::Eq => Ok(Value::Bool(values_equal(left, right))),
-        BinaryOp::NotEq => Ok(Value::Bool(!values_equal(left, right))),
-        BinaryOp::Lt => Ok(Value::Bool(compare_values(left, right) < 0)),
-        BinaryOp::LtEq => Ok(Value::Bool(compare_values(left, right) <= 0)),
-        BinaryOp::Gt => Ok(Value::Bool(compare_values(left, right) > 0)),
-        BinaryOp::GtEq => Ok(Value::Bool(compare_values(left, right) >= 0)),
+        // Comparison operators - return NULL if either operand is NULL (SQL semantics)
+        BinaryOp::Eq => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(values_equal(left, right)))
+            }
+        }
+        BinaryOp::NotEq => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(!values_equal(left, right)))
+            }
+        }
+        BinaryOp::Lt => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(compare_values(left, right) < 0))
+            }
+        }
+        BinaryOp::LtEq => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(compare_values(left, right) <= 0))
+            }
+        }
+        BinaryOp::Gt => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(compare_values(left, right) > 0))
+            }
+        }
+        BinaryOp::GtEq => {
+            if matches!(left, Value::Null) || matches!(right, Value::Null) {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(compare_values(left, right) >= 0))
+            }
+        }
 
         // Logical operators
         BinaryOp::And => {
@@ -1009,5 +1045,46 @@ mod tests {
         // Pattern at exact boundaries
         assert!(like_match("test", "test"));
         assert!(!like_match("test", "Test")); // case sensitive
+    }
+
+    #[test]
+    fn null_comparison_returns_null() {
+        // SQL semantics: any comparison with NULL returns NULL
+        let schema = Arc::new(Schema::new(vec!["a".to_string(), "b".to_string()]));
+
+        // NULL = NULL should return NULL (not true)
+        let row = Row::new(schema.clone(), vec![Value::Null, Value::Null]);
+        let expr = LogicalExpr::column("a").eq(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // NULL = value should return NULL
+        let row = Row::new(schema.clone(), vec![Value::Null, Value::Int(5)]);
+        let expr = LogicalExpr::column("a").eq(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // value = NULL should return NULL
+        let row = Row::new(schema.clone(), vec![Value::Int(5), Value::Null]);
+        let expr = LogicalExpr::column("a").eq(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // NULL != NULL should return NULL
+        let row = Row::new(schema.clone(), vec![Value::Null, Value::Null]);
+        let expr = LogicalExpr::column("a").not_eq(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // NULL < value should return NULL
+        let row = Row::new(schema.clone(), vec![Value::Null, Value::Int(5)]);
+        let expr = LogicalExpr::column("a").lt(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // value > NULL should return NULL
+        let row = Row::new(schema.clone(), vec![Value::Int(5), Value::Null]);
+        let expr = LogicalExpr::column("a").gt(LogicalExpr::column("b"));
+        assert!(matches!(evaluate_expr(&expr, &row).unwrap(), Value::Null));
+
+        // Non-null comparison should still work
+        let row = Row::new(schema, vec![Value::Int(5), Value::Int(5)]);
+        let expr = LogicalExpr::column("a").eq(LogicalExpr::column("b"));
+        assert_eq!(evaluate_expr(&expr, &row).unwrap(), Value::Bool(true));
     }
 }
