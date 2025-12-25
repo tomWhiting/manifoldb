@@ -1331,8 +1331,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist
         {
@@ -1374,9 +1374,7 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
         }
 
@@ -1516,8 +1514,8 @@ impl Database {
 
         // Get all collection IDs by listing collection names and looking them up
         let collection_ids: Vec<_> = {
-            let names = CollectionManager::list(&tx)
-                .map_err(|e| Error::Collection(e.to_string()))?;
+            let names =
+                CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
             let mut ids = Vec::new();
             for name in names {
                 if let Some(collection) = CollectionManager::get(&tx, &name)
@@ -1542,9 +1540,7 @@ impl Database {
                         .map_err(Error::Storage)?
                         .is_some()
                     {
-                        storage
-                            .delete(TABLE_COLLECTION_VECTORS, &key)
-                            .map_err(Error::Storage)?;
+                        storage.delete(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?;
                         deleted_count += 1;
                         break; // Found and deleted, no need to check other collections
                     }
@@ -1676,8 +1672,8 @@ impl Database {
         let count = vectors.len();
 
         // Parse and validate collection name
-        let coll_name = CollectionName::new(collection_name)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist AND have vectors with the specified names in the collection
         {
@@ -1701,11 +1697,7 @@ impl Database {
 
                 // Check that the vector exists in collection_vectors table
                 let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
-                if storage
-                    .get(TABLE_COLLECTION_VECTORS, &key)
-                    .map_err(Error::Storage)?
-                    .is_none()
-                {
+                if storage.get(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?.is_none() {
                     return Err(Error::Vector(format!(
                         "Entity {} does not have vector '{}' to update",
                         entity_id, vector_name
@@ -1738,9 +1730,7 @@ impl Database {
                 let value = encode_vector_value(&vector_data, vector_name);
 
                 // Store in the collection_vectors table (overwrites existing)
-                storage
-                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(Error::Storage)?;
+                storage.put(TABLE_COLLECTION_VECTORS, &key, &value).map_err(Error::Storage)?;
             }
         }
 
@@ -1801,6 +1791,236 @@ impl Database {
             vectors.iter().map(|(id, data)| (*id, vector_name.to_string(), data.clone())).collect();
 
         self.bulk_update_vectors(collection_name, &expanded)
+    }
+
+    // ========================================================================
+    // Vector Retrieval Operations
+    // ========================================================================
+
+    /// Get a specific named vector for an entity.
+    ///
+    /// Retrieves a single vector from the collection's vector storage. This is
+    /// the primary method for accessing vector data that was stored using
+    /// `bulk_insert_vectors` or `bulk_insert_named_vectors`.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_name` - The collection containing the entity
+    /// * `entity_id` - The entity ID
+    /// * `vector_name` - The name of the vector (e.g., "text_embedding")
+    ///
+    /// # Returns
+    ///
+    /// The vector data if it exists, `None` otherwise. The return type is
+    /// [`VectorData`](manifoldb_vector::VectorData) which can be dense, sparse,
+    /// multi-vector, or binary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The collection name is invalid
+    /// - The collection does not exist
+    /// - The storage operation fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // After inserting vectors...
+    /// if let Some(vector) = db.get_vector("documents", entity_id, "text_embedding")? {
+    ///     println!("Vector dimension: {}", vector.dimension());
+    ///     if let Some(dense) = vector.as_dense() {
+    ///         println!("First element: {}", dense[0]);
+    ///     }
+    /// }
+    /// ```
+    pub fn get_vector(
+        &self,
+        collection_name: &str,
+        entity_id: manifoldb_core::EntityId,
+        vector_name: &str,
+    ) -> Result<Option<manifoldb_vector::VectorData>> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_vector::{encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
+
+        // Parse and validate collection name
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
+
+        // Get collection ID (read-only)
+        let tx = self.begin_read()?;
+        let collection = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| Error::Collection(e.to_string()))?
+            .ok_or_else(|| {
+                Error::Collection(format!("collection '{}' not found", collection_name))
+            })?;
+        let collection_id = collection.id();
+
+        // Access storage directly for vector lookup
+        let storage = tx.storage_ref().map_err(Error::Transaction)?;
+        let key = encode_collection_vector_key(collection_id, entity_id, vector_name);
+
+        match storage.get(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)? {
+            Some(bytes) => {
+                let (data, _name) =
+                    manifoldb_vector::store::decode_vector_value(&bytes).map_err(|e| {
+                        Error::Storage(manifoldb_storage::StorageError::Serialization(
+                            e.to_string(),
+                        ))
+                    })?;
+                Ok(Some(data))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get all named vectors for an entity.
+    ///
+    /// Returns a map of vector names to their data. Useful when an entity
+    /// has multiple embeddings (text, image, summary, etc.).
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_name` - The collection containing the entity
+    /// * `entity_id` - The entity ID
+    ///
+    /// # Returns
+    ///
+    /// A `HashMap` of vector_name → vector_data. Returns an empty map if the
+    /// entity has no vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The collection name is invalid
+    /// - The collection does not exist
+    /// - The storage operation fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // After inserting multiple named vectors...
+    /// let vectors = db.get_all_vectors("documents", entity_id)?;
+    /// for (name, vec) in vectors {
+    ///     println!("{}: {} dimensions", name, vec.dimension());
+    /// }
+    /// ```
+    pub fn get_all_vectors(
+        &self,
+        collection_name: &str,
+        entity_id: manifoldb_core::EntityId,
+    ) -> Result<std::collections::HashMap<String, manifoldb_vector::VectorData>> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_storage::Cursor;
+        use manifoldb_vector::{encoding::encode_entity_vector_prefix, TABLE_COLLECTION_VECTORS};
+        use std::ops::Bound;
+
+        // Parse and validate collection name
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
+
+        // Get collection ID (read-only)
+        let tx = self.begin_read()?;
+        let collection = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| Error::Collection(e.to_string()))?
+            .ok_or_else(|| {
+                Error::Collection(format!("collection '{}' not found", collection_name))
+            })?;
+        let collection_id = collection.id();
+
+        // Access storage directly for vector scan
+        let storage = tx.storage_ref().map_err(Error::Transaction)?;
+        let prefix = encode_entity_vector_prefix(collection_id, entity_id);
+        let prefix_end = next_prefix(&prefix);
+
+        let mut cursor = storage
+            .range(
+                TABLE_COLLECTION_VECTORS,
+                Bound::Included(prefix.as_slice()),
+                Bound::Excluded(prefix_end.as_slice()),
+            )
+            .map_err(Error::Storage)?;
+
+        let mut vectors = std::collections::HashMap::new();
+        while let Some((_key, value)) = cursor.next().map_err(Error::Storage)? {
+            let (data, vector_name) = manifoldb_vector::store::decode_vector_value(&value)
+                .map_err(|e| {
+                    Error::Storage(manifoldb_storage::StorageError::Serialization(e.to_string()))
+                })?;
+            vectors.insert(vector_name, data);
+        }
+
+        Ok(vectors)
+    }
+
+    /// Check if an entity has a specific named vector.
+    ///
+    /// This is a lightweight existence check that doesn't load the vector data.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_name` - The collection containing the entity
+    /// * `entity_id` - The entity ID
+    /// * `vector_name` - The name of the vector to check
+    ///
+    /// # Returns
+    ///
+    /// `true` if the vector exists, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The collection name is invalid
+    /// - The collection does not exist
+    /// - The storage operation fails
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// if db.has_vector("documents", entity_id, "text_embedding")? {
+    ///     println!("Entity has a text embedding");
+    /// } else {
+    ///     println!("Entity needs embedding generation");
+    /// }
+    /// ```
+    pub fn has_vector(
+        &self,
+        collection_name: &str,
+        entity_id: manifoldb_core::EntityId,
+        vector_name: &str,
+    ) -> Result<bool> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_vector::{encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
+
+        // Parse and validate collection name
+        let coll_name =
+            CollectionName::new(collection_name).map_err(|e| Error::InvalidInput(e.to_string()))?;
+
+        // Get collection ID (read-only)
+        let tx = self.begin_read()?;
+        let collection = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| Error::Collection(e.to_string()))?
+            .ok_or_else(|| {
+                Error::Collection(format!("collection '{}' not found", collection_name))
+            })?;
+        let collection_id = collection.id();
+
+        // Access storage directly for existence check
+        let storage = tx.storage_ref().map_err(Error::Transaction)?;
+        let key = encode_collection_vector_key(collection_id, entity_id, vector_name);
+
+        Ok(storage.get(TABLE_COLLECTION_VECTORS, &key).map_err(Error::Storage)?.is_some())
     }
 
     // ========================================================================
@@ -2661,6 +2881,23 @@ macro_rules! params {
     ($($value:expr),+ $(,)?) => {
         [$($crate::Value::from($value)),+]
     };
+}
+
+/// Calculate the next prefix for range scanning.
+///
+/// Given a prefix byte slice, returns a new slice that serves as an exclusive upper bound
+/// for a range scan. This is used to efficiently iterate over all keys with a given prefix.
+fn next_prefix(prefix: &[u8]) -> Vec<u8> {
+    let mut result = prefix.to_vec();
+    for byte in result.iter_mut().rev() {
+        if *byte < 0xFF {
+            *byte += 1;
+            return result;
+        }
+    }
+    // All bytes are 0xFF, append another 0xFF
+    result.push(0xFF);
+    result
 }
 
 #[cfg(test)]

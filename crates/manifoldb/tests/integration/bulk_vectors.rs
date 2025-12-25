@@ -1018,3 +1018,240 @@ fn test_bulk_update_vectors_dimension_change() {
         "vector should NOT be stored as entity property"
     );
 }
+
+// ============================================================================
+// Vector Retrieval Tests
+// ============================================================================
+
+#[test]
+fn test_get_vector_after_insert() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert a vector
+    let expected_vector = vec![0.1f32, 0.2, 0.3, 0.4, 0.5];
+    let vectors = vec![(entity_id, "text_embedding".to_string(), expected_vector.clone())];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Retrieve the vector using get_vector
+    let retrieved =
+        db.get_vector("documents", entity_id, "text_embedding").expect("failed to get vector");
+
+    assert!(retrieved.is_some(), "vector should exist");
+    let vector_data = retrieved.unwrap();
+    let dense = vector_data.as_dense().expect("should be dense vector");
+    assert_eq!(dense, expected_vector.as_slice(), "vector data should match");
+
+    // Verify the entity does NOT contain the vector
+    let tx = db.begin_read().expect("failed to begin read transaction");
+    let stored_entity =
+        tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
+    assert!(
+        stored_entity.get_property("_vector_text_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
+}
+
+#[test]
+fn test_get_all_vectors_multiple_named() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert multiple named vectors for the same entity
+    let text_embedding = vec![0.1f32, 0.2, 0.3];
+    let image_embedding = vec![0.4f32, 0.5, 0.6, 0.7];
+    let summary_embedding = vec![0.8f32, 0.9];
+
+    let vectors = vec![
+        (entity_id, "text_embedding".to_string(), text_embedding.clone()),
+        (entity_id, "image_embedding".to_string(), image_embedding.clone()),
+        (entity_id, "summary_embedding".to_string(), summary_embedding.clone()),
+    ];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Retrieve all vectors
+    let all_vectors =
+        db.get_all_vectors("documents", entity_id).expect("failed to get all vectors");
+
+    assert_eq!(all_vectors.len(), 3, "should have 3 vectors");
+    assert!(all_vectors.contains_key("text_embedding"));
+    assert!(all_vectors.contains_key("image_embedding"));
+    assert!(all_vectors.contains_key("summary_embedding"));
+
+    // Verify each vector's content
+    let retrieved_text = all_vectors.get("text_embedding").unwrap().as_dense().unwrap();
+    assert_eq!(retrieved_text, text_embedding.as_slice());
+
+    let retrieved_image = all_vectors.get("image_embedding").unwrap().as_dense().unwrap();
+    assert_eq!(retrieved_image, image_embedding.as_slice());
+
+    let retrieved_summary = all_vectors.get("summary_embedding").unwrap().as_dense().unwrap();
+    assert_eq!(retrieved_summary, summary_embedding.as_slice());
+}
+
+#[test]
+fn test_get_vector_nonexistent() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert a vector with one name
+    let vectors = vec![(entity_id, "existing_vector".to_string(), vec![0.1f32; 10])];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Try to get a non-existent vector name - should return None, not error
+    let result = db.get_vector("documents", entity_id, "nonexistent_vector");
+    assert!(result.is_ok(), "should not error for nonexistent vector");
+    assert!(result.unwrap().is_none(), "should return None for nonexistent vector");
+}
+
+#[test]
+fn test_has_vector() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert a vector
+    let vectors = vec![(entity_id, "text_embedding".to_string(), vec![0.1f32; 10])];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Check existence - should be true
+    let exists = db
+        .has_vector("documents", entity_id, "text_embedding")
+        .expect("failed to check vector existence");
+    assert!(exists, "vector should exist");
+
+    // Check non-existent vector - should be false
+    let not_exists = db
+        .has_vector("documents", entity_id, "nonexistent")
+        .expect("failed to check vector existence");
+    assert!(!not_exists, "vector should not exist");
+}
+
+#[test]
+fn test_get_all_vectors_empty() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity (but don't add any vectors)
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Create collection by inserting another entity's vector first
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity2 = tx.create_entity().expect("failed to create entity").with_label("documents");
+    tx.put_entity(&entity2).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+    let vectors = vec![(entity2.id, "dummy".to_string(), vec![0.1f32])];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert dummy vector");
+
+    // Get all vectors for entity with no vectors
+    let all_vectors =
+        db.get_all_vectors("documents", entity_id).expect("failed to get all vectors");
+
+    assert!(all_vectors.is_empty(), "should return empty map for entity with no vectors");
+}
+
+#[test]
+fn test_get_vector_after_update() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert initial vector
+    let initial_vector = vec![0.1f32, 0.2, 0.3];
+    let vectors = vec![(entity_id, "embedding".to_string(), initial_vector)];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Update the vector
+    let updated_vector = vec![0.9f32, 0.8, 0.7, 0.6];
+    let update = vec![(entity_id, "embedding".to_string(), updated_vector.clone())];
+    db.bulk_update_vectors("documents", &update).expect("failed to update vectors");
+
+    // Retrieve and verify it's the updated vector
+    let retrieved = db
+        .get_vector("documents", entity_id, "embedding")
+        .expect("failed to get vector")
+        .expect("vector should exist");
+
+    let dense = retrieved.as_dense().expect("should be dense vector");
+    assert_eq!(dense, updated_vector.as_slice(), "should have updated vector data");
+}
+
+#[test]
+fn test_get_vector_after_delete() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Create an entity
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    let entity_id = entity.id;
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+
+    // Insert a vector
+    let vectors = vec![(entity_id, "embedding".to_string(), vec![0.1f32; 10])];
+    db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
+
+    // Verify it exists
+    assert!(
+        db.has_vector("documents", entity_id, "embedding").expect("check failed"),
+        "vector should exist before delete"
+    );
+
+    // Delete the vector
+    let to_delete = vec![(entity_id, "embedding".to_string())];
+    db.bulk_delete_vectors(&to_delete).expect("failed to delete vectors");
+
+    // Verify it's gone
+    let retrieved =
+        db.get_vector("documents", entity_id, "embedding").expect("failed to get vector");
+    assert!(retrieved.is_none(), "vector should be None after delete");
+
+    assert!(
+        !db.has_vector("documents", entity_id, "embedding").expect("check failed"),
+        "has_vector should return false after delete"
+    );
+}
+
+#[test]
+fn test_get_vector_collection_not_found() {
+    let db = Database::in_memory().expect("failed to create database");
+
+    // Try to get a vector from a non-existent collection
+    let result = db.get_vector("nonexistent_collection", EntityId::new(1), "embedding");
+
+    assert!(result.is_err(), "should error for non-existent collection");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(err_str.contains("not found"), "error message should mention 'not found': {}", err_str);
+}
