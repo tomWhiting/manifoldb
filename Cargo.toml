@@ -15,17 +15,21 @@ version = "0.1.0"
 edition = "2021"
 authors = ["ManifoldDB Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/manifoldb/manifoldb"
+repository = "https://github.com/tomWhiting/manifoldb"
+homepage = "https://github.com/tomWhiting/manifoldb"
+documentation = "https://docs.rs/manifoldb"
 rust-version = "1.75"
+keywords = ["database", "graph", "vector", "embedded", "sql"]
+categories = ["database", "data-structures"]
 
 [workspace.dependencies]
-# Internal crates
-manifoldb = { path = "crates/manifoldb" }
-manifoldb-core = { path = "crates/manifoldb-core" }
-manifoldb-storage = { path = "crates/manifoldb-storage" }
-manifoldb-graph = { path = "crates/manifoldb-graph" }
-manifoldb-vector = { path = "crates/manifoldb-vector" }
-manifoldb-query = { path = "crates/manifoldb-query" }
+# Internal crates - path for local dev, version for crates.io
+manifoldb = { version = "0.1.0", path = "crates/manifoldb" }
+manifoldb-core = { version = "0.1.0", path = "crates/manifoldb-core" }
+manifoldb-storage = { version = "0.1.0", path = "crates/manifoldb-storage" }
+manifoldb-graph = { version = "0.1.0", path = "crates/manifoldb-graph" }
+manifoldb-vector = { version = "0.1.0", path = "crates/manifoldb-vector" }
+manifoldb-query = { version = "0.1.0", path = "crates/manifoldb-query" }
 
 # Storage
 redb = "3.1"
