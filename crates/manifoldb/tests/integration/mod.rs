@@ -6,6 +6,7 @@
 pub mod bulk_delete;
 pub mod bulk_delete_edges;
 pub mod bulk_vectors;
+pub mod collection;
 pub mod combined;
 pub mod concurrency;
 pub mod correctness;
