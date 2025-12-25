@@ -1248,6 +1248,248 @@ fn bulk_insert_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Insert Edge Benchmarks
+// ============================================================================
+
+fn bulk_insert_edge_benchmarks(c: &mut Criterion) {
+    use manifoldb_core::{Edge, EdgeId, Entity};
+
+    let mut group = c.benchmark_group("bulk_insert_edges");
+
+    // Compare individual inserts vs bulk insert for edges
+    for count in [100, 1000, 10_000] {
+        group.throughput(Throughput::Elements(count));
+
+        // Individual edge inserts (one transaction per edge)
+        group.bench_with_input(
+            BenchmarkId::new("individual_inserts", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-create entities
+                        let mut entity_ids = Vec::new();
+                        {
+                            let mut tx = db.begin().expect("failed");
+                            for _ in 0..100 {
+                                let entity = tx.create_entity().expect("failed");
+                                entity_ids.push(entity.id);
+                                tx.put_entity(&entity).expect("failed");
+                            }
+                            tx.commit().expect("failed");
+                        }
+                        (db, entity_ids)
+                    },
+                    |(db, entity_ids)| {
+                        let mut rng = Rng::new(42);
+                        for _ in 0..count {
+                            let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let mut tx = db.begin().expect("failed");
+                            let edge = tx
+                                .create_edge(entity_ids[src], entity_ids[dst], "LINKS")
+                                .expect("failed");
+                            tx.put_edge(&edge).expect("failed");
+                            tx.commit().expect("failed");
+                        }
+                        black_box(db)
+                    },
+                );
+            },
+        );
+
+        // Individual edge inserts in single transaction (baseline for bulk)
+        group.bench_with_input(
+            BenchmarkId::new("single_tx_inserts", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-create entities
+                        let mut entity_ids = Vec::new();
+                        {
+                            let mut tx = db.begin().expect("failed");
+                            for _ in 0..100 {
+                                let entity = tx.create_entity().expect("failed");
+                                entity_ids.push(entity.id);
+                                tx.put_entity(&entity).expect("failed");
+                            }
+                            tx.commit().expect("failed");
+                        }
+                        (db, entity_ids)
+                    },
+                    |(db, entity_ids)| {
+                        let mut rng = Rng::new(42);
+                        let mut tx = db.begin().expect("failed");
+                        for _ in 0..count {
+                            let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let edge = tx
+                                .create_edge(entity_ids[src], entity_ids[dst], "LINKS")
+                                .expect("failed");
+                            tx.put_edge(&edge).expect("failed");
+                        }
+                        tx.commit().expect("failed");
+                        black_box(db)
+                    },
+                );
+            },
+        );
+
+        // Bulk insert edges (parallel serialization + single transaction)
+        group.bench_with_input(BenchmarkId::new("bulk_insert", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    let db = Database::in_memory().expect("failed to create db");
+                    // Pre-create entities
+                    let entity_ids: Vec<EntityId> = {
+                        let entities: Vec<Entity> = (0..100)
+                            .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                            .collect();
+                        db.bulk_insert_entities(&entities).expect("failed")
+                    };
+
+                    // Create edges
+                    let mut rng = Rng::new(42);
+                    let edges: Vec<Edge> = (0..count)
+                        .map(|i| {
+                            let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                            Edge::new(EdgeId::new(0), entity_ids[src], entity_ids[dst], "LINKS")
+                                .with_property("index", i as i64)
+                        })
+                        .collect();
+                    (db, edges)
+                },
+                |(db, edges)| {
+                    let ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                    black_box((db, ids))
+                },
+            );
+        });
+    }
+
+    // Bulk insert edges with varying edge sizes (more properties)
+    for num_props in [0, 3, 5, 10] {
+        group.bench_with_input(
+            BenchmarkId::new("bulk_insert_props", num_props),
+            &num_props,
+            |b, &num_props| {
+                let count = 1000u64;
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Pre-create entities
+                        let entity_ids: Vec<EntityId> = {
+                            let entities: Vec<Entity> = (0..100)
+                                .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                                .collect();
+                            db.bulk_insert_entities(&entities).expect("failed")
+                        };
+
+                        // Create edges with properties
+                        let mut rng = Rng::new(42);
+                        let edges: Vec<Edge> = (0..count)
+                            .map(|i| {
+                                let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                                let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                                let mut edge = Edge::new(
+                                    EdgeId::new(0),
+                                    entity_ids[src],
+                                    entity_ids[dst],
+                                    "LINKS",
+                                );
+                                for p in 0..num_props {
+                                    edge = edge.with_property(
+                                        format!("prop_{}", p),
+                                        format!("value_{}_{}", i, p),
+                                    );
+                                }
+                                edge
+                            })
+                            .collect();
+                        (db, edges)
+                    },
+                    |(db, edges)| {
+                        let ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                        black_box((db, ids))
+                    },
+                );
+            },
+        );
+    }
+
+    // Chain insertion benchmark (edges form a linear chain)
+    group.bench_function("bulk_insert_chain_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                // Create 1001 entities for a chain of 1000 edges
+                let entity_ids: Vec<EntityId> = {
+                    let entities: Vec<Entity> = (0..1001)
+                        .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                        .collect();
+                    db.bulk_insert_entities(&entities).expect("failed")
+                };
+
+                // Create chain edges: 0->1->2->...->1000
+                let edges: Vec<Edge> = entity_ids
+                    .windows(2)
+                    .enumerate()
+                    .map(|(i, pair)| {
+                        Edge::new(EdgeId::new(0), pair[0], pair[1], "NEXT")
+                            .with_property("order", i as i64)
+                    })
+                    .collect();
+                (db, edges)
+            },
+            |(db, edges)| {
+                let ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                black_box((db, ids))
+            },
+        );
+    });
+
+    // Large bulk insert (stress test)
+    group.sample_size(10); // Fewer samples for large tests
+    group.throughput(Throughput::Elements(50_000));
+    group.bench_function("bulk_insert_50k", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                // Pre-create entities
+                let entity_ids: Vec<EntityId> = {
+                    let entities: Vec<Entity> = (0..500)
+                        .map(|_| Entity::new(EntityId::new(0)).with_label("Node"))
+                        .collect();
+                    db.bulk_insert_entities(&entities).expect("failed")
+                };
+
+                // Create edges
+                let mut rng = Rng::new(42);
+                let edges: Vec<Edge> = (0..50_000)
+                    .map(|i| {
+                        let src = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                        let dst = (rng.next_u64() % entity_ids.len() as u64) as usize;
+                        Edge::new(EdgeId::new(0), entity_ids[src], entity_ids[dst], "LINKS")
+                            .with_property("index", i as i64)
+                    })
+                    .collect();
+                (db, edges)
+            },
+            |(db, edges)| {
+                let ids = db.bulk_insert_edges(&edges).expect("bulk insert failed");
+                black_box((db, ids))
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -1260,6 +1502,7 @@ criterion_group!(
     bulk_vector_benchmarks,
     query_benchmarks,
     write_batching_benchmarks,
-    bulk_insert_benchmarks
+    bulk_insert_benchmarks,
+    bulk_insert_edge_benchmarks
 );
 criterion_main!(benches);
