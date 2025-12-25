@@ -887,6 +887,167 @@ fn bulk_vector_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Vector Update Benchmarks
+// ============================================================================
+
+fn bulk_update_vector_benchmarks(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bulk_update_vectors");
+
+    // Bulk update throughput at different scales
+    for count in [1_000, 10_000] {
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(BenchmarkId::new("bulk_update", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    // Setup: create database, entities, and initial vectors
+                    let db = Database::in_memory().expect("failed to create database");
+                    let mut entity_ids = Vec::with_capacity(count);
+                    {
+                        let mut tx = db.begin().expect("failed");
+                        for _ in 0..count {
+                            let entity = tx.create_entity().expect("failed");
+                            entity_ids.push(entity.id);
+                            tx.put_entity(&entity).expect("failed");
+                        }
+                        tx.commit().expect("failed");
+                    }
+                    // Insert initial vectors
+                    let initial_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                        .iter()
+                        .map(|&id| (id, "embedding".to_string(), vec![0.1f32; 128]))
+                        .collect();
+                    db.bulk_insert_vectors("documents", &initial_vectors).expect("failed");
+                    (db, entity_ids)
+                },
+                |(db, entity_ids)| {
+                    // Benchmark: bulk update vectors
+                    let updated_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                        .iter()
+                        .map(|&id| (id, "embedding".to_string(), vec![0.9f32; 128]))
+                        .collect();
+                    let result =
+                        db.bulk_update_vectors("documents", &updated_vectors).expect("failed");
+                    black_box(result)
+                },
+            );
+        });
+    }
+
+    // Compare update vs insert (both should be similar as update uses same mechanism)
+    group.bench_function("update_vs_insert_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create database");
+                let mut entity_ids = Vec::with_capacity(1000);
+                {
+                    let mut tx = db.begin().expect("failed");
+                    for _ in 0..1000 {
+                        let entity = tx.create_entity().expect("failed");
+                        entity_ids.push(entity.id);
+                        tx.put_entity(&entity).expect("failed");
+                    }
+                    tx.commit().expect("failed");
+                }
+                // Insert initial vectors
+                let initial_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                    .iter()
+                    .map(|&id| (id, "embedding".to_string(), vec![0.1f32; 128]))
+                    .collect();
+                db.bulk_insert_vectors("documents", &initial_vectors).expect("failed");
+                (db, entity_ids)
+            },
+            |(db, entity_ids)| {
+                // Update vectors
+                let updated_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                    .iter()
+                    .map(|&id| (id, "embedding".to_string(), vec![0.9f32; 128]))
+                    .collect();
+                let result = db.bulk_update_vectors("documents", &updated_vectors).expect("failed");
+                black_box(result)
+            },
+        );
+    });
+
+    // Compare bulk_replace_named_vectors convenience method
+    group.bench_function("bulk_replace_named_1000", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create database");
+                let mut entity_ids = Vec::with_capacity(1000);
+                {
+                    let mut tx = db.begin().expect("failed");
+                    for _ in 0..1000 {
+                        let entity = tx.create_entity().expect("failed");
+                        entity_ids.push(entity.id);
+                        tx.put_entity(&entity).expect("failed");
+                    }
+                    tx.commit().expect("failed");
+                }
+                // Insert initial vectors
+                let initial_vectors: Vec<(EntityId, Vec<f32>)> =
+                    entity_ids.iter().map(|&id| (id, vec![0.1f32; 128])).collect();
+                db.bulk_insert_named_vectors("documents", "text_embedding", &initial_vectors)
+                    .expect("failed");
+                (db, entity_ids)
+            },
+            |(db, entity_ids)| {
+                let updated_vectors: Vec<(EntityId, Vec<f32>)> =
+                    entity_ids.iter().map(|&id| (id, vec![0.9f32; 128])).collect();
+                let result = db
+                    .bulk_replace_named_vectors("documents", "text_embedding", &updated_vectors)
+                    .expect("failed");
+                black_box(result)
+            },
+        );
+    });
+
+    // Compare dimension changes (simulating model upgrade)
+    for (old_dim, new_dim) in [(128, 384), (384, 768), (768, 1536)] {
+        let id = format!("{}_to_{}", old_dim, new_dim);
+        group.bench_with_input(
+            BenchmarkId::new("dimension_upgrade", &id),
+            &(old_dim, new_dim),
+            |b, &(old_dim, new_dim)| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create database");
+                        let mut entity_ids = Vec::with_capacity(1000);
+                        {
+                            let mut tx = db.begin().expect("failed");
+                            for _ in 0..1000 {
+                                let entity = tx.create_entity().expect("failed");
+                                entity_ids.push(entity.id);
+                                tx.put_entity(&entity).expect("failed");
+                            }
+                            tx.commit().expect("failed");
+                        }
+                        // Insert with old dimension
+                        let initial_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                            .iter()
+                            .map(|&id| (id, "embedding".to_string(), vec![0.5f32; old_dim]))
+                            .collect();
+                        db.bulk_insert_vectors("documents", &initial_vectors).expect("failed");
+                        (db, entity_ids, new_dim)
+                    },
+                    |(db, entity_ids, new_dim)| {
+                        // Update with new dimension
+                        let updated_vectors: Vec<(EntityId, String, Vec<f32>)> = entity_ids
+                            .iter()
+                            .map(|&id| (id, "embedding".to_string(), vec![0.5f32; new_dim]))
+                            .collect();
+                        let result =
+                            db.bulk_update_vectors("documents", &updated_vectors).expect("failed");
+                        black_box(result)
+                    },
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
 // Query Execution Benchmarks
 // ============================================================================
 
@@ -2151,6 +2312,7 @@ criterion_group!(
     wide_graph_benchmarks,
     vector_benchmarks,
     bulk_vector_benchmarks,
+    bulk_update_vector_benchmarks,
     query_benchmarks,
     write_batching_benchmarks,
     bulk_insert_benchmarks,
