@@ -966,16 +966,19 @@ fn execute_graph_plan<T: Transaction>(
             let schema = graph_result.schema_arc();
             let mut rows = graph_result.into_rows();
 
-            if let Some(order) = node.order_by.first() {
+            if !node.order_by.is_empty() {
                 rows.sort_by(|a, b| {
-                    let va = evaluate_row_expr(&order.expr, a);
-                    let vb = evaluate_row_expr(&order.expr, b);
-                    let cmp = compare_values(&va, &vb);
-                    if order.ascending {
-                        cmp
-                    } else {
-                        cmp.reverse()
+                    // Compare by each sort key in order
+                    for order in &node.order_by {
+                        let va = evaluate_row_expr(&order.expr, a);
+                        let vb = evaluate_row_expr(&order.expr, b);
+                        let cmp = compare_values(&va, &vb);
+                        let cmp = if order.ascending { cmp } else { cmp.reverse() };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
                     }
+                    std::cmp::Ordering::Equal
                 });
             }
 
@@ -1202,17 +1205,20 @@ fn execute_logical_plan<T: Transaction>(
         LogicalPlan::Sort { node, input } => {
             let mut entities = execute_logical_plan(tx, input, ctx)?;
 
-            // Sort by the first order-by expression
-            if let Some(order) = node.order_by.first() {
+            // Sort by all order-by expressions
+            if !node.order_by.is_empty() {
                 entities.sort_by(|a, b| {
-                    let va = evaluate_expr(&order.expr, a, ctx);
-                    let vb = evaluate_expr(&order.expr, b, ctx);
-                    let cmp = compare_values(&va, &vb);
-                    if order.ascending {
-                        cmp
-                    } else {
-                        cmp.reverse()
+                    // Compare by each sort key in order
+                    for order in &node.order_by {
+                        let va = evaluate_expr(&order.expr, a, ctx);
+                        let vb = evaluate_expr(&order.expr, b, ctx);
+                        let cmp = compare_values(&va, &vb);
+                        let cmp = if order.ascending { cmp } else { cmp.reverse() };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
                     }
+                    std::cmp::Ordering::Equal
                 });
             }
 
@@ -1573,16 +1579,19 @@ fn execute_join_plan<T: Transaction>(
             let schema = join_result.schema_arc();
             let mut rows = join_result.into_rows();
 
-            if let Some(order) = node.order_by.first() {
+            if !node.order_by.is_empty() {
                 rows.sort_by(|a, b| {
-                    let va = evaluate_row_expr(&order.expr, a);
-                    let vb = evaluate_row_expr(&order.expr, b);
-                    let cmp = compare_values(&va, &vb);
-                    if order.ascending {
-                        cmp
-                    } else {
-                        cmp.reverse()
+                    // Compare by each sort key in order
+                    for order in &node.order_by {
+                        let va = evaluate_row_expr(&order.expr, a);
+                        let vb = evaluate_row_expr(&order.expr, b);
+                        let cmp = compare_values(&va, &vb);
+                        let cmp = if order.ascending { cmp } else { cmp.reverse() };
+                        if cmp != std::cmp::Ordering::Equal {
+                            return cmp;
+                        }
                     }
+                    std::cmp::Ordering::Equal
                 });
             }
 
