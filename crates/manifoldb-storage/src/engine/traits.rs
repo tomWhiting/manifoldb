@@ -10,6 +10,7 @@
 //! types for maximum flexibility in backend implementations.
 
 use std::ops::Bound;
+use std::sync::Arc;
 
 use super::StorageError;
 
@@ -281,4 +282,31 @@ pub trait Cursor {
     /// Returns `None` if the cursor is not positioned at a valid entry
     /// (before first call to seek/next, or after iteration is exhausted).
     fn current(&self) -> Option<(&[u8], &[u8])>;
+}
+
+// ============================================================================
+// Blanket Implementations
+// ============================================================================
+
+/// Implement `StorageEngine` for `Arc<E>` to allow shared ownership of engines.
+///
+/// This is useful when multiple components need access to the same engine,
+/// such as when creating collection handles from a database.
+impl<E: StorageEngine> StorageEngine for Arc<E> {
+    type Transaction<'a>
+        = E::Transaction<'a>
+    where
+        Self: 'a;
+
+    fn begin_read(&self) -> Result<Self::Transaction<'_>, StorageError> {
+        (**self).begin_read()
+    }
+
+    fn begin_write(&self) -> Result<Self::Transaction<'_>, StorageError> {
+        (**self).begin_write()
+    }
+
+    fn flush(&self) -> Result<(), StorageError> {
+        (**self).flush()
+    }
 }

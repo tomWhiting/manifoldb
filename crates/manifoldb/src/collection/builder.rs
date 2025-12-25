@@ -15,8 +15,6 @@
 //!     .build()?;
 //! ```
 
-use std::sync::Arc;
-
 use manifoldb_storage::StorageEngine;
 use manifoldb_vector::distance::sparse::SparseDistanceMetric;
 use manifoldb_vector::distance::DistanceMetric;
@@ -40,20 +38,20 @@ use crate::collection::config::DistanceType;
 /// use manifoldb::collection::DistanceMetric;
 ///
 /// // Create a collection with dense and sparse vectors
-/// let collection = db.create_collection("documents")
+/// let collection = db.create_collection("documents")?
 ///     .with_dense_vector("text", 768, DistanceMetric::Cosine)
 ///     .with_sparse_vector("keywords")
 ///     .build()?;
 ///
 /// // Create a hybrid collection for semantic + keyword search
-/// let collection = db.create_collection("articles")
+/// let collection = db.create_collection("articles")?
 ///     .with_dense_vector("semantic", 384, DistanceMetric::DotProduct)
 ///     .with_sparse_vector_config("bm25", 30522, SparseDistanceMetric::BM25)
 ///     .build()?;
 /// ```
 pub struct CollectionBuilder<E: StorageEngine> {
     /// The storage engine.
-    pub(crate) engine: Arc<E>,
+    pub(crate) engine: E,
     /// The collection name.
     pub(crate) name: CollectionName,
     /// Named vectors to create.
@@ -64,8 +62,7 @@ impl<E: StorageEngine> CollectionBuilder<E> {
     /// Create a new collection builder.
     ///
     /// This is typically called via `db.create_collection(name)`.
-    #[allow(dead_code)]
-    pub(crate) fn new(engine: Arc<E>, name: CollectionName) -> Self {
+    pub(crate) fn new(engine: E, name: CollectionName) -> Self {
         Self { engine, name, vectors: Vec::new() }
     }
 

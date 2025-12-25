@@ -183,6 +183,15 @@ impl<E: StorageEngine> TransactionManager<E> {
         &self.engine
     }
 
+    /// Get an Arc to the underlying storage engine.
+    ///
+    /// Returns a cloned Arc reference to the engine, useful for creating
+    /// components that need shared ownership of the engine.
+    #[must_use]
+    pub fn engine_arc(&self) -> Arc<E> {
+        Arc::clone(&self.engine)
+    }
+
     /// Begin a batched write transaction.
     ///
     /// Batched transactions buffer writes locally and commit them through

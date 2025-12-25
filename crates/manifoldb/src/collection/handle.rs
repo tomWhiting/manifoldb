@@ -26,7 +26,6 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use manifoldb_core::PointId;
 use manifoldb_storage::StorageEngine;
@@ -86,9 +85,10 @@ pub struct CollectionHandle<E: StorageEngine> {
 
 impl<E: StorageEngine> CollectionHandle<E> {
     /// Create a new collection and return a handle to it.
-    #[allow(dead_code)]
+    ///
+    /// This is called by `CollectionBuilder::build()` after configuring vectors.
     pub(crate) fn create(
-        engine: Arc<E>,
+        engine: E,
         name: CollectionName,
         vectors: Vec<(String, VectorConfig)>,
     ) -> ApiResult<Self> {
@@ -102,14 +102,7 @@ impl<E: StorageEngine> CollectionHandle<E> {
             schema = schema.with_vector(vec_name.clone(), store_config);
         }
 
-        // Create the point store
-        // We need to unwrap the Arc to get the engine
-        // Since PointStore takes ownership, we'll store the engine directly
-        let engine = Arc::try_unwrap(engine).map_err(|_| {
-            ApiError::InvalidState(
-                "Cannot create collection handle: engine has multiple references".into(),
-            )
-        })?;
+        // Create the point store with the engine
         let point_store = PointStore::new(engine);
 
         // Create the collection in the point store
@@ -119,7 +112,8 @@ impl<E: StorageEngine> CollectionHandle<E> {
     }
 
     /// Open an existing collection and return a handle.
-    #[allow(dead_code)]
+    ///
+    /// This is called by `Database::collection()` to get a handle to an existing collection.
     pub(crate) fn open(engine: E, name: CollectionName) -> ApiResult<Self> {
         let vector_name = VectorCollectionName::new(name.as_str())?;
         let point_store = PointStore::new(engine);
@@ -535,7 +529,6 @@ fn vector_config_to_store_config(config: &VectorConfig) -> VectorStoreConfig {
 }
 
 /// Convert store's VectorConfig to our VectorConfig.
-#[allow(dead_code)]
 fn store_config_to_vector_config(config: &VectorStoreConfig) -> VectorConfig {
     use manifoldb_vector::distance::DistanceMetric;
 
@@ -670,34 +663,30 @@ fn fuse_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
-    fn test_create_with_multiple_arc_references_returns_error() {
+    fn test_create_with_arc_engine_works() {
         use manifoldb_storage::backends::RedbEngine;
 
         // Create an engine wrapped in Arc
         let engine = Arc::new(RedbEngine::in_memory().unwrap());
 
-        // Clone the Arc to create multiple references
-        let _engine_clone = Arc::clone(&engine);
+        // Clone the Arc to have multiple references - this should work now
+        let engine_clone = Arc::clone(&engine);
 
-        // Now try to create a collection handle - this should return an error,
-        // not panic, since there are multiple Arc references
+        // Create a collection handle with the Arc - should succeed
         let name = CollectionName::new("test_collection").unwrap();
-        let vectors = vec![];
+        let vectors = vec![(
+            "embedding".to_string(),
+            VectorConfig::dense(128, manifoldb_vector::distance::DistanceMetric::Cosine),
+        )];
 
         let result = CollectionHandle::create(engine, name, vectors);
+        assert!(result.is_ok(), "Creating handle with Arc should work");
 
-        match result {
-            Err(ApiError::InvalidState(msg)) => {
-                assert!(
-                    msg.contains("multiple references"),
-                    "Error message should mention multiple references: {msg}"
-                );
-            }
-            Err(other) => panic!("Expected InvalidState error, got: {other:?}"),
-            Ok(_) => panic!("Expected error when creating handle with multiple Arc references"),
-        }
+        // The clone should still be valid
+        drop(engine_clone);
     }
 
     #[test]
