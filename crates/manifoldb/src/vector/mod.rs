@@ -701,8 +701,7 @@ fn insert_into_graph(
         }
     }
 
-    // Insert the node
-    graph.nodes.insert(entity_id, node);
+    // Node was already inserted via entry().or_insert_with() in the loop above
 
     // Update entry point if needed
     if level > graph.max_layer {
@@ -1127,6 +1126,7 @@ pub fn list_indexes_for_collection<T: Transaction>(
 /// Update a named vector in the HNSW index when a point is upserted.
 ///
 /// This adds or updates the point's vector in the appropriate HNSW index.
+/// For updates, we remove the old entry first to ensure the new embedding is used.
 pub fn update_point_vector_in_index<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     collection_name: &str,
@@ -1149,7 +1149,9 @@ pub fn update_point_vector_in_index<T: Transaction>(
     // Convert PointId to EntityId for HNSW compatibility
     let entity_id = EntityId::new(point_id.as_u64());
 
-    // Add to index
+    // For updates: remove old entry first if it exists, then add new one
+    // This ensures the new embedding is used and connections are recalculated
+    remove_from_index(tx, &index_name, entity_id)?;
     add_to_index(tx, &index_name, entity_id, embedding)?;
 
     Ok(())
