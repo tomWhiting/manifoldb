@@ -46,10 +46,10 @@
 //! ```
 
 use crate::ast::{
-    BinaryOp, CreateCollectionStatement, DistanceMetric, EdgeDirection, EdgeLength, EdgePattern,
-    Expr, GraphPattern, Identifier, MatchStatement, NodePattern, OrderByExpr, ParameterRef,
-    PathPattern, PropertyCondition, QualifiedName, ReturnItem, SelectStatement,
-    ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
+    BinaryOp, CreateCollectionStatement, DataType, DistanceMetric, EdgeDirection, EdgeLength,
+    EdgePattern, Expr, GraphPattern, Identifier, MatchStatement, NodePattern, OrderByExpr,
+    ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition, QualifiedName, ReturnItem,
+    SelectStatement, ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -192,10 +192,10 @@ impl ExtendedParser {
             ParseError::SqlSyntax("unclosed parenthesis in CREATE COLLECTION".to_string())
         })?;
 
-        let vector_defs_str = &after_name[1..close_paren];
+        let defs_str = &after_name[1..close_paren];
 
-        // Parse vector definitions
-        let vectors = Self::parse_vector_definitions(vector_defs_str)?;
+        // Parse vector and payload field definitions
+        let (vectors, payload_fields) = Self::parse_collection_definitions(defs_str)?;
 
         if vectors.is_empty() {
             return Err(ParseError::SqlSyntax(
@@ -203,12 +203,267 @@ impl ExtendedParser {
             ));
         }
 
-        let stmt = CreateCollectionStatement { if_not_exists, name, vectors };
+        let stmt = CreateCollectionStatement { if_not_exists, name, vectors, payload_fields };
 
         Ok(vec![Statement::CreateCollection(Box::new(stmt))])
     }
 
+    /// Parses collection definitions (vectors and payload fields).
+    ///
+    /// Supports both syntaxes:
+    /// - New syntax: `title TEXT, VECTOR text_embedding DIMENSION 1536`
+    /// - Legacy syntax: `dense VECTOR(768) USING hnsw`
+    fn parse_collection_definitions(
+        input: &str,
+    ) -> ParseResult<(Vec<VectorDef>, Vec<PayloadFieldDef>)> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok((vec![], vec![]));
+        }
+
+        let mut vectors = Vec::new();
+        let mut payload_fields = Vec::new();
+        let mut current = String::new();
+        let mut paren_depth: i32 = 0;
+
+        // Split by comma, respecting parentheses
+        for c in input.chars() {
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    current.push(c);
+                }
+                ')' => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    current.push(c);
+                }
+                ',' if paren_depth == 0 => {
+                    if !current.trim().is_empty() {
+                        Self::parse_collection_item(
+                            current.trim(),
+                            &mut vectors,
+                            &mut payload_fields,
+                        )?;
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        // Don't forget the last definition
+        if !current.trim().is_empty() {
+            Self::parse_collection_item(current.trim(), &mut vectors, &mut payload_fields)?;
+        }
+
+        Ok((vectors, payload_fields))
+    }
+
+    /// Parses a single collection item (either a vector or a payload field).
+    fn parse_collection_item(
+        input: &str,
+        vectors: &mut Vec<VectorDef>,
+        payload_fields: &mut Vec<PayloadFieldDef>,
+    ) -> ParseResult<()> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Check for new-style VECTOR declaration: VECTOR name DIMENSION dim
+        if upper.starts_with("VECTOR ") {
+            let vector = Self::parse_new_style_vector_def(input)?;
+            vectors.push(vector);
+            return Ok(());
+        }
+
+        // Check if it's a legacy vector definition (name VECTOR(dim), SPARSE_VECTOR, etc.)
+        if Self::is_legacy_vector_def(input) {
+            let vector = Self::parse_single_vector_def(input)?;
+            vectors.push(vector);
+            return Ok(());
+        }
+
+        // Otherwise, it's a payload field definition: name TYPE [INDEXED]
+        let field = Self::parse_payload_field(input)?;
+        payload_fields.push(field);
+        Ok(())
+    }
+
+    /// Checks if the input is a legacy vector definition (name VECTOR(...)).
+    fn is_legacy_vector_def(input: &str) -> bool {
+        let upper = input.to_uppercase();
+        // Find where the type starts (after the name)
+        let name_end = input.find(|c: char| c.is_whitespace()).unwrap_or(input.len());
+        let after_name = upper[name_end..].trim_start();
+        after_name.starts_with("VECTOR")
+            || after_name.starts_with("SPARSE_VECTOR")
+            || after_name.starts_with("MULTI_VECTOR")
+            || after_name.starts_with("BINARY_VECTOR")
+    }
+
+    /// Parses a new-style vector definition: `VECTOR name DIMENSION dim [USING method] [WITH (...)]`.
+    fn parse_new_style_vector_def(input: &str) -> ParseResult<VectorDef> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Skip "VECTOR " prefix
+        if !upper.starts_with("VECTOR ") {
+            return Err(ParseError::SqlSyntax("expected VECTOR keyword".to_string()));
+        }
+        let after_vector = input[7..].trim_start();
+
+        // Parse vector name
+        let name_end = after_vector.find(|c: char| c.is_whitespace()).unwrap_or(after_vector.len());
+        let name_str = &after_vector[..name_end];
+        if name_str.is_empty() {
+            return Err(ParseError::SqlSyntax("expected vector name after VECTOR".to_string()));
+        }
+        let name = Identifier::new(name_str);
+
+        let after_name = after_vector[name_end..].trim_start();
+        let upper_after_name = after_name.to_uppercase();
+
+        // Parse DIMENSION
+        if !upper_after_name.starts_with("DIMENSION") {
+            return Err(ParseError::SqlSyntax(
+                "expected DIMENSION keyword after vector name".to_string(),
+            ));
+        }
+        let after_dimension = after_name[9..].trim_start();
+
+        // Parse dimension value
+        let dim_end =
+            after_dimension.find(|c: char| c.is_whitespace()).unwrap_or(after_dimension.len());
+        let dim_str = &after_dimension[..dim_end];
+        let dimension = dim_str
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| ParseError::SqlSyntax(format!("invalid DIMENSION value: {dim_str}")))?;
+
+        let vector_type = VectorTypeDef::Vector { dimension };
+
+        // Parse optional USING and WITH clauses
+        let rest = after_dimension[dim_end..].trim_start();
+        let upper_rest = rest.to_uppercase();
+
+        let (using_method, after_using) = if upper_rest.starts_with("USING") {
+            let after_using_kw = rest[5..].trim_start();
+            let method_end =
+                after_using_kw.find(|c: char| c.is_whitespace()).unwrap_or(after_using_kw.len());
+            let method = &after_using_kw[..method_end];
+            (Some(method.to_lowercase()), after_using_kw[method_end..].trim_start())
+        } else {
+            (None, rest)
+        };
+
+        let upper_after_using = after_using.to_uppercase();
+        let with_options = if upper_after_using.starts_with("WITH") {
+            let after_with = after_using[4..].trim_start();
+            Self::parse_with_options(after_with)?
+        } else {
+            vec![]
+        };
+
+        Ok(VectorDef { name, vector_type, using: using_method, with_options })
+    }
+
+    /// Parses a payload field definition: `name TYPE [INDEXED]`.
+    fn parse_payload_field(input: &str) -> ParseResult<PayloadFieldDef> {
+        let input = input.trim();
+
+        // Parse field name
+        let name_end = input.find(|c: char| c.is_whitespace()).unwrap_or(input.len());
+        let name_str = &input[..name_end];
+        if name_str.is_empty() {
+            return Err(ParseError::SqlSyntax("expected field name".to_string()));
+        }
+        let name = Identifier::new(name_str);
+
+        let after_name = input[name_end..].trim_start();
+        let upper_after_name = after_name.to_uppercase();
+
+        // Parse data type
+        let (data_type, after_type) = Self::parse_payload_data_type(&upper_after_name, after_name)?;
+
+        // Check for INDEXED keyword
+        let upper_after_type = after_type.to_uppercase();
+        let indexed = upper_after_type.trim().starts_with("INDEXED");
+
+        Ok(PayloadFieldDef { name, data_type, indexed })
+    }
+
+    /// Parses a payload data type (TEXT, INTEGER, FLOAT, BOOLEAN, JSON, BYTEA).
+    fn parse_payload_data_type<'a>(
+        upper: &str,
+        original: &'a str,
+    ) -> ParseResult<(DataType, &'a str)> {
+        if upper.starts_with("TEXT") {
+            return Ok((DataType::Text, &original[4..]));
+        }
+        if upper.starts_with("INTEGER") {
+            return Ok((DataType::Integer, &original[7..]));
+        }
+        if upper.starts_with("INT") {
+            return Ok((DataType::Integer, &original[3..]));
+        }
+        if upper.starts_with("BIGINT") {
+            return Ok((DataType::BigInt, &original[6..]));
+        }
+        if upper.starts_with("FLOAT") {
+            return Ok((DataType::Real, &original[5..]));
+        }
+        if upper.starts_with("REAL") {
+            return Ok((DataType::Real, &original[4..]));
+        }
+        if upper.starts_with("DOUBLE") {
+            return Ok((DataType::DoublePrecision, &original[6..]));
+        }
+        if upper.starts_with("BOOLEAN") || upper.starts_with("BOOL") {
+            let len = if upper.starts_with("BOOLEAN") { 7 } else { 4 };
+            return Ok((DataType::Boolean, &original[len..]));
+        }
+        if upper.starts_with("JSON") {
+            return Ok((DataType::Json, &original[4..]));
+        }
+        if upper.starts_with("JSONB") {
+            return Ok((DataType::Jsonb, &original[5..]));
+        }
+        if upper.starts_with("BYTEA") {
+            return Ok((DataType::Bytea, &original[5..]));
+        }
+        if upper.starts_with("TIMESTAMP") {
+            return Ok((DataType::Timestamp, &original[9..]));
+        }
+        if upper.starts_with("DATE") {
+            return Ok((DataType::Date, &original[4..]));
+        }
+        if upper.starts_with("UUID") {
+            return Ok((DataType::Uuid, &original[4..]));
+        }
+        // VARCHAR(n)
+        if upper.starts_with("VARCHAR") {
+            let after_varchar = original[7..].trim_start();
+            if after_varchar.starts_with('(') {
+                let close = after_varchar.find(')').ok_or_else(|| {
+                    ParseError::SqlSyntax("unclosed parenthesis in VARCHAR".to_string())
+                })?;
+                let len_str = &after_varchar[1..close];
+                let len = len_str.trim().parse::<u32>().map_err(|_| {
+                    ParseError::SqlSyntax(format!("invalid VARCHAR length: {len_str}"))
+                })?;
+                return Ok((DataType::Varchar(Some(len)), &after_varchar[close + 1..]));
+            }
+            return Ok((DataType::Varchar(None), &original[7..]));
+        }
+
+        Err(ParseError::SqlSyntax(format!(
+            "expected data type (TEXT, INTEGER, FLOAT, BOOLEAN, JSON, BYTEA, etc.), found: {}",
+            &original[..original.len().min(20)]
+        )))
+    }
+
     /// Parses the vector definitions inside CREATE COLLECTION parentheses.
+    /// This is kept for backwards compatibility.
+    #[allow(dead_code)]
     fn parse_vector_definitions(input: &str) -> ParseResult<Vec<VectorDef>> {
         let input = input.trim();
         if input.is_empty() {
@@ -1256,7 +1511,12 @@ impl ExtendedParser {
 
     /// Converts vector function calls to binary operators.
     ///
-    /// Transforms `__VEC_EUCLIDEAN__(a, b)` to `Expr::BinaryOp { left: a, op: EuclideanDistance, right: b }`.
+    /// Transforms:
+    /// - `__VEC_EUCLIDEAN__(a, b)` to `Expr::BinaryOp { left: a, op: EuclideanDistance, right: b }`
+    /// - `COSINE_SIMILARITY(vector_name, query)` to `Expr::BinaryOp { left: vector_name, op: CosineDistance, right: query }`
+    /// - `EUCLIDEAN_DISTANCE(vector_name, query)` to `Expr::BinaryOp { left: vector_name, op: EuclideanDistance, right: query }`
+    /// - `INNER_PRODUCT(vector_name, query)` to `Expr::BinaryOp { left: vector_name, op: InnerProduct, right: query }`
+    /// - `MAXSIM(vector_name, query)` to `Expr::BinaryOp { left: vector_name, op: MaxSim, right: query }`
     fn convert_vector_function(expr: &mut Expr) {
         let replacement = if let Expr::Function(func) = expr {
             let func_name = func.name.name().map(|id| id.name.as_str()).unwrap_or("");
@@ -1265,14 +1525,8 @@ impl ExtendedParser {
             if func_name.eq_ignore_ascii_case("HYBRID") || func_name.eq_ignore_ascii_case("RRF") {
                 Self::parse_hybrid_function(func, func_name.eq_ignore_ascii_case("RRF"))
             } else {
-                // Check for vector distance operators
-                let op = match func_name {
-                    "__VEC_EUCLIDEAN__" => Some(BinaryOp::EuclideanDistance),
-                    "__VEC_COSINE__" => Some(BinaryOp::CosineDistance),
-                    "__VEC_INNER__" => Some(BinaryOp::InnerProduct),
-                    "__VEC_MAXSIM__" => Some(BinaryOp::MaxSim),
-                    _ => None,
-                };
+                // Check for vector distance operators (both internal and user-facing function names)
+                let op = Self::parse_distance_function_name(func_name);
 
                 if let Some(op) = op {
                     if func.args.len() == 2 {
@@ -1293,6 +1547,43 @@ impl ExtendedParser {
 
         if let Some(new_expr) = replacement {
             *expr = new_expr;
+        }
+    }
+
+    /// Parses a distance function name and returns the corresponding binary operator.
+    ///
+    /// Supports both internal marker names (from preprocessing) and user-facing function names.
+    fn parse_distance_function_name(func_name: &str) -> Option<BinaryOp> {
+        // Internal marker names from preprocessing
+        if func_name == "__VEC_EUCLIDEAN__" {
+            return Some(BinaryOp::EuclideanDistance);
+        }
+        if func_name == "__VEC_COSINE__" {
+            return Some(BinaryOp::CosineDistance);
+        }
+        if func_name == "__VEC_INNER__" {
+            return Some(BinaryOp::InnerProduct);
+        }
+        if func_name == "__VEC_MAXSIM__" {
+            return Some(BinaryOp::MaxSim);
+        }
+
+        // User-facing similarity function names (case-insensitive)
+        let upper = func_name.to_uppercase();
+        match upper.as_str() {
+            // Cosine similarity/distance functions
+            "COSINE_SIMILARITY" | "COSINE_DISTANCE" | "COS_DISTANCE" | "COS_SIM" => {
+                Some(BinaryOp::CosineDistance)
+            }
+            // Euclidean distance functions
+            "EUCLIDEAN_DISTANCE" | "L2_DISTANCE" | "EUCLIDEAN" | "L2" => {
+                Some(BinaryOp::EuclideanDistance)
+            }
+            // Inner product functions
+            "INNER_PRODUCT" | "DOT_PRODUCT" | "DOT" => Some(BinaryOp::InnerProduct),
+            // MaxSim for multi-vectors
+            "MAXSIM" | "MAX_SIM" => Some(BinaryOp::MaxSim),
+            _ => None,
         }
     }
 
@@ -2382,5 +2673,276 @@ mod tests {
         ));
         assert!(!ExtendedParser::is_create_collection("CREATE TABLE foo (id INT)"));
         assert!(!ExtendedParser::is_create_collection("SELECT * FROM foo"));
+    }
+
+    // New syntax tests for named embeddings
+
+    #[test]
+    fn parse_create_collection_new_syntax() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION documents (
+                title TEXT,
+                content TEXT,
+                VECTOR text_embedding DIMENSION 1536,
+                VECTOR image_embedding DIMENSION 512
+            )",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.name.name, "documents");
+            // Check payload fields
+            assert_eq!(create.payload_fields.len(), 2);
+            assert_eq!(create.payload_fields[0].name.name, "title");
+            assert!(matches!(create.payload_fields[0].data_type, DataType::Text));
+            assert_eq!(create.payload_fields[1].name.name, "content");
+            assert!(matches!(create.payload_fields[1].data_type, DataType::Text));
+            // Check vectors
+            assert_eq!(create.vectors.len(), 2);
+            assert_eq!(create.vectors[0].name.name, "text_embedding");
+            assert!(matches!(
+                create.vectors[0].vector_type,
+                VectorTypeDef::Vector { dimension: 1536 }
+            ));
+            assert_eq!(create.vectors[1].name.name, "image_embedding");
+            assert!(matches!(
+                create.vectors[1].vector_type,
+                VectorTypeDef::Vector { dimension: 512 }
+            ));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_mixed_syntax() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION documents (
+                title TEXT,
+                category INTEGER INDEXED,
+                dense VECTOR(768) USING hnsw,
+                VECTOR summary_embedding DIMENSION 1536 USING hnsw WITH (distance = 'cosine')
+            )",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            // Check payload fields
+            assert_eq!(create.payload_fields.len(), 2);
+            assert_eq!(create.payload_fields[0].name.name, "title");
+            assert!(!create.payload_fields[0].indexed);
+            assert_eq!(create.payload_fields[1].name.name, "category");
+            assert!(create.payload_fields[1].indexed);
+            // Check vectors (both legacy and new syntax)
+            assert_eq!(create.vectors.len(), 2);
+            assert_eq!(create.vectors[0].name.name, "dense");
+            assert_eq!(create.vectors[1].name.name, "summary_embedding");
+            assert!(matches!(
+                create.vectors[1].vector_type,
+                VectorTypeDef::Vector { dimension: 1536 }
+            ));
+            assert_eq!(create.vectors[1].using, Some("hnsw".to_string()));
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    #[test]
+    fn parse_create_collection_various_types() {
+        let stmts = ExtendedParser::parse(
+            "CREATE COLLECTION items (
+                name VARCHAR(255),
+                count INTEGER,
+                price FLOAT,
+                active BOOLEAN,
+                metadata JSON,
+                created_at TIMESTAMP,
+                id UUID,
+                VECTOR embedding DIMENSION 768
+            )",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::CreateCollection(create) = &stmts[0] {
+            assert_eq!(create.payload_fields.len(), 7);
+            assert!(matches!(create.payload_fields[0].data_type, DataType::Varchar(Some(255))));
+            assert!(matches!(create.payload_fields[1].data_type, DataType::Integer));
+            assert!(matches!(create.payload_fields[2].data_type, DataType::Real));
+            assert!(matches!(create.payload_fields[3].data_type, DataType::Boolean));
+            assert!(matches!(create.payload_fields[4].data_type, DataType::Json));
+            assert!(matches!(create.payload_fields[5].data_type, DataType::Timestamp));
+            assert!(matches!(create.payload_fields[6].data_type, DataType::Uuid));
+            assert_eq!(create.vectors.len(), 1);
+        } else {
+            panic!("Expected CreateCollection statement");
+        }
+    }
+
+    // Similarity function tests
+
+    #[test]
+    fn parse_cosine_similarity_function() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM documents ORDER BY COSINE_SIMILARITY(text_embedding, $query) LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert_eq!(select.order_by.len(), 1);
+            if let Expr::BinaryOp { op: BinaryOp::CosineDistance, left, right } =
+                &*select.order_by[0].expr
+            {
+                // Check left side is the vector column reference
+                if let Expr::Column(col) = left.as_ref() {
+                    assert_eq!(col.name().map(|id| id.name.as_str()), Some("text_embedding"));
+                } else {
+                    panic!("Expected column reference for left operand");
+                }
+                // Check right side is a parameter
+                assert!(matches!(right.as_ref(), Expr::Parameter(_)));
+            } else {
+                panic!("Expected BinaryOp with CosineDistance");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_euclidean_distance_function() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY EUCLIDEAN_DISTANCE(embedding, $1) ASC LIMIT 5",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            if let Expr::BinaryOp { op: BinaryOp::EuclideanDistance, .. } =
+                &*select.order_by[0].expr
+            {
+                // OK - correctly parsed
+            } else {
+                panic!("Expected BinaryOp with EuclideanDistance");
+            }
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_l2_distance_alias() {
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM docs ORDER BY L2_DISTANCE(vec, $q) LIMIT 10")
+                .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(matches!(
+                &*select.order_by[0].expr,
+                Expr::BinaryOp { op: BinaryOp::EuclideanDistance, .. }
+            ));
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_inner_product_function() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY INNER_PRODUCT(vec, $q) DESC LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(matches!(
+                &*select.order_by[0].expr,
+                Expr::BinaryOp { op: BinaryOp::InnerProduct, .. }
+            ));
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_dot_product_alias() {
+        let stmts =
+            ExtendedParser::parse("SELECT * FROM docs ORDER BY DOT_PRODUCT(vec, $q) DESC LIMIT 10")
+                .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(matches!(
+                &*select.order_by[0].expr,
+                Expr::BinaryOp { op: BinaryOp::InnerProduct, .. }
+            ));
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_maxsim_function() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY MAXSIM(colbert_vec, $q) DESC LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(matches!(
+                &*select.order_by[0].expr,
+                Expr::BinaryOp { op: BinaryOp::MaxSim, .. }
+            ));
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_distance_function_case_insensitive() {
+        // Test that function names are case-insensitive
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM docs ORDER BY cosine_similarity(vec, $q) LIMIT 10",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(matches!(
+                &*select.order_by[0].expr,
+                Expr::BinaryOp { op: BinaryOp::CosineDistance, .. }
+            ));
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_distance_function_name_mapping() {
+        // Test the function name mapping directly
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("COSINE_SIMILARITY"),
+            Some(BinaryOp::CosineDistance)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("COS_DISTANCE"),
+            Some(BinaryOp::CosineDistance)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("EUCLIDEAN_DISTANCE"),
+            Some(BinaryOp::EuclideanDistance)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("L2"),
+            Some(BinaryOp::EuclideanDistance)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("INNER_PRODUCT"),
+            Some(BinaryOp::InnerProduct)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("DOT"),
+            Some(BinaryOp::InnerProduct)
+        ));
+        assert!(matches!(
+            ExtendedParser::parse_distance_function_name("MAXSIM"),
+            Some(BinaryOp::MaxSim)
+        ));
+        assert!(ExtendedParser::parse_distance_function_name("UNKNOWN").is_none());
     }
 }
