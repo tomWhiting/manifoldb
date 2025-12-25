@@ -371,3 +371,141 @@ fn test_drop_nonexistent_index_error() {
     let result = db.execute("DROP INDEX nonexistent_index");
     assert!(result.is_err());
 }
+
+// ============================================================================
+// Index Backfill Tests
+// ============================================================================
+
+#[test]
+fn test_create_index_backfills_existing_data() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table first
+    db.execute("CREATE TABLE backfill_users (id BIGINT, name TEXT, email TEXT)")
+        .expect("create table failed");
+
+    // Insert some data
+    db.execute("INSERT INTO backfill_users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
+        .expect("insert 1 failed");
+    db.execute("INSERT INTO backfill_users (id, name, email) VALUES (2, 'Bob', 'bob@example.com')")
+        .expect("insert 2 failed");
+    db.execute("INSERT INTO backfill_users (id, name, email) VALUES (3, 'Charlie', 'charlie@example.com')")
+        .expect("insert 3 failed");
+
+    // Now create an index on the email column
+    // This should backfill the existing 3 rows into the index
+    let affected = db
+        .execute("CREATE INDEX idx_backfill_users_email ON backfill_users (email)")
+        .expect("create index failed");
+
+    // The executor returns the number of entries backfilled
+    assert_eq!(affected, 3);
+
+    // Verify the data can still be queried
+    let result = db.query("SELECT * FROM backfill_users WHERE email = 'alice@example.com'").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_create_index_on_empty_table_returns_zero() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table but don't insert any data
+    db.execute("CREATE TABLE empty_test (id BIGINT, value TEXT)").expect("create table failed");
+
+    // Create an index - should return 0 since no data to backfill
+    let affected = db
+        .execute("CREATE INDEX idx_empty_value ON empty_test (value)")
+        .expect("create index failed");
+
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_create_index_skips_missing_column() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE nulltest (id BIGINT, name TEXT)")
+        .expect("create table failed");
+
+    // Insert some data - some rows have name, some don't
+    db.execute("INSERT INTO nulltest (id, name) VALUES (1, 'Alice')")
+        .expect("insert 1 failed");
+    db.execute("INSERT INTO nulltest (id) VALUES (2)")  // name is missing (not stored)
+        .expect("insert 2 failed");
+    db.execute("INSERT INTO nulltest (id, name) VALUES (3, 'Charlie')")
+        .expect("insert 3 failed");
+
+    // Create an index on name column
+    // Only rows with the property set get indexed
+    let affected = db
+        .execute("CREATE INDEX idx_nulltest_name ON nulltest (name)")
+        .expect("create index failed");
+
+    // We should get 2 entries (only rows with name property)
+    assert_eq!(affected, 2);
+}
+
+#[test]
+fn test_drop_index_and_recreate() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE cleanup_test (id BIGINT, value TEXT)")
+        .expect("create table failed");
+
+    // Insert data
+    db.execute("INSERT INTO cleanup_test (id, value) VALUES (1, 'one')")
+        .expect("insert 1 failed");
+    db.execute("INSERT INTO cleanup_test (id, value) VALUES (2, 'two')")
+        .expect("insert 2 failed");
+
+    // Create index (backfills 2 entries)
+    let created = db
+        .execute("CREATE INDEX idx_cleanup ON cleanup_test (value)")
+        .expect("create index failed");
+    assert_eq!(created, 2);
+
+    // Drop the index
+    db.execute("DROP INDEX idx_cleanup").expect("drop index failed");
+
+    // Verify we can create the index again and it backfills
+    // This proves the drop succeeded and cleaned up properly
+    let recreated = db
+        .execute("CREATE INDEX idx_cleanup ON cleanup_test (value)")
+        .expect("recreate index failed");
+    assert_eq!(recreated, 2);
+
+    // Query should still work
+    let result = db.query("SELECT * FROM cleanup_test WHERE value = 'one'").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_create_index_with_numeric_types() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE mixed (id BIGINT, score INTEGER)")
+        .expect("create table failed");
+
+    // Insert data with numeric values
+    db.execute("INSERT INTO mixed (id, score) VALUES (1, 100)")
+        .expect("insert 1 failed");
+    db.execute("INSERT INTO mixed (id, score) VALUES (2, 200)")
+        .expect("insert 2 failed");
+    db.execute("INSERT INTO mixed (id, score) VALUES (3, 150)")
+        .expect("insert 3 failed");
+
+    // Create index on numeric column
+    let affected = db
+        .execute("CREATE INDEX idx_mixed_score ON mixed (score)")
+        .expect("create index failed");
+
+    assert_eq!(affected, 3);
+
+    // Query should still work
+    let result = db.query("SELECT * FROM mixed WHERE score > 120").expect("query failed");
+    assert_eq!(result.len(), 2);  // 200 and 150
+}

@@ -1894,14 +1894,71 @@ fn execute_create_index<T: Transaction>(
     // Store schema metadata
     SchemaManager::create_index(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
 
-    // Check if this is an HNSW index
+    // Check the index type and build appropriately
     if let Some(using) = &node.using {
-        if using.eq_ignore_ascii_case("hnsw") {
+        let using_lower = using.to_lowercase();
+        if using_lower == "hnsw" {
             build_hnsw_index(tx, node)?;
+            return Ok(0);
+        }
+        // Other index types (btree, hash) fall through to backfill
+    }
+
+    // For BTree/Hash indexes (or no USING clause), backfill existing data
+    let backfilled = backfill_btree_index(tx, node)?;
+    Ok(backfilled)
+}
+
+/// Backfill a BTree index with existing entity data.
+///
+/// This scans all entities with the specified label and creates index entries
+/// for the indexed columns.
+fn backfill_btree_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateIndexNode,
+) -> Result<u64> {
+    use manifoldb_core::index::{IndexId, PropertyIndexEntry};
+
+    // Extract column names from the index definition
+    let column_names: Vec<String> =
+        node.columns.iter().map(|c| extract_column_name_from_expr(&c.expr)).collect();
+
+    if column_names.is_empty() {
+        return Ok(0);
+    }
+
+    // For now, only support single-column indexes for property index backfill
+    if column_names.len() > 1 {
+        // Multi-column indexes are stored in schema but not backfilled to property index
+        // They can be used for query planning but require different storage format
+        return Ok(0);
+    }
+
+    let column_name = &column_names[0];
+    let table_name = &node.table;
+
+    // Create the index ID for this label + property combination
+    let index_id = IndexId::from_label_property(table_name, column_name);
+
+    // Scan all entities with this label and create index entries
+    let entities = tx.iter_entities(Some(table_name)).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let mut count = 0u64;
+    for entity in &entities {
+        // Get the property value for this column
+        if let Some(value) = entity.properties.get(column_name) {
+            // Only index scalar values (not vectors, arrays, etc.)
+            if PropertyIndexEntry::is_indexable(value) {
+                let entry = PropertyIndexEntry::new(index_id, value.clone(), entity.id);
+                if let Some(key) = entry.encode_key() {
+                    tx.put_property_index(&key).map_err(|e| Error::Execution(e.to_string()))?;
+                    count += 1;
+                }
+            }
         }
     }
 
-    Ok(0)
+    Ok(count)
 }
 
 /// Build an HNSW index from the CREATE INDEX node.
@@ -1977,17 +2034,61 @@ fn execute_drop_index<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     node: &DropIndexNode,
 ) -> Result<u64> {
+    let mut total_deleted = 0u64;
+
     for index_name in &node.names {
+        // Get index schema before deleting to know what to clean up
+        let schema = SchemaManager::get_index(tx, index_name)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+
         // Check if this is an HNSW index and drop it
         // Pass if_exists=true since the index might be a non-HNSW index (schema-only)
         crate::vector::drop_index(tx, index_name, true)
             .map_err(|e| Error::Execution(format!("failed to drop vector index: {e}")))?;
 
+        // Clean up property index entries for BTree indexes
+        if let Some(schema) = schema {
+            let is_hnsw = schema.using.as_ref().is_some_and(|u| u.eq_ignore_ascii_case("hnsw"));
+            if !is_hnsw {
+                let deleted = cleanup_btree_index_entries(tx, &schema)?;
+                total_deleted += deleted;
+            }
+        }
+
         // Drop from schema manager
         SchemaManager::drop_index(tx, index_name, node.if_exists)
             .map_err(|e| Error::Execution(e.to_string()))?;
     }
-    Ok(0)
+    Ok(total_deleted)
+}
+
+/// Clean up property index entries for a BTree index.
+fn cleanup_btree_index_entries<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    schema: &crate::schema::IndexSchema,
+) -> Result<u64> {
+    use manifoldb_core::index::{IndexId, PropertyIndexScan};
+
+    // Only handle single-column indexes for now
+    if schema.columns.len() != 1 {
+        return Ok(0);
+    }
+
+    let column_name = &schema.columns[0].expr;
+    let table_name = &schema.table;
+
+    // Create the index ID for this label + property combination
+    let index_id = IndexId::from_label_property(table_name, column_name);
+
+    // Get the range for all entries in this index
+    let (start, end) = PropertyIndexScan::full_index_range(index_id);
+
+    // Delete all entries in the range
+    let deleted = tx
+        .delete_property_index_range(&start, &end)
+        .map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(deleted as u64)
 }
 
 /// Execute a CREATE COLLECTION statement.

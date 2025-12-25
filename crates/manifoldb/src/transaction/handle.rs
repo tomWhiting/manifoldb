@@ -13,6 +13,7 @@ mod tables {
     pub const EDGES_OUT: &str = "edges_out";
     pub const EDGES_IN: &str = "edges_in";
     pub const METADATA: &str = "metadata";
+    pub const PROPERTY_INDEX: &str = "property_index";
 }
 
 /// Metadata keys for counters.
@@ -692,6 +693,89 @@ impl<T: Transaction> DatabaseTransaction<T> {
     pub fn delete_metadata(&mut self, key: &[u8]) -> Result<bool, TransactionError> {
         let storage = self.storage_mut()?;
         storage.delete(tables::METADATA, key).map_err(storage_error_to_tx_error)
+    }
+
+    // ========================================================================
+    // Property Index Operations
+    // ========================================================================
+
+    /// Put a property index entry.
+    ///
+    /// The key should be encoded using `PropertyIndexEntry::encode_key()`.
+    pub fn put_property_index(&mut self, key: &[u8]) -> Result<(), TransactionError> {
+        let storage = self.storage_mut()?;
+        // Property index entries have no value, just the key
+        storage
+            .put(tables::PROPERTY_INDEX, key, &[])
+            .map_err(storage_error_to_tx_error)
+    }
+
+    /// Delete a property index entry.
+    ///
+    /// Returns `true` if the entry existed and was deleted.
+    pub fn delete_property_index(&mut self, key: &[u8]) -> Result<bool, TransactionError> {
+        let storage = self.storage_mut()?;
+        storage
+            .delete(tables::PROPERTY_INDEX, key)
+            .map_err(storage_error_to_tx_error)
+    }
+
+    /// Scan property index entries in a range.
+    ///
+    /// Returns all keys in the range [start, end).
+    pub fn scan_property_index(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Vec<Vec<u8>>, TransactionError> {
+        use std::ops::Bound;
+
+        let storage = self.storage()?;
+
+        // Handle table not existing (no entries yet)
+        let cursor_result = storage.range(
+            tables::PROPERTY_INDEX,
+            Bound::Included(start),
+            Bound::Excluded(end),
+        );
+
+        let mut cursor = match cursor_result {
+            Ok(c) => c,
+            Err(manifoldb_storage::StorageError::TableNotFound(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(storage_error_to_tx_error(e)),
+        };
+
+        let mut keys = Vec::new();
+        while let Some((key, _)) = cursor.next().map_err(storage_error_to_tx_error)? {
+            keys.push(key);
+        }
+
+        Ok(keys)
+    }
+
+    /// Delete all property index entries in a range.
+    ///
+    /// Returns the number of entries deleted.
+    pub fn delete_property_index_range(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<usize, TransactionError> {
+        // First collect all keys in the range
+        let keys = self.scan_property_index(start, end)?;
+        let count = keys.len();
+
+        // Then delete them
+        let storage = self.storage_mut()?;
+        for key in keys {
+            storage
+                .delete(tables::PROPERTY_INDEX, &key)
+                .map_err(storage_error_to_tx_error)?;
+        }
+
+        Ok(count)
     }
 
     // ========================================================================
