@@ -96,7 +96,9 @@ mod point_store;
 mod sparse_store;
 mod vector_store;
 
-pub use collection_vector_store::CollectionVectorStore;
+pub use collection_vector_store::{
+    encode_vector_value, CollectionVectorStore, TABLE_COLLECTION_VECTORS,
+};
 pub use inverted_index::{
     InvertedIndex, InvertedIndexMeta, PostingEntry, PostingList, ScoringFunction, SearchResult,
 };

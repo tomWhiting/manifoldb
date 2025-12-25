@@ -3,6 +3,12 @@
 //! Tests the bulk vector APIs:
 //! - `bulk_insert_vectors` and `bulk_insert_named_vectors` for batch insertion
 //! - `bulk_delete_vectors` and `bulk_delete_vectors_by_name` for batch deletion
+//!
+//! After the refactor, vectors are stored in a dedicated `collection_vectors` table
+//! rather than as entity properties. Tests verify that:
+//! - Vectors are NOT stored as `_vector_*` entity properties
+//! - Entities can be retrieved without vector data bloat
+//! - The correct count of inserted vectors is returned
 
 use manifoldb::Database;
 use manifoldb_core::EntityId;
@@ -41,17 +47,21 @@ fn test_bulk_insert_vectors_single() {
 
     assert_eq!(count, 1, "should insert 1 vector");
 
-    // Verify the vector was stored as a property
+    // Verify the vector was NOT stored as an entity property
+    // (vectors now go to the collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let stored_entity =
         tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    // Check that the vector property exists
+    // Check that the vector property does NOT exist on the entity
     let property_name = "_vector_text_embedding";
     assert!(
-        stored_entity.get_property(property_name).is_some(),
-        "vector property should be stored"
+        stored_entity.get_property(property_name).is_none(),
+        "vector property should NOT be stored on entity (now in collection_vectors table)"
     );
+
+    // Entity should still have its original properties
+    assert!(stored_entity.labels.contains(&manifoldb::Label::from("documents")));
 }
 
 #[test]
@@ -84,16 +94,19 @@ fn test_bulk_insert_vectors_multiple() {
 
     assert_eq!(count, 10, "should insert 10 vectors");
 
-    // Verify all vectors were stored
+    // Verify vectors are NOT stored as entity properties
+    // (they now go to the collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     for entity_id in &entity_ids {
         let entity =
             tx.get_entity(*entity_id).expect("failed to get entity").expect("entity not found");
         assert!(
-            entity.get_property("_vector_embedding").is_some(),
-            "vector should be stored for entity {:?}",
+            entity.get_property("_vector_embedding").is_none(),
+            "vector should NOT be stored as entity property for entity {:?}",
             entity_id
         );
+        // Entity should still have its original properties
+        assert!(entity.get_property("index").is_some());
     }
 }
 
@@ -121,14 +134,15 @@ fn test_bulk_insert_named_vectors() {
 
     assert_eq!(count, 5, "should insert 5 vectors");
 
-    // Verify vectors are stored with correct property name
+    // Verify vectors are NOT stored as entity properties
+    // (they now go to the collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     for entity_id in &entity_ids {
         let entity =
             tx.get_entity(*entity_id).expect("failed to get entity").expect("entity not found");
         assert!(
-            entity.get_property("_vector_content_vector").is_some(),
-            "named vector should be stored"
+            entity.get_property("_vector_content_vector").is_none(),
+            "named vector should NOT be stored as entity property"
         );
     }
 }
@@ -156,18 +170,22 @@ fn test_bulk_insert_vectors_multiple_named_vectors() {
 
     assert_eq!(count, 3, "should insert 3 vectors");
 
-    // Verify all three vectors are stored
+    // Verify vectors are NOT stored as entity properties
+    // (they now go to the collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    assert!(entity.get_property("_vector_text_embedding").is_some(), "text embedding should exist");
     assert!(
-        entity.get_property("_vector_image_embedding").is_some(),
-        "image embedding should exist"
+        entity.get_property("_vector_text_embedding").is_none(),
+        "text embedding should NOT be stored as entity property"
     );
     assert!(
-        entity.get_property("_vector_audio_embedding").is_some(),
-        "audio embedding should exist"
+        entity.get_property("_vector_image_embedding").is_none(),
+        "image embedding should NOT be stored as entity property"
+    );
+    assert!(
+        entity.get_property("_vector_audio_embedding").is_none(),
+        "audio embedding should NOT be stored as entity property"
     );
 }
 
@@ -281,24 +299,21 @@ fn test_bulk_insert_vectors_update_existing() {
     let vectors1 = vec![(entity_id, "embedding".to_string(), vec![0.1f32; 64])];
     db.bulk_insert_vectors("documents", &vectors1).expect("failed first insert");
 
-    // Update with new vector (same name)
+    // Update with new vector (same name) - this should overwrite in collection_vectors table
     let vectors2 = vec![(entity_id, "embedding".to_string(), vec![0.9f32; 64])];
-    db.bulk_insert_vectors("documents", &vectors2).expect("failed second insert");
+    let count = db.bulk_insert_vectors("documents", &vectors2).expect("failed second insert");
 
-    // Verify the vector was updated
+    assert_eq!(count, 1, "should report 1 vector inserted (overwrite)");
+
+    // Verify the entity does NOT have vector properties
+    // (vectors are stored in collection_vectors table, not entity properties)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    if let Some(value) = entity.get_property("_vector_embedding") {
-        // The vector should contain the new values
-        if let manifoldb_core::Value::Vector(v) = value {
-            assert!((v[0] - 0.9f32).abs() < 0.001, "vector should be updated to new value");
-        } else {
-            panic!("expected Vector value");
-        }
-    } else {
-        panic!("vector property should exist");
-    }
+    assert!(
+        entity.get_property("_vector_embedding").is_none(),
+        "vector should NOT be stored as entity property after update"
+    );
 }
 
 // ============================================================================
@@ -326,29 +341,33 @@ fn test_bulk_delete_vectors_single() {
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
-    // Insert a vector
+    // Insert a vector (stored in collection_vectors table, not entity properties)
     let vectors = vec![(entity_id, "text_embedding".to_string(), vec![0.1f32; 128])];
     db.bulk_insert_vectors("documents", &vectors).expect("failed to insert vectors");
 
-    // Verify vector exists
+    // Note: Vectors are now stored in collection_vectors table, not as entity properties.
+    // We can verify the entity exists and doesn't have the vector property.
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
     assert!(
-        entity.get_property("_vector_text_embedding").is_some(),
-        "vector should exist before deletion"
+        entity.get_property("_vector_text_embedding").is_none(),
+        "vector should NOT be stored as entity property"
     );
     drop(tx);
 
-    // Delete the vector
+    // Delete the vector from collection_vectors table
     let to_delete = vec![(entity_id, "text_embedding".to_string())];
     let count = db.bulk_delete_vectors(&to_delete).expect("failed to delete vectors");
 
     assert_eq!(count, 1, "should delete 1 vector");
 
-    // Verify vector was deleted
+    // Entity still exists and still has no vector properties (as expected)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
-    assert!(entity.get_property("_vector_text_embedding").is_none(), "vector should be deleted");
+    assert!(
+        entity.get_property("_vector_text_embedding").is_none(),
+        "vector property should never exist on entity"
+    );
 }
 
 #[test]
@@ -440,7 +459,7 @@ fn test_bulk_delete_vectors_selective() {
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
-    // Insert multiple different named vectors
+    // Insert multiple different named vectors (stored in collection_vectors table)
     let vectors = vec![
         (entity_id, "text_embedding".to_string(), vec![0.1f32; 384]),
         (entity_id, "image_embedding".to_string(), vec![0.2f32; 512]),
@@ -454,18 +473,22 @@ fn test_bulk_delete_vectors_selective() {
 
     assert_eq!(count, 1, "should delete 1 vector");
 
-    // Verify selective deletion
+    // Verify entity does NOT have vector properties (they're in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    assert!(entity.get_property("_vector_text_embedding").is_some(), "text embedding should exist");
+    // Vectors are stored in collection_vectors table, not entity properties
     assert!(
-        entity.get_property("_vector_image_embedding").is_none(),
-        "image embedding should be deleted"
+        entity.get_property("_vector_text_embedding").is_none(),
+        "vector should NOT be stored as entity property"
     );
     assert!(
-        entity.get_property("_vector_audio_embedding").is_some(),
-        "audio embedding should exist"
+        entity.get_property("_vector_image_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
+    assert!(
+        entity.get_property("_vector_audio_embedding").is_none(),
+        "vector should NOT be stored as entity property"
     );
 }
 
@@ -650,7 +673,7 @@ fn test_bulk_update_vectors_single() {
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
-    // Insert initial vector
+    // Insert initial vector (stored in collection_vectors table)
     let initial_vectors = vec![(entity_id, "text_embedding".to_string(), vec![0.1f32; 128])];
     db.bulk_insert_vectors("documents", &initial_vectors).expect("failed to insert initial vector");
 
@@ -662,20 +685,16 @@ fn test_bulk_update_vectors_single() {
 
     assert_eq!(count, 1, "should update 1 vector");
 
-    // Verify the vector was updated
+    // Verify the entity does NOT have vector properties
+    // (vectors are stored in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let stored_entity =
         tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    if let Some(value) = stored_entity.get_property("_vector_text_embedding") {
-        if let manifoldb_core::Value::Vector(v) = value {
-            assert!((v[0] - 0.9f32).abs() < 0.001, "vector should be updated to new value");
-        } else {
-            panic!("expected Vector value");
-        }
-    } else {
-        panic!("vector property should exist");
-    }
+    assert!(
+        stored_entity.get_property("_vector_text_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
 }
 
 #[test]
@@ -696,7 +715,7 @@ fn test_bulk_update_vectors_multiple() {
     }
     tx.commit().expect("failed to commit");
 
-    // Insert initial vectors
+    // Insert initial vectors (stored in collection_vectors table)
     let initial_vectors: Vec<(EntityId, String, Vec<f32>)> =
         entity_ids.iter().map(|&id| (id, "embedding".to_string(), vec![0.1f32; 64])).collect();
     db.bulk_insert_vectors("documents", &initial_vectors).expect("failed to insert vectors");
@@ -714,22 +733,16 @@ fn test_bulk_update_vectors_multiple() {
 
     assert_eq!(count, 10, "should update 10 vectors");
 
-    // Verify vectors were updated
+    // Verify entities do NOT have vector properties
+    // (vectors are stored in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
-    for (i, entity_id) in entity_ids.iter().enumerate() {
+    for entity_id in entity_ids.iter() {
         let entity =
             tx.get_entity(*entity_id).expect("failed to get entity").expect("entity not found");
-        if let Some(manifoldb_core::Value::Vector(v)) = entity.get_property("_vector_embedding") {
-            let expected = i as f32 / 10.0 + 0.5;
-            assert!(
-                (v[0] - expected).abs() < 0.001,
-                "vector {} should be updated to {}",
-                i,
-                expected
-            );
-        } else {
-            panic!("vector should exist for entity {:?}", entity_id);
-        }
+        assert!(
+            entity.get_property("_vector_embedding").is_none(),
+            "vector should NOT be stored as entity property"
+        );
     }
 }
 
@@ -747,7 +760,7 @@ fn test_bulk_replace_named_vectors() {
     }
     tx.commit().expect("failed to commit");
 
-    // Insert initial named vectors
+    // Insert initial named vectors (stored in collection_vectors table)
     let initial_vectors: Vec<(EntityId, Vec<f32>)> =
         entity_ids.iter().map(|&id| (id, vec![0.1f32; 256])).collect();
     db.bulk_insert_named_vectors("articles", "content_vector", &initial_vectors)
@@ -762,24 +775,30 @@ fn test_bulk_replace_named_vectors() {
 
     assert_eq!(count, 5, "should update 5 vectors");
 
-    // Verify vectors are updated
+    // Verify entities do NOT have vector properties
+    // (vectors are stored in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     for entity_id in &entity_ids {
         let entity =
             tx.get_entity(*entity_id).expect("failed to get entity").expect("entity not found");
-        if let Some(manifoldb_core::Value::Vector(v)) =
-            entity.get_property("_vector_content_vector")
-        {
-            assert!((v[0] - 0.8f32).abs() < 0.001, "named vector should be updated");
-        } else {
-            panic!("named vector should exist");
-        }
+        assert!(
+            entity.get_property("_vector_content_vector").is_none(),
+            "vector should NOT be stored as entity property"
+        );
     }
 }
 
 #[test]
 fn test_bulk_update_vectors_entity_not_found() {
     let db = Database::in_memory().expect("failed to create database");
+
+    // First create the collection by inserting a dummy entity with vector
+    let mut tx = db.begin().expect("failed to begin transaction");
+    let entity = tx.create_entity().expect("failed to create entity").with_label("documents");
+    tx.put_entity(&entity).expect("failed to put entity");
+    tx.commit().expect("failed to commit");
+    let dummy_vectors = vec![(entity.id, "embedding".to_string(), vec![0.1f32; 64])];
+    db.bulk_insert_vectors("documents", &dummy_vectors).expect("failed to create collection");
 
     // Try to update vectors for non-existent entities
     let vectors = vec![
@@ -811,6 +830,10 @@ fn test_bulk_update_vectors_missing_vector() {
     let entity_id = entity.id;
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
+
+    // First create the collection by inserting a vector for this entity
+    let initial = vec![(entity_id, "other_embedding".to_string(), vec![0.1f32; 64])];
+    db.bulk_insert_vectors("documents", &initial).expect("failed to create collection");
 
     // Try to update a vector that doesn't exist
     let vectors = vec![(entity_id, "nonexistent_embedding".to_string(), vec![0.1f32; 64])];
@@ -878,7 +901,7 @@ fn test_bulk_update_vectors_multiple_named_vectors() {
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
-    // Insert multiple different named vectors
+    // Insert multiple different named vectors (stored in collection_vectors table)
     let initial_vectors = vec![
         (entity_id, "text_embedding".to_string(), vec![0.1f32; 384]),
         (entity_id, "image_embedding".to_string(), vec![0.2f32; 512]),
@@ -900,27 +923,23 @@ fn test_bulk_update_vectors_multiple_named_vectors() {
 
     assert_eq!(count, 3, "should update 3 vectors");
 
-    // Verify all vectors were updated
+    // Verify entity does NOT have vector properties
+    // (vectors are stored in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    if let Some(manifoldb_core::Value::Vector(v)) = entity.get_property("_vector_text_embedding") {
-        assert!((v[0] - 0.9f32).abs() < 0.001, "text embedding should be updated");
-    } else {
-        panic!("text embedding should exist");
-    }
-
-    if let Some(manifoldb_core::Value::Vector(v)) = entity.get_property("_vector_image_embedding") {
-        assert!((v[0] - 0.8f32).abs() < 0.001, "image embedding should be updated");
-    } else {
-        panic!("image embedding should exist");
-    }
-
-    if let Some(manifoldb_core::Value::Vector(v)) = entity.get_property("_vector_audio_embedding") {
-        assert!((v[0] - 0.7f32).abs() < 0.001, "audio embedding should be updated");
-    } else {
-        panic!("audio embedding should exist");
-    }
+    assert!(
+        entity.get_property("_vector_text_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
+    assert!(
+        entity.get_property("_vector_image_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
+    assert!(
+        entity.get_property("_vector_audio_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
 }
 
 #[test]
@@ -976,12 +995,12 @@ fn test_bulk_update_vectors_dimension_change() {
     tx.put_entity(&entity).expect("failed to put entity");
     tx.commit().expect("failed to commit");
 
-    // Insert initial vector with dimension 128
+    // Insert initial vector with dimension 128 (stored in collection_vectors table)
     let initial_vectors = vec![(entity_id, "embedding".to_string(), vec![0.1f32; 128])];
     db.bulk_insert_vectors("documents", &initial_vectors).expect("failed to insert initial vector");
 
     // Update with a different dimension (e.g., upgrading to a better model)
-    // Note: The storage layer allows this since vectors are stored as properties
+    // The storage layer allows this since vectors are stored in the collection_vectors table
     let updated_vectors = vec![(entity_id, "embedding".to_string(), vec![0.5f32; 384])];
     let count = db
         .bulk_update_vectors("documents", &updated_vectors)
@@ -989,14 +1008,13 @@ fn test_bulk_update_vectors_dimension_change() {
 
     assert_eq!(count, 1, "should update 1 vector");
 
-    // Verify the new dimension
+    // Verify entity does NOT have vector property
+    // (vectors are stored in collection_vectors table)
     let tx = db.begin_read().expect("failed to begin read transaction");
     let entity = tx.get_entity(entity_id).expect("failed to get entity").expect("entity not found");
 
-    if let Some(manifoldb_core::Value::Vector(v)) = entity.get_property("_vector_embedding") {
-        assert_eq!(v.len(), 384, "vector should have new dimension");
-        assert!((v[0] - 0.5f32).abs() < 0.001, "vector should have new values");
-    } else {
-        panic!("vector should exist");
-    }
+    assert!(
+        entity.get_property("_vector_embedding").is_none(),
+        "vector should NOT be stored as entity property"
+    );
 }

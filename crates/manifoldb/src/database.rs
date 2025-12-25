@@ -1314,15 +1314,25 @@ impl Database {
     /// - Target: 100K+ vectors/second for typical workloads
     pub fn bulk_insert_vectors(
         &self,
-        _collection_name: &str,
+        collection_name: &str,
         vectors: &[(manifoldb_core::EntityId, String, Vec<f32>)],
     ) -> Result<usize> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_vector::{
+            encode_vector_value, encoding::encode_collection_vector_key, VectorData,
+            TABLE_COLLECTION_VECTORS,
+        };
+
         if vectors.is_empty() {
             return Ok(0);
         }
 
         let start = std::time::Instant::now();
         let count = vectors.len();
+
+        // Parse and validate collection name
+        let coll_name = CollectionName::new(collection_name)
+            .map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         // Phase 1: Validate all entities exist
         {
@@ -1334,26 +1344,40 @@ impl Database {
             }
         }
 
-        // Phase 2: Store vectors using a write transaction
-        // We store vectors as entity properties with a dedicated vector property format
+        // Phase 2: Store vectors in the CollectionVectorStore
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
 
-        // Store each vector as an entity property
-        // The property name format is: _vector_{vector_name}
-        for (entity_id, vector_name, data) in vectors {
-            // Get the existing entity
-            let mut entity =
-                tx.get_entity(*entity_id)?.ok_or_else(|| Error::EntityNotFound(*entity_id))?;
+        // Get or create collection ID
+        let collection_id = match CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| Error::Collection(e.to_string()))?
+        {
+            Some(collection) => collection.id(),
+            None => {
+                // Create collection on first use with no vector configs
+                // (vector configs can be added later if needed for schema validation)
+                let collection = CollectionManager::create(&mut tx, &coll_name, std::iter::empty())
+                    .map_err(|e| Error::Collection(e.to_string()))?;
+                collection.id()
+            }
+        };
 
-            // Store the vector as a property
-            // Note: Property name is prefixed to distinguish vector properties
-            let property_name = format!("_vector_{}", vector_name);
-            let vector_value = manifoldb_core::Value::from(data.clone());
-            entity = entity.with_property(&property_name, vector_value);
+        // Store each vector in the collection_vectors table
+        {
+            let storage = tx.storage_mut().map_err(Error::Transaction)?;
+            for (entity_id, vector_name, data) in vectors {
+                // Convert Vec<f32> to VectorData::Dense
+                let vector_data = VectorData::Dense(data.clone());
 
-            // Update the entity
-            tx.put_entity(&entity).map_err(Error::Transaction)?;
+                // Encode key and value
+                let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
+                let value = encode_vector_value(&vector_data, vector_name);
+
+                // Store in the collection_vectors table
+                storage
+                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
+                    .map_err(Error::Storage)?;
+            }
         }
 
         // Commit the transaction
@@ -1464,6 +1488,9 @@ impl Database {
         &self,
         vectors: &[(manifoldb_core::EntityId, String)],
     ) -> Result<usize> {
+        use crate::collection::CollectionManager;
+        use manifoldb_vector::{encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
+
         if vectors.is_empty() {
             return Ok(0);
         }
@@ -1480,24 +1507,48 @@ impl Database {
             }
         }
 
-        // Phase 2: Delete vectors using a write transaction
+        // Phase 2: Delete vectors from all collections
+        // Since we don't know which collection the vector belongs to, we need to check all
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
 
         let mut deleted_count = 0;
 
-        for (entity_id, vector_name) in vectors {
-            // Get the existing entity
-            let mut entity =
-                tx.get_entity(*entity_id)?.ok_or_else(|| Error::EntityNotFound(*entity_id))?;
+        // Get all collection IDs by listing collection names and looking them up
+        let collection_ids: Vec<_> = {
+            let names = CollectionManager::list(&tx)
+                .map_err(|e| Error::Collection(e.to_string()))?;
+            let mut ids = Vec::new();
+            for name in names {
+                if let Some(collection) = CollectionManager::get(&tx, &name)
+                    .map_err(|e| Error::Collection(e.to_string()))?
+                {
+                    ids.push(collection.id());
+                }
+            }
+            ids
+        };
 
-            // Check if the vector property exists and remove it
-            let property_name = format!("_vector_{}", vector_name);
-            if entity.properties.remove(&property_name).is_some() {
-                deleted_count += 1;
+        {
+            let storage = tx.storage_mut().map_err(Error::Transaction)?;
 
-                // Update the entity
-                tx.put_entity(&entity).map_err(Error::Transaction)?;
+            for (entity_id, vector_name) in vectors {
+                // Try to delete from each collection
+                for &collection_id in &collection_ids {
+                    let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
+                    // Check if key exists and delete it
+                    if storage
+                        .get(TABLE_COLLECTION_VECTORS, &key)
+                        .map_err(Error::Storage)?
+                        .is_some()
+                    {
+                        storage
+                            .delete(TABLE_COLLECTION_VECTORS, &key)
+                            .map_err(Error::Storage)?;
+                        deleted_count += 1;
+                        break; // Found and deleted, no need to check other collections
+                    }
+                }
             }
         }
 
@@ -1608,9 +1659,15 @@ impl Database {
     /// - Target: 100K+ vectors/second for typical workloads
     pub fn bulk_update_vectors(
         &self,
-        _collection_name: &str,
+        collection_name: &str,
         vectors: &[(manifoldb_core::EntityId, String, Vec<f32>)],
     ) -> Result<usize> {
+        use crate::collection::{CollectionManager, CollectionName};
+        use manifoldb_vector::{
+            encode_vector_value, encoding::encode_collection_vector_key, VectorData,
+            TABLE_COLLECTION_VECTORS,
+        };
+
         if vectors.is_empty() {
             return Ok(0);
         }
@@ -1618,16 +1675,37 @@ impl Database {
         let start = std::time::Instant::now();
         let count = vectors.len();
 
-        // Phase 1: Validate all entities exist AND have vectors with the specified names
+        // Parse and validate collection name
+        let coll_name = CollectionName::new(collection_name)
+            .map_err(|e| Error::InvalidInput(e.to_string()))?;
+
+        // Phase 1: Validate all entities exist AND have vectors with the specified names in the collection
         {
             let tx = self.begin_read()?;
-            for (entity_id, vector_name, _) in vectors {
-                let entity =
-                    tx.get_entity(*entity_id)?.ok_or_else(|| Error::EntityNotFound(*entity_id))?;
 
-                // Check that the vector property exists
-                let property_name = format!("_vector_{}", vector_name);
-                if entity.get_property(&property_name).is_none() {
+            // Get collection - must exist for update
+            let collection = CollectionManager::get(&tx, &coll_name)
+                .map_err(|e| Error::Collection(e.to_string()))?
+                .ok_or_else(|| {
+                    Error::Collection(format!("Collection '{}' not found", collection_name))
+                })?;
+            let collection_id = collection.id();
+
+            let storage = tx.storage_ref().map_err(Error::Transaction)?;
+
+            for (entity_id, vector_name, _) in vectors {
+                // Entity must exist
+                if tx.get_entity(*entity_id)?.is_none() {
+                    return Err(Error::EntityNotFound(*entity_id));
+                }
+
+                // Check that the vector exists in collection_vectors table
+                let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
+                if storage
+                    .get(TABLE_COLLECTION_VECTORS, &key)
+                    .map_err(Error::Storage)?
+                    .is_none()
+                {
                     return Err(Error::Vector(format!(
                         "Entity {} does not have vector '{}' to update",
                         entity_id, vector_name
@@ -1636,23 +1714,34 @@ impl Database {
             }
         }
 
-        // Phase 2: Update vectors using a write transaction
+        // Phase 2: Update vectors in the collection_vectors table
         let mut tx = self.begin()?;
         self.db_metrics.transactions.record_start();
 
-        // Update each vector as an entity property
-        for (entity_id, vector_name, data) in vectors {
-            // Get the existing entity
-            let mut entity =
-                tx.get_entity(*entity_id)?.ok_or_else(|| Error::EntityNotFound(*entity_id))?;
+        // Get collection ID again in write transaction
+        let collection_id = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| Error::Collection(e.to_string()))?
+            .map(|c| c.id())
+            .ok_or_else(|| {
+                Error::Collection(format!("Collection '{}' not found", collection_name))
+            })?;
 
-            // Update the vector property
-            let property_name = format!("_vector_{}", vector_name);
-            let vector_value = manifoldb_core::Value::from(data.clone());
-            entity = entity.with_property(&property_name, vector_value);
+        {
+            let storage = tx.storage_mut().map_err(Error::Transaction)?;
 
-            // Update the entity
-            tx.put_entity(&entity).map_err(Error::Transaction)?;
+            for (entity_id, vector_name, data) in vectors {
+                // Convert Vec<f32> to VectorData::Dense
+                let vector_data = VectorData::Dense(data.clone());
+
+                // Encode key and value
+                let key = encode_collection_vector_key(collection_id, *entity_id, vector_name);
+                let value = encode_vector_value(&vector_data, vector_name);
+
+                // Store in the collection_vectors table (overwrites existing)
+                storage
+                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
+                    .map_err(Error::Storage)?;
+            }
         }
 
         // Commit the transaction

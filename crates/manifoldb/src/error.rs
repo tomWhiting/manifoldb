@@ -76,6 +76,14 @@ pub enum Error {
         /// Actual dimension provided.
         actual: usize,
     },
+
+    /// Invalid input provided.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
+    /// A collection error occurred.
+    #[error("collection error: {0}")]
+    Collection(String),
 }
 
 impl Error {

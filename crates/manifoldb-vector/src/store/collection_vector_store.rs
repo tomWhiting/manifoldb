@@ -37,8 +37,6 @@ use crate::encoding::{encode_collection_vector_key, encode_entity_vector_prefix,
 use crate::error::VectorError;
 use crate::types::VectorData;
 
-/// Table name for collection vectors.
-const TABLE_COLLECTION_VECTORS: &str = "collection_vectors";
 
 /// Version byte for vector storage format.
 const VECTOR_FORMAT_VERSION: u8 = 1;
@@ -355,6 +353,9 @@ impl<E: StorageEngine> CollectionVectorStore<E> {
 
 // Value encoding functions
 
+/// Table name for collection vectors.
+pub const TABLE_COLLECTION_VECTORS: &str = "collection_vectors";
+
 /// Encode a vector value for storage.
 ///
 /// Format:
@@ -365,7 +366,7 @@ impl<E: StorageEngine> CollectionVectorStore<E> {
 /// - `[vector_name: variable]` (UTF-8 encoded name for reverse lookup)
 /// - `[data_len: 4 bytes]`
 /// - `[data: variable]`
-fn encode_vector_value(data: &VectorData, vector_name: &str) -> Vec<u8> {
+pub fn encode_vector_value(data: &VectorData, vector_name: &str) -> Vec<u8> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -120,8 +120,17 @@ impl<T: Transaction> DatabaseTransaction<T> {
         self.storage()
     }
 
-    /// Get a mutable reference to the storage transaction.
-    fn storage_mut(&mut self) -> Result<&mut T, TransactionError> {
+    /// Get a mutable reference to the underlying storage transaction for direct access.
+    ///
+    /// This is useful for operations that need low-level access to the storage layer,
+    /// such as storing vectors in dedicated tables separate from entity properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The transaction is read-only
+    /// - The transaction has already been committed or rolled back
+    pub fn storage_mut(&mut self) -> Result<&mut T, TransactionError> {
         if self.read_only {
             return Err(TransactionError::ReadOnly);
         }
