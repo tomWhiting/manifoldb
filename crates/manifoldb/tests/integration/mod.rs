@@ -12,6 +12,7 @@ pub mod ddl;
 pub mod e2e;
 pub mod graph;
 pub mod index_maintenance;
+pub mod index_query;
 pub mod prepared;
 pub mod recovery;
 pub mod scale;

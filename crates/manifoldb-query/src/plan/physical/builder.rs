@@ -14,13 +14,15 @@ use super::cost::{Cost, CostModel};
 use super::node::{
     BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, GraphPathScanExecNode,
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
-    HybridSearchNode as PhysicalHybridSearchNode, JoinOrder, LimitExecNode, NestedLoopJoinNode,
-    PhysicalPlan, PhysicalScoreCombinationMethod, ProjectExecNode, SortExecNode,
+    HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
+    LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
+    ProjectExecNode, SortExecNode,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
     LogicalPlan, PathScanNode, ScanNode, ScoreCombinationMethod,
 };
+use crate::plan::optimize::{AccessType, IndexCandidate, IndexSelector};
 
 /// Physical query planner.
 ///
@@ -386,8 +388,16 @@ impl PhysicalPlanner {
 
     fn plan_scan(&self, node: &ScanNode) -> PhysicalPlan {
         let row_count = self.catalog.get_row_count(&node.table_name);
-        let cost = self.cost_model.full_scan_cost(row_count);
 
+        // Try to use an index if there's a filter predicate
+        if let Some(filter) = &node.filter {
+            if let Some(plan) = self.try_index_scan(node, filter, row_count) {
+                return plan;
+            }
+        }
+
+        // Fall back to full table scan
+        let cost = self.cost_model.full_scan_cost(row_count);
         let mut scan = FullScanNode::new(&node.table_name).with_cost(cost);
 
         if let Some(alias) = &node.alias {
@@ -403,6 +413,358 @@ impl PhysicalPlanner {
         }
 
         PhysicalPlan::FullScan(Box::new(scan))
+    }
+
+    /// Tries to create an index scan plan for the given filter predicate.
+    ///
+    /// Returns `Some(PhysicalPlan)` if an index can be used, `None` otherwise.
+    fn try_index_scan(
+        &self,
+        node: &ScanNode,
+        filter: &LogicalExpr,
+        row_count: usize,
+    ) -> Option<PhysicalPlan> {
+        // Use IndexSelector to find index candidates
+        let selector = IndexSelector::new();
+        let candidates = selector.find_index_candidates(filter);
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Find the best candidate that has an available index
+        let mut best_plan: Option<(Cost, PhysicalPlan)> = None;
+
+        for candidate in &candidates {
+            // Check if we have an index for this column
+            if let Some(index_info) =
+                self.catalog.find_btree_index(&node.table_name, &candidate.column)
+            {
+                // Calculate index scan cost
+                let (plan, index_cost) =
+                    self.build_index_plan(node, filter, candidate, &index_info.name, row_count);
+
+                // Compare with current best
+                if let Some((ref current_cost, _)) = best_plan {
+                    if index_cost.is_less_than(current_cost) {
+                        best_plan = Some((index_cost, plan));
+                    }
+                } else {
+                    best_plan = Some((index_cost, plan));
+                }
+            }
+        }
+
+        // Compare index plan cost with full scan cost
+        if let Some((index_cost, plan)) = best_plan {
+            let full_scan_cost = self.cost_model.full_scan_cost(row_count);
+            if index_cost.is_less_than(&full_scan_cost) {
+                return Some(plan);
+            }
+        }
+
+        None
+    }
+
+    /// Builds an index scan plan for the given candidate.
+    fn build_index_plan(
+        &self,
+        node: &ScanNode,
+        filter: &LogicalExpr,
+        candidate: &IndexCandidate,
+        index_name: &str,
+        row_count: usize,
+    ) -> (PhysicalPlan, Cost) {
+        match candidate.access_type {
+            AccessType::PointLookup => {
+                self.build_point_lookup_plan(node, filter, candidate, index_name, row_count)
+            }
+            AccessType::RangeScan | AccessType::RangeScanGt | AccessType::RangeScanLt => {
+                self.build_range_scan_plan(node, filter, candidate, index_name, row_count)
+            }
+            AccessType::InList => {
+                // IN lists are handled as multiple point lookups; for now fall back to range
+                self.build_range_scan_plan(node, filter, candidate, index_name, row_count)
+            }
+            AccessType::PrefixScan => {
+                // Prefix scans are handled as range scans
+                self.build_range_scan_plan(node, filter, candidate, index_name, row_count)
+            }
+        }
+    }
+
+    /// Builds a point lookup (equality) index scan plan.
+    fn build_point_lookup_plan(
+        &self,
+        node: &ScanNode,
+        filter: &LogicalExpr,
+        candidate: &IndexCandidate,
+        index_name: &str,
+        row_count: usize,
+    ) -> (PhysicalPlan, Cost) {
+        // Extract the lookup value from the filter predicate
+        let key_value = self.extract_equality_value(filter, &candidate.column);
+
+        // Estimate result count (usually 1 for unique, small for non-unique)
+        let result_count = (row_count as f64 * candidate.selectivity).ceil() as usize;
+        let cost = self.cost_model.index_lookup_cost(result_count.max(1));
+
+        let mut scan_node = IndexScanNode::new(
+            &node.table_name,
+            index_name,
+            vec![candidate.column.clone()],
+            vec![key_value.unwrap_or_else(|| LogicalExpr::null())],
+        )
+        .with_cost(cost);
+
+        if let Some(proj) = &node.projection {
+            scan_node = scan_node.with_projection(proj.clone());
+        }
+
+        // Check if there are residual predicates not covered by the index
+        let residual = self.extract_residual_predicate(filter, &candidate.column);
+
+        let plan = if let Some(residual_pred) = residual {
+            // Need to apply residual filter on top of index scan
+            let filter_cost = self.cost_model.filter_cost(result_count, 0.5);
+            PhysicalPlan::Filter {
+                node: FilterExecNode::new(residual_pred).with_cost(filter_cost),
+                input: Box::new(PhysicalPlan::IndexScan(Box::new(scan_node))),
+            }
+        } else {
+            PhysicalPlan::IndexScan(Box::new(scan_node))
+        };
+
+        (plan, cost)
+    }
+
+    /// Builds a range scan index plan.
+    fn build_range_scan_plan(
+        &self,
+        node: &ScanNode,
+        filter: &LogicalExpr,
+        candidate: &IndexCandidate,
+        index_name: &str,
+        row_count: usize,
+    ) -> (PhysicalPlan, Cost) {
+        // Extract bounds from the filter predicate
+        let (lower_bound, lower_inclusive, upper_bound, upper_inclusive) =
+            self.extract_range_bounds(filter, &candidate.column);
+
+        let cost = self.cost_model.index_range_cost(row_count, candidate.selectivity);
+        let result_count = (row_count as f64 * candidate.selectivity).ceil() as usize;
+
+        let scan_node = IndexRangeScanNode {
+            table_name: node.table_name.clone(),
+            index_name: index_name.to_string(),
+            key_column: candidate.column.clone(),
+            lower_bound,
+            lower_inclusive,
+            upper_bound,
+            upper_inclusive,
+            projection: node.projection.clone(),
+            cost,
+        };
+
+        // Check if there are residual predicates
+        let residual = self.extract_residual_predicate(filter, &candidate.column);
+
+        let plan = if let Some(residual_pred) = residual {
+            let filter_cost = self.cost_model.filter_cost(result_count, 0.5);
+            PhysicalPlan::Filter {
+                node: FilterExecNode::new(residual_pred).with_cost(filter_cost),
+                input: Box::new(PhysicalPlan::IndexRangeScan(Box::new(scan_node))),
+            }
+        } else {
+            PhysicalPlan::IndexRangeScan(Box::new(scan_node))
+        };
+
+        (plan, cost)
+    }
+
+    /// Extracts the equality value from a filter predicate for a specific column.
+    fn extract_equality_value(&self, filter: &LogicalExpr, column: &str) -> Option<LogicalExpr> {
+        match filter {
+            LogicalExpr::BinaryOp { left, op: crate::ast::BinaryOp::Eq, right } => {
+                // column = value
+                if self.is_column(left, column) {
+                    return Some(*right.clone());
+                }
+                // value = column
+                if self.is_column(right, column) {
+                    return Some(*left.clone());
+                }
+                None
+            }
+            LogicalExpr::BinaryOp { left, op: crate::ast::BinaryOp::And, right } => {
+                // Try both sides of AND
+                self.extract_equality_value(left, column)
+                    .or_else(|| self.extract_equality_value(right, column))
+            }
+            _ => None,
+        }
+    }
+
+    /// Extracts range bounds from a filter predicate.
+    fn extract_range_bounds(
+        &self,
+        filter: &LogicalExpr,
+        column: &str,
+    ) -> (Option<LogicalExpr>, bool, Option<LogicalExpr>, bool) {
+        let mut lower_bound = None;
+        let mut lower_inclusive = false;
+        let mut upper_bound = None;
+        let mut upper_inclusive = false;
+
+        self.collect_range_bounds(
+            filter,
+            column,
+            &mut lower_bound,
+            &mut lower_inclusive,
+            &mut upper_bound,
+            &mut upper_inclusive,
+        );
+
+        (lower_bound, lower_inclusive, upper_bound, upper_inclusive)
+    }
+
+    fn collect_range_bounds(
+        &self,
+        filter: &LogicalExpr,
+        column: &str,
+        lower_bound: &mut Option<LogicalExpr>,
+        lower_inclusive: &mut bool,
+        upper_bound: &mut Option<LogicalExpr>,
+        upper_inclusive: &mut bool,
+    ) {
+        match filter {
+            LogicalExpr::BinaryOp { left, op, right } => {
+                match op {
+                    crate::ast::BinaryOp::Gt => {
+                        if self.is_column(left, column) {
+                            *lower_bound = Some(*right.clone());
+                            *lower_inclusive = false;
+                        } else if self.is_column(right, column) {
+                            *upper_bound = Some(*left.clone());
+                            *upper_inclusive = false;
+                        }
+                    }
+                    crate::ast::BinaryOp::GtEq => {
+                        if self.is_column(left, column) {
+                            *lower_bound = Some(*right.clone());
+                            *lower_inclusive = true;
+                        } else if self.is_column(right, column) {
+                            *upper_bound = Some(*left.clone());
+                            *upper_inclusive = true;
+                        }
+                    }
+                    crate::ast::BinaryOp::Lt => {
+                        if self.is_column(left, column) {
+                            *upper_bound = Some(*right.clone());
+                            *upper_inclusive = false;
+                        } else if self.is_column(right, column) {
+                            *lower_bound = Some(*left.clone());
+                            *lower_inclusive = false;
+                        }
+                    }
+                    crate::ast::BinaryOp::LtEq => {
+                        if self.is_column(left, column) {
+                            *upper_bound = Some(*right.clone());
+                            *upper_inclusive = true;
+                        } else if self.is_column(right, column) {
+                            *lower_bound = Some(*left.clone());
+                            *lower_inclusive = true;
+                        }
+                    }
+                    crate::ast::BinaryOp::And => {
+                        // Recurse into both sides
+                        self.collect_range_bounds(
+                            left,
+                            column,
+                            lower_bound,
+                            lower_inclusive,
+                            upper_bound,
+                            upper_inclusive,
+                        );
+                        self.collect_range_bounds(
+                            right,
+                            column,
+                            lower_bound,
+                            lower_inclusive,
+                            upper_bound,
+                            upper_inclusive,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            LogicalExpr::Between { expr, low, high, negated } if !negated => {
+                if self.is_column(expr, column) {
+                    *lower_bound = Some(*low.clone());
+                    *lower_inclusive = true;
+                    *upper_bound = Some(*high.clone());
+                    *upper_inclusive = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Checks if an expression is a reference to the specified column.
+    fn is_column(&self, expr: &LogicalExpr, column: &str) -> bool {
+        match expr {
+            LogicalExpr::Column { name, .. } => name == column,
+            _ => false,
+        }
+    }
+
+    /// Extracts predicates that are not covered by the index lookup.
+    fn extract_residual_predicate(
+        &self,
+        filter: &LogicalExpr,
+        indexed_column: &str,
+    ) -> Option<LogicalExpr> {
+        match filter {
+            LogicalExpr::BinaryOp { left, op: crate::ast::BinaryOp::And, right } => {
+                let left_residual = self.extract_residual_predicate(left, indexed_column);
+                let right_residual = self.extract_residual_predicate(right, indexed_column);
+
+                match (left_residual, right_residual) {
+                    (Some(l), Some(r)) => Some(l.and(r)),
+                    (Some(l), None) => Some(l),
+                    (None, Some(r)) => Some(r),
+                    (None, None) => None,
+                }
+            }
+            LogicalExpr::BinaryOp { left, op, right } => {
+                // Check if this predicate uses the indexed column
+                let uses_indexed =
+                    self.is_column(left, indexed_column) || self.is_column(right, indexed_column);
+
+                if uses_indexed {
+                    // This predicate is handled by the index
+                    match op {
+                        crate::ast::BinaryOp::Eq
+                        | crate::ast::BinaryOp::Lt
+                        | crate::ast::BinaryOp::LtEq
+                        | crate::ast::BinaryOp::Gt
+                        | crate::ast::BinaryOp::GtEq => None,
+                        _ => Some(filter.clone()), // Other ops need residual check
+                    }
+                } else {
+                    // This predicate is not covered by the index
+                    Some(filter.clone())
+                }
+            }
+            LogicalExpr::Between { expr, negated, .. } if !negated => {
+                if self.is_column(expr, indexed_column) {
+                    None // BETWEEN is handled by index
+                } else {
+                    Some(filter.clone())
+                }
+            }
+            _ => Some(filter.clone()), // Unknown predicates need residual check
+        }
     }
 
     fn plan_values(&self, node: &crate::plan::logical::ValuesNode) -> PhysicalPlan {

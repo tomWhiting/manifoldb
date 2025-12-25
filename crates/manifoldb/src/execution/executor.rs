@@ -183,17 +183,111 @@ fn create_context_with_limit(params: &[Value], max_rows_in_memory: usize) -> Exe
     ExecutionContext::with_parameters(param_map).with_config(config)
 }
 
+/// Try to execute a query using the physical plan's index scans.
+///
+/// Returns `Ok(Some(result))` if the physical plan contains index scans that were used,
+/// or `Ok(None)` to fall back to logical plan execution.
+fn try_execute_from_physical<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    physical: &PhysicalPlan,
+    logical: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<Option<ResultSet>> {
+    use super::index_scan::{execute_index_range_scan, execute_index_scan};
+
+    // Check if the physical plan uses index scans
+    match physical {
+        PhysicalPlan::IndexScan(scan_node) => {
+            // Execute the index scan
+            let entities = execute_index_scan(tx, scan_node, ctx)?;
+            let columns = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, columns);
+            let schema = scan.schema();
+            let rows = scan.collect_rows();
+            Ok(Some(ResultSet::with_rows(schema, rows)))
+        }
+
+        PhysicalPlan::IndexRangeScan(scan_node) => {
+            // Execute the range scan
+            let entities = execute_index_range_scan(tx, scan_node, ctx)?;
+            let columns = collect_all_columns(&entities);
+            let scan = StorageScan::new(entities, columns);
+            let schema = scan.schema();
+            let rows = scan.collect_rows();
+            Ok(Some(ResultSet::with_rows(schema, rows)))
+        }
+
+        PhysicalPlan::Filter { node, input } => {
+            // Check if the input is an index scan
+            if let Some(result) = try_execute_from_physical(tx, input, logical, ctx)? {
+                // Apply the filter to the result
+                let schema = result.schema_arc();
+                let filtered_rows: Vec<Row> = result
+                    .into_rows()
+                    .into_iter()
+                    .filter(|row| {
+                        let val = evaluate_row_expr(&node.predicate, row);
+                        matches!(val, Value::Bool(true))
+                    })
+                    .collect();
+                return Ok(Some(ResultSet::with_rows(schema, filtered_rows)));
+            }
+            Ok(None)
+        }
+
+        PhysicalPlan::Project { node, input } => {
+            // Check if the input is an index scan
+            if let Some(result) = try_execute_from_physical(tx, input, logical, ctx)? {
+                // Apply the projection
+                let has_wildcard = node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+
+                if has_wildcard {
+                    return Ok(Some(result));
+                }
+
+                let projected_columns: Vec<String> =
+                    node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+                let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+                let result_schema = result.schema_arc();
+
+                let rows: Vec<Row> = result
+                    .rows()
+                    .iter()
+                    .map(|row| {
+                        let values: Vec<Value> = node
+                            .exprs
+                            .iter()
+                            .map(|expr| evaluate_expr_on_row(expr, row, &result_schema, ctx))
+                            .collect();
+                        Row::new(Arc::clone(&new_schema), values)
+                    })
+                    .collect();
+
+                return Ok(Some(ResultSet::with_rows(new_schema, rows)));
+            }
+            Ok(None)
+        }
+
+        _ => {
+            // No index scan in this plan - fall back to logical execution
+            Ok(None)
+        }
+    }
+}
+
 /// Execute a physical plan and return the result set.
 fn execute_physical_plan<T: Transaction>(
     tx: &DatabaseTransaction<T>,
-    _physical: &PhysicalPlan,
+    physical: &PhysicalPlan,
     logical: &LogicalPlan,
     ctx: &ExecutionContext,
 ) -> Result<ResultSet> {
-    // For now, we'll implement a simple interpreter that handles basic queries
-    // A full implementation would convert the physical plan to operators with storage access
-    // The physical plan is currently unused but will be needed for optimization
+    // Try to execute index scans from the physical plan if available
+    if let Some(result) = try_execute_from_physical(tx, physical, logical, ctx)? {
+        return Ok(result);
+    }
 
+    // Fall back to logical plan execution
     match logical {
         LogicalPlan::Project { node, input } => {
             // Check if input is an aggregate - if so, handle specially
