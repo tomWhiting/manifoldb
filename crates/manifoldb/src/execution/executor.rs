@@ -1361,6 +1361,10 @@ fn execute_insert<T: Transaction>(
 
             tx.put_entity(&entity).map_err(Error::Transaction)?;
 
+            // Update property indexes for this entity
+            super::index_maintenance::EntityIndexMaintenance::on_insert(tx, &entity)
+                .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
+
             // Update HNSW indexes for this entity
             crate::vector::update_entity_in_indexes(tx, &entity, None)
                 .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
@@ -1405,6 +1409,14 @@ fn execute_update<T: Transaction>(
 
             tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
 
+            // Update property indexes for this entity
+            super::index_maintenance::EntityIndexMaintenance::on_update(
+                tx,
+                &old_entity,
+                &updated_entity,
+            )
+            .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
+
             // Update HNSW indexes for this entity
             crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
                 .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
@@ -1436,6 +1448,10 @@ fn execute_delete<T: Transaction>(
         };
 
         if matches {
+            // Remove from property indexes before deleting
+            super::index_maintenance::EntityIndexMaintenance::on_delete(tx, &entity)
+                .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
+
             // Remove from HNSW indexes before deleting
             crate::vector::remove_entity_from_indexes(tx, &entity)
                 .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
@@ -1941,7 +1957,8 @@ fn backfill_btree_index<T: Transaction>(
     let index_id = IndexId::from_label_property(table_name, column_name);
 
     // Scan all entities with this label and create index entries
-    let entities = tx.iter_entities(Some(table_name)).map_err(|e| Error::Execution(e.to_string()))?;
+    let entities =
+        tx.iter_entities(Some(table_name)).map_err(|e| Error::Execution(e.to_string()))?;
 
     let mut count = 0u64;
     for entity in &entities {

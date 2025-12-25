@@ -705,9 +705,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     pub fn put_property_index(&mut self, key: &[u8]) -> Result<(), TransactionError> {
         let storage = self.storage_mut()?;
         // Property index entries have no value, just the key
-        storage
-            .put(tables::PROPERTY_INDEX, key, &[])
-            .map_err(storage_error_to_tx_error)
+        storage.put(tables::PROPERTY_INDEX, key, &[]).map_err(storage_error_to_tx_error)
     }
 
     /// Delete a property index entry.
@@ -715,9 +713,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Returns `true` if the entry existed and was deleted.
     pub fn delete_property_index(&mut self, key: &[u8]) -> Result<bool, TransactionError> {
         let storage = self.storage_mut()?;
-        storage
-            .delete(tables::PROPERTY_INDEX, key)
-            .map_err(storage_error_to_tx_error)
+        storage.delete(tables::PROPERTY_INDEX, key).map_err(storage_error_to_tx_error)
     }
 
     /// Scan property index entries in a range.
@@ -733,11 +729,8 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage()?;
 
         // Handle table not existing (no entries yet)
-        let cursor_result = storage.range(
-            tables::PROPERTY_INDEX,
-            Bound::Included(start),
-            Bound::Excluded(end),
-        );
+        let cursor_result =
+            storage.range(tables::PROPERTY_INDEX, Bound::Included(start), Bound::Excluded(end));
 
         let mut cursor = match cursor_result {
             Ok(c) => c,
@@ -770,9 +763,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         // Then delete them
         let storage = self.storage_mut()?;
         for key in keys {
-            storage
-                .delete(tables::PROPERTY_INDEX, &key)
-                .map_err(storage_error_to_tx_error)?;
+            storage.delete(tables::PROPERTY_INDEX, &key).map_err(storage_error_to_tx_error)?;
         }
 
         Ok(count)

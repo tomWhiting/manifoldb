@@ -5,6 +5,7 @@
 
 mod executor;
 mod graph_accessor;
+mod index_maintenance;
 mod scan;
 mod table_extractor;
 
