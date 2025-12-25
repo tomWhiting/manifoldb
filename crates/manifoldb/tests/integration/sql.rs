@@ -294,6 +294,36 @@ fn test_select_with_order_by() {
 }
 
 #[test]
+fn test_select_with_order_by_multiple_columns() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data with duplicate ages
+    db.execute("INSERT INTO users (id, age, name) VALUES (1, 25, 'Bob')").expect("insert failed");
+    db.execute("INSERT INTO users (id, age, name) VALUES (2, 25, 'Alice')").expect("insert failed");
+    db.execute("INSERT INTO users (id, age, name) VALUES (3, 30, 'Carol')").expect("insert failed");
+
+    // Query with ORDER BY age, name - should sort by age first, then by name within same age
+    let result = db.query("SELECT * FROM users ORDER BY age, name").expect("query failed");
+
+    assert_eq!(result.len(), 3);
+
+    let name_idx = result.column_index("name").expect("name column not found");
+    let age_idx = result.column_index("age").expect("age column not found");
+
+    // First row: age 25, name Alice (alphabetically first among age 25)
+    assert_eq!(result.rows()[0].get(age_idx), Some(&Value::Int(25)));
+    assert_eq!(result.rows()[0].get(name_idx), Some(&Value::String("Alice".to_string())));
+
+    // Second row: age 25, name Bob (alphabetically second among age 25)
+    assert_eq!(result.rows()[1].get(age_idx), Some(&Value::Int(25)));
+    assert_eq!(result.rows()[1].get(name_idx), Some(&Value::String("Bob".to_string())));
+
+    // Third row: age 30, name Carol
+    assert_eq!(result.rows()[2].get(age_idx), Some(&Value::Int(30)));
+    assert_eq!(result.rows()[2].get(name_idx), Some(&Value::String("Carol".to_string())));
+}
+
+#[test]
 fn test_select_with_limit() {
     let db = Database::in_memory().expect("failed to create db");
 
