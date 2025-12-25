@@ -1737,6 +1737,140 @@ fn bulk_insert_edge_benchmarks(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Bulk Delete Benchmarks
+// ============================================================================
+
+fn bulk_delete_benchmarks(c: &mut Criterion) {
+    use manifoldb_core::Entity;
+
+    let mut group = c.benchmark_group("bulk_delete");
+
+    // Compare individual deletes vs bulk delete
+    for count in [100, 1000, 10_000] {
+        group.throughput(Throughput::Elements(count));
+
+        // Bulk delete
+        group.bench_with_input(BenchmarkId::new("bulk_delete", count), &count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    let db = Database::in_memory().expect("failed to create db");
+                    let entities: Vec<Entity> = (0..count)
+                        .map(|i| {
+                            Entity::new(EntityId::new(0))
+                                .with_label("Item")
+                                .with_property("index", i as i64)
+                        })
+                        .collect();
+                    let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+                    (db, ids)
+                },
+                |(db, ids)| {
+                    let deleted = db.bulk_delete_entities(&ids).expect("bulk delete failed");
+                    black_box((db, deleted))
+                },
+            );
+        });
+
+        // Individual deletes (via SQL DELETE)
+        group.bench_with_input(
+            BenchmarkId::new("individual_sql_delete", count),
+            &count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        // Create table and insert
+                        db.execute("CREATE TABLE items (id BIGINT, idx INTEGER)")
+                            .expect("create failed");
+                        for i in 0..count {
+                            db.execute(&format!(
+                                "INSERT INTO items (id, idx) VALUES ({}, {})",
+                                i + 1,
+                                i
+                            ))
+                            .expect("insert failed");
+                        }
+                        db
+                    },
+                    |db| {
+                        for i in 0..count {
+                            db.execute(&format!("DELETE FROM items WHERE id = {}", i + 1))
+                                .expect("delete failed");
+                        }
+                        black_box(db)
+                    },
+                );
+            },
+        );
+    }
+
+    // Bulk delete with edges (cascade)
+    for edge_count in [0, 10, 50, 100] {
+        group.bench_with_input(
+            BenchmarkId::new("bulk_delete_with_edges", edge_count),
+            &edge_count,
+            |b, &edge_count| {
+                b.iter_with_setup(
+                    || {
+                        let db = Database::in_memory().expect("failed to create db");
+                        let mut tx = db.begin().expect("failed");
+
+                        // Create center entity
+                        let center = tx.create_entity().expect("failed").with_label("Center");
+                        tx.put_entity(&center).expect("put failed");
+
+                        // Create leaf entities and edges
+                        for _ in 0..edge_count {
+                            let leaf = tx.create_entity().expect("failed").with_label("Leaf");
+                            tx.put_entity(&leaf).expect("put failed");
+
+                            let edge = tx
+                                .create_edge(center.id, leaf.id, "CONNECTS")
+                                .expect("create edge");
+                            tx.put_edge(&edge).expect("put edge");
+                        }
+
+                        tx.commit().expect("commit failed");
+                        (db, center.id)
+                    },
+                    |(db, center_id)| {
+                        let deleted =
+                            db.bulk_delete_entities(&[center_id]).expect("bulk delete failed");
+                        black_box((db, deleted))
+                    },
+                );
+            },
+        );
+    }
+
+    // Large batch delete stress test
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(50_000));
+    group.bench_function("bulk_delete_50k", |b| {
+        b.iter_with_setup(
+            || {
+                let db = Database::in_memory().expect("failed to create db");
+                let entities: Vec<Entity> = (0..50_000)
+                    .map(|i| {
+                        Entity::new(EntityId::new(0))
+                            .with_label("Item")
+                            .with_property("index", i as i64)
+                    })
+                    .collect();
+                let ids = db.bulk_insert_entities(&entities).expect("bulk insert failed");
+                (db, ids)
+            },
+            |(db, ids)| {
+                let deleted = db.bulk_delete_entities(&ids).expect("bulk delete failed");
+                black_box((db, deleted))
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Criterion Main
 // ============================================================================
 
@@ -1751,6 +1885,7 @@ criterion_group!(
     write_batching_benchmarks,
     bulk_insert_benchmarks,
     bulk_upsert_benchmarks,
-    bulk_insert_edge_benchmarks
+    bulk_insert_edge_benchmarks,
+    bulk_delete_benchmarks
 );
 criterion_main!(benches);

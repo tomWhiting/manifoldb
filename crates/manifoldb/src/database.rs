@@ -1655,6 +1655,184 @@ impl Database {
 
         Ok((inserted_count, updated_count))
     }
+
+    // ========================================================================
+    // Bulk Delete Operations
+    // ========================================================================
+
+    /// Bulk delete entities by ID.
+    ///
+    /// All deletions happen in a single transaction. This method properly
+    /// cleans up all property indexes and vector indexes for deleted entities.
+    ///
+    /// By default, this method performs cascade deletion of connected edges.
+    /// Use [`bulk_delete_entities_checked`](Self::bulk_delete_entities_checked) if you
+    /// want to error when entities have connected edges.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity_ids` - The IDs of entities to delete
+    ///
+    /// # Returns
+    ///
+    /// The number of entities that were actually deleted. This may be less
+    /// than the input size if some entities didn't exist.
+    ///
+    /// # Performance
+    ///
+    /// This method achieves high throughput by:
+    /// 1. **Single transaction**: All deletes occur within one transaction (one fsync)
+    /// 2. **Batch index cleanup**: Property index entries removed efficiently
+    /// 3. **Cascade edge deletion**: All connected edges deleted within same transaction
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, EntityId};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create some entities
+    /// let ids = db.bulk_insert_entities(&entities)?;
+    ///
+    /// // Delete half of them
+    /// let to_delete: Vec<EntityId> = ids[0..ids.len()/2].to_vec();
+    /// let deleted = db.bulk_delete_entities(&to_delete)?;
+    /// assert_eq!(deleted, to_delete.len());
+    /// ```
+    pub fn bulk_delete_entities(&self, entity_ids: &[EntityId]) -> Result<usize> {
+        self.bulk_delete_entities_impl(entity_ids, true)
+    }
+
+    /// Bulk delete entities by ID, erroring if any entity has connected edges.
+    ///
+    /// Similar to [`bulk_delete_entities`](Self::bulk_delete_entities), but
+    /// returns an error if any entity has connected edges instead of
+    /// automatically deleting them.
+    ///
+    /// # Arguments
+    ///
+    /// * `entity_ids` - The IDs of entities to delete
+    ///
+    /// # Returns
+    ///
+    /// The number of entities that were actually deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::BulkOperation`] if any entity has connected edges.
+    /// In this case, no entities are deleted (the operation is atomic).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, EntityId};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Delete entities that shouldn't have any edges
+    /// match db.bulk_delete_entities_checked(&entity_ids) {
+    ///     Ok(count) => println!("Deleted {} entities", count),
+    ///     Err(e) => println!("Some entities had edges: {}", e),
+    /// }
+    /// ```
+    pub fn bulk_delete_entities_checked(&self, entity_ids: &[EntityId]) -> Result<usize> {
+        self.bulk_delete_entities_impl(entity_ids, false)
+    }
+
+    /// Internal implementation of bulk delete with cascade control.
+    fn bulk_delete_entities_impl(
+        &self,
+        entity_ids: &[EntityId],
+        cascade_edges: bool,
+    ) -> Result<usize> {
+        use crate::execution::EntityIndexMaintenance;
+        use std::collections::HashSet;
+
+        if entity_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let start = std::time::Instant::now();
+
+        // Begin a write transaction
+        let mut tx = self.begin()?;
+        self.db_metrics.transactions.record_start();
+
+        let mut deleted_count = 0;
+        let mut affected_tables: HashSet<String> = HashSet::new();
+
+        for &entity_id in entity_ids {
+            // Load the entity to get property values for index cleanup
+            let entity = match tx.get_entity(entity_id)? {
+                Some(e) => e,
+                None => continue, // Entity doesn't exist, skip
+            };
+
+            // Track affected tables for cache invalidation
+            for label in &entity.labels {
+                affected_tables.insert(label.as_str().to_string());
+            }
+
+            // Handle edges
+            if cascade_edges {
+                // Cascade delete: delete all connected edges
+                let outgoing = tx.get_outgoing_edges(entity_id)?;
+                let incoming = tx.get_incoming_edges(entity_id)?;
+
+                // Delete outgoing edges
+                for edge in &outgoing {
+                    tx.delete_edge(edge.id)?;
+                }
+
+                // Delete incoming edges (skip self-loops which appear in both lists)
+                for edge in &incoming {
+                    if edge.source != edge.target {
+                        tx.delete_edge(edge.id)?;
+                    }
+                }
+            } else {
+                // Checked delete: error if entity has edges
+                if tx.has_edges(entity_id)? {
+                    return Err(Error::bulk_operation(format!(
+                        "entity {} has connected edges; use bulk_delete_entities for cascade delete",
+                        entity_id.as_u64()
+                    )));
+                }
+            }
+
+            // Remove from property indexes before deleting
+            EntityIndexMaintenance::on_delete(&mut tx, &entity)
+                .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
+
+            // Remove from HNSW/vector indexes
+            crate::vector::remove_entity_from_indexes(&mut tx, &entity)
+                .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
+
+            // Delete the entity itself
+            if tx.delete_entity(entity_id)? {
+                deleted_count += 1;
+            }
+        }
+
+        // Commit the transaction
+        let commit_start = std::time::Instant::now();
+        tx.commit().map_err(Error::Transaction)?;
+        self.db_metrics.record_commit(commit_start.elapsed());
+
+        // Invalidate cache entries for affected tables
+        let table_list: Vec<String> = affected_tables.into_iter().collect();
+        self.query_cache.invalidate_tables(&table_list);
+        if let Err(e) = self.prepared_cache.invalidate_tables(&table_list) {
+            // Log the error but don't fail the operation
+            eprintln!("Warning: failed to invalidate prepared cache: {e}");
+        }
+
+        // Record successful operation
+        self.db_metrics.record_query(start.elapsed(), true);
+
+        Ok(deleted_count)
+    }
 }
 
 // Note: Database automatically implements Send + Sync through its fields
