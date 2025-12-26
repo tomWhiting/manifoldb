@@ -836,7 +836,7 @@ fn execute_ann_search_with_index<T: Transaction>(
             let mut values: Vec<Value> = data_columns
                 .iter()
                 .map(|col| {
-                    if *col == "id" {
+                    if *col == "_rowid" {
                         Value::Int(entity.id.as_u64() as i64)
                     } else {
                         entity.get_property(*col).cloned().unwrap_or(Value::Null)
@@ -948,7 +948,7 @@ fn execute_vector_distance<T: Transaction>(
         let mut values: Vec<Value> = columns[..columns.len() - 1]
             .iter()
             .map(|col| {
-                if col == "id" {
+                if col == "_rowid" {
                     Value::Int(entity.id.as_u64() as i64)
                 } else {
                     entity.get_property(col).cloned().unwrap_or(Value::Null)
@@ -1113,7 +1113,7 @@ fn execute_graph_plan<T: Transaction>(
                     let values: Vec<Value> = columns
                         .iter()
                         .map(|col| {
-                            if col == "id" {
+                            if col == "_rowid" {
                                 Value::Int(entity.id.as_u64() as i64)
                             } else {
                                 entity.get_property(col).cloned().unwrap_or(Value::Null)
@@ -1244,8 +1244,8 @@ fn collect_all_columns(entities: &[Entity]) -> Vec<String> {
         return vec![];
     }
 
-    // Start with id, then add all unique property keys
-    let mut cols: Vec<String> = vec!["id".to_string()];
+    // Start with _rowid, then add all unique property keys
+    let mut cols: Vec<String> = vec!["_rowid".to_string()];
     for entity in entities {
         for key in entity.properties.keys() {
             if !cols.contains(key) {
@@ -1891,7 +1891,7 @@ fn execute_join_input<T: Transaction>(
 /// Convert entities to a ValuesOp with prefixed column names.
 fn entities_to_values_op(entities: &[Entity], prefix: &str) -> (ValuesOp, Vec<String>) {
     // Collect all unique property names
-    let mut prop_names: Vec<String> = vec!["id".to_string()];
+    let mut prop_names: Vec<String> = vec!["_rowid".to_string()];
     for entity in entities {
         for key in entity.properties.keys() {
             if !prop_names.contains(key) {
@@ -1900,7 +1900,7 @@ fn entities_to_values_op(entities: &[Entity], prefix: &str) -> (ValuesOp, Vec<St
         }
     }
 
-    // Create prefixed column names (e.g., "u.id", "u.name")
+    // Create prefixed column names (e.g., "u._rowid", "u.name")
     let prefixed_columns: Vec<String> =
         prop_names.iter().map(|n| format!("{}.{}", prefix, n)).collect();
 
@@ -1911,7 +1911,7 @@ fn entities_to_values_op(entities: &[Entity], prefix: &str) -> (ValuesOp, Vec<St
             prop_names
                 .iter()
                 .map(|prop| {
-                    if prop == "id" {
+                    if prop == "_rowid" {
                         Value::Int(entity.id.as_u64() as i64)
                     } else {
                         entity.get_property(prop).cloned().unwrap_or(Value::Null)
@@ -2438,7 +2438,7 @@ fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) ->
         LogicalExpr::Literal(lit) => literal_to_value(lit),
 
         LogicalExpr::Column { name, .. } => {
-            if name == "id" || name == "_id" {
+            if name == "_rowid" {
                 Value::Int(entity.id.as_u64() as i64)
             } else {
                 // Missing properties return NULL - this is intentional for sparse property model

@@ -233,11 +233,14 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
     let columns = schema.columns();
 
     // Find the column that represents the source variable
-    // It might be "p", "p.id", or just "id"
+    // It might be "p", "p._rowid", or just "_rowid"
     let id_col_idx = columns
         .iter()
         .position(|c| {
-            *c == src_var || *c == format!("{}.id", src_var) || *c == "id" || c.ends_with(".id")
+            *c == src_var
+                || *c == format!("{}._rowid", src_var)
+                || *c == "_rowid"
+                || c.ends_with("._rowid")
         })
         .unwrap_or(0);
 

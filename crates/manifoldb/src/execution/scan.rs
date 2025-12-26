@@ -79,7 +79,7 @@ impl StorageScan {
             .iter()
             .map(|col| {
                 // Handle special columns
-                if col == "_id" || col == "id" {
+                if col == "_rowid" {
                     Value::Int(entity.id.as_u64() as i64)
                 } else if col == "_labels" {
                     // Return labels as a string (comma-separated)
@@ -171,7 +171,7 @@ mod tests {
                 .with_property("age", 25i64),
         ];
 
-        let columns = vec!["id".to_string(), "name".to_string(), "age".to_string()];
+        let columns = vec!["_rowid".to_string(), "name".to_string(), "age".to_string()];
         let mut scan = StorageScan::new(entities, columns);
 
         assert_eq!(scan.len(), 2);
