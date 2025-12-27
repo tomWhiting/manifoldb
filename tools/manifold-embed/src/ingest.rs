@@ -362,6 +362,7 @@ const DIM: &str = "\x1b[2m";
 const BOLD: &str = "\x1b[1m";
 const RED: &str = "\x1b[31m";
 const BLUE: &str = "\x1b[34m";
+const CYAN: &str = "\x1b[36m";
 const RESET: &str = "\x1b[0m";
 
 /// Search for similar documents
@@ -429,7 +430,7 @@ pub fn search(
         let pct = ((result.score / max_score) * 100.0).min(100.0);
 
         // Format header line: [score%] path
-        print!("{BOLD}[{:>3.0}%]{RESET} ", pct);
+        print!("{BOLD}{CYAN}[{:>3.0}%]{RESET} ", pct);
         print!("{BLUE}{}{RESET}", result.file_path);
 
         // Add heading if present
@@ -459,29 +460,35 @@ pub fn search(
     Ok(())
 }
 
-/// Highlight query terms in text using ripgrep-style red
+/// Highlight query terms in text using ripgrep-style red (whole words only)
 fn highlight_terms(text: &str, terms: &[&str]) -> String {
     if terms.is_empty() {
         return text.to_string();
     }
 
     let mut result = text.to_string();
+    let text_lower = result.to_lowercase();
 
     for term in terms {
-        // Case-insensitive replacement with highlighting
         let term_lower = term.to_lowercase();
         let mut new_result = String::with_capacity(result.len() + 100);
         let mut last_end = 0;
 
-        for (start, part) in result.to_lowercase().match_indices(&term_lower) {
-            // Add text before match
-            new_result.push_str(&result[last_end..start]);
-            // Add highlighted match (preserving original case)
-            new_result.push_str(BOLD);
-            new_result.push_str(RED);
-            new_result.push_str(&result[start..start + part.len()]);
-            new_result.push_str(RESET);
-            last_end = start + part.len();
+        for (start, _) in text_lower.match_indices(&term_lower) {
+            // Check for whole word match (word boundaries)
+            let before_ok = start == 0 || !text_lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+            let end = start + term_lower.len();
+            let after_ok = end >= text_lower.len() || !text_lower.as_bytes()[end].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                // Whole word match - highlight it
+                new_result.push_str(&result[last_end..start]);
+                new_result.push_str(BOLD);
+                new_result.push_str(RED);
+                new_result.push_str(&result[start..end]);
+                new_result.push_str(RESET);
+                last_end = end;
+            }
         }
         new_result.push_str(&result[last_end..]);
         result = new_result;
