@@ -419,10 +419,15 @@ pub fn search(
         results.len()
     );
 
-    // Extract query terms for highlighting (simple word tokenization)
+    // Extract query terms for highlighting
+    // Keep: words >= 3 chars, single uppercase letters (variables), terms with operators
     let query_terms: Vec<&str> = query
         .split_whitespace()
-        .filter(|t| t.len() >= 3) // skip short words
+        .filter(|t| {
+            t.len() >= 3
+            || (t.len() == 1 && t.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false))
+            || t.chars().any(|c| !c.is_alphanumeric() && !c.is_whitespace())
+        })
         .collect();
 
     for result in &results {
@@ -477,9 +482,21 @@ fn is_stop_word(word: &str) -> bool {
     STOP_WORDS.contains(&word.to_lowercase().as_str())
 }
 
+/// Check if a term contains special characters (operators, punctuation)
+fn has_special_chars(term: &str) -> bool {
+    term.chars().any(|c| !c.is_alphanumeric())
+}
+
+/// Check if a term is a single uppercase letter (variable name)
+fn is_single_uppercase(term: &str) -> bool {
+    term.len() == 1 && term.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+}
+
 /// Highlight query terms in text using ripgrep-style red
-/// - Only highlights whole words
-/// - Skips stop words unless they're part of a 3+ word phrase match
+/// - Only highlights whole words for normal terms
+/// - Case-sensitive matching for single uppercase letters (variables like K)
+/// - Literal matching for terms with operators (equations)
+/// - Skips stop words unless they're part of a phrase match
 fn highlight_terms(text: &str, terms: &[&str]) -> String {
     if terms.is_empty() {
         return text.to_string();
@@ -487,36 +504,90 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
 
     let text_lower = text.to_lowercase();
 
-    // Filter terms: keep content words, track stop words for phrase matching
+    // Categorize terms
     let content_terms: Vec<&str> = terms
         .iter()
-        .filter(|t| !is_stop_word(t))
+        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_uppercase(t))
         .copied()
         .collect();
 
-    // Find all word positions in text
-    let mut matches: Vec<(usize, usize)> = Vec::new(); // (start, end) positions to highlight
+    let special_terms: Vec<&str> = terms
+        .iter()
+        .filter(|t| has_special_chars(t))
+        .copied()
+        .collect();
 
-    // First, try to find contiguous phrase matches (3+ consecutive query words)
-    let query_phrase = terms.join(" ").to_lowercase();
+    let uppercase_terms: Vec<&str> = terms
+        .iter()
+        .filter(|t| is_single_uppercase(t))
+        .copied()
+        .collect();
+
+    // Find all positions to highlight
+    let mut matches: Vec<(usize, usize)> = Vec::new();
+
+    // 1. First, try to find the full query as a phrase (for equations etc.)
+    let full_query = terms.join(" ");
     if terms.len() >= 3 {
         let mut search_start = 0;
-        while let Some(pos) = text_lower[search_start..].find(&query_phrase) {
+        while let Some(pos) = text[search_start..].find(&full_query) {
             let abs_pos = search_start + pos;
-            let end_pos = abs_pos + query_phrase.len();
+            matches.push((abs_pos, abs_pos + full_query.len()));
+            search_start = abs_pos + 1;
+        }
+        // Also try case-insensitive
+        let full_query_lower = full_query.to_lowercase();
+        search_start = 0;
+        while let Some(pos) = text_lower[search_start..].find(&full_query_lower) {
+            let abs_pos = search_start + pos;
+            let already = matches.iter().any(|(s, e)| abs_pos >= *s && abs_pos + full_query.len() <= *e);
+            if !already {
+                matches.push((abs_pos, abs_pos + full_query.len()));
+            }
+            search_start = abs_pos + 1;
+        }
+    }
 
-            // Verify word boundaries
-            let before_ok = abs_pos == 0 || !text_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos >= text_lower.len() || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
+    // 2. Match terms with special characters (literal, case-insensitive)
+    for term in &special_terms {
+        let term_lower = term.to_lowercase();
+        let mut search_start = 0;
 
-            if before_ok && after_ok {
+        while let Some(pos) = text_lower[search_start..].find(&term_lower) {
+            let abs_pos = search_start + pos;
+            let end_pos = abs_pos + term.len();
+
+            let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
+            if !already_covered {
                 matches.push((abs_pos, end_pos));
             }
             search_start = abs_pos + 1;
         }
     }
 
-    // Then find individual content words (non-stop words)
+    // 3. Match single uppercase letters (case-sensitive, word boundary)
+    for term in &uppercase_terms {
+        let mut search_start = 0;
+
+        while let Some(pos) = text[search_start..].find(term) {
+            let abs_pos = search_start + pos;
+            let end_pos = abs_pos + term.len();
+
+            // Check word boundaries
+            let before_ok = abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
+                if !already_covered {
+                    matches.push((abs_pos, end_pos));
+                }
+            }
+            search_start = abs_pos + 1;
+        }
+    }
+
+    // 4. Match regular content words (case-insensitive, word boundary)
     for term in &content_terms {
         let term_lower = term.to_lowercase();
         let mut search_start = 0;
@@ -530,7 +601,6 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
             let after_ok = end_pos >= text_lower.len() || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
-                // Don't add if already covered by a phrase match
                 let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
                 if !already_covered {
                     matches.push((abs_pos, end_pos));
@@ -544,7 +614,7 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
         return text.to_string();
     }
 
-    // Sort by start position and merge overlapping ranges
+    // Sort by start position and merge overlapping/adjacent ranges
     matches.sort_by_key(|(s, _)| *s);
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in matches {
