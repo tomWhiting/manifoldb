@@ -1,4 +1,4 @@
-//! Configuration for manifold-embed
+//! Configuration for gimbal
 //!
 //! Supports multi-vector embeddings with named vector configurations,
 //! each with its own model, chunking settings, and search behavior.

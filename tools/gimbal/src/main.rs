@@ -1,4 +1,4 @@
-//! ManifoldEmbed - CLI for embedding documents with Tessera and storing in ManifoldDB
+//! Gimbal - CLI for embedding documents with Tessera and storing in ManifoldDB
 //!
 //! Supports multiple embedding paradigms (dense, sparse, ColBERT) with configurable
 //! search modes including hybrid search with RRF fusion.
@@ -15,11 +15,11 @@ use config::SearchMode;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "manifold-embed")]
+#[command(name = "gimbal")]
 #[command(about = "Embed documents with Tessera and store in ManifoldDB")]
 #[command(version)]
 struct Cli {
-    /// Path to config file (default: manifold-embed.toml)
+    /// Path to config file (default: gimbal.toml)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
@@ -107,7 +107,7 @@ enum Commands {
     /// Initialize a new config file
     Init {
         /// Output path for config file
-        #[arg(default_value = "manifold-embed.toml")]
+        #[arg(default_value = "gimbal.toml")]
         path: PathBuf,
 
         /// Include example multi-vector configuration
@@ -135,7 +135,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load config
-    let config_path = cli.config.unwrap_or_else(|| PathBuf::from("manifold-embed.toml"));
+    let config_path = cli.config.unwrap_or_else(|| PathBuf::from("gimbal.toml"));
     let mut cfg = if config_path.exists() {
         config::Config::load(&config_path)?
     } else {
@@ -177,9 +177,9 @@ fn main() -> Result<()> {
                 // No sources configured and no path - show help
                 println!("No path provided and no sources configured.");
                 println!("Either:");
-                println!("  - Provide a path: manifold-embed ingest ./docs");
-                println!("  - Configure sources in manifold-embed.toml");
-                println!("  - Use stdin: echo 'text' | manifold-embed ingest --stdin");
+                println!("  - Provide a path: gimbal ingest ./docs");
+                println!("  - Configure sources in gimbal.toml");
+                println!("  - Use stdin: echo 'text' | gimbal ingest --stdin");
             }
         }
 
@@ -200,7 +200,7 @@ fn main() -> Result<()> {
             if multi_vector {
                 println!("  Configured with dense, sparse, and ColBERT vectors");
             }
-            println!("  Run 'manifold-embed models' to see all available embedding models");
+            println!("  Run 'gimbal models' to see all available embedding models");
         }
 
         Commands::Models { r#type } => {
@@ -235,7 +235,7 @@ fn build_filters(category: Option<String>, topic: Option<String>) -> Vec<(String
 
 /// Generate default config content with helpful comments
 fn generate_default_config_content() -> String {
-    r##"# ManifoldEmbed Configuration
+    r##"# Gimbal Configuration
 # Embed documents with multiple vector types and store in ManifoldDB
 
 [database]
@@ -279,7 +279,7 @@ fusion = "rrf"  # or "weighted_sum"
 
 # =============================================================================
 # AVAILABLE EMBEDDING MODELS (from Tessera)
-# Run 'manifold-embed models' for the full list with dimensions
+# Run 'gimbal models' for the full list with dimensions
 # =============================================================================
 #
 # DENSE MODELS (semantic similarity):
@@ -314,7 +314,7 @@ fusion = "rrf"  # or "weighted_sum"
 
 /// Generate multi-vector config content with helpful comments
 fn generate_multi_vector_config_content() -> String {
-    r##"# ManifoldEmbed Configuration - Multi-Vector Setup
+    r##"# Gimbal Configuration - Multi-Vector Setup
 # Uses dense, sparse, and ColBERT for comprehensive retrieval
 
 [database]
@@ -382,7 +382,7 @@ fusion = "rrf"
 
 # =============================================================================
 # AVAILABLE EMBEDDING MODELS (from Tessera)
-# Run 'manifold-embed models' for the full list with dimensions
+# Run 'gimbal models' for the full list with dimensions
 # =============================================================================
 #
 # DENSE MODELS (semantic similarity):

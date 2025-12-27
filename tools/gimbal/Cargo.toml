@@ -1,5 +1,5 @@
 [package]
-name = "manifold-embed"
+name = "gimbal"
 version = "0.1.0"
 edition = "2021"
 description = "CLI tool for embedding documents with Tessera and storing in ManifoldDB"
@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 [workspace]
 
 [[bin]]
-name = "manifold-embed"
+name = "gimbal"
 path = "src/main.rs"
 
 [[bin]]
