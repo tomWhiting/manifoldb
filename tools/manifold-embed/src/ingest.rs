@@ -485,9 +485,15 @@ fn is_single_letter(term: &str) -> bool {
     term.len() == 1 && term.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
 }
 
+/// Check if a term is an acronym/initialism (all uppercase letters, 2+ chars)
+fn is_acronym(term: &str) -> bool {
+    term.len() >= 2 && term.chars().all(|c| c.is_ascii_uppercase())
+}
+
 /// Highlight query terms in text using ripgrep-style red
 /// - Full phrase matching first (includes all terms)
 /// - Single letters matched case-sensitively (variables like k, K)
+/// - Acronyms matched case-sensitively (ML, API, NASA)
 /// - Terms with operators matched literally
 /// - Stop words skipped for individual matches (but included in phrases)
 fn highlight_terms(text: &str, terms: &[&str]) -> String {
@@ -500,7 +506,7 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
     // Categorize terms for individual matching (phrase matching uses all terms)
     let content_terms: Vec<&str> = terms
         .iter()
-        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_letter(t) && t.len() >= 3)
+        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_letter(t) && !is_acronym(t) && t.len() >= 3)
         .copied()
         .collect();
 
@@ -513,6 +519,12 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
     let letter_terms: Vec<&str> = terms
         .iter()
         .filter(|t| is_single_letter(t))
+        .copied()
+        .collect();
+
+    let acronym_terms: Vec<&str> = terms
+        .iter()
+        .filter(|t| is_acronym(t))
         .copied()
         .collect();
 
@@ -580,7 +592,29 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
         }
     }
 
-    // 4. Match regular content words (case-insensitive, word boundary)
+    // 4. Match acronyms case-sensitively (ML, API, NASA, etc.)
+    for term in &acronym_terms {
+        let mut search_start = 0;
+
+        while let Some(pos) = text[search_start..].find(term) {
+            let abs_pos = search_start + pos;
+            let end_pos = abs_pos + term.len();
+
+            // Check word boundaries
+            let before_ok = abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
+                if !already_covered {
+                    matches.push((abs_pos, end_pos));
+                }
+            }
+            search_start = abs_pos + 1;
+        }
+    }
+
+    // 5. Match regular content words (case-insensitive, word boundary)
     for term in &content_terms {
         let term_lower = term.to_lowercase();
         let mut search_start = 0;
