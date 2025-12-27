@@ -420,15 +420,8 @@ pub fn search(
     );
 
     // Extract query terms for highlighting
-    // Keep: words >= 3 chars, single uppercase letters (variables), terms with operators
-    let query_terms: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| {
-            t.len() >= 3
-            || (t.len() == 1 && t.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false))
-            || t.chars().any(|c| !c.is_alphanumeric() && !c.is_whitespace())
-        })
-        .collect();
+    // Keep all terms for phrase matching, filter later for individual highlights
+    let query_terms: Vec<&str> = query.split_whitespace().collect();
 
     for result in &results {
         // Normalize score to percentage
@@ -487,16 +480,16 @@ fn has_special_chars(term: &str) -> bool {
     term.chars().any(|c| !c.is_alphanumeric())
 }
 
-/// Check if a term is a single uppercase letter (variable name)
-fn is_single_uppercase(term: &str) -> bool {
-    term.len() == 1 && term.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+/// Check if a term is a single letter (variable name like k, x, n, K, X)
+fn is_single_letter(term: &str) -> bool {
+    term.len() == 1 && term.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
 }
 
 /// Highlight query terms in text using ripgrep-style red
-/// - Only highlights whole words for normal terms
-/// - Case-sensitive matching for single uppercase letters (variables like K)
-/// - Literal matching for terms with operators (equations)
-/// - Skips stop words unless they're part of a phrase match
+/// - Full phrase matching first (includes all terms)
+/// - Single letters matched case-sensitively (variables like k, K)
+/// - Terms with operators matched literally
+/// - Stop words skipped for individual matches (but included in phrases)
 fn highlight_terms(text: &str, terms: &[&str]) -> String {
     if terms.is_empty() {
         return text.to_string();
@@ -504,10 +497,10 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
 
     let text_lower = text.to_lowercase();
 
-    // Categorize terms
+    // Categorize terms for individual matching (phrase matching uses all terms)
     let content_terms: Vec<&str> = terms
         .iter()
-        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_uppercase(t))
+        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_letter(t) && t.len() >= 3)
         .copied()
         .collect();
 
@@ -517,9 +510,9 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
         .copied()
         .collect();
 
-    let uppercase_terms: Vec<&str> = terms
+    let letter_terms: Vec<&str> = terms
         .iter()
-        .filter(|t| is_single_uppercase(t))
+        .filter(|t| is_single_letter(t))
         .copied()
         .collect();
 
@@ -565,8 +558,8 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
         }
     }
 
-    // 3. Match single uppercase letters (case-sensitive, word boundary)
-    for term in &uppercase_terms {
+    // 3. Match single letters case-sensitively (variables like k, K, x, n)
+    for term in &letter_terms {
         let mut search_start = 0;
 
         while let Some(pos) = text[search_start..].find(term) {
