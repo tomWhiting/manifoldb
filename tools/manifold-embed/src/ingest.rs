@@ -357,6 +357,13 @@ pub fn pipe_stdin(
     Ok(())
 }
 
+// ANSI color codes
+const DIM: &str = "\x1b[2m";
+const BOLD: &str = "\x1b[1m";
+const RED: &str = "\x1b[31m";
+const BLUE: &str = "\x1b[34m";
+const RESET: &str = "\x1b[0m";
+
 /// Search for similar documents
 pub fn search(
     config: &Config,
@@ -366,14 +373,11 @@ pub fn search(
     mode: Option<SearchMode>,
     filters: &[(String, String)],
 ) -> Result<()> {
-    println!("Loading embedding models...");
     let embedder_set = EmbedderSet::from_config(&config.vectors)?;
-
     let store = Store::open(config)?;
 
     // Determine search mode
     let search_mode = mode.unwrap_or(config.search.default_mode);
-    println!("Searching for: \"{}\" (mode: {})", query, search_mode);
 
     // Generate query embeddings with all models
     let query_embeddings = embedder_set.embed_all(query)?;
@@ -392,36 +396,98 @@ pub fn search(
         return Ok(());
     }
 
-    println!("\nResults ({}):", results.len());
-    println!("{}", "-".repeat(60));
-
-    for (i, result) in results.iter().enumerate() {
-        println!(
-            "\n{}. [Score: {:.4}]",
-            i + 1,
-            result.score
-        );
-        if !result.heading.is_empty() {
-            println!("   Heading: {}", result.heading);
+    // Calculate score normalization based on mode
+    // RRF: max = N * (1/(k+1)) where k=60, N=number of sources (2 for hybrid)
+    let (max_score, score_explanation) = match search_mode {
+        SearchMode::Hybrid => {
+            let k = 60.0;
+            let n_sources = 2.0; // dense + sparse
+            (n_sources / (k + 1.0), "RRF")
         }
-        println!("   File: {}", result.file_path);
+        SearchMode::Dense | SearchMode::Sparse | SearchMode::Colbert => {
+            // Cosine similarity is already 0-1
+            (1.0, "similarity")
+        }
+    };
 
-        if show_full {
-            // Show full content with proper indentation
-            println!("   Content:");
-            for line in result.content.lines() {
-                println!("   {}", line);
-            }
+    // Header
+    println!(
+        "\n{DIM}{} search ({}) · {} results · higher = better match{RESET}\n",
+        format!("{:?}", search_mode).to_lowercase(),
+        score_explanation,
+        results.len()
+    );
+
+    // Extract query terms for highlighting (simple word tokenization)
+    let query_terms: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| t.len() >= 3) // skip short words
+        .collect();
+
+    for result in &results {
+        // Normalize score to percentage
+        let pct = ((result.score / max_score) * 100.0).min(100.0);
+
+        // Format header line: [score%] path
+        print!("{BOLD}[{:>3.0}%]{RESET} ", pct);
+        print!("{BLUE}{}{RESET}", result.file_path);
+
+        // Add heading if present
+        if !result.heading.is_empty() {
+            print!("{DIM} · {}{RESET}", result.heading);
+        }
+        println!();
+
+        // Content with highlighted matches
+        let content = if show_full {
+            result.content.clone()
         } else {
-            // Show preview of content (first 400 chars)
+            // Preview: first 400 chars, collapse newlines
             let preview: String = result.content.chars().take(400).collect();
             let preview = preview.replace('\n', " ");
             let suffix = if result.content.chars().count() > 400 { "..." } else { "" };
-            println!("   Preview: {}{}", preview.trim(), suffix);
-        }
+            format!("{}{}", preview.trim(), suffix)
+        };
+
+        // Highlight matching terms
+        let highlighted = highlight_terms(&content, &query_terms);
+
+        // Print content (left-aligned for easy copy/paste)
+        println!("{}\n", highlighted);
     }
 
     Ok(())
+}
+
+/// Highlight query terms in text using ripgrep-style red
+fn highlight_terms(text: &str, terms: &[&str]) -> String {
+    if terms.is_empty() {
+        return text.to_string();
+    }
+
+    let mut result = text.to_string();
+
+    for term in terms {
+        // Case-insensitive replacement with highlighting
+        let term_lower = term.to_lowercase();
+        let mut new_result = String::with_capacity(result.len() + 100);
+        let mut last_end = 0;
+
+        for (start, part) in result.to_lowercase().match_indices(&term_lower) {
+            // Add text before match
+            new_result.push_str(&result[last_end..start]);
+            // Add highlighted match (preserving original case)
+            new_result.push_str(BOLD);
+            new_result.push_str(RED);
+            new_result.push_str(&result[start..start + part.len()]);
+            new_result.push_str(RESET);
+            last_end = start + part.len();
+        }
+        new_result.push_str(&result[last_end..]);
+        result = new_result;
+    }
+
+    result
 }
 
 /// Re-embed existing chunks with new/additional embedders
