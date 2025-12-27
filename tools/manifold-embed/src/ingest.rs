@@ -429,8 +429,8 @@ pub fn search(
         // Normalize score to percentage
         let pct = ((result.score / max_score) * 100.0).min(100.0);
 
-        // Format header line: [score%] path
-        print!("{BOLD}{CYAN}[{:>3.0}%]{RESET} ", pct);
+        // Format header line: <score%> path (turbofish style)
+        print!("{BOLD}{CYAN}<{:>3.0}%>{RESET} ", pct);
         print!("{BLUE}{}{RESET}", result.file_path);
 
         // Add heading if present
@@ -460,39 +460,116 @@ pub fn search(
     Ok(())
 }
 
-/// Highlight query terms in text using ripgrep-style red (whole words only)
+/// Common stop words to skip when highlighting (unless part of a phrase)
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
+    "be", "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "must", "shall", "can", "need", "it", "its",
+    "this", "that", "these", "those", "i", "you", "he", "she", "we", "they",
+    "what", "which", "who", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such", "no",
+    "not", "only", "own", "same", "so", "than", "too", "very", "just",
+];
+
+/// Check if a word is a stop word
+fn is_stop_word(word: &str) -> bool {
+    STOP_WORDS.contains(&word.to_lowercase().as_str())
+}
+
+/// Highlight query terms in text using ripgrep-style red
+/// - Only highlights whole words
+/// - Skips stop words unless they're part of a 3+ word phrase match
 fn highlight_terms(text: &str, terms: &[&str]) -> String {
     if terms.is_empty() {
         return text.to_string();
     }
 
-    let mut result = text.to_string();
-    let text_lower = result.to_lowercase();
+    let text_lower = text.to_lowercase();
 
-    for term in terms {
-        let term_lower = term.to_lowercase();
-        let mut new_result = String::with_capacity(result.len() + 100);
-        let mut last_end = 0;
+    // Filter terms: keep content words, track stop words for phrase matching
+    let content_terms: Vec<&str> = terms
+        .iter()
+        .filter(|t| !is_stop_word(t))
+        .copied()
+        .collect();
 
-        for (start, _) in text_lower.match_indices(&term_lower) {
-            // Check for whole word match (word boundaries)
-            let before_ok = start == 0 || !text_lower.as_bytes()[start - 1].is_ascii_alphanumeric();
-            let end = start + term_lower.len();
-            let after_ok = end >= text_lower.len() || !text_lower.as_bytes()[end].is_ascii_alphanumeric();
+    // Find all word positions in text
+    let mut matches: Vec<(usize, usize)> = Vec::new(); // (start, end) positions to highlight
+
+    // First, try to find contiguous phrase matches (3+ consecutive query words)
+    let query_phrase = terms.join(" ").to_lowercase();
+    if terms.len() >= 3 {
+        let mut search_start = 0;
+        while let Some(pos) = text_lower[search_start..].find(&query_phrase) {
+            let abs_pos = search_start + pos;
+            let end_pos = abs_pos + query_phrase.len();
+
+            // Verify word boundaries
+            let before_ok = abs_pos == 0 || !text_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos >= text_lower.len() || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
-                // Whole word match - highlight it
-                new_result.push_str(&result[last_end..start]);
-                new_result.push_str(BOLD);
-                new_result.push_str(RED);
-                new_result.push_str(&result[start..end]);
-                new_result.push_str(RESET);
-                last_end = end;
+                matches.push((abs_pos, end_pos));
+            }
+            search_start = abs_pos + 1;
+        }
+    }
+
+    // Then find individual content words (non-stop words)
+    for term in &content_terms {
+        let term_lower = term.to_lowercase();
+        let mut search_start = 0;
+
+        while let Some(pos) = text_lower[search_start..].find(&term_lower) {
+            let abs_pos = search_start + pos;
+            let end_pos = abs_pos + term_lower.len();
+
+            // Check word boundaries
+            let before_ok = abs_pos == 0 || !text_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos >= text_lower.len() || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                // Don't add if already covered by a phrase match
+                let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
+                if !already_covered {
+                    matches.push((abs_pos, end_pos));
+                }
+            }
+            search_start = abs_pos + 1;
+        }
+    }
+
+    if matches.is_empty() {
+        return text.to_string();
+    }
+
+    // Sort by start position and merge overlapping ranges
+    matches.sort_by_key(|(s, _)| *s);
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in matches {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
             }
         }
-        new_result.push_str(&result[last_end..]);
-        result = new_result;
+        merged.push((start, end));
     }
+
+    // Build result string with highlights (single pass)
+    let mut result = String::with_capacity(text.len() + merged.len() * 20);
+    let mut last_end = 0;
+
+    for (start, end) in merged {
+        result.push_str(&text[last_end..start]);
+        result.push_str(BOLD);
+        result.push_str(RED);
+        result.push_str(&text[start..end]);
+        result.push_str(RESET);
+        last_end = end;
+    }
+    result.push_str(&text[last_end..]);
 
     result
 }
