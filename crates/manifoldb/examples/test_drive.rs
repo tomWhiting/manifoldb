@@ -89,18 +89,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         v
     };
 
-    let results = docs
-        .search("embedding")
-        .query(rust_query)
-        .limit(3)
-        .with_payload(true)
-        .execute()?;
+    let results =
+        docs.search("embedding").query(rust_query).limit(3).with_payload(true).execute()?;
 
     println!("\n📚 Search results for 'Rust-like' embedding:");
     for (i, r) in results.iter().enumerate() {
-        let title = r.payload.as_ref()
-            .and_then(|p| p["title"].as_str())
-            .unwrap_or("Unknown");
+        let title = r.payload.as_ref().and_then(|p| p["title"].as_str()).unwrap_or("Unknown");
         println!("   {}. {} (score: {:.4})", i + 1, title, r.score);
     }
 
@@ -115,9 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n📚 Filtered search (category = 'rust'):");
     for r in &filtered_results {
-        let title = r.payload.as_ref()
-            .and_then(|p| p["title"].as_str())
-            .unwrap_or("Unknown");
+        let title = r.payload.as_ref().and_then(|p| p["title"].as_str()).unwrap_or("Unknown");
         println!("   - {}", title);
     }
 
@@ -125,7 +117,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payload = docs.get_payload(1.into())?;
     println!("\n✓ Retrieved payload for point 1: {:?}", payload.map(|p| p["title"].clone()));
 
-    docs.update_payload(1.into(), json!({"title": "Intro to Rust (Updated)", "category": "rust", "pages": 150}))?;
+    docs.update_payload(
+        1.into(),
+        json!({"title": "Intro to Rust (Updated)", "category": "rust", "pages": 150}),
+    )?;
     println!("✓ Updated payload for point 1");
 
     let updated = docs.get_payload(1.into())?;
@@ -144,11 +139,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Created users table");
 
     // Insert data
-    db.execute("INSERT INTO users (id, name, email, age) VALUES (1, 'Alice', 'alice@example.com', 30)")?;
-    db.execute("INSERT INTO users (id, name, email, age) VALUES (2, 'Bob', 'bob@example.com', 25)")?;
-    db.execute("INSERT INTO users (id, name, email, age) VALUES (3, 'Charlie', 'charlie@example.com', 35)")?;
-    db.execute("INSERT INTO users (id, name, email, age) VALUES (4, 'Diana', 'diana@example.com', 28)")?;
-    db.execute("INSERT INTO users (id, name, email, age) VALUES (5, 'Eve', 'eve@example.com', 32)")?;
+    db.execute(
+        "INSERT INTO users (id, name, email, age) VALUES (1, 'Alice', 'alice@example.com', 30)",
+    )?;
+    db.execute(
+        "INSERT INTO users (id, name, email, age) VALUES (2, 'Bob', 'bob@example.com', 25)",
+    )?;
+    db.execute(
+        "INSERT INTO users (id, name, email, age) VALUES (3, 'Charlie', 'charlie@example.com', 35)",
+    )?;
+    db.execute(
+        "INSERT INTO users (id, name, email, age) VALUES (4, 'Diana', 'diana@example.com', 28)",
+    )?;
+    db.execute(
+        "INSERT INTO users (id, name, email, age) VALUES (5, 'Eve', 'eve@example.com', 32)",
+    )?;
     println!("✓ Inserted 5 users");
 
     // Query data
@@ -185,26 +190,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tx = db.begin()?;
 
     // Create people
-    let alice = tx.create_entity()?
+    let alice = tx
+        .create_entity()?
         .with_label("Person")
         .with_property("name", "Alice")
         .with_property("role", "Engineer");
     tx.put_entity(&alice)?;
 
-    let bob = tx.create_entity()?
+    let bob = tx
+        .create_entity()?
         .with_label("Person")
         .with_property("name", "Bob")
         .with_property("role", "Manager");
     tx.put_entity(&bob)?;
 
-    let charlie = tx.create_entity()?
+    let charlie = tx
+        .create_entity()?
         .with_label("Person")
         .with_property("name", "Charlie")
         .with_property("role", "Designer");
     tx.put_entity(&charlie)?;
 
     // Create project
-    let project = tx.create_entity()?
+    let project = tx
+        .create_entity()?
         .with_label("Project")
         .with_property("name", "ManifoldDB")
         .with_property("status", "active");
@@ -219,15 +228,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let e2 = tx.create_edge(charlie.id, bob.id, "REPORTS_TO")?;
     tx.put_edge(&e2)?;
 
-    let e3 = tx.create_edge(alice.id, project.id, "WORKS_ON")?
-        .with_property("hours_per_week", 40i64);
+    let e3 =
+        tx.create_edge(alice.id, project.id, "WORKS_ON")?.with_property("hours_per_week", 40i64);
     tx.put_edge(&e3)?;
 
     let e4 = tx.create_edge(bob.id, project.id, "MANAGES")?;
     tx.put_edge(&e4)?;
 
-    let e5 = tx.create_edge(charlie.id, project.id, "WORKS_ON")?
-        .with_property("hours_per_week", 20i64);
+    let e5 =
+        tx.create_edge(charlie.id, project.id, "WORKS_ON")?.with_property("hours_per_week", 20i64);
     tx.put_edge(&e5)?;
 
     tx.commit()?;
@@ -238,9 +247,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Who reports to Bob?
     let reports = tx.get_incoming_edges(bob.id)?;
-    let reporters: Vec<_> = reports.iter()
-        .filter(|e| e.edge_type.as_str() == "REPORTS_TO")
-        .collect();
+    let reporters: Vec<_> =
+        reports.iter().filter(|e| e.edge_type.as_str() == "REPORTS_TO").collect();
     println!("\n👥 People reporting to Bob: {} people", reporters.len());
 
     for edge in &reporters {
@@ -279,7 +287,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cluster 1: [1, 0, 0, 0] direction
     db.execute("INSERT INTO embeddings (label, vec) VALUES ('cluster1_a', [1.0, 0.0, 0.0, 0.0])")?;
     db.execute("INSERT INTO embeddings (label, vec) VALUES ('cluster1_b', [0.9, 0.1, 0.0, 0.0])")?;
-    db.execute("INSERT INTO embeddings (label, vec) VALUES ('cluster1_c', [0.95, 0.05, 0.0, 0.0])")?;
+    db.execute(
+        "INSERT INTO embeddings (label, vec) VALUES ('cluster1_c', [0.95, 0.05, 0.0, 0.0])",
+    )?;
 
     // Cluster 2: [0, 1, 0, 0] direction
     db.execute("INSERT INTO embeddings (label, vec) VALUES ('cluster2_a', [0.0, 1.0, 0.0, 0.0])")?;
@@ -292,17 +302,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Inserted 7 vectors in 3 clusters");
 
     // Vector similarity search
-    let result = db.query(
-        "SELECT label, vec FROM embeddings ORDER BY vec <-> [1.0, 0.0, 0.0, 0.0] LIMIT 3",
-    )?;
+    let result = db
+        .query("SELECT label, vec FROM embeddings ORDER BY vec <-> [1.0, 0.0, 0.0, 0.0] LIMIT 3")?;
     println!("\n🔍 Nearest to [1,0,0,0]:");
     for row in result.rows() {
         println!("   - {:?}", row);
     }
 
-    let result = db.query(
-        "SELECT label, vec FROM embeddings ORDER BY vec <-> [0.0, 1.0, 0.0, 0.0] LIMIT 3",
-    )?;
+    let result = db
+        .query("SELECT label, vec FROM embeddings ORDER BY vec <-> [0.0, 1.0, 0.0, 0.0] LIMIT 3")?;
     println!("\n🔍 Nearest to [0,1,0,0]:");
     for row in result.rows() {
         println!("   - {:?}", row);
@@ -312,9 +320,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.execute("UPDATE embeddings SET vec = [0.0, 0.0, 0.0, 1.0] WHERE label = 'cluster1_a'")?;
     println!("\n✓ Updated vector for 'cluster1_a' to [0,0,0,1]");
 
-    let result = db.query(
-        "SELECT label, vec FROM embeddings ORDER BY vec <-> [0.0, 0.0, 0.0, 1.0] LIMIT 3",
-    )?;
+    let result = db
+        .query("SELECT label, vec FROM embeddings ORDER BY vec <-> [0.0, 0.0, 0.0, 1.0] LIMIT 3")?;
     println!("🔍 Nearest to [0,0,0,1] (should now include cluster1_a):");
     for row in result.rows() {
         println!("   - {:?}", row);
@@ -334,7 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = std::time::Instant::now();
     let mut entities = Vec::new();
     for i in 0..1000 {
-        let entity = tx.create_entity()?
+        let entity = tx
+            .create_entity()?
             .with_label("BulkItem")
             .with_property("index", i as i64)
             .with_property("batch", "test_batch");
@@ -408,8 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Dimension mismatch (try to insert wrong dimension vector via Collection API)
     let wrong_dim_result = docs.upsert_point(
-        PointStruct::new(999u64)
-            .with_vector("embedding", vec![1.0; 64]) // Should be 128
+        PointStruct::new(999u64).with_vector("embedding", vec![1.0; 64]), // Should be 128
     );
     // This might or might not error depending on validation - let's see
     println!("✓ Dimension mismatch handling: {:?}", wrong_dim_result.is_err());
