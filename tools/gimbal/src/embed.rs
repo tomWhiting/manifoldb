@@ -6,7 +6,7 @@
 //! - ColBERT: Multi-vector token embeddings for late interaction
 
 use crate::config::{ModelType, VectorConfig};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use tessera::{
     model_registry::{get_model, ModelInfo},
@@ -139,17 +139,17 @@ impl Embedder {
         let inner = match metadata.model_type {
             ModelType::Dense => {
                 let embedder = TesseraDense::new(&config.model)
-                    .map_err(|e| anyhow!("Failed to load dense model '{}': {}", config.model, e))?;
+                    .with_context(|| format!("Failed to load dense model '{}'", config.model))?;
                 EmbedderInner::Dense(embedder)
             }
             ModelType::Sparse => {
                 let embedder = TesseraSparse::new(&config.model)
-                    .map_err(|e| anyhow!("Failed to load sparse model '{}': {}", config.model, e))?;
+                    .with_context(|| format!("Failed to load sparse model '{}'", config.model))?;
                 EmbedderInner::Sparse(embedder)
             }
             ModelType::Colbert => {
                 let embedder = TesseraMultiVector::new(&config.model)
-                    .map_err(|e| anyhow!("Failed to load colbert model '{}': {}", config.model, e))?;
+                    .with_context(|| format!("Failed to load colbert model '{}'", config.model))?;
                 EmbedderInner::MultiVector(embedder)
             }
         };

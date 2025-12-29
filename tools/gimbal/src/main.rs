@@ -131,7 +131,25 @@ fn parse_property(s: &str) -> Result<(String, String), String> {
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        // Display root cause directly for clear error messages
+        let chain: Vec<_> = e.chain().collect();
+        if let Some(root_cause) = chain.last() {
+            eprintln!("Error: {}", root_cause);
+        }
+        // Show context chain if there are additional layers
+        if chain.len() > 1 {
+            eprintln!("\nContext:");
+            for cause in chain.iter().take(chain.len() - 1) {
+                eprintln!("  - {}", cause);
+            }
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Load config
