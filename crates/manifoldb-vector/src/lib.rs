@@ -68,6 +68,9 @@
 //! }
 //! ```
 
+// Deny unwrap in library code to ensure proper error handling
+#![deny(clippy::unwrap_used)]
+
 pub mod distance;
 pub mod encoding;
 pub mod error;

@@ -49,6 +49,9 @@
 //! - [`error`] - Error types ([`CoreError`])
 //! - [`transaction`] - Transaction error types ([`TransactionError`])
 
+// Deny unwrap in library code to ensure proper error handling
+#![deny(clippy::unwrap_used)]
+
 pub mod encoding;
 pub mod error;
 pub mod index;

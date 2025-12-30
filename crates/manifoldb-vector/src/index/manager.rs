@@ -607,7 +607,13 @@ impl<E: StorageEngine> HnswIndexManager<E> {
 
         let count = embeddings.len();
 
-        if !embeddings.is_empty() {
+        if embeddings.is_empty() {
+            // Cache empty index
+            {
+                let mut indexes = self.indexes.write().map_err(|_| VectorError::LockPoisoned)?;
+                indexes.insert(index_name, Arc::new(RwLock::new(hnsw)));
+            }
+        } else {
             let refs: Vec<(manifoldb_core::EntityId, &Embedding)> =
                 embeddings.iter().map(|(id, emb)| (*id, emb)).collect();
             let mut hnsw_guard = hnsw;
@@ -618,12 +624,6 @@ impl<E: StorageEngine> HnswIndexManager<E> {
             {
                 let mut indexes = self.indexes.write().map_err(|_| VectorError::LockPoisoned)?;
                 indexes.insert(index_name, Arc::new(RwLock::new(hnsw_guard)));
-            }
-        } else {
-            // Cache empty index
-            {
-                let mut indexes = self.indexes.write().map_err(|_| VectorError::LockPoisoned)?;
-                indexes.insert(index_name, Arc::new(RwLock::new(hnsw)));
             }
         }
 

@@ -47,9 +47,11 @@
 mod batch_writer;
 mod handle;
 mod manager;
+mod read_pool;
 
 pub use batch_writer::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, WriteBuffer, WriteOp, WriteQueue,
 };
 pub use handle::DatabaseTransaction;
 pub use manager::{TransactionManager, TransactionManagerConfig, VectorSyncStrategy};
+pub use read_pool::{PooledReadTx, ReadPool, ReadPoolConfig};

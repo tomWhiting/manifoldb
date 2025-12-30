@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// // Multi-vector for ColBERT with MaxSim aggregation
 /// let colbert = VectorConfig::multi_vector(128);
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VectorConfig {
     /// The type of vector (dense, sparse, multi, binary).
     pub vector_type: VectorType,
@@ -211,7 +211,7 @@ pub enum BinaryDistanceType {
 }
 
 /// Index configuration for a named vector.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// The indexing method.
     pub method: IndexMethod,
@@ -265,7 +265,7 @@ impl IndexConfig {
 }
 
 /// Indexing methods for vector search.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexMethod {
     /// Hierarchical Navigable Small World graph.
     Hnsw(HnswParams),
@@ -278,7 +278,7 @@ pub enum IndexMethod {
 /// HNSW index parameters.
 ///
 /// These parameters control the construction and search behavior of HNSW indexes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HnswParams {
     /// Maximum number of connections per node (M parameter).
     /// Typical values: 16-64. Higher = better recall, more memory.
@@ -323,7 +323,7 @@ impl HnswParams {
 }
 
 /// Inverted index parameters for sparse vectors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvertedIndexParams {
     /// Whether to apply IDF weighting during search.
     pub use_idf: bool,

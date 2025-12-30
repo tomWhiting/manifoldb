@@ -477,7 +477,7 @@ impl Accumulator {
     fn update(&mut self, func: &AggregateFunction, value: &Value, is_wildcard: bool) {
         // Store the function type on first update
         if self.func.is_none() {
-            self.func = Some(func.clone());
+            self.func = Some(*func);
         }
 
         // For COUNT(*), always count (even NULLs)

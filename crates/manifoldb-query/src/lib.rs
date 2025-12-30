@@ -65,6 +65,9 @@
 //! println!("{}", plan.display_tree());
 //! ```
 
+// Deny unwrap in library code to ensure proper error handling
+#![deny(clippy::unwrap_used)]
+
 pub mod ast;
 pub mod error;
 pub mod exec;

@@ -168,7 +168,7 @@ impl<E: StorageEngine> CollectionHandle<E> {
     /// ```
     pub fn upsert_point(&self, point: PointStruct) -> ApiResult<()> {
         let payload =
-            point.payload.map(|v| VectorPayload::from_value(v)).unwrap_or_else(VectorPayload::new);
+            point.payload.map(|v| VectorPayload::from_value(v)).unwrap_or_default();
 
         let vectors = self.convert_vectors_to_store(point.vectors)?;
 
@@ -577,14 +577,18 @@ fn sparse_dot_product(a: &[(u32, f32)], b: &[(u32, f32)]) -> f32 {
     let mut j = 0;
 
     while i < a.len() && j < b.len() {
-        if a[i].0 == b[j].0 {
-            score += a[i].1 * b[j].1;
-            i += 1;
-            j += 1;
-        } else if a[i].0 < b[j].0 {
-            i += 1;
-        } else {
-            j += 1;
+        match a[i].0.cmp(&b[j].0) {
+            std::cmp::Ordering::Equal => {
+                score += a[i].1 * b[j].1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => {
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                j += 1;
+            }
         }
     }
 

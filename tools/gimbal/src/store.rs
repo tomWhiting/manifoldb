@@ -90,8 +90,16 @@ impl Store {
                 }
 
                 if has_colbert {
-                    // ColBERT uses 128-dim token vectors
-                    builder = builder.with_dense_vector(VECTOR_COLBERT, 128, DistanceMetric::Cosine);
+                    // Look up ColBERT dimension from model registry
+                    let colbert_dim = config
+                        .vectors
+                        .get("colbert")
+                        .and_then(|vc| {
+                            MODEL_REGISTRY.iter().find(|info| info.id == vc.model)
+                        })
+                        .map(|info| info.embedding_dim.default_dim())
+                        .unwrap_or(128); // Fallback to ColBERT-v2 default
+                    builder = builder.with_dense_vector(VECTOR_COLBERT, colbert_dim, DistanceMetric::Cosine);
                 }
 
                 builder.build()?

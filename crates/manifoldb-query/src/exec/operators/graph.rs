@@ -46,7 +46,8 @@ struct ExpandedNode {
     entity_id: EntityId,
     /// The edge ID (if tracking edges).
     edge_id: Option<manifoldb_core::EdgeId>,
-    /// Depth for variable-length expansion. Reserved for future use.
+    /// Depth for variable-length expansion.
+    /// TODO(v0.2): Use this field for variable-length path traversal (e.g., [:1..5]).
     #[allow(dead_code)]
     depth: usize,
 }

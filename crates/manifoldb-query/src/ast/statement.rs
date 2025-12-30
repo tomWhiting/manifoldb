@@ -1030,7 +1030,7 @@ impl PayloadFieldDef {
 /// A named vector definition in a collection.
 ///
 /// Defines a single named vector space with its type, index method, and options.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VectorDef {
     /// The vector name (e.g., "dense", "sparse", "colbert").
     pub name: Identifier,

@@ -68,6 +68,8 @@ pub fn extract_cache_hint(sql: &str) -> (CacheHint, String) {
 ///
 /// This function is provided for external use when you want to check
 /// if a statement is cacheable before executing it.
+///
+/// TODO(v0.2): Expose this function via the public API for cache control.
 #[must_use]
 #[allow(dead_code)]
 pub fn is_cacheable_statement(sql: &str) -> bool {

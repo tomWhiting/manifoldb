@@ -19,6 +19,7 @@ use manifoldb_query::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
     DropTableNode, JoinType, LogicalExpr, SetOpNode, UnionNode,
 };
+use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
@@ -61,8 +62,11 @@ pub fn execute_query_with_limit<T: Transaction>(
     let mut builder = PlanBuilder::new();
     let logical_plan = builder.build_statement(&stmt).map_err(|e| Error::Parse(e.to_string()))?;
 
-    // Build physical plan
-    let planner = PhysicalPlanner::new();
+    // Build catalog with available indexes from schema
+    let catalog = build_planner_catalog(tx)?;
+
+    // Build physical plan with catalog for index selection
+    let planner = PhysicalPlanner::new().with_catalog(catalog);
     let physical_plan = planner.plan(&logical_plan);
 
     // Create execution context with parameters and row limit
@@ -181,6 +185,39 @@ fn create_context_with_limit(params: &[Value], max_rows_in_memory: usize) -> Exe
 
     let config = ExecutionConfig::new().with_max_rows_in_memory(max_rows_in_memory);
     ExecutionContext::with_parameters(param_map).with_config(config)
+}
+
+/// Build a planner catalog from the schema for index selection.
+///
+/// This queries the schema to find all available indexes and creates
+/// a catalog that the physical planner can use to choose index scans.
+fn build_planner_catalog<T: Transaction>(tx: &DatabaseTransaction<T>) -> Result<PlannerCatalog> {
+    let mut catalog = PlannerCatalog::new();
+
+    // Get all indexes from the schema
+    let index_names = SchemaManager::list_indexes(tx).unwrap_or_default();
+
+    for name in index_names {
+        if let Ok(Some(schema)) = SchemaManager::get_index(tx, &name) {
+            // Convert schema index type to planner index type
+            let index_type = match schema.using.as_deref() {
+                Some("hnsw" | "HNSW") => IndexType::Hnsw,
+                Some("hash" | "HASH") => IndexType::Hash,
+                _ => IndexType::BTree, // Default to B-tree
+            };
+
+            // Only add B-tree indexes for now (HNSW handled separately)
+            if index_type == IndexType::BTree {
+                let columns: Vec<String> =
+                    schema.columns.iter().map(|c| c.expr.clone()).collect();
+
+                let index_info = IndexInfo::btree(&schema.name, &schema.table, columns);
+                catalog = catalog.with_index(index_info);
+            }
+        }
+    }
+
+    Ok(catalog)
 }
 
 /// Try to execute a query using the physical plan's index scans.
@@ -839,7 +876,7 @@ fn execute_ann_search_with_index<T: Transaction>(
                     if *col == "_rowid" {
                         Value::Int(entity.id.as_u64() as i64)
                     } else {
-                        entity.get_property(*col).cloned().unwrap_or(Value::Null)
+                        entity.get_property(col).cloned().unwrap_or(Value::Null)
                     }
                 })
                 .collect();

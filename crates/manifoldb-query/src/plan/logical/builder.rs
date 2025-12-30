@@ -931,7 +931,7 @@ impl PlanBuilder {
                 let mut vec_elements = Vec::new();
                 let mut all_numeric = true;
 
-                for expr in exprs.iter() {
+                for expr in exprs {
                     match expr {
                         Expr::Literal(ast::Literal::Integer(n)) => {
                             vec_elements.push(*n as f32);

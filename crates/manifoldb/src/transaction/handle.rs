@@ -14,6 +14,8 @@ mod tables {
     pub const EDGES_IN: &str = "edges_in";
     pub const METADATA: &str = "metadata";
     pub const PROPERTY_INDEX: &str = "property_index";
+    /// Index mapping (label, entity_id) -> () for efficient label-based queries.
+    pub const LABEL_INDEX: &str = "label_index";
 }
 
 /// Metadata keys for counters.
@@ -163,13 +165,35 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Put an entity into the database.
     ///
     /// If an entity with the same ID already exists, it will be replaced.
+    /// This also maintains the label index.
     pub fn put_entity(&mut self, entity: &Entity) -> Result<(), TransactionError> {
+        // First, check if entity already exists to remove old label index entries
+        let old_entity = self.get_entity(entity.id)?;
+
         let storage = self.storage_mut()?;
         let key = entity.id.as_u64().to_be_bytes();
         let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
             .map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
-        storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)
+        storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)?;
+
+        // Remove old label index entries if entity existed
+        if let Some(old) = old_entity {
+            for label in &old.labels {
+                let label_key = make_label_key(label.as_str(), old.id);
+                storage
+                    .delete(tables::LABEL_INDEX, &label_key)
+                    .map_err(storage_error_to_tx_error)?;
+            }
+        }
+
+        // Add new label index entries
+        for label in &entity.labels {
+            let label_key = make_label_key(label.as_str(), entity.id);
+            storage.put(tables::LABEL_INDEX, &label_key, &[]).map_err(storage_error_to_tx_error)?;
+        }
+
+        Ok(())
     }
 
     /// Delete an entity by its ID.
@@ -181,10 +205,25 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Consider using [`delete_entity_cascade`](Self::delete_entity_cascade) or
     /// [`delete_entity_checked`](Self::delete_entity_checked) for safer deletion.
     pub fn delete_entity(&mut self, id: EntityId) -> Result<bool, TransactionError> {
+        // First get the entity to find its labels for index cleanup
+        let entity = self.get_entity(id)?;
+
         let storage = self.storage_mut()?;
         let key = id.as_u64().to_be_bytes();
 
-        storage.delete(tables::NODES, &key).map_err(storage_error_to_tx_error)
+        let deleted = storage.delete(tables::NODES, &key).map_err(storage_error_to_tx_error)?;
+
+        // Remove label index entries if entity existed
+        if let Some(entity) = entity {
+            for label in &entity.labels {
+                let label_key = make_label_key(label.as_str(), entity.id);
+                storage
+                    .delete(tables::LABEL_INDEX, &label_key)
+                    .map_err(storage_error_to_tx_error)?;
+            }
+        }
+
+        Ok(deleted)
     }
 
     /// Delete an entity and all edges connected to it (cascade delete).
@@ -336,6 +375,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// as it minimizes transaction overhead and enables bulk write optimizations.
     ///
     /// If any entity with the same ID already exists, it will be replaced.
+    /// This also maintains the label index for all entities.
     ///
     /// # Performance
     ///
@@ -353,13 +393,37 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// tx.put_entities_batch(&entities)?;
     /// ```
     pub fn put_entities_batch(&mut self, entities: &[Entity]) -> Result<(), TransactionError> {
+        // First, collect old entities to clean up their label indexes
+        let mut old_entities = Vec::with_capacity(entities.len());
+        for entity in entities {
+            old_entities.push(self.get_entity(entity.id)?);
+        }
+
         let storage = self.storage_mut()?;
 
-        for entity in entities {
+        for (entity, old_entity) in entities.iter().zip(old_entities.into_iter()) {
             let key = entity.id.as_u64().to_be_bytes();
             let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
                 .map_err(|e| TransactionError::Serialization(e.to_string()))?;
             storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)?;
+
+            // Remove old label index entries if entity existed
+            if let Some(old) = old_entity {
+                for label in &old.labels {
+                    let label_key = make_label_key(label.as_str(), old.id);
+                    storage
+                        .delete(tables::LABEL_INDEX, &label_key)
+                        .map_err(storage_error_to_tx_error)?;
+                }
+            }
+
+            // Add new label index entries
+            for label in &entity.labels {
+                let label_key = make_label_key(label.as_str(), entity.id);
+                storage
+                    .put(tables::LABEL_INDEX, &label_key, &[])
+                    .map_err(storage_error_to_tx_error)?;
+            }
         }
 
         Ok(())
@@ -502,8 +566,9 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
     /// Iterate over all entities, optionally filtering by label.
     ///
-    /// If `label` is `Some`, only entities with that label are returned.
-    /// If `label` is `None`, all entities are returned.
+    /// If `label` is `Some`, only entities with that label are returned using
+    /// the label index for efficient lookup (no full table scan).
+    /// If `label` is `None`, all entities are returned (requires full table scan).
     ///
     /// Returns an empty vector if no entities exist (including if the table hasn't been created).
     pub fn iter_entities(&self, label: Option<&str>) -> Result<Vec<Entity>, TransactionError> {
@@ -512,8 +577,12 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         let storage = self.storage()?;
 
-        // Create a cursor over all nodes
-        // If the table doesn't exist yet, just return empty
+        // If a label is specified, use the label index for efficient lookup
+        if let Some(label_filter) = label {
+            return self.iter_entities_by_label(label_filter);
+        }
+
+        // No label filter - scan all nodes
         let cursor_result = storage.range(tables::NODES, Bound::Unbounded, Bound::Unbounded);
 
         let mut cursor = match cursor_result {
@@ -532,14 +601,59 @@ impl<T: Transaction> DatabaseTransaction<T> {
             let (entity, _): (Entity, _) =
                 bincode::serde::decode_from_slice(&value, bincode::config::standard())
                     .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            entities.push(entity);
+        }
 
-            // Filter by label if specified
-            if let Some(label_filter) = label {
-                if entity.has_label(label_filter) {
+        Ok(entities)
+    }
+
+    /// Iterate over entities with a specific label using the label index.
+    ///
+    /// This is an efficient O(k) lookup where k is the number of entities with
+    /// the given label, rather than O(n) for a full table scan.
+    fn iter_entities_by_label(&self, label: &str) -> Result<Vec<Entity>, TransactionError> {
+        use manifoldb_storage::StorageError;
+        use std::ops::Bound;
+
+        let storage = self.storage()?;
+
+        // Create range bounds for the label index
+        let start_key = make_label_scan_start(label);
+        let end_key = make_label_scan_end(label);
+
+        let cursor_result = storage.range(
+            tables::LABEL_INDEX,
+            Bound::Included(start_key.as_slice()),
+            Bound::Excluded(end_key.as_slice()),
+        );
+
+        let mut cursor = match cursor_result {
+            Ok(c) => c,
+            Err(StorageError::TableNotFound(_)) => {
+                // Label index table doesn't exist, no entities yet
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(storage_error_to_tx_error(e)),
+        };
+
+        let mut entities = Vec::new();
+
+        // Iterate through the label index and fetch each entity
+        while let Some((key, _)) = cursor.next().map_err(storage_error_to_tx_error)? {
+            // Extract entity_id from the key
+            // Key format: length (2 bytes) + label (variable) + entity_id (8 bytes)
+            if key.len() >= 10 {
+                // Minimum: 2 + 0 + 8 (empty label edge case)
+                let entity_id_offset = key.len() - 8;
+                let entity_id_bytes: [u8; 8] =
+                    key[entity_id_offset..].try_into().map_err(|_| {
+                        TransactionError::Internal("invalid label index key".to_string())
+                    })?;
+                let entity_id = EntityId::new(u64::from_be_bytes(entity_id_bytes));
+
+                if let Some(entity) = self.get_entity(entity_id)? {
                     entities.push(entity);
                 }
-            } else {
-                entities.push(entity);
             }
         }
 
@@ -836,6 +950,45 @@ fn make_adjacency_key(entity_id: EntityId, edge_id: EdgeId) -> [u8; 16] {
     let mut key = [0u8; 16];
     key[0..8].copy_from_slice(&entity_id.as_u64().to_be_bytes());
     key[8..16].copy_from_slice(&edge_id.as_u64().to_be_bytes());
+    key
+}
+
+/// Create a key for the label index.
+/// Format: `label_length` (2 bytes big-endian) + `label` (variable) + `entity_id` (8 bytes big-endian)
+///
+/// The length prefix ensures labels don't collide (e.g., "ab" vs "a" followed by entity starting with 'b').
+fn make_label_key(label: &str, entity_id: EntityId) -> Vec<u8> {
+    let label_bytes = label.as_bytes();
+    let len = label_bytes.len() as u16;
+    let mut key = Vec::with_capacity(2 + label_bytes.len() + 8);
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(label_bytes);
+    key.extend_from_slice(&entity_id.as_u64().to_be_bytes());
+    key
+}
+
+/// Create the start key for scanning all entities with a given label.
+fn make_label_scan_start(label: &str) -> Vec<u8> {
+    let label_bytes = label.as_bytes();
+    let len = label_bytes.len() as u16;
+    let mut key = Vec::with_capacity(2 + label_bytes.len());
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(label_bytes);
+    key
+}
+
+/// Create the end key for scanning all entities with a given label.
+/// Returns the start key for the "next" label (length prefix incremented or label bytes incremented).
+fn make_label_scan_end(label: &str) -> Vec<u8> {
+    let label_bytes = label.as_bytes();
+    let len = label_bytes.len() as u16;
+    let mut key = Vec::with_capacity(2 + label_bytes.len() + 8);
+    key.extend_from_slice(&len.to_be_bytes());
+    key.extend_from_slice(label_bytes);
+    // Append maximum entity_id + 1 (effectively infinity for this label prefix)
+    key.extend_from_slice(&u64::MAX.to_be_bytes());
+    // Then add one more byte to ensure we're past all valid keys for this label
+    key.push(0);
     key
 }
 

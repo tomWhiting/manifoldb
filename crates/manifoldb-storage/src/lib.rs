@@ -48,6 +48,9 @@
 //! - [`backends`] - Concrete storage backend implementations
 //! - [`wal`] - Write-ahead logging for durability and recovery
 
+// Deny unwrap in library code to ensure proper error handling
+#![deny(clippy::unwrap_used)]
+
 pub mod backends;
 pub mod engine;
 pub mod wal;

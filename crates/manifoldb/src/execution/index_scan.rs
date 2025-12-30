@@ -197,6 +197,9 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 ///
 /// Performs multiple point lookups for each value in the IN list
 /// and combines the results.
+///
+/// TODO(v0.2): Wire this into physical planner for IN list predicates.
+#[allow(dead_code)]
 pub fn execute_index_in_scan<T: Transaction>(
     tx: &DatabaseTransaction<T>,
     table_name: &str,
@@ -236,6 +239,9 @@ pub fn execute_index_in_scan<T: Transaction>(
 ///
 /// Finds all entities where the indexed string column starts with
 /// the given prefix (for LIKE 'prefix%' queries).
+///
+/// TODO(v0.2): Wire this into physical planner for LIKE 'prefix%' predicates.
+#[allow(dead_code)]
 pub fn execute_index_prefix_scan<T: Transaction>(
     tx: &DatabaseTransaction<T>,
     table_name: &str,

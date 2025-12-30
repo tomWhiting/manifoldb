@@ -519,6 +519,7 @@ impl ExtendedParser {
 
     /// Parses the vector definitions inside CREATE COLLECTION parentheses.
     /// This is kept for backwards compatibility.
+    /// TODO(v1.0): Remove after deprecation period for old syntax.
     #[allow(dead_code)]
     fn parse_vector_definitions(input: &str) -> ParseResult<Vec<VectorDef>> {
         let input = input.trim();
@@ -854,10 +855,10 @@ impl ExtendedParser {
             let limit_content = &return_and_rest[lp + 5..]; // +5 for "LIMIT"
             let limit_end = limit_content.find(';').unwrap_or(limit_content.len());
             let limit_str = limit_content[..limit_end].trim();
-            if !limit_str.is_empty() {
-                Some(Self::parse_limit_expr(limit_str)?)
-            } else {
+            if limit_str.is_empty() {
                 None
+            } else {
+                Some(Self::parse_limit_expr(limit_str)?)
             }
         } else {
             None

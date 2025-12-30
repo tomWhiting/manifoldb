@@ -57,6 +57,7 @@ pub struct HnswSearchOp {
     /// Query vector expression.
     query_vector: LogicalExpr,
     /// Distance metric (stored for potential future validation with index metric).
+    /// TODO(v0.2): Use this field to validate query metric matches index metric.
     #[allow(dead_code)]
     metric: DistanceMetric,
     /// Number of results.
@@ -512,6 +513,7 @@ pub struct HybridSearchOp {
     /// Whether to include score in output.
     include_score: bool,
     /// Score column alias (used for schema naming).
+    /// TODO(v0.2): Use this field for customizable score column naming in output.
     #[allow(dead_code)]
     score_alias: String,
     /// Input operator.

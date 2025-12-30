@@ -117,7 +117,32 @@ use crate::transaction::{DatabaseTransaction, TransactionManager};
 ///
 /// txn.commit()?;
 /// ```
+///
+/// # Cloning
+///
+/// `Database` is cheap to clone - it uses `Arc` internally, so cloning only
+/// increments a reference count. This makes it easy to share a database handle
+/// across threads or async tasks.
+///
+/// ```ignore
+/// let db = Database::open("mydb.manifold")?;
+/// let db2 = db.clone(); // Cheap clone, shares underlying data
+///
+/// // Use in multiple threads
+/// std::thread::spawn(move || {
+///     db2.query("SELECT * FROM users")?;
+/// });
+/// ```
+#[derive(Clone)]
 pub struct Database {
+    /// The inner database state, shared via Arc for cheap cloning.
+    inner: Arc<DatabaseInner>,
+}
+
+/// The internal state of a Database.
+///
+/// This is wrapped in an `Arc` by `Database` to enable cheap cloning.
+struct DatabaseInner {
     /// The transaction manager coordinating storage and indexes.
     manager: TransactionManager<RedbEngine>,
     /// The configuration used to open this database.
@@ -203,12 +228,13 @@ impl Database {
         let db_metrics = Arc::new(DatabaseMetrics::new());
 
         // Initialize prepared cache with current schema version
-        let db = Self { manager, config, query_cache, prepared_cache, db_metrics };
+        let inner = DatabaseInner { manager, config, query_cache, prepared_cache, db_metrics };
+        let db = Self { inner: Arc::new(inner) };
 
         // Load initial schema version
         if let Ok(tx) = db.begin_read() {
             if let Ok(version) = SchemaManager::get_version(&tx) {
-                db.prepared_cache.set_schema_version(version);
+                db.inner.prepared_cache.set_schema_version(version);
             }
         }
 
@@ -235,7 +261,7 @@ impl Database {
     /// Get the configuration used to open this database.
     #[must_use]
     pub fn config(&self) -> &Config {
-        &self.config
+        &self.inner.config
     }
 
     /// Begin a new read-write transaction.
@@ -260,7 +286,7 @@ impl Database {
     ) -> Result<
         DatabaseTransaction<<RedbEngine as manifoldb_storage::StorageEngine>::Transaction<'_>>,
     > {
-        self.manager.begin_write().map_err(Error::Transaction)
+        self.inner.manager.begin_write().map_err(Error::Transaction)
     }
 
     /// Begin a new read-only transaction.
@@ -284,7 +310,7 @@ impl Database {
     ) -> Result<
         DatabaseTransaction<<RedbEngine as manifoldb_storage::StorageEngine>::Transaction<'_>>,
     > {
-        self.manager.begin_read().map_err(Error::Transaction)
+        self.inner.manager.begin_read().map_err(Error::Transaction)
     }
 
     /// Execute a SQL statement that doesn't return results.
@@ -356,7 +382,7 @@ impl Database {
 
         // Start a write transaction
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Execute the statement
         let result = execute_statement(&mut tx, sql, params);
@@ -370,26 +396,26 @@ impl Database {
                 // Commit the transaction
                 let commit_start = Instant::now();
                 tx.commit().map_err(Error::Transaction)?;
-                self.db_metrics.record_commit(commit_start.elapsed());
+                self.inner.db_metrics.record_commit(commit_start.elapsed());
 
                 // Record successful query
-                self.db_metrics.record_query(start.elapsed(), true);
+                self.inner.db_metrics.record_query(start.elapsed(), true);
 
                 // Invalidate cache entries for affected tables
-                self.query_cache.invalidate_tables(&affected_tables);
-                self.prepared_cache.invalidate_tables(&affected_tables)?;
+                self.inner.query_cache.invalidate_tables(&affected_tables);
+                self.inner.prepared_cache.invalidate_tables(&affected_tables)?;
 
                 // Update prepared statement cache schema version if DDL
                 if let Some(version) = new_schema_version {
-                    self.prepared_cache.set_schema_version(version);
+                    self.inner.prepared_cache.set_schema_version(version);
                 }
 
                 Ok(count)
             }
             Err(e) => {
                 // Record failed query and rollback
-                self.db_metrics.record_query(start.elapsed(), false);
-                self.db_metrics.record_rollback();
+                self.inner.db_metrics.record_query(start.elapsed(), false);
+                self.inner.db_metrics.record_rollback();
                 Err(e)
             }
         }
@@ -490,15 +516,15 @@ impl Database {
         let use_cache = match hint {
             CacheHint::Cache => true,
             CacheHint::NoCache => false,
-            CacheHint::Default => self.query_cache.is_enabled(),
+            CacheHint::Default => self.inner.query_cache.is_enabled(),
         };
 
         // Try to get from cache if caching is enabled
         if use_cache {
             let cache_key = QueryCacheKey::new(&clean_sql, params);
-            if let Some(cached_result) = self.query_cache.get(&cache_key) {
+            if let Some(cached_result) = self.inner.query_cache.get(&cache_key) {
                 // Update LRU order
-                self.query_cache.touch(&cache_key);
+                self.inner.query_cache.touch(&cache_key);
                 return Ok(cached_result);
             }
         }
@@ -513,13 +539,13 @@ impl Database {
             &tx,
             &clean_sql,
             params,
-            self.config.max_rows_in_memory,
+            self.inner.config.max_rows_in_memory,
         );
 
         match result {
             Ok(result_set) => {
                 // Record successful query
-                self.db_metrics.record_query(start.elapsed(), true);
+                self.inner.db_metrics.record_query(start.elapsed(), true);
 
                 // Convert the ResultSet to our QueryResult
                 let result = QueryResult::from_result_set(result_set);
@@ -528,14 +554,14 @@ impl Database {
                 if use_cache {
                     let cache_key = QueryCacheKey::new(&clean_sql, params);
                     let accessed_tables = extract_tables_from_sql(&clean_sql);
-                    self.query_cache.insert(cache_key, result.clone(), accessed_tables);
+                    self.inner.query_cache.insert(cache_key, result.clone(), accessed_tables);
                 }
 
                 Ok(result)
             }
             Err(e) => {
                 // Record failed query
-                self.db_metrics.record_query(start.elapsed(), false);
+                self.inner.db_metrics.record_query(start.elapsed(), false);
                 Err(e)
             }
         }
@@ -551,7 +577,7 @@ impl Database {
     ///
     /// Returns an error if the flush fails.
     pub fn flush(&self) -> Result<()> {
-        self.manager.flush().map_err(Error::Transaction)
+        self.inner.manager.flush().map_err(Error::Transaction)
     }
 
     /// Get the underlying transaction manager.
@@ -560,7 +586,7 @@ impl Database {
     /// transaction management.
     #[must_use]
     pub fn transaction_manager(&self) -> &TransactionManager<RedbEngine> {
-        &self.manager
+        &self.inner.manager
     }
 
     /// Get the query cache.
@@ -568,7 +594,7 @@ impl Database {
     /// Use this to access cache operations like clearing or checking metrics.
     #[must_use]
     pub fn query_cache(&self) -> &QueryCache {
-        &self.query_cache
+        &self.inner.query_cache
     }
 
     /// Get the cache metrics.
@@ -584,7 +610,7 @@ impl Database {
     /// ```
     #[must_use]
     pub fn cache_metrics(&self) -> Arc<CacheMetrics> {
-        self.query_cache.metrics()
+        self.inner.query_cache.metrics()
     }
 
     /// Clear the query cache.
@@ -592,7 +618,7 @@ impl Database {
     /// This removes all cached query results. Useful after bulk data
     /// modifications or when you want to ensure fresh data.
     pub fn clear_cache(&self) {
-        self.query_cache.clear();
+        self.inner.query_cache.clear();
     }
 
     /// Invalidate cache entries for specific tables.
@@ -601,7 +627,7 @@ impl Database {
     /// be called manually if you modify data outside of the normal
     /// execute methods.
     pub fn invalidate_cache_for_tables(&self, tables: &[String]) {
-        self.query_cache.invalidate_tables(tables);
+        self.inner.query_cache.invalidate_tables(tables);
     }
 
     /// Get a snapshot of all database metrics.
@@ -631,10 +657,10 @@ impl Database {
     /// ```
     #[must_use]
     pub fn metrics(&self) -> MetricsSnapshot {
-        let mut snapshot = self.db_metrics.snapshot();
+        let mut snapshot = self.inner.db_metrics.snapshot();
 
         // Include cache metrics from the query cache
-        let cache_snapshot = self.query_cache.metrics().snapshot();
+        let cache_snapshot = self.inner.query_cache.metrics().snapshot();
         snapshot.cache = Some(CacheMetricsSnapshot::from_cache_snapshot(cache_snapshot));
 
         snapshot
@@ -646,7 +672,7 @@ impl Database {
     /// external monitoring systems.
     #[must_use]
     pub fn raw_metrics(&self) -> Arc<DatabaseMetrics> {
-        Arc::clone(&self.db_metrics)
+        Arc::clone(&self.inner.db_metrics)
     }
 
     /// Reset all collected metrics.
@@ -657,8 +683,8 @@ impl Database {
     /// Note: Storage size metrics are not reset as they represent
     /// current state rather than accumulated values.
     pub fn reset_metrics(&self) {
-        self.db_metrics.reset();
-        self.query_cache.metrics().reset();
+        self.inner.db_metrics.reset();
+        self.inner.query_cache.metrics().reset();
     }
 
     /// Prepare a SQL statement for repeated execution.
@@ -693,7 +719,7 @@ impl Database {
     /// let old = stmt.query(&db, &[Value::Int(65)])?;
     /// ```
     pub fn prepare(&self, sql: &str) -> Result<Arc<PreparedStatement>> {
-        self.prepared_cache.prepare(sql)
+        self.inner.prepared_cache.prepare(sql)
     }
 
     /// Get or prepare a SQL statement (uses cache).
@@ -714,7 +740,7 @@ impl Database {
     ///
     /// Returns an error if the SQL cannot be parsed or planned.
     pub fn prepare_cached(&self, sql: &str) -> Result<Arc<PreparedStatement>> {
-        self.prepared_cache.get_or_prepare(sql)
+        self.inner.prepared_cache.get_or_prepare(sql)
     }
 
     /// Execute a prepared statement that returns results (SELECT).
@@ -745,7 +771,7 @@ impl Database {
         params: &[manifoldb_core::Value],
     ) -> Result<QueryResult> {
         // Check if statement is still valid
-        let current_version = self.prepared_cache.schema_version();
+        let current_version = self.inner.prepared_cache.schema_version();
         if !stmt.is_valid(current_version) {
             return Err(Error::Execution(
                 "Prepared statement is invalid due to schema changes. Please re-prepare."
@@ -764,14 +790,14 @@ impl Database {
         match result {
             Ok(result_set) => {
                 // Record successful query
-                self.db_metrics.record_query(start.elapsed(), true);
+                self.inner.db_metrics.record_query(start.elapsed(), true);
 
                 // Convert the ResultSet to our QueryResult
                 Ok(QueryResult::from_result_set(result_set))
             }
             Err(e) => {
                 // Record failed query
-                self.db_metrics.record_query(start.elapsed(), false);
+                self.inner.db_metrics.record_query(start.elapsed(), false);
                 Err(e)
             }
         }
@@ -805,7 +831,7 @@ impl Database {
         params: &[manifoldb_core::Value],
     ) -> Result<u64> {
         // Check if statement is still valid
-        let current_version = self.prepared_cache.schema_version();
+        let current_version = self.inner.prepared_cache.schema_version();
         if !stmt.is_valid(current_version) {
             return Err(Error::Execution(
                 "Prepared statement is invalid due to schema changes. Please re-prepare."
@@ -817,7 +843,7 @@ impl Database {
 
         // Start a write transaction
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Execute using the cached plans
         let result = crate::execution::execute_prepared_statement(&mut tx, stmt, params);
@@ -831,27 +857,27 @@ impl Database {
                 // Commit the transaction
                 let commit_start = Instant::now();
                 tx.commit().map_err(Error::Transaction)?;
-                self.db_metrics.record_commit(commit_start.elapsed());
+                self.inner.db_metrics.record_commit(commit_start.elapsed());
 
                 // Record successful query
-                self.db_metrics.record_query(start.elapsed(), true);
+                self.inner.db_metrics.record_query(start.elapsed(), true);
 
                 // Invalidate cache entries for affected tables
                 let affected_tables: Vec<String> = stmt.accessed_tables().iter().cloned().collect();
-                self.query_cache.invalidate_tables(&affected_tables);
-                self.prepared_cache.invalidate_tables(&affected_tables)?;
+                self.inner.query_cache.invalidate_tables(&affected_tables);
+                self.inner.prepared_cache.invalidate_tables(&affected_tables)?;
 
                 // Update prepared statement cache schema version if DDL
                 if let Some(version) = new_schema_version {
-                    self.prepared_cache.set_schema_version(version);
+                    self.inner.prepared_cache.set_schema_version(version);
                 }
 
                 Ok(count)
             }
             Err(e) => {
                 // Record failed query and rollback
-                self.db_metrics.record_query(start.elapsed(), false);
-                self.db_metrics.record_rollback();
+                self.inner.db_metrics.record_query(start.elapsed(), false);
+                self.inner.db_metrics.record_rollback();
                 Err(e)
             }
         }
@@ -862,7 +888,7 @@ impl Database {
     /// Use this to access cache operations like clearing or checking metrics.
     #[must_use]
     pub fn prepared_cache(&self) -> &PreparedStatementCache {
-        &self.prepared_cache
+        &self.inner.prepared_cache
     }
 
     /// Clear the prepared statement cache.
@@ -871,7 +897,7 @@ impl Database {
     ///
     /// Returns an error if the internal cache lock is poisoned.
     pub fn clear_prepared_cache(&self) -> Result<()> {
-        self.prepared_cache.clear()
+        self.inner.prepared_cache.clear()
     }
 
     /// Bulk insert entities with maximum throughput.
@@ -960,7 +986,7 @@ impl Database {
 
         // Phase 2: Begin transaction and allocate IDs
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Get the starting entity ID and reserve a range
         let entity_count = entities.len() as u64;
@@ -1028,10 +1054,10 @@ impl Database {
         // Phase 6: Commit
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful bulk insert
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(ids)
     }
@@ -1159,7 +1185,7 @@ impl Database {
 
         // Phase 3: Begin transaction and allocate IDs
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Get the starting edge ID and reserve a range
         let edge_count = edges.len() as u64;
@@ -1245,10 +1271,10 @@ impl Database {
         // Phase 7: Commit
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful bulk insert
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(ids)
     }
@@ -1348,7 +1374,7 @@ impl Database {
 
         // Phase 2: Store vectors in the CollectionVectorStore and update HNSW indexes
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Get or create collection ID
         let collection_id = match CollectionManager::get(&tx, &coll_name)
@@ -1391,10 +1417,10 @@ impl Database {
         // Commit the transaction
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful operation
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(count)
     }
@@ -1520,7 +1546,7 @@ impl Database {
         // Phase 2: Delete vectors from all collections
         // Since we don't know which collection the vector belongs to, we need to check all
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         let mut deleted_count = 0;
 
@@ -1575,10 +1601,10 @@ impl Database {
         // Commit the transaction
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful operation
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(deleted_count)
     }
@@ -1734,7 +1760,7 @@ impl Database {
 
         // Phase 2: Update vectors in the collection_vectors table and HNSW indexes
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Get collection ID again in write transaction
         let collection_id = CollectionManager::get(&tx, &coll_name)
@@ -1771,10 +1797,10 @@ impl Database {
         // Commit the transaction
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful operation
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(count)
     }
@@ -2198,10 +2224,12 @@ impl Database {
 
         // Phase 3: Begin write transaction
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         // Phase 4: Handle inserts - allocate new IDs
-        let new_entity_ids = if !to_insert.is_empty() {
+        let new_entity_ids = if to_insert.is_empty() {
+            Vec::new()
+        } else {
             let entity_count = to_insert.len() as u64;
             let start_id = {
                 // Read current counter
@@ -2228,8 +2256,6 @@ impl Database {
                 .enumerate()
                 .map(|(i, _)| EntityId::new(start_id + i as u64))
                 .collect::<Vec<_>>()
-        } else {
-            Vec::new()
         };
 
         // Phase 5: Parallel serialization with correct IDs for inserts
@@ -2301,10 +2327,10 @@ impl Database {
         // Phase 9: Commit
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful bulk upsert
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok((inserted_count, updated_count))
     }
@@ -2414,7 +2440,7 @@ impl Database {
 
         // Begin a write transaction
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         let mut deleted_count = 0;
         let mut affected_tables: HashSet<String> = HashSet::new();
@@ -2504,7 +2530,7 @@ impl Database {
                             .map_err(Error::Storage)?;
 
                         while let Some((key, _)) = cursor.next().map_err(Error::Storage)? {
-                            keys_to_delete.push(key.to_vec());
+                            keys_to_delete.push(key.clone());
                         }
                     }
 
@@ -2532,18 +2558,18 @@ impl Database {
         // Commit the transaction
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Invalidate cache entries for affected tables
         let table_list: Vec<String> = affected_tables.into_iter().collect();
-        self.query_cache.invalidate_tables(&table_list);
-        if let Err(e) = self.prepared_cache.invalidate_tables(&table_list) {
+        self.inner.query_cache.invalidate_tables(&table_list);
+        if let Err(e) = self.inner.prepared_cache.invalidate_tables(&table_list) {
             // Log the error but don't fail the operation
             eprintln!("Warning: failed to invalidate prepared cache: {e}");
         }
 
         // Record successful operation
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(deleted_count)
     }
@@ -2585,7 +2611,7 @@ impl Database {
 
         // Begin a write transaction
         let mut tx = self.begin()?;
-        self.db_metrics.transactions.record_start();
+        self.inner.db_metrics.transactions.record_start();
 
         let mut deleted_count = 0;
 
@@ -2603,10 +2629,10 @@ impl Database {
         // Commit the transaction
         let commit_start = std::time::Instant::now();
         tx.commit().map_err(Error::Transaction)?;
-        self.db_metrics.record_commit(commit_start.elapsed());
+        self.inner.db_metrics.record_commit(commit_start.elapsed());
 
         // Record successful operation
-        self.db_metrics.record_query(start.elapsed(), true);
+        self.inner.db_metrics.record_query(start.elapsed(), true);
 
         Ok(deleted_count)
     }
@@ -2657,7 +2683,7 @@ impl Database {
         let coll_name = crate::collection::CollectionName::new(name)
             .map_err(|e| Error::Collection(e.to_string()))?;
 
-        Ok(crate::collection::CollectionBuilder::new(self.manager.engine_arc(), coll_name))
+        Ok(crate::collection::CollectionBuilder::new(self.inner.manager.engine_arc(), coll_name))
     }
 
     /// Get a handle to an existing collection.
@@ -2707,7 +2733,7 @@ impl Database {
         let coll_name = crate::collection::CollectionName::new(name)
             .map_err(|e| Error::Collection(e.to_string()))?;
 
-        crate::collection::CollectionHandle::open(self.manager.engine_arc(), coll_name)
+        crate::collection::CollectionHandle::open(self.inner.manager.engine_arc(), coll_name)
             .map_err(|e| Error::Collection(e.to_string()))
     }
 
@@ -2786,7 +2812,7 @@ impl Database {
                 .map_err(Error::Storage)?;
 
             while let Some((key, _)) = cursor.next()? {
-                keys_to_delete.push(key.to_vec());
+                keys_to_delete.push(key.clone());
             }
             drop(cursor);
 

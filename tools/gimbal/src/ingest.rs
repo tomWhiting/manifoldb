@@ -397,17 +397,23 @@ pub fn search(
         return Ok(());
     }
 
-    // Calculate score normalization based on mode
-    // RRF: max = N * (1/(k+1)) where k=60, N=number of sources (2 for hybrid)
+    // Calculate score normalization based on mode and actual results
+    // For dot product scores (SPLADE/sparse), normalize by max score in results
     let (max_score, score_explanation) = match search_mode {
         SearchMode::Hybrid => {
             let k = 60.0;
             let n_sources = 2.0; // dense + sparse
             (n_sources / (k + 1.0), "RRF")
         }
-        SearchMode::Dense | SearchMode::Sparse | SearchMode::Colbert => {
+        SearchMode::Dense | SearchMode::Colbert => {
             // Cosine similarity is already 0-1
             (1.0, "similarity")
+        }
+        SearchMode::Sparse => {
+            // SPLADE uses dot product which returns unbounded scores (typically 5-50+)
+            // Normalize by the max score in the result set
+            let max_in_results = results.iter().map(|r| r.score).fold(0.0f32, f32::max);
+            (max_in_results.max(1.0), "relevance")
         }
     };
 

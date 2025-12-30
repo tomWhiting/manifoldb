@@ -136,6 +136,9 @@
 //! - [`error`] - Error types
 //! - [`transaction`] - Transaction management
 
+// Deny unwrap in library code to ensure proper error handling
+#![deny(clippy::unwrap_used)]
+
 // Re-export core types
 pub use manifoldb_core::{
     CollectionId, DeleteResult, Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property,

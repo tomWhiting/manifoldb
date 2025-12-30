@@ -34,7 +34,7 @@ mod builder;
 mod cost;
 mod node;
 
-pub use builder::PhysicalPlanner;
+pub use builder::{IndexInfo, IndexType, PhysicalPlanner, PlannerCatalog, TableStats};
 pub use cost::{Cost, CostModel};
 pub use node::{
     BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, HashAggregateNode,

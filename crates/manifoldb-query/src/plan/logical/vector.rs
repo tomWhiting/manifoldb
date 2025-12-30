@@ -259,7 +259,7 @@ impl VectorDistanceNode {
 }
 
 /// Score combination method for hybrid search.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreCombinationMethod {
     /// Weighted linear combination: `w1*s1 + w2*s2`
     WeightedSum,

@@ -525,7 +525,7 @@ impl HybridSearchComponent {
 }
 
 /// Combination method for hybrid vector search.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HybridCombinationMethod {
     /// Weighted sum of distances: `w1*d1 + w2*d2`.
     WeightedSum,

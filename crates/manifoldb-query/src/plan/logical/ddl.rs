@@ -189,7 +189,7 @@ impl DropIndexNode {
 }
 
 /// A CREATE COLLECTION operation for vector collections.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateCollectionNode {
     /// Whether IF NOT EXISTS is specified.
     pub if_not_exists: bool,
