@@ -198,6 +198,7 @@ WHERE amount > (SELECT AVG(amount) FROM orders WHERE user_id = o.user_id)
 | WHERE filtering | ✅ | Property predicates |
 | RETURN clause | ✅ | With expressions |
 | Pattern parsing | ✅ | Via SQL MATCH extension |
+| OPTIONAL MATCH | ✅ | LEFT OUTER JOIN semantics |
 
 ### Missing Cypher Features
 
@@ -240,18 +241,29 @@ RETURN u.name
 - [ ] WITH acts as a pipeline stage (project + optional aggregate)
 - [ ] Chain multiple WITH clauses
 
-#### 3. OPTIONAL MATCH - Medium Effort
+#### 3. OPTIONAL MATCH - ✅ Complete
 
-```cypher
+```sql
+SELECT u.name, p.title
+FROM entities
 MATCH (u:User)
 OPTIONAL MATCH (u)-[:LIKES]->(p:Post)
-RETURN u.name, p.title
+WHERE u.status = 'active';
 ```
 
-**Implementation:**
-- [ ] Parse OPTIONAL MATCH
-- [ ] Convert to LEFT JOIN in logical plan
-- [ ] Handle NULL for unmatched patterns
+**Implementation (Done):**
+- [x] Parse OPTIONAL MATCH after regular MATCH
+- [x] Add `optional_match_clauses` to `SelectStatement`
+- [x] Convert to LEFT OUTER JOIN in logical plan
+- [x] Handle NULL for unmatched patterns
+
+**Files modified:**
+- `manifoldb-query/src/ast/statement.rs` - Added `optional_match_clauses` field
+- `manifoldb-query/src/parser/extensions.rs` - Added OPTIONAL MATCH parsing
+- `manifoldb-query/src/plan/logical/builder.rs` - Added `build_optional_graph_pattern()`
+
+**Tests:** 9 parser tests + 3 integration tests
+**Review:** `docs/reviews/optional-match-review.md`
 
 #### 4. Write Operations - Large Effort
 
@@ -303,7 +315,7 @@ WITH [1, 2, 3] AS nums RETURN [x IN nums WHERE x > 1] AS filtered
 | Task | Effort | Why |
 |------|--------|-----|
 | ~~CTEs (WITH clause)~~ | ~~Medium~~ | ✅ Complete |
-| OPTIONAL MATCH | Medium | Clear mapping to LEFT JOIN |
+| ~~OPTIONAL MATCH~~ | ~~Medium~~ | ✅ Complete |
 | UNWIND | Small | Simple list expansion |
 
 ### Tier 2: High Value, Needs Design
@@ -424,4 +436,4 @@ Test file locations:
 
 ---
 
-*Last updated: January 1, 2026 - Completed Graph-Constrained Vector Search API*
+*Last updated: January 1, 2026 - Completed OPTIONAL MATCH*
