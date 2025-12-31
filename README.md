@@ -35,6 +35,25 @@ let db = Database::open("mydb.manifold")?;
 let db = Database::in_memory()?;
 ```
 
+### Multi-threaded Usage
+
+`Database` is cheaply cloneable and can be shared across threads:
+
+```rust
+use manifoldb::Database;
+use std::thread;
+
+let db = Database::open("mydb.manifold")?;
+
+// Clone for another thread (shares underlying engine)
+let db_clone = db.clone();
+
+thread::spawn(move || {
+    let tx = db_clone.begin_read().unwrap();
+    // Read operations...
+});
+```
+
 ### Working with Entities and Edges
 
 ```rust
