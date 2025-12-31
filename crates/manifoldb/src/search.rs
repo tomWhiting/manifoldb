@@ -29,10 +29,30 @@
 //!     .limit(10)
 //!     .execute()?;
 //! ```
+//!
+//! # Graph-Constrained Search
+//!
+//! You can constrain vector search results to entities reachable via a graph
+//! traversal pattern using [`within_traversal()`](EntitySearchBuilder::within_traversal):
+//!
+//! ```ignore
+//! // Search for similar symbols, but only within a specific repository
+//! let results = db.search("symbols", "embedding")
+//!     .query(query_vector)
+//!     .within_traversal(repo_id, |p| p
+//!         .edge_out("CONTAINS")
+//!         .variable_length(1, 10)
+//!     )
+//!     .filter(Filter::eq("visibility", "public"))
+//!     .limit(10)
+//!     .execute()?;
+//! ```
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use manifoldb_core::{Entity, EntityId, ScoredEntity, VectorData};
+use manifoldb_graph::traversal::{Direction, PathPattern, PathStep};
 use manifoldb_storage::backends::RedbEngine;
 
 use crate::collection::CollectionHandle;
@@ -40,6 +60,157 @@ use crate::collection::Vector as CollectionVector;
 use crate::error::Result;
 use crate::filter::Filter;
 use crate::Error;
+
+/// A constraint that limits vector search results to entities reachable
+/// via a graph traversal.
+///
+/// This is used internally by [`EntitySearchBuilder::within_traversal()`].
+#[derive(Clone)]
+pub struct TraversalConstraint {
+    /// The starting entity ID for the traversal.
+    start: EntityId,
+    /// The path pattern to match during traversal.
+    pattern: PathPattern,
+}
+
+impl TraversalConstraint {
+    /// Create a new traversal constraint.
+    pub fn new(start: EntityId, pattern: PathPattern) -> Self {
+        Self { start, pattern }
+    }
+
+    /// Get the starting entity ID.
+    #[must_use]
+    pub fn start(&self) -> EntityId {
+        self.start
+    }
+
+    /// Get the path pattern.
+    #[must_use]
+    pub fn pattern(&self) -> &PathPattern {
+        &self.pattern
+    }
+}
+
+/// Builder for constructing graph traversal patterns.
+///
+/// This provides a fluent API for defining path patterns that constrain
+/// which entities are considered in a vector search.
+///
+/// # Example
+///
+/// ```ignore
+/// // Pattern: (start)-[:CONTAINS*1..10]->(result)
+/// let builder = TraversalPatternBuilder::new()
+///     .edge_out("CONTAINS")
+///     .variable_length(1, 10);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct TraversalPatternBuilder {
+    pattern: PathPattern,
+}
+
+impl TraversalPatternBuilder {
+    /// Create a new empty pattern builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an outgoing edge step with the specified type.
+    ///
+    /// This matches edges where the pattern traverses from source to target.
+    #[must_use]
+    pub fn edge_out(mut self, edge_type: impl Into<manifoldb_core::EdgeType>) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::outgoing(edge_type));
+        self
+    }
+
+    /// Add an incoming edge step with the specified type.
+    ///
+    /// This matches edges where the pattern traverses from target to source.
+    #[must_use]
+    pub fn edge_in(mut self, edge_type: impl Into<manifoldb_core::EdgeType>) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::incoming(edge_type));
+        self
+    }
+
+    /// Add a bidirectional edge step with the specified type.
+    ///
+    /// This matches edges in either direction.
+    #[must_use]
+    pub fn edge_both(mut self, edge_type: impl Into<manifoldb_core::EdgeType>) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::both(edge_type));
+        self
+    }
+
+    /// Add an outgoing edge step that matches any edge type.
+    #[must_use]
+    pub fn any_out(mut self) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::any(Direction::Outgoing));
+        self
+    }
+
+    /// Add an incoming edge step that matches any edge type.
+    #[must_use]
+    pub fn any_in(mut self) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::any(Direction::Incoming));
+        self
+    }
+
+    /// Add a bidirectional edge step that matches any edge type.
+    #[must_use]
+    pub fn any_both(mut self) -> Self {
+        self.pattern = self.pattern.add_step(PathStep::any(Direction::Both));
+        self
+    }
+
+    /// Make the last step variable-length with the given hop range.
+    ///
+    /// This is equivalent to Cypher's `*min..max` syntax.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no steps have been added yet.
+    #[must_use]
+    pub fn variable_length(mut self, min: usize, max: usize) -> Self {
+        let steps = self.pattern.steps();
+        if steps.is_empty() {
+            return self;
+        }
+
+        // Replace the last step with a variable-length version
+        let last_idx = steps.len() - 1;
+        let last_step = steps[last_idx].clone();
+        let var_step = PathStep::new(last_step.direction, last_step.filter.clone())
+            .variable_length(min, max);
+
+        // Rebuild pattern with modified last step
+        let mut new_pattern = PathPattern::new();
+        for (i, step) in steps.iter().enumerate() {
+            if i == last_idx {
+                new_pattern = new_pattern.add_step(var_step.clone());
+            } else {
+                new_pattern = new_pattern.add_step(step.clone());
+            }
+        }
+        self.pattern = new_pattern;
+        self
+    }
+
+    /// Add a custom step with full control over direction and filter.
+    #[must_use]
+    pub fn step(mut self, step: PathStep) -> Self {
+        self.pattern = self.pattern.add_step(step);
+        self
+    }
+
+    /// Build the final path pattern.
+    #[must_use]
+    pub fn build(self) -> PathPattern {
+        self.pattern
+    }
+}
 
 /// Builder for unified vector search operations.
 ///
@@ -64,6 +235,8 @@ use crate::Error;
 pub struct EntitySearchBuilder {
     /// The collection handle (owned).
     handle: CollectionHandle<Arc<RedbEngine>>,
+    /// The storage engine for graph traversal.
+    engine: Arc<RedbEngine>,
     /// The vector name to search.
     vector_name: String,
     /// The query vector.
@@ -76,22 +249,27 @@ pub struct EntitySearchBuilder {
     filter: Option<Filter>,
     /// Minimum score threshold.
     score_threshold: Option<f32>,
+    /// Optional traversal constraint for graph-bounded search.
+    traversal_constraint: Option<TraversalConstraint>,
 }
 
 impl EntitySearchBuilder {
     /// Create a new search builder.
     pub(crate) fn new(
         handle: CollectionHandle<Arc<RedbEngine>>,
+        engine: Arc<RedbEngine>,
         vector_name: impl Into<String>,
     ) -> Self {
         Self {
             handle,
+            engine,
             vector_name: vector_name.into(),
             query: None,
             limit: 10,
             offset: 0,
             filter: None,
             score_threshold: None,
+            traversal_constraint: None,
         }
     }
 
@@ -141,6 +319,63 @@ impl EntitySearchBuilder {
         self
     }
 
+    /// Constrain search results to entities reachable via a graph traversal.
+    ///
+    /// This enables graph-bounded vector search, where only entities that
+    /// are reachable from the starting entity via the specified path pattern
+    /// are considered as search results.
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - The starting entity ID for the traversal
+    /// * `pattern_builder` - A closure that builds the traversal pattern
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, EntityId};
+    ///
+    /// // Search for similar symbols within a specific repository
+    /// let repo_id = EntityId::new(123);
+    /// let results = db.search("symbols", "embedding")
+    ///     .query(query_vector)
+    ///     .within_traversal(repo_id, |p| p
+    ///         .edge_out("CONTAINS")
+    ///         .variable_length(1, 10)
+    ///     )
+    ///     .limit(10)
+    ///     .execute()?;
+    /// ```
+    ///
+    /// # How It Works
+    ///
+    /// 1. The traversal is executed first to find all reachable entity IDs
+    /// 2. Vector search is performed normally
+    /// 3. Results are filtered to only include entities in the traversal set
+    ///
+    /// This approach ensures that vector search results are constrained to
+    /// the graph structure while maintaining vector similarity ordering.
+    #[must_use]
+    pub fn within_traversal<F>(mut self, start: EntityId, pattern_builder: F) -> Self
+    where
+        F: FnOnce(TraversalPatternBuilder) -> TraversalPatternBuilder,
+    {
+        let builder = TraversalPatternBuilder::new();
+        let pattern = pattern_builder(builder).build();
+        self.traversal_constraint = Some(TraversalConstraint::new(start, pattern));
+        self
+    }
+
+    /// Constrain search results using a pre-built traversal constraint.
+    ///
+    /// This is an alternative to [`within_traversal()`](Self::within_traversal)
+    /// that accepts a pre-built [`TraversalConstraint`].
+    #[must_use]
+    pub fn with_traversal_constraint(mut self, constraint: TraversalConstraint) -> Self {
+        self.traversal_constraint = Some(constraint);
+        self
+    }
+
     /// Execute the search and return scored entities.
     ///
     /// # Errors
@@ -149,9 +384,33 @@ impl EntitySearchBuilder {
     /// - No query vector was provided
     /// - The vector name doesn't exist in the collection
     /// - A storage error occurs
+    /// - A graph traversal error occurs (when using `within_traversal`)
     pub fn execute(self) -> Result<Vec<ScoredEntity>> {
+        use manifoldb_storage::StorageEngine;
+
         let query =
             self.query.ok_or_else(|| Error::InvalidInput("No query vector provided".into()))?;
+
+        // If we have a traversal constraint, execute the traversal first
+        // to get the set of reachable entity IDs
+        let reachable_ids: Option<HashSet<EntityId>> =
+            if let Some(ref constraint) = self.traversal_constraint {
+                let tx = self.engine.begin_read().map_err(|e| {
+                    Error::Execution(format!("Failed to start read transaction: {e}"))
+                })?;
+
+                let matches = constraint
+                    .pattern()
+                    .find_from(&tx, constraint.start())
+                    .map_err(|e| Error::Execution(format!("Graph traversal failed: {e}")))?;
+
+                // Collect all target entity IDs from the traversal matches
+                let ids: HashSet<EntityId> = matches.iter().map(|m| m.target()).collect();
+
+                Some(ids)
+            } else {
+                None
+            };
 
         // Convert VectorData to collection Vector
         let collection_query = vector_data_to_collection_vector(&query);
@@ -159,13 +418,22 @@ impl EntitySearchBuilder {
         // Convert our Filter to collection Filter
         let collection_filter = self.filter.map(filter_to_collection_filter);
 
+        // When we have a traversal constraint, we need to fetch more results
+        // than the limit, since we'll filter them down afterward.
+        // We use a heuristic: fetch up to 10x the limit or at least 100 results.
+        let fetch_limit = if self.traversal_constraint.is_some() {
+            (self.limit * 10).max(100)
+        } else {
+            self.limit
+        };
+
         // Execute search using collection handle
         let scored_points = self
             .handle
             .execute_search(
                 &self.vector_name,
                 collection_query,
-                self.limit,
+                fetch_limit,
                 self.offset,
                 collection_filter,
                 true,  // with_payload - we need properties
@@ -175,14 +443,30 @@ impl EntitySearchBuilder {
             )
             .map_err(|e| Error::Collection(e.to_string()))?;
 
-        // Convert ScoredPoint to ScoredEntity
-        let results = scored_points
-            .into_iter()
-            .map(|sp| {
-                let entity = scored_point_to_entity(sp.id, sp.payload);
-                ScoredEntity::new(entity, sp.score)
-            })
-            .collect();
+        // Convert ScoredPoint to ScoredEntity and filter by traversal if applicable
+        let results: Vec<ScoredEntity> = if let Some(ref allowed_ids) = reachable_ids {
+            scored_points
+                .into_iter()
+                .filter_map(|sp| {
+                    let entity_id = EntityId::new(sp.id.as_u64());
+                    if allowed_ids.contains(&entity_id) {
+                        let entity = scored_point_to_entity(sp.id, sp.payload);
+                        Some(ScoredEntity::new(entity, sp.score))
+                    } else {
+                        None
+                    }
+                })
+                .take(self.limit)
+                .collect()
+        } else {
+            scored_points
+                .into_iter()
+                .map(|sp| {
+                    let entity = scored_point_to_entity(sp.id, sp.payload);
+                    ScoredEntity::new(entity, sp.score)
+                })
+                .collect()
+        };
 
         Ok(results)
     }

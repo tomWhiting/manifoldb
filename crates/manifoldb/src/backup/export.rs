@@ -6,6 +6,7 @@
 use std::io::Write;
 use std::ops::Bound;
 
+use manifoldb_core::encoding::Decoder;
 use manifoldb_storage::{Cursor, Transaction};
 
 use super::error::{BackupError, BackupResult};
@@ -265,9 +266,9 @@ fn export_edges<T: Transaction, W: Write>(
     };
 
     while let Some((_key, value)) = cursor.next()? {
-        let (edge, _): (manifoldb_core::Edge, _) =
-            bincode::serde::decode_from_slice(&value, bincode::config::standard())
-                .map_err(|e| BackupError::Deserialization(e.to_string()))?;
+        // Use Edge::decode() for compatibility with the graph layer encoding
+        let edge = manifoldb_core::Edge::decode(&value)
+            .map_err(|e| BackupError::Deserialization(e.to_string()))?;
         writer.write_edge(&edge)?;
     }
 

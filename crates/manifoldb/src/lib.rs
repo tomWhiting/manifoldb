@@ -181,7 +181,7 @@ pub use metrics::{
     VectorMetrics, VectorMetricsSnapshot,
 };
 pub use prepared::{PreparedStatement, PreparedStatementCache};
-pub use search::EntitySearchBuilder;
+pub use search::{EntitySearchBuilder, TraversalConstraint, TraversalPatternBuilder};
 pub use transaction::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
     TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,

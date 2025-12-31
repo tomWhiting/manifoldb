@@ -45,6 +45,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use manifoldb_core::encoding::keys::encode_edge_key;
+use manifoldb_core::encoding::Encoder;
 use manifoldb_core::{Edge, EdgeId, Entity, EntityId};
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
 use manifoldb_storage::Transaction;
@@ -1419,6 +1421,7 @@ impl Database {
 
         // Phase 4: Re-serialize with correct IDs (in parallel)
         // Now we have the IDs, we need to serialize again with the correct IDs
+        // Use Edge::encode() for graph layer compatibility
         let edges_with_ids: std::result::Result<Vec<(EdgeId, Edge, Vec<u8>)>, Error> = edges
             .par_iter()
             .enumerate()
@@ -1427,7 +1430,8 @@ impl Database {
                 let mut edge_with_id = edge.clone();
                 edge_with_id.id = id;
 
-                bincode::serde::encode_to_vec(&edge_with_id, bincode::config::standard())
+                edge_with_id
+                    .encode()
                     .map(|bytes| (id, edge_with_id, bytes))
                     .map_err(|e| {
                         Error::Execution(format!(
@@ -1447,8 +1451,8 @@ impl Database {
         let ids: Vec<EdgeId> = edges_with_ids.iter().map(|(id, _, _)| *id).collect();
 
         for (id, edge, bytes) in &edges_with_ids {
-            // Store edge data (using simple key like transaction handle)
-            let key = id.as_u64().to_be_bytes();
+            // Store edge data with key encoding for graph layer compatibility
+            let key = encode_edge_key(*id);
             tx.storage_mut_ref()
                 .map_err(Error::Transaction)?
                 .put(TABLE_EDGES, &key, bytes)
@@ -3189,7 +3193,8 @@ impl Database {
         vector_name: &str,
     ) -> Result<crate::search::EntitySearchBuilder> {
         let handle = self.collection(collection)?;
-        Ok(crate::search::EntitySearchBuilder::new(handle, vector_name))
+        let engine = self.inner.manager.engine_arc();
+        Ok(crate::search::EntitySearchBuilder::new(handle, engine, vector_name))
     }
 
     /// Upsert an entity into a collection.

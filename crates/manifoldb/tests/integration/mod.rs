@@ -14,6 +14,7 @@ pub mod crud;
 pub mod ddl;
 pub mod e2e;
 pub mod graph;
+pub mod graph_vector_search;
 pub mod index_maintenance;
 pub mod index_query;
 pub mod prepared;

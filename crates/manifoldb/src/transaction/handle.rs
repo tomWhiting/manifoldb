@@ -1,5 +1,7 @@
 //! Database transaction handle for user operations.
 
+use manifoldb_core::encoding::keys::encode_edge_key;
+use manifoldb_core::encoding::{Decoder, Encoder};
 use manifoldb_core::{DeleteResult, Edge, EdgeId, Entity, EntityId, TransactionError};
 use manifoldb_graph::index::IndexMaintenance;
 use manifoldb_storage::{Cursor, Transaction};
@@ -471,13 +473,12 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Returns `Ok(None)` if the edge does not exist.
     pub fn get_edge(&self, id: EdgeId) -> Result<Option<Edge>, TransactionError> {
         let storage = self.storage()?;
-        let key = id.as_u64().to_be_bytes();
+        let key = encode_edge_key(id);
 
         match storage.get(tables::EDGES, &key) {
             Ok(Some(bytes)) => {
-                let (edge, _): (Edge, _) =
-                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                        .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+                let edge = Edge::decode(&bytes)
+                    .map_err(|e| TransactionError::Serialization(e.to_string()))?;
                 Ok(Some(edge))
             }
             Ok(None) => Ok(None),
@@ -489,11 +490,15 @@ impl<T: Transaction> DatabaseTransaction<T> {
     ///
     /// If an edge with the same ID already exists, it will be replaced.
     /// This also updates the adjacency indexes (both the simple and graph-layer indexes).
+    ///
+    /// The edge is stored with a format compatible with the graph traversal layer.
     pub fn put_edge(&mut self, edge: &Edge) -> Result<(), TransactionError> {
         let storage = self.storage_mut()?;
-        let key = edge.id.as_u64().to_be_bytes();
-        let value = bincode::serde::encode_to_vec(edge, bincode::config::standard())
-            .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+
+        // Use the same key encoding as EdgeStore for graph layer compatibility
+        let key = encode_edge_key(edge.id);
+        // Use the same value encoding as EdgeStore for graph layer compatibility
+        let value = edge.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
         // Store the edge data
         storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
@@ -541,9 +546,10 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage_mut()?;
 
         for edge in edges {
-            let key = edge.id.as_u64().to_be_bytes();
-            let value = bincode::serde::encode_to_vec(edge, bincode::config::standard())
-                .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            // Use the same key encoding as EdgeStore for graph layer compatibility
+            let key = encode_edge_key(edge.id);
+            // Use the same value encoding as EdgeStore for graph layer compatibility
+            let value = edge.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
             // Store the edge data
             storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
@@ -677,7 +683,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         };
 
         let storage = self.storage_mut()?;
-        let key = id.as_u64().to_be_bytes();
+        let key = encode_edge_key(id);
 
         // Delete the edge data
         let deleted = storage.delete(tables::EDGES, &key).map_err(storage_error_to_tx_error)?;
