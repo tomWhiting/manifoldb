@@ -1430,15 +1430,9 @@ impl Database {
                 let mut edge_with_id = edge.clone();
                 edge_with_id.id = id;
 
-                edge_with_id
-                    .encode()
-                    .map(|bytes| (id, edge_with_id, bytes))
-                    .map_err(|e| {
-                        Error::Execution(format!(
-                            "Failed to serialize edge at index {}: {}",
-                            idx, e
-                        ))
-                    })
+                edge_with_id.encode().map(|bytes| (id, edge_with_id, bytes)).map_err(|e| {
+                    Error::Execution(format!("Failed to serialize edge at index {}: {}", idx, e))
+                })
             })
             .collect();
 

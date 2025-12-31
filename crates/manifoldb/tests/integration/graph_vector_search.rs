@@ -48,11 +48,16 @@ fn test_graph_constrained_search_basic() {
     tx.put_entity(&repo_b).expect("put");
 
     // Create files (symbols) with embeddings
-    let file_a1 = tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a1");
-    let file_a2 = tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a2");
-    let file_a3 = tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a3");
-    let file_b1 = tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_b1");
-    let file_b2 = tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_b2");
+    let file_a1 =
+        tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a1");
+    let file_a2 =
+        tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a2");
+    let file_a3 =
+        tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_a3");
+    let file_b1 =
+        tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_b1");
+    let file_b2 =
+        tx.create_entity().expect("create").with_label("Symbol").with_property("name", "class_b2");
 
     tx.put_entity(&file_a1).expect("put");
     tx.put_entity(&file_a2).expect("put");
@@ -187,14 +192,20 @@ fn test_graph_constrained_search_variable_length() {
 
     // Create hierarchy
     let org = tx.create_entity().expect("create").with_label("Org").with_property("name", "acme");
-    let team_a = tx.create_entity().expect("create").with_label("Team").with_property("name", "team-a");
-    let team_b = tx.create_entity().expect("create").with_label("Team").with_property("name", "team-b");
-    let proj_a1 = tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-a1");
-    let proj_a2 = tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-a2");
-    let proj_b1 = tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-b1");
+    let team_a =
+        tx.create_entity().expect("create").with_label("Team").with_property("name", "team-a");
+    let team_b =
+        tx.create_entity().expect("create").with_label("Team").with_property("name", "team-b");
+    let proj_a1 =
+        tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-a1");
+    let proj_a2 =
+        tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-a2");
+    let proj_b1 =
+        tx.create_entity().expect("create").with_label("Project").with_property("name", "proj-b1");
 
     // External project (not in org)
-    let external = tx.create_entity().expect("create").with_label("Project").with_property("name", "external");
+    let external =
+        tx.create_entity().expect("create").with_label("Project").with_property("name", "external");
 
     tx.put_entity(&org).expect("put");
     tx.put_entity(&team_a).expect("put");
@@ -300,10 +311,14 @@ fn test_graph_constrained_search_with_filter() {
     let mut tx = db.begin().expect("begin");
 
     let root = tx.create_entity().expect("create").with_label("Root");
-    let item1 = tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
-    let item2 = tx.create_entity().expect("create").with_label("Item").with_property("status", "archived");
-    let item3 = tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
-    let item4 = tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
+    let item1 =
+        tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
+    let item2 =
+        tx.create_entity().expect("create").with_label("Item").with_property("status", "archived");
+    let item3 =
+        tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
+    let item4 =
+        tx.create_entity().expect("create").with_label("Item").with_property("status", "active");
 
     tx.put_entity(&root).expect("put");
     tx.put_entity(&item1).expect("put");

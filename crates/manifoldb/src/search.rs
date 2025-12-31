@@ -182,8 +182,8 @@ impl TraversalPatternBuilder {
         // Replace the last step with a variable-length version
         let last_idx = steps.len() - 1;
         let last_step = steps[last_idx].clone();
-        let var_step = PathStep::new(last_step.direction, last_step.filter.clone())
-            .variable_length(min, max);
+        let var_step =
+            PathStep::new(last_step.direction, last_step.filter.clone()).variable_length(min, max);
 
         // Rebuild pattern with modified last step
         let mut new_pattern = PathPattern::new();

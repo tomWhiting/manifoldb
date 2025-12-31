@@ -549,7 +549,8 @@ impl<T: Transaction> DatabaseTransaction<T> {
             // Use the same key encoding as EdgeStore for graph layer compatibility
             let key = encode_edge_key(edge.id);
             // Use the same value encoding as EdgeStore for graph layer compatibility
-            let value = edge.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            let value =
+                edge.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
             // Store the edge data
             storage.put(tables::EDGES, &key, &value).map_err(storage_error_to_tx_error)?;
