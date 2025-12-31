@@ -391,7 +391,8 @@ impl std::fmt::Display for ModelType {
 /// Chunking configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkingConfig {
-    /// Split on headers (h1, h2, h3, etc.)
+    // Markdown-specific options
+    /// Split markdown on headers (h1, h2, h3, etc.)
     #[serde(default = "default_split_on_headers")]
     pub split_on_headers: bool,
 
@@ -402,6 +403,15 @@ pub struct ChunkingConfig {
     /// Default overlap between chunks in tokens
     #[serde(default)]
     pub overlap: usize,
+
+    // Code-specific options
+    /// Enable tree-sitter based code chunking (default: true)
+    #[serde(default = "default_code_enabled")]
+    pub code_enabled: bool,
+
+    /// Maximum chunk size for code in bytes (default: 8000)
+    #[serde(default = "default_code_max_size")]
+    pub code_max_size: usize,
 }
 
 fn default_split_on_headers() -> bool {
@@ -412,12 +422,22 @@ fn default_header_levels() -> Vec<u8> {
     vec![1, 2, 3]
 }
 
+fn default_code_enabled() -> bool {
+    true
+}
+
+fn default_code_max_size() -> usize {
+    8000
+}
+
 impl Default for ChunkingConfig {
     fn default() -> Self {
         Self {
             split_on_headers: true,
             header_levels: vec![1, 2, 3],
             overlap: 50,
+            code_enabled: true,
+            code_max_size: 8000,
         }
     }
 }

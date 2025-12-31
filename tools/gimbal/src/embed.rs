@@ -192,23 +192,21 @@ impl Embedder {
     pub fn embed(&self, text: &str) -> Result<Embedding> {
         match &self.inner {
             EmbedderInner::Dense(embedder) => {
-                let result = embedder.encode(text)
-                    .map_err(|e| anyhow!("Dense encoding failed: {}", e))?;
+                let result =
+                    embedder.encode(text).map_err(|e| anyhow!("Dense encoding failed: {}", e))?;
                 Ok(Embedding::Dense(result.embedding.to_vec()))
             }
             EmbedderInner::Sparse(embedder) => {
-                let result = embedder.encode(text)
-                    .map_err(|e| anyhow!("Sparse encoding failed: {}", e))?;
+                let result =
+                    embedder.encode(text).map_err(|e| anyhow!("Sparse encoding failed: {}", e))?;
                 Ok(Embedding::Sparse(result.weights))
             }
             EmbedderInner::MultiVector(embedder) => {
-                let result = embedder.encode(text)
+                let result = embedder
+                    .encode(text)
                     .map_err(|e| anyhow!("Multi-vector encoding failed: {}", e))?;
-                let vectors: Vec<Vec<f32>> = result.embeddings
-                    .rows()
-                    .into_iter()
-                    .map(|row| row.to_vec())
-                    .collect();
+                let vectors: Vec<Vec<f32>> =
+                    result.embeddings.rows().into_iter().map(|row| row.to_vec()).collect();
                 Ok(Embedding::MultiVector(vectors))
             }
         }
@@ -218,29 +216,26 @@ impl Embedder {
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
         match &self.inner {
             EmbedderInner::Dense(embedder) => {
-                let results = embedder.encode_batch(texts)
+                let results = embedder
+                    .encode_batch(texts)
                     .map_err(|e| anyhow!("Dense batch encoding failed: {}", e))?;
-                Ok(results.into_iter()
-                    .map(|r| Embedding::Dense(r.embedding.to_vec()))
-                    .collect())
+                Ok(results.into_iter().map(|r| Embedding::Dense(r.embedding.to_vec())).collect())
             }
             EmbedderInner::Sparse(embedder) => {
-                let results = embedder.encode_batch(texts)
+                let results = embedder
+                    .encode_batch(texts)
                     .map_err(|e| anyhow!("Sparse batch encoding failed: {}", e))?;
-                Ok(results.into_iter()
-                    .map(|r| Embedding::Sparse(r.weights))
-                    .collect())
+                Ok(results.into_iter().map(|r| Embedding::Sparse(r.weights)).collect())
             }
             EmbedderInner::MultiVector(embedder) => {
-                let results = embedder.encode_batch(texts)
+                let results = embedder
+                    .encode_batch(texts)
                     .map_err(|e| anyhow!("Multi-vector batch encoding failed: {}", e))?;
-                Ok(results.into_iter()
+                Ok(results
+                    .into_iter()
                     .map(|r| {
-                        let vectors: Vec<Vec<f32>> = r.embeddings
-                            .rows()
-                            .into_iter()
-                            .map(|row| row.to_vec())
-                            .collect();
+                        let vectors: Vec<Vec<f32>> =
+                            r.embeddings.rows().into_iter().map(|row| row.to_vec()).collect();
                         Embedding::MultiVector(vectors)
                     })
                     .collect())
@@ -251,18 +246,15 @@ impl Embedder {
     /// Compute similarity between two texts
     pub fn similarity(&self, text_a: &str, text_b: &str) -> Result<f32> {
         match &self.inner {
-            EmbedderInner::Dense(embedder) => {
-                embedder.similarity(text_a, text_b)
-                    .map_err(|e| anyhow!("Dense similarity failed: {}", e))
-            }
-            EmbedderInner::Sparse(embedder) => {
-                embedder.similarity(text_a, text_b)
-                    .map_err(|e| anyhow!("Sparse similarity failed: {}", e))
-            }
-            EmbedderInner::MultiVector(embedder) => {
-                embedder.similarity(text_a, text_b)
-                    .map_err(|e| anyhow!("Multi-vector similarity failed: {}", e))
-            }
+            EmbedderInner::Dense(embedder) => embedder
+                .similarity(text_a, text_b)
+                .map_err(|e| anyhow!("Dense similarity failed: {}", e)),
+            EmbedderInner::Sparse(embedder) => embedder
+                .similarity(text_a, text_b)
+                .map_err(|e| anyhow!("Sparse similarity failed: {}", e)),
+            EmbedderInner::MultiVector(embedder) => embedder
+                .similarity(text_a, text_b)
+                .map_err(|e| anyhow!("Multi-vector similarity failed: {}", e)),
         }
     }
 }
@@ -275,9 +267,7 @@ pub struct EmbedderSet {
 impl EmbedderSet {
     /// Create a new empty embedder set
     pub fn new() -> Self {
-        Self {
-            embedders: HashMap::new(),
-        }
+        Self { embedders: HashMap::new() }
     }
 
     /// Create embedder set from configuration
@@ -329,9 +319,7 @@ impl EmbedderSet {
 
     /// Get an embedder by model type (returns first match)
     pub fn get_by_type(&self, model_type: ModelType) -> Option<(&String, &Embedder)> {
-        self.embedders
-            .iter()
-            .find(|(_, e)| e.model_type() == model_type)
+        self.embedders.iter().find(|(_, e)| e.model_type() == model_type)
     }
 
     /// Check if an embedder exists for a given name
@@ -377,21 +365,15 @@ impl EmbedderSet {
     /// Get the minimum context length across all embedders
     /// Useful for determining safe chunk sizes
     pub fn min_context_length(&self) -> usize {
-        self.embedders
-            .values()
-            .map(|e| e.context_length())
-            .min()
-            .unwrap_or(512)
+        self.embedders.values().map(|e| e.context_length()).min().unwrap_or(512)
     }
 
     /// Get context length for a specific vector config
     /// Returns the model's context length if not overridden
     pub fn effective_chunk_size(&self, name: &str, config: &VectorConfig) -> usize {
-        config.max_chunk_size.unwrap_or_else(|| {
-            self.get(name)
-                .map(|e| e.context_length())
-                .unwrap_or(512)
-        })
+        config
+            .max_chunk_size
+            .unwrap_or_else(|| self.get(name).map(|e| e.context_length()).unwrap_or(512))
     }
 }
 
@@ -416,11 +398,7 @@ mod tests {
         assert_eq!(sparse.model_type(), ModelType::Sparse);
         assert_eq!(sparse.vector_count(), 1);
 
-        let multi = Embedding::MultiVector(vec![
-            vec![1.0, 2.0],
-            vec![3.0, 4.0],
-            vec![5.0, 6.0],
-        ]);
+        let multi = Embedding::MultiVector(vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]);
         assert_eq!(multi.model_type(), ModelType::Colbert);
         assert_eq!(multi.dimension(), 2);
         assert_eq!(multi.vector_count(), 3);

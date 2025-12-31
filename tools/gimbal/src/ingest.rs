@@ -3,7 +3,7 @@
 //! Handles crawling, chunking, embedding with multiple models, and storing in ManifoldDB.
 //! Supports named sources with per-source vector assignments.
 
-use crate::chunk::split_markdown;
+use crate::chunk::{ChunkRouter, CodeChunker, MarkdownChunker, TextChunker};
 use crate::config::{Config, IngestSource, SearchMode};
 use crate::embed::EmbedderSet;
 use crate::store::Store;
@@ -13,6 +13,18 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::path::Path;
 use walkdir::WalkDir;
+
+/// Create a chunk router from config
+fn create_router(config: &Config) -> ChunkRouter {
+    let markdown = MarkdownChunker::from_config(&config.chunking);
+    let code = if config.chunking.code_enabled {
+        CodeChunker::new(config.chunking.code_max_size)
+    } else {
+        CodeChunker::new(0) // Disabled - will fall back to text
+    };
+    let text = TextChunker::default();
+    ChunkRouter::with_chunkers(markdown, code, text)
+}
 
 /// Ingest all configured sources
 pub fn ingest_all_sources(config: &Config, properties: &[(String, String)]) -> Result<()> {
@@ -36,13 +48,18 @@ pub fn ingest_all_sources(config: &Config, properties: &[(String, String)]) -> R
 }
 
 /// Ingest from a specific configured source by name
-pub fn ingest_source(config: &Config, source_name: &str, properties: &[(String, String)]) -> Result<()> {
-    let source = config.get_source(source_name)
-        .ok_or_else(|| anyhow!(
+pub fn ingest_source(
+    config: &Config,
+    source_name: &str,
+    properties: &[(String, String)],
+) -> Result<()> {
+    let source = config.get_source(source_name).ok_or_else(|| {
+        anyhow!(
             "Source '{}' not found. Available sources: {:?}",
             source_name,
             config.ingest.sources.iter().map(|s| &s.name).collect::<Vec<_>>()
-        ))?;
+        )
+    })?;
 
     println!("Ingesting from source: {}", source.name);
 
@@ -74,13 +91,11 @@ fn ingest_source_internal(
 
     println!("  Loading {} embedding models...", embedder_set.len());
     for (name, embedder) in embedder_set.iter() {
-        println!(
-            "    {} ({}, dim: {})",
-            name,
-            embedder.metadata().name,
-            embedder.dimension()
-        );
+        println!("    {} ({}, dim: {})", name, embedder.metadata().name, embedder.dimension());
     }
+
+    // Create chunk router
+    let router = create_router(config);
 
     let mut file_count = 0;
     let mut chunk_count = 0;
@@ -90,12 +105,13 @@ fn ingest_source_internal(
 
         if path.is_file() {
             if source.matches_extension(path) && !source.should_exclude(path) {
-                chunk_count += ingest_file_internal(config, &embedder_set, store, path, properties)?;
+                chunk_count +=
+                    ingest_file_internal(&router, &embedder_set, store, path, properties)?;
                 file_count += 1;
             }
         } else if path.is_dir() {
             let (files, chunks) = ingest_directory_internal(
-                config,
+                &router,
                 &embedder_set,
                 store,
                 path,
@@ -150,15 +166,18 @@ pub fn ingest_path(
         );
     }
 
+    // Create chunk router
+    let router = create_router(config);
+
     let mut store = Store::open(config)?;
     println!("Database opened: {}", config.database.path.display());
 
     let (file_count, chunk_count) = if path.is_file() {
-        let chunks = ingest_file_internal(config, &embedder_set, &mut store, path, properties)?;
+        let chunks = ingest_file_internal(&router, &embedder_set, &mut store, path, properties)?;
         (1, chunks)
     } else if path.is_dir() {
         ingest_directory_internal(
-            config,
+            &router,
             &embedder_set,
             &mut store,
             path,
@@ -187,7 +206,7 @@ pub fn ingest(
 
 /// Ingest a single file, returning the number of chunks created
 fn ingest_file_internal(
-    config: &Config,
+    router: &ChunkRouter,
     embedder_set: &EmbedderSet,
     store: &mut Store,
     path: &Path,
@@ -198,7 +217,7 @@ fn ingest_file_internal(
 
     println!("Processing: {}", path.display());
 
-    let chunks = split_markdown(&content, &config.chunking);
+    let chunks = router.chunk(&content, path)?;
     println!("  {} chunks", chunks.len());
 
     let mut prev_chunk_id: Option<EntityId> = None;
@@ -207,9 +226,15 @@ fn ingest_file_internal(
         // Embed with configured models
         let embeddings = embedder_set.embed_all(&chunk.content)?;
 
+        // For code chunks, use symbol name as heading; for markdown, use heading
+        let heading = chunk
+            .heading
+            .as_deref()
+            .or_else(|| chunk.symbol.as_ref().map(|s| s.name.as_str()));
+
         let chunk_id = store.store_chunk(
             &path_str,
-            chunk.heading.as_deref(),
+            heading,
             &chunk.content,
             &embeddings,
             properties,
@@ -228,7 +253,7 @@ fn ingest_file_internal(
 
 /// Ingest all files in a directory, returning (file_count, chunk_count)
 fn ingest_directory_internal(
-    config: &Config,
+    router: &ChunkRouter,
     embedder_set: &EmbedderSet,
     store: &mut Store,
     path: &Path,
@@ -255,9 +280,7 @@ fn ingest_directory_internal(
         }
 
         // Check extension
-        let ext = entry_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         if !extensions.is_empty() && !extensions.iter().any(|e| e == ext) {
             continue;
@@ -275,7 +298,7 @@ fn ingest_directory_internal(
         let path_str = entry_path.to_string_lossy().to_string();
         println!("Processing: {}", entry_path.display());
 
-        let chunks = split_markdown(&content, &config.chunking);
+        let chunks = router.chunk(&content, entry_path)?;
         println!("  {} chunks", chunks.len());
 
         let mut prev_chunk_id: Option<EntityId> = None;
@@ -283,9 +306,15 @@ fn ingest_directory_internal(
         for chunk in &chunks {
             let embeddings = embedder_set.embed_all(&chunk.content)?;
 
+            // For code chunks, use symbol name as heading; for markdown, use heading
+            let heading = chunk
+                .heading
+                .as_deref()
+                .or_else(|| chunk.symbol.as_ref().map(|s| s.name.as_str()));
+
             let chunk_id = store.store_chunk(
                 &path_str,
-                chunk.heading.as_deref(),
+                heading,
                 &chunk.content,
                 &embeddings,
                 properties,
@@ -329,12 +358,7 @@ pub fn pipe_stdin(
     let embedder_set = EmbedderSet::from_config_filtered(&config.vectors, &vector_names)?;
 
     for (name, embedder) in embedder_set.iter() {
-        println!(
-            "  {} ({}, dim: {})",
-            name,
-            embedder.metadata().name,
-            embedder.dimension()
-        );
+        println!("  {} ({}, dim: {})", name, embedder.metadata().name, embedder.dimension());
     }
 
     let mut store = Store::open(config)?;
@@ -342,14 +366,8 @@ pub fn pipe_stdin(
     println!("Embedding chunk from: {}", file_path);
     let embeddings = embedder_set.embed_all(&content)?;
 
-    let chunk_id = store.store_chunk(
-        file_path,
-        heading,
-        &content,
-        &embeddings,
-        properties,
-        None,
-    )?;
+    let chunk_id =
+        store.store_chunk(file_path, heading, &content, &embeddings, properties, None)?;
 
     store.flush()?;
 
@@ -384,11 +402,8 @@ pub fn search(
     let query_embeddings = embedder_set.embed_all(query)?;
 
     // Get hybrid config if needed
-    let hybrid_config = if search_mode == SearchMode::Hybrid {
-        Some(&config.search.hybrid)
-    } else {
-        None
-    };
+    let hybrid_config =
+        if search_mode == SearchMode::Hybrid { Some(&config.search.hybrid) } else { None };
 
     let results = store.search(search_mode, &query_embeddings, limit, filters, hybrid_config)?;
 
@@ -466,14 +481,13 @@ pub fn search(
 
 /// Common stop words to skip when highlighting (unless part of a phrase)
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "as", "is", "was", "are", "were", "been",
-    "be", "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "must", "shall", "can", "need", "it", "its",
-    "this", "that", "these", "those", "i", "you", "he", "she", "we", "they",
-    "what", "which", "who", "when", "where", "why", "how", "all", "each",
-    "every", "both", "few", "more", "most", "other", "some", "such", "no",
-    "not", "only", "own", "same", "so", "than", "too", "very", "just",
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
+    "from", "as", "is", "was", "are", "were", "been", "be", "have", "has", "had", "do", "does",
+    "did", "will", "would", "could", "should", "may", "might", "must", "shall", "can", "need",
+    "it", "its", "this", "that", "these", "those", "i", "you", "he", "she", "we", "they", "what",
+    "which", "who", "when", "where", "why", "how", "all", "each", "every", "both", "few", "more",
+    "most", "other", "some", "such", "no", "not", "only", "own", "same", "so", "than", "too",
+    "very", "just",
 ];
 
 /// Check if a word is a stop word
@@ -512,27 +526,21 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
     // Categorize terms for individual matching (phrase matching uses all terms)
     let content_terms: Vec<&str> = terms
         .iter()
-        .filter(|t| !is_stop_word(t) && !has_special_chars(t) && !is_single_letter(t) && !is_acronym(t) && t.len() >= 3)
+        .filter(|t| {
+            !is_stop_word(t)
+                && !has_special_chars(t)
+                && !is_single_letter(t)
+                && !is_acronym(t)
+                && t.len() >= 3
+        })
         .copied()
         .collect();
 
-    let special_terms: Vec<&str> = terms
-        .iter()
-        .filter(|t| has_special_chars(t))
-        .copied()
-        .collect();
+    let special_terms: Vec<&str> = terms.iter().filter(|t| has_special_chars(t)).copied().collect();
 
-    let letter_terms: Vec<&str> = terms
-        .iter()
-        .filter(|t| is_single_letter(t))
-        .copied()
-        .collect();
+    let letter_terms: Vec<&str> = terms.iter().filter(|t| is_single_letter(t)).copied().collect();
 
-    let acronym_terms: Vec<&str> = terms
-        .iter()
-        .filter(|t| is_acronym(t))
-        .copied()
-        .collect();
+    let acronym_terms: Vec<&str> = terms.iter().filter(|t| is_acronym(t)).copied().collect();
 
     // Find all positions to highlight
     let mut matches: Vec<(usize, usize)> = Vec::new();
@@ -551,7 +559,8 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
         search_start = 0;
         while let Some(pos) = text_lower[search_start..].find(&full_query_lower) {
             let abs_pos = search_start + pos;
-            let already = matches.iter().any(|(s, e)| abs_pos >= *s && abs_pos + full_query.len() <= *e);
+            let already =
+                matches.iter().any(|(s, e)| abs_pos >= *s && abs_pos + full_query.len() <= *e);
             if !already {
                 matches.push((abs_pos, abs_pos + full_query.len()));
             }
@@ -586,7 +595,8 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
 
             // Check word boundaries
             let before_ok = abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let after_ok =
+                end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
                 let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
@@ -608,7 +618,8 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
 
             // Check word boundaries
             let before_ok = abs_pos == 0 || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let after_ok =
+                end_pos >= text.len() || !text.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
                 let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
@@ -630,8 +641,10 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
             let end_pos = abs_pos + term_lower.len();
 
             // Check word boundaries
-            let before_ok = abs_pos == 0 || !text_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
-            let after_ok = end_pos >= text_lower.len() || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
+            let before_ok =
+                abs_pos == 0 || !text_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+            let after_ok = end_pos >= text_lower.len()
+                || !text_lower.as_bytes()[end_pos].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
                 let already_covered = matches.iter().any(|(s, e)| abs_pos >= *s && end_pos <= *e);
@@ -680,18 +693,13 @@ fn highlight_terms(text: &str, terms: &[&str]) -> String {
 /// Re-embed existing chunks with new/additional embedders
 /// Useful when adding new vector types to an existing database
 #[allow(dead_code)]
-pub fn reembed(
-    config: &Config,
-    vector_names: Option<&[String]>,
-) -> Result<()> {
+pub fn reembed(config: &Config, vector_names: Option<&[String]>) -> Result<()> {
     println!("Loading embedding models...");
     let embedder_set = EmbedderSet::from_config(&config.vectors)?;
 
     // Filter to specified vectors if provided
     let vectors_to_process: Vec<&String> = match vector_names {
-        Some(names) => embedder_set.names()
-            .filter(|n| names.iter().any(|x| x == *n))
-            .collect(),
+        Some(names) => embedder_set.names().filter(|n| names.iter().any(|x| x == *n)).collect(),
         None => embedder_set.names().collect(),
     };
 
@@ -702,12 +710,7 @@ pub fn reembed(
 
     for name in &vectors_to_process {
         if let Some(embedder) = embedder_set.get(name) {
-            println!(
-                "  {} ({}, dim: {})",
-                name,
-                embedder.metadata().name,
-                embedder.dimension()
-            );
+            println!("  {} ({}, dim: {})", name, embedder.metadata().name, embedder.dimension());
         }
     }
 

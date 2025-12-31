@@ -1,0 +1,98 @@
+# Gimbal Configuration
+# Embed documents with multiple vector types and store in ManifoldDB
+
+[database]
+path = "embeddings.manifold"
+
+# =============================================================================
+# CHUNKING - Automatic content-aware splitting
+# =============================================================================
+# Gimbal automatically detects file types and uses appropriate chunking:
+#   - Markdown (.md): Split on headers
+#   - Code (.rs, .py, .ts, etc.): Tree-sitter AST-based symbol extraction
+#   - Other text: Paragraph-based splitting
+
+[chunking]
+# Markdown options
+split_on_headers = true
+header_levels = [1, 2, 3]
+overlap = 50
+
+# Code options (tree-sitter based)
+code_enabled = true
+code_max_size = 8000  # Max bytes per code chunk
+
+# Vector configurations - name them whatever you want!
+# Each vector name becomes a separate embedding namespace.
+[vectors.dense]
+model = "bge-base-en-v1.5"
+enabled = true
+# max_chunk_size = 512  # optional, defaults to model's context length
+# overlap = 50          # optional, overrides chunking.overlap
+
+# Ingestion sources (optional - you can also use CLI directly)
+# [[ingest.sources]]
+# name = "documentation"
+# paths = ["./docs"]
+# extensions = ["md", "txt", "rs", "py"]
+# exclude = [".git", "node_modules"]
+# vectors = ["dense"]  # which vectors to use for this source
+
+# Default vectors for CLI one-off ingests
+[ingest.default]
+vectors = ["dense"]
+extensions = ["md", "txt", "rs", "py", "ts", "js", "go"]
+exclude = [".git", "node_modules", "target", "__pycache__", ".venv"]
+
+[search]
+default_mode = "dense"
+
+# Hybrid search combines dense and sparse results
+[search.hybrid]
+dense_weight = 0.7
+sparse_weight = 0.3
+fusion = "rrf"  # or "weighted_sum"
+
+# =============================================================================
+# SUPPORTED FILE TYPES
+# =============================================================================
+# Code (tree-sitter AST parsing):
+#   Rust (.rs), Python (.py), TypeScript (.ts), JavaScript (.js),
+#   TSX (.tsx), Go (.go), C (.c, .h), C++ (.cpp, .hpp),
+#   JSON, YAML, CSS, Bash (.sh)
+#
+# Documents (markdown-aware):
+#   Markdown (.md), Plain text (.txt)
+#
+# =============================================================================
+# AVAILABLE EMBEDDING MODELS (from Tessera)
+# Run 'gimbal models' for the full list with dimensions
+# =============================================================================
+#
+# DENSE MODELS (semantic similarity):
+#   bge-base-en-v1.5     - 768 dim, 512 ctx  - Strong baseline, fast
+#   nomic-embed-v1.5     - 768 dim, 8K ctx   - Matryoshka support
+#   snowflake-arctic-l   - 1024 dim, 512 ctx - High performance, Matryoshka
+#   jina-embeddings-v3   - 1024 dim, 8K ctx  - Multilingual (89 langs)
+#   gte-qwen2-7b         - 3584 dim, 32K ctx - State-of-art, Matryoshka
+#   qwen3-embedding-8b   - 4096 dim, 32K ctx - Latest, #1 MTEB multilingual
+#   qwen3-embedding-4b   - 2560 dim, 32K ctx - Efficient, strong performance
+#   qwen3-embedding-0.6b - 1024 dim, 32K ctx - Compact multilingual
+#
+# SPARSE MODELS (keyword/lexical matching):
+#   splade-v3            - vocab dim, 512 ctx - Best sparse retrieval
+#   splade-pp-en-v1      - vocab dim, 512 ctx - Efficient variant
+#   splade-pp-en-v2      - vocab dim, 512 ctx - Improved v1
+#   minicoil-v1          - 4 dim, 512 ctx     - Ultra-compact sparse
+#
+# COLBERT MODELS (multi-vector late interaction):
+#   colbert-v2           - 128 dim, 512 ctx  - Original Stanford baseline
+#   colbert-small        - 96 dim, 512 ctx   - Compact, fast inference
+#   jina-colbert-v2      - 768 dim, 8K ctx   - Multilingual, Matryoshka
+#   jina-colbert-v2-96   - 96 dim, 8K ctx    - Compact variant
+#   gte-modern-colbert   - 768 dim, 8K ctx   - ModernBERT, best performance
+#
+# UNIFIED MODELS (dense + sparse + colbert in one):
+#   bge-m3-multi         - 1024 dim, 8K ctx  - All three modes, 100+ langs
+#
+# =============================================================================

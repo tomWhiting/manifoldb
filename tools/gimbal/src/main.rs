@@ -259,10 +259,23 @@ fn generate_default_config_content() -> String {
 [database]
 path = "embeddings.manifold"
 
+# =============================================================================
+# CHUNKING - Automatic content-aware splitting
+# =============================================================================
+# Gimbal automatically detects file types and uses appropriate chunking:
+#   - Markdown (.md): Split on headers
+#   - Code (.rs, .py, .ts, etc.): Tree-sitter AST-based symbol extraction
+#   - Other text: Paragraph-based splitting
+
 [chunking]
+# Markdown options
 split_on_headers = true
 header_levels = [1, 2, 3]
 overlap = 50
+
+# Code options (tree-sitter based)
+code_enabled = true
+code_max_size = 8000  # Max bytes per code chunk
 
 # Vector configurations - name them whatever you want!
 # Each vector name becomes a separate embedding namespace.
@@ -276,15 +289,15 @@ enabled = true
 # [[ingest.sources]]
 # name = "documentation"
 # paths = ["./docs"]
-# extensions = ["md", "txt"]
+# extensions = ["md", "txt", "rs", "py"]
 # exclude = [".git", "node_modules"]
 # vectors = ["dense"]  # which vectors to use for this source
 
 # Default vectors for CLI one-off ingests
 [ingest.default]
 vectors = ["dense"]
-extensions = ["md", "txt"]
-exclude = [".git", "node_modules", "target", "__pycache__"]
+extensions = ["md", "txt", "rs", "py", "ts", "js", "go"]
+exclude = [".git", "node_modules", "target", "__pycache__", ".venv"]
 
 [search]
 default_mode = "dense"
@@ -295,6 +308,17 @@ dense_weight = 0.7
 sparse_weight = 0.3
 fusion = "rrf"  # or "weighted_sum"
 
+# =============================================================================
+# SUPPORTED FILE TYPES
+# =============================================================================
+# Code (tree-sitter AST parsing):
+#   Rust (.rs), Python (.py), TypeScript (.ts), JavaScript (.js),
+#   TSX (.tsx), Go (.go), C (.c, .h), C++ (.cpp, .hpp),
+#   JSON, YAML, CSS, Bash (.sh)
+#
+# Documents (markdown-aware):
+#   Markdown (.md), Plain text (.txt)
+#
 # =============================================================================
 # AVAILABLE EMBEDDING MODELS (from Tessera)
 # Run 'gimbal models' for the full list with dimensions
@@ -338,10 +362,23 @@ fn generate_multi_vector_config_content() -> String {
 [database]
 path = "embeddings.manifold"
 
+# =============================================================================
+# CHUNKING - Automatic content-aware splitting
+# =============================================================================
+# Gimbal automatically detects file types and uses appropriate chunking:
+#   - Markdown (.md): Split on headers
+#   - Code (.rs, .py, .ts, etc.): Tree-sitter AST-based symbol extraction
+#   - Other text: Paragraph-based splitting
+
 [chunking]
+# Markdown options
 split_on_headers = true
 header_levels = [1, 2, 3]
 overlap = 50
+
+# Code options (tree-sitter based)
+code_enabled = true
+code_max_size = 8000  # Max bytes per code chunk
 
 # Vector configurations - you can rename these to anything you want!
 # Examples: "docs", "code", "research", "semantic", "keywords", etc.
