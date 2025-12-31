@@ -10,6 +10,8 @@
 //! - Entities can be retrieved without vector data bloat
 //! - The correct count of inserted vectors is returned
 
+#![allow(clippy::explicit_iter_loop)]
+
 use manifoldb::Database;
 use manifoldb_core::EntityId;
 

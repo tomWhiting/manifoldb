@@ -351,7 +351,7 @@ impl std::fmt::Debug for ExecutionContext {
             .field("config", &self.config)
             .field("graph", &"<GraphAccessor>")
             .field("vector_index_provider", &self.vector_index_provider.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

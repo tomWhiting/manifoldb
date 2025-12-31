@@ -676,11 +676,7 @@ fn insert_into_graph(
         let selected: Vec<EntityId> = neighbors.into_iter().take(m).collect();
 
         // Add connections
-        graph
-            .nodes
-            .entry(entity_id)
-            .or_insert_with(|| node.clone())
-            .connections[layer]
+        graph.nodes.entry(entity_id).or_insert_with(|| node.clone()).connections[layer]
             .clone_from(&selected);
 
         // Add reverse connections

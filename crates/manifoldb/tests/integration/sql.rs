@@ -1235,11 +1235,7 @@ fn test_explain_basic() {
     // First row should be the logical plan header
     let first_row = result.rows().first().expect("no rows");
     if let Some(Value::String(line)) = first_row.get(plan_idx) {
-        assert!(
-            line.contains("Logical Plan"),
-            "Expected Logical Plan header, got: {}",
-            line
-        );
+        assert!(line.contains("Logical Plan"), "Expected Logical Plan header, got: {}", line);
     }
 
     // Should also have physical plan output

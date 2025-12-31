@@ -232,7 +232,14 @@ impl Database {
         let index_manager = IndexManager::new(manager.engine_arc());
 
         // Initialize prepared cache with current schema version
-        let inner = DatabaseInner { manager, config, query_cache, prepared_cache, db_metrics, index_manager };
+        let inner = DatabaseInner {
+            manager,
+            config,
+            query_cache,
+            prepared_cache,
+            db_metrics,
+            index_manager,
+        };
         let db = Self { inner: Arc::new(inner) };
 
         // Load initial schema version
@@ -738,7 +745,12 @@ impl Database {
     /// - `Equality`: Best for enum-like fields. Supports `eq`, `ne`, `in` operators.
     /// - `Range`: Best for numeric fields. Supports `gt`, `gte`, `lt`, `lte`, `range`.
     /// - `Prefix`: Best for paths/names. Supports `starts_with`.
-    pub fn create_index_with_type(&self, label: &str, property: &str, index_type: IndexType) -> Result<()> {
+    pub fn create_index_with_type(
+        &self,
+        label: &str,
+        property: &str,
+        index_type: IndexType,
+    ) -> Result<()> {
         self.inner.index_manager.create_index(label, property, index_type)
     }
 
@@ -800,7 +812,12 @@ impl Database {
     /// * `label` - The entity label
     /// * `property` - The indexed property
     /// * `value` - The value to match
-    pub fn index_lookup(&self, label: &str, property: &str, value: &manifoldb_core::Value) -> Result<Option<Vec<EntityId>>> {
+    pub fn index_lookup(
+        &self,
+        label: &str,
+        property: &str,
+        value: &manifoldb_core::Value,
+    ) -> Result<Option<Vec<EntityId>>> {
         self.inner.index_manager.lookup_eq(label, property, value)
     }
 
@@ -1213,7 +1230,8 @@ impl Database {
             let key = id.as_u64().to_be_bytes();
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
-            storage.put("nodes", &key, bytes)
+            storage
+                .put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Phase 5a: Label index maintenance
@@ -1225,7 +1243,8 @@ impl Database {
                 label_key.extend_from_slice(&len.to_be_bytes());
                 label_key.extend_from_slice(label_bytes);
                 label_key.extend_from_slice(&id.as_u64().to_be_bytes());
-                storage.put("label_index", &label_key, &[])
+                storage
+                    .put("label_index", &label_key, &[])
                     .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
             }
 
@@ -2493,7 +2512,8 @@ impl Database {
             let key = id.as_u64().to_be_bytes();
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
-            storage.put("nodes", &key, bytes)
+            storage
+                .put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Label index maintenance for insert
@@ -2504,7 +2524,8 @@ impl Database {
                 label_key.extend_from_slice(&len.to_be_bytes());
                 label_key.extend_from_slice(label_bytes);
                 label_key.extend_from_slice(&id.as_u64().to_be_bytes());
-                storage.put("label_index", &label_key, &[])
+                storage
+                    .put("label_index", &label_key, &[])
                     .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
             }
 
@@ -2525,7 +2546,8 @@ impl Database {
             let key = id.as_u64().to_be_bytes();
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
-            storage.put("nodes", &key, bytes)
+            storage
+                .put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Label index maintenance for update - remove old labels not in new
@@ -2537,8 +2559,9 @@ impl Database {
                     label_key.extend_from_slice(&len.to_be_bytes());
                     label_key.extend_from_slice(label_bytes);
                     label_key.extend_from_slice(&id.as_u64().to_be_bytes());
-                    storage.delete("label_index", &label_key)
-                        .map_err(|e| Error::Execution(format!("Failed to delete label index: {}", e)))?;
+                    storage.delete("label_index", &label_key).map_err(|e| {
+                        Error::Execution(format!("Failed to delete label index: {}", e))
+                    })?;
                 }
             }
             // Add new labels not in old
@@ -2550,8 +2573,9 @@ impl Database {
                     label_key.extend_from_slice(&len.to_be_bytes());
                     label_key.extend_from_slice(label_bytes);
                     label_key.extend_from_slice(&id.as_u64().to_be_bytes());
-                    storage.put("label_index", &label_key, &[])
-                        .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
+                    storage.put("label_index", &label_key, &[]).map_err(|e| {
+                        Error::Execution(format!("Failed to write label index: {}", e))
+                    })?;
                 }
             }
 
@@ -2789,10 +2813,9 @@ impl Database {
                 .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
 
             // Remove from payload indexes before deleting
-            self.inner.index_manager.on_entity_delete_tx(
-                tx.storage_mut_ref().map_err(Error::Transaction)?,
-                &entity,
-            )?;
+            self.inner
+                .index_manager
+                .on_entity_delete_tx(tx.storage_mut_ref().map_err(Error::Transaction)?, &entity)?;
 
             // Remove from HNSW/vector indexes
             crate::vector::remove_entity_from_indexes(&mut tx, &entity)

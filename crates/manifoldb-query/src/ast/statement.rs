@@ -38,9 +38,52 @@ pub enum Statement {
     Explain(Box<Statement>),
 }
 
+/// A Common Table Expression (CTE) defined in a WITH clause.
+///
+/// CTEs allow defining named subqueries that can be referenced multiple times
+/// in the main query, similar to temporary views.
+///
+/// # Example
+///
+/// ```sql
+/// WITH active_users AS (
+///     SELECT * FROM users WHERE status = 'active'
+/// )
+/// SELECT * FROM active_users WHERE age > 21;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithClause {
+    /// The name of the CTE.
+    pub name: Identifier,
+    /// Optional column aliases for the CTE.
+    pub columns: Vec<Identifier>,
+    /// The subquery that defines the CTE.
+    pub query: Box<SelectStatement>,
+}
+
+impl WithClause {
+    /// Creates a new CTE with the given name and query.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, query: SelectStatement) -> Self {
+        Self { name: name.into(), columns: vec![], query: Box::new(query) }
+    }
+
+    /// Creates a new CTE with column aliases.
+    #[must_use]
+    pub fn with_columns(
+        name: impl Into<Identifier>,
+        columns: Vec<Identifier>,
+        query: SelectStatement,
+    ) -> Self {
+        Self { name: name.into(), columns, query: Box::new(query) }
+    }
+}
+
 /// A SELECT statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectStatement {
+    /// Common Table Expressions (WITH clause).
+    pub with_clauses: Vec<WithClause>,
     /// Whether DISTINCT is specified.
     pub distinct: bool,
     /// The projection (SELECT list).
@@ -70,6 +113,7 @@ impl SelectStatement {
     #[must_use]
     pub const fn new(projection: Vec<SelectItem>) -> Self {
         Self {
+            with_clauses: vec![],
             distinct: false,
             projection,
             from: vec![],
@@ -82,6 +126,13 @@ impl SelectStatement {
             offset: None,
             set_op: None,
         }
+    }
+
+    /// Adds a WITH clause (CTE) to the statement.
+    #[must_use]
+    pub fn with_cte(mut self, cte: WithClause) -> Self {
+        self.with_clauses.push(cte);
+        self
     }
 
     /// Adds a FROM clause.
@@ -226,6 +277,7 @@ impl MatchStatement {
             .collect();
 
         SelectStatement {
+            with_clauses: vec![], // MATCH statements don't have CTEs
             distinct: self.distinct,
             projection,
             from: vec![], // Graph patterns don't need a FROM clause

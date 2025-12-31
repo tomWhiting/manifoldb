@@ -8,6 +8,9 @@
 //! Note: Full scale tests are marked `#[ignore]` by default as they take
 //! significant time and resources. Run with `--ignored` flag to execute.
 
+#![allow(clippy::cloned_instead_of_copied)]
+#![allow(clippy::set_contains_or_insert)]
+
 use std::collections::HashSet;
 use std::time::Instant;
 

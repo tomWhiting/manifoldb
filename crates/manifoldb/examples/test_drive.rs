@@ -3,6 +3,9 @@
 //! A comprehensive interactive test of all major features.
 //! Run with: cargo run --example test_drive
 
+#![allow(unused_variables)]
+#![allow(clippy::unreadable_literal)]
+
 use manifoldb::collection::{DistanceMetric, Filter, PointStruct};
 use manifoldb::{Database, EntityId};
 use serde_json::json;

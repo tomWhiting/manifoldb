@@ -101,9 +101,7 @@ mod tests {
 
     #[test]
     fn scored_entity_basic() {
-        let entity = Entity::new(EntityId::new(1))
-            .with_label("Test")
-            .with_property("name", "foo");
+        let entity = Entity::new(EntityId::new(1)).with_label("Test").with_property("name", "foo");
 
         let scored = ScoredEntity::new(entity, 0.95);
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use manifoldb_core::{Entity, Value};
 use manifoldb_query::ast::DistanceMetric;
 use manifoldb_query::ast::Literal;
+use manifoldb_query::ast::Statement;
 use manifoldb_query::exec::operators::{
     BruteForceSearchOp, HashAggregateOp, HashJoinOp, NestedLoopJoinOp, SetOpOp, UnionOp, ValuesOp,
 };
@@ -21,7 +22,6 @@ use manifoldb_query::plan::logical::{
 };
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
-use manifoldb_query::ast::Statement;
 use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
 
@@ -89,7 +89,8 @@ pub fn execute_query_with_catalog<T: Transaction>(
 
     // Build logical plan from the inner statement
     let mut builder = PlanBuilder::new();
-    let logical_plan = builder.build_statement(inner_stmt).map_err(|e| Error::Parse(e.to_string()))?;
+    let logical_plan =
+        builder.build_statement(inner_stmt).map_err(|e| Error::Parse(e.to_string()))?;
 
     // Build catalog with available indexes from schema
     let mut catalog = build_planner_catalog(tx)?;
@@ -277,8 +278,7 @@ fn build_planner_catalog<T: Transaction>(tx: &DatabaseTransaction<T>) -> Result<
 
             // Only add B-tree indexes for now (HNSW handled separately)
             if index_type == IndexType::BTree {
-                let columns: Vec<String> =
-                    schema.columns.iter().map(|c| c.expr.clone()).collect();
+                let columns: Vec<String> = schema.columns.iter().map(|c| c.expr.clone()).collect();
 
                 let index_info = IndexInfo::btree(&schema.name, &schema.table, columns);
                 catalog = catalog.with_index(index_info);

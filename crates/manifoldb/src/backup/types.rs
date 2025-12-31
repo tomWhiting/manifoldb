@@ -408,15 +408,11 @@ fn json_to_value(json: &serde_json::Value) -> manifoldb_core::Value {
     match json {
         serde_json::Value::Null => manifoldb_core::Value::Null,
         serde_json::Value::Bool(b) => manifoldb_core::Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                manifoldb_core::Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                manifoldb_core::Value::Float(f)
-            } else {
-                manifoldb_core::Value::Null
-            }
-        }
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(manifoldb_core::Value::Int)
+            .or_else(|| n.as_f64().map(manifoldb_core::Value::Float))
+            .unwrap_or(manifoldb_core::Value::Null),
         serde_json::Value::String(s) => manifoldb_core::Value::String(s.clone()),
         serde_json::Value::Array(arr) => {
             // Try to detect if this is a vector (all f64) or a general array

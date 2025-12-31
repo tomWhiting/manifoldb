@@ -256,7 +256,8 @@ fn test_index_maintenance_on_delete() {
     let initial_count = initial_rust_ids.len();
 
     // Delete half of the rust entities
-    let to_delete: Vec<EntityId> = initial_rust_ids.iter().take(initial_count / 2).copied().collect();
+    let to_delete: Vec<EntityId> =
+        initial_rust_ids.iter().take(initial_count / 2).copied().collect();
     db.bulk_delete_entities(&to_delete).expect("Failed to delete entities");
 
     // Verify index was updated
@@ -298,14 +299,9 @@ fn test_index_with_null_values() {
 
     // Insert entities, some without the indexed property
     let entities = vec![
-        Entity::new(EntityId::new(0))
-            .with_label("Symbol")
-            .with_property("language", "rust"),
-        Entity::new(EntityId::new(0))
-            .with_label("Symbol")
-            .with_property("language", "python"),
-        Entity::new(EntityId::new(0))
-            .with_label("Symbol"), // No language property
+        Entity::new(EntityId::new(0)).with_label("Symbol").with_property("language", "rust"),
+        Entity::new(EntityId::new(0)).with_label("Symbol").with_property("language", "python"),
+        Entity::new(EntityId::new(0)).with_label("Symbol"), // No language property
     ];
 
     db.bulk_insert_entities(&entities).expect("Failed to insert entities");
@@ -325,9 +321,7 @@ fn test_index_key_ordering() {
     // Insert entities with numeric values
     let entities: Vec<Entity> = (0..100)
         .map(|i| {
-            Entity::new(EntityId::new(0))
-                .with_label("Counter")
-                .with_property("value", i as i64)
+            Entity::new(EntityId::new(0)).with_label("Counter").with_property("value", i as i64)
         })
         .collect();
 
@@ -338,9 +332,7 @@ fn test_index_key_ordering() {
         .expect("Failed to create index");
 
     // Lookup for value = 50 should return exactly 1 entity
-    let ids = db
-        .index_lookup("Counter", "value", &Value::Int(50))
-        .expect("Failed to lookup")
-        .unwrap();
+    let ids =
+        db.index_lookup("Counter", "value", &Value::Int(50)).expect("Failed to lookup").unwrap();
     assert_eq!(ids.len(), 1);
 }

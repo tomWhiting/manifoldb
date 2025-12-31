@@ -1331,9 +1331,9 @@ mod standalone_match {
     fn parse_match_full_syntax() {
         // Test full Cypher-style syntax as described in the task
         let stmts = ExtendedParser::parse(
-            r#"MATCH (a:User)-[:FOLLOWS]->(b:User)
+            r"MATCH (a:User)-[:FOLLOWS]->(b:User)
                WHERE a.name = 'Alice'
-               RETURN b.name"#,
+               RETURN b.name",
         )
         .unwrap();
 
@@ -1348,6 +1348,207 @@ mod standalone_match {
             assert_eq!(match_stmt.return_clause.len(), 1);
         } else {
             panic!("expected MATCH statement");
+        }
+    }
+}
+
+// ============================================================================
+// Common Table Expressions (CTE) Tests
+// ============================================================================
+
+mod cte {
+    use super::*;
+
+    #[test]
+    fn parse_simple_cte() {
+        let stmt = parse_single_statement(
+            "WITH active_users AS (SELECT * FROM users WHERE status = 'active')
+             SELECT * FROM active_users WHERE age > 21",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                // Check WITH clause
+                assert_eq!(select.with_clauses.len(), 1);
+                assert_eq!(select.with_clauses[0].name.name, "active_users");
+                assert!(select.with_clauses[0].columns.is_empty());
+
+                // Check the CTE query
+                let cte_query = &select.with_clauses[0].query;
+                assert!(cte_query.where_clause.is_some());
+
+                // Check the main query uses the CTE
+                assert_eq!(select.from.len(), 1);
+                if let TableRef::Table { name, .. } = &select.from[0] {
+                    assert_eq!(name.name().unwrap().name, "active_users");
+                } else {
+                    panic!("expected table reference");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_ctes() {
+        let stmt = parse_single_statement(
+            "WITH
+                dept_totals AS (SELECT dept_id, SUM(salary) as total FROM employees GROUP BY dept_id),
+                high_spenders AS (SELECT * FROM dept_totals WHERE total > 100000)
+             SELECT * FROM high_spenders",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                // Check we have two CTEs
+                assert_eq!(select.with_clauses.len(), 2);
+                assert_eq!(select.with_clauses[0].name.name, "dept_totals");
+                assert_eq!(select.with_clauses[1].name.name, "high_spenders");
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cte_with_column_aliases() {
+        let stmt =
+            parse_single_statement("WITH temp(a, b, c) AS (SELECT 1, 2, 3) SELECT * FROM temp")
+                .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+                assert_eq!(select.with_clauses[0].name.name, "temp");
+                assert_eq!(select.with_clauses[0].columns.len(), 3);
+                assert_eq!(select.with_clauses[0].columns[0].name, "a");
+                assert_eq!(select.with_clauses[0].columns[1].name, "b");
+                assert_eq!(select.with_clauses[0].columns[2].name, "c");
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cte_with_join() {
+        let stmt = parse_single_statement(
+            "WITH user_orders AS (
+                SELECT u.id, u.name, o.total
+                FROM users u
+                JOIN orders o ON u.id = o.user_id
+             )
+             SELECT * FROM user_orders WHERE total > 100",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+
+                // Check the CTE query has a join
+                let cte_query = &select.with_clauses[0].query;
+                assert_eq!(cte_query.from.len(), 1);
+                if let TableRef::Join(_) = &cte_query.from[0] {
+                    // Good - it's a join
+                } else {
+                    panic!("expected JOIN in CTE");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cte_with_aggregation() {
+        let stmt = parse_single_statement(
+            "WITH summary AS (
+                SELECT category, COUNT(*) as cnt, AVG(price) as avg_price
+                FROM products
+                GROUP BY category
+             )
+             SELECT * FROM summary ORDER BY cnt DESC",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+                assert_eq!(select.with_clauses[0].name.name, "summary");
+
+                // Check the CTE query has GROUP BY
+                let cte_query = &select.with_clauses[0].query;
+                assert_eq!(cte_query.group_by.len(), 1);
+
+                // Check the main query has ORDER BY
+                assert_eq!(select.order_by.len(), 1);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cte_referenced_multiple_times() {
+        let stmt = parse_single_statement(
+            "WITH temp AS (SELECT id, value FROM data)
+             SELECT t1.id, t1.value, t2.value
+             FROM temp t1
+             JOIN temp t2 ON t1.id = t2.id + 1",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+                assert_eq!(select.with_clauses[0].name.name, "temp");
+
+                // Main query should have a join with two references to 'temp'
+                assert_eq!(select.from.len(), 1);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cte_with_subquery() {
+        let stmt = parse_single_statement(
+            "WITH filtered AS (
+                SELECT * FROM users WHERE id IN (SELECT user_id FROM premium_users)
+             )
+             SELECT * FROM filtered",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+
+                // Check the CTE query has a subquery in WHERE
+                let cte_query = &select.with_clauses[0].query;
+                assert!(cte_query.where_clause.is_some());
+                if let Some(Expr::InSubquery { .. }) = &cte_query.where_clause {
+                    // Good - it's an IN subquery
+                } else {
+                    panic!("expected IN subquery in CTE WHERE clause");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn recursive_cte_not_supported() {
+        // WITH RECURSIVE should return an error
+        let result = parse_single_statement(
+            "WITH RECURSIVE cte AS (SELECT 1 UNION ALL SELECT n + 1 FROM cte WHERE n < 10)
+             SELECT * FROM cte",
+        );
+
+        assert!(result.is_err());
+        if let Err(ParseError::Unsupported(msg)) = result {
+            assert!(msg.contains("RECURSIVE"));
+        } else {
+            panic!("expected Unsupported error for RECURSIVE");
         }
     }
 }

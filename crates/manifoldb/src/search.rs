@@ -150,7 +150,8 @@ impl EntitySearchBuilder {
     /// - The vector name doesn't exist in the collection
     /// - A storage error occurs
     pub fn execute(self) -> Result<Vec<ScoredEntity>> {
-        let query = self.query.ok_or_else(|| Error::InvalidInput("No query vector provided".into()))?;
+        let query =
+            self.query.ok_or_else(|| Error::InvalidInput("No query vector provided".into()))?;
 
         // Convert VectorData to collection Vector
         let collection_query = vector_data_to_collection_vector(&query);
@@ -219,12 +220,12 @@ fn filter_to_collection_filter(filter: Filter) -> crate::collection::Filter {
         }
         Filter::Exists { field } => crate::collection::Filter::Exists { field },
         Filter::NotExists { field } => crate::collection::Filter::NotExists { field },
-        Filter::And(filters) => {
-            crate::collection::Filter::And(filters.into_iter().map(filter_to_collection_filter).collect())
-        }
-        Filter::Or(filters) => {
-            crate::collection::Filter::Or(filters.into_iter().map(filter_to_collection_filter).collect())
-        }
+        Filter::And(filters) => crate::collection::Filter::And(
+            filters.into_iter().map(filter_to_collection_filter).collect(),
+        ),
+        Filter::Or(filters) => crate::collection::Filter::Or(
+            filters.into_iter().map(filter_to_collection_filter).collect(),
+        ),
         Filter::Not(filter) => {
             crate::collection::Filter::Not(Box::new(filter_to_collection_filter(*filter)))
         }
@@ -256,22 +257,15 @@ fn json_to_value(json: &serde_json::Value) -> Option<manifoldb_core::Value> {
     match json {
         serde_json::Value::Null => Some(manifoldb_core::Value::Null),
         serde_json::Value::Bool(b) => Some(manifoldb_core::Value::Bool(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(manifoldb_core::Value::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(manifoldb_core::Value::Float(f))
-            } else {
-                None
-            }
-        }
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(manifoldb_core::Value::Int)
+            .or_else(|| n.as_f64().map(manifoldb_core::Value::Float)),
         serde_json::Value::String(s) => Some(manifoldb_core::Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
             // Check if it's a vector (all f32)
-            let floats: Option<Vec<f32>> = arr
-                .iter()
-                .map(|v| v.as_f64().map(|f| f as f32))
-                .collect();
+            let floats: Option<Vec<f32>> =
+                arr.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
             if let Some(vec) = floats {
                 Some(manifoldb_core::Value::Vector(vec))
             } else {
@@ -289,7 +283,7 @@ fn json_to_value(json: &serde_json::Value) -> Option<manifoldb_core::Value> {
 }
 
 /// Convert Entity to collection PointStruct for upserting.
-pub(crate) fn entity_to_point_struct(
+pub fn entity_to_point_struct(
     entity: &Entity,
     collection_name: &str,
 ) -> crate::collection::PointStruct {
@@ -347,9 +341,8 @@ fn value_to_json(value: &manifoldb_core::Value) -> serde_json::Value {
         manifoldb_core::Value::Null => serde_json::Value::Null,
         manifoldb_core::Value::Bool(b) => serde_json::Value::Bool(*b),
         manifoldb_core::Value::Int(i) => serde_json::json!(*i),
-        manifoldb_core::Value::Float(f) => {
-            serde_json::Number::from_f64(*f).map_or(serde_json::Value::Null, serde_json::Value::Number)
-        }
+        manifoldb_core::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
         manifoldb_core::Value::String(s) => serde_json::Value::String(s.clone()),
         manifoldb_core::Value::Bytes(b) => {
             use base64::Engine;
@@ -358,21 +351,16 @@ fn value_to_json(value: &manifoldb_core::Value) -> serde_json::Value {
         manifoldb_core::Value::Vector(v) => {
             serde_json::Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect())
         }
-        manifoldb_core::Value::SparseVector(pairs) => {
-            serde_json::Value::Array(
-                pairs
-                    .iter()
-                    .map(|(idx, val)| serde_json::json!([*idx, *val]))
-                    .collect(),
-            )
-        }
-        manifoldb_core::Value::MultiVector(vecs) => {
-            serde_json::Value::Array(
-                vecs.iter()
-                    .map(|v| serde_json::Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect()))
-                    .collect(),
-            )
-        }
+        manifoldb_core::Value::SparseVector(pairs) => serde_json::Value::Array(
+            pairs.iter().map(|(idx, val)| serde_json::json!([*idx, *val])).collect(),
+        ),
+        manifoldb_core::Value::MultiVector(vecs) => serde_json::Value::Array(
+            vecs.iter()
+                .map(|v| {
+                    serde_json::Value::Array(v.iter().map(|f| serde_json::json!(*f)).collect())
+                })
+                .collect(),
+        ),
         manifoldb_core::Value::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(value_to_json).collect())
         }
