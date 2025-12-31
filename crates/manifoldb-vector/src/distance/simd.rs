@@ -18,6 +18,13 @@ use wide::f32x8;
 /// Number of f32 elements processed per SIMD iteration.
 const SIMD_WIDTH: usize = 8;
 
+/// Convert a slice to a fixed-size array for SIMD.
+/// Returns zero array if conversion fails (should never happen with correct loop bounds).
+#[inline]
+fn slice_to_simd_array(slice: &[f32]) -> [f32; SIMD_WIDTH] {
+    slice.try_into().unwrap_or([0.0; SIMD_WIDTH])
+}
+
 /// Calculate the squared Euclidean (L2) distance between two vectors.
 ///
 /// This avoids the sqrt operation for cases where only relative distances matter
@@ -38,8 +45,8 @@ pub fn euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
 
     // Process 8 elements at a time
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
-        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let va = f32x8::new(slice_to_simd_array(&a[i..i + SIMD_WIDTH]));
+        let vb = f32x8::new(slice_to_simd_array(&b[i..i + SIMD_WIDTH]));
         let diff = va - vb;
         sum += diff * diff;
     }
@@ -84,8 +91,8 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 
     // Process 8 elements at a time
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
-        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let va = f32x8::new(slice_to_simd_array(&a[i..i + SIMD_WIDTH]));
+        let vb = f32x8::new(slice_to_simd_array(&b[i..i + SIMD_WIDTH]));
         sum += va * vb;
     }
 
@@ -113,7 +120,7 @@ pub fn sum_of_squares(v: &[f32]) -> f32 {
 
     // Process 8 elements at a time
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let vv = f32x8::new(v[i..i + SIMD_WIDTH].try_into().unwrap());
+        let vv = f32x8::new(slice_to_simd_array(&v[i..i + SIMD_WIDTH]));
         sum += vv * vv;
     }
 
@@ -155,8 +162,8 @@ pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
 
     // Process 8 elements at a time
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
-        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let va = f32x8::new(slice_to_simd_array(&a[i..i + SIMD_WIDTH]));
+        let vb = f32x8::new(slice_to_simd_array(&b[i..i + SIMD_WIDTH]));
         let diff = va - vb;
         sum += diff.abs();
     }
@@ -192,8 +199,8 @@ pub fn chebyshev_distance(a: &[f32], b: &[f32]) -> f32 {
 
     // Process 8 elements at a time
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
-        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let va = f32x8::new(slice_to_simd_array(&a[i..i + SIMD_WIDTH]));
+        let vb = f32x8::new(slice_to_simd_array(&b[i..i + SIMD_WIDTH]));
         let diff = (va - vb).abs();
         max_simd = max_simd.max(diff);
     }
@@ -244,8 +251,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
     // Process 8 elements at a time, computing dot product and norms together
     for i in (0..simd_len).step_by(SIMD_WIDTH) {
-        let va = f32x8::new(a[i..i + SIMD_WIDTH].try_into().unwrap());
-        let vb = f32x8::new(b[i..i + SIMD_WIDTH].try_into().unwrap());
+        let va = f32x8::new(slice_to_simd_array(&a[i..i + SIMD_WIDTH]));
+        let vb = f32x8::new(slice_to_simd_array(&b[i..i + SIMD_WIDTH]));
 
         dot_sum += va * vb;
         norm_a_sum += va * va;

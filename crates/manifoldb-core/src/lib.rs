@@ -10,12 +10,13 @@
 //! - **Identifiers**: [`EntityId`], [`EdgeId`], and [`CollectionId`] for referencing graph elements
 //! - **Graph primitives**: [`Entity`] (nodes) and [`Edge`] (relationships)
 //! - **Values**: [`Value`] enum supporting strings, numbers, vectors, and more
+//! - **Vectors**: [`VectorData`] for attaching embeddings to entities
 //! - **Labels and types**: [`Label`] for entity categorization, [`EdgeType`] for relationships
 //!
 //! # Example
 //!
 //! ```
-//! use manifoldb_core::{Entity, EntityId, Edge, EdgeId, Value};
+//! use manifoldb_core::{Entity, EntityId, Edge, EdgeId, Value, VectorData};
 //!
 //! // Create entities (graph nodes)
 //! let alice = Entity::new(EntityId::new(1))
@@ -35,15 +36,18 @@
 //! assert!(alice.has_label("Person"));
 //! assert_eq!(alice.get_property("name"), Some(&Value::String("Alice".into())));
 //!
-//! // Vector embeddings for similarity search
+//! // Entity with vector embeddings for similarity search
 //! let doc = Entity::new(EntityId::new(3))
 //!     .with_label("Document")
-//!     .with_property("embedding", vec![0.1f32, 0.2, 0.3]);
+//!     .with_property("title", "Example")
+//!     .with_vector("dense", vec![0.1f32, 0.2, 0.3]);
+//!
+//! assert!(doc.has_vector("dense"));
 //! ```
 //!
 //! # Modules
 //!
-//! - [`types`] - Core data types ([`Entity`], [`Edge`], [`Value`], IDs)
+//! - [`types`] - Core data types ([`Entity`], [`Edge`], [`Value`], [`VectorData`], IDs)
 //! - [`encoding`] - Serialization and key encoding utilities
 //! - [`index`] - Property index types for secondary indexes
 //! - [`error`] - Error types ([`CoreError`])
@@ -62,5 +66,6 @@ pub mod types;
 pub use error::CoreError;
 pub use transaction::{DeleteResult, TransactionError, TransactionResult};
 pub use types::{
-    CollectionId, Edge, EdgeId, EdgeType, Entity, EntityId, Label, PointId, Property, Value,
+    CollectionId, Edge, EdgeId, EdgeType, Entity, EntityId, Label, PointId, Property, ScoredEntity,
+    ScoredId, Value, VectorData,
 };

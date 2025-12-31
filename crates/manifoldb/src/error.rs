@@ -84,6 +84,14 @@ pub enum Error {
     /// A collection error occurred.
     #[error("collection error: {0}")]
     Collection(String),
+
+    /// A serialization/deserialization error occurred.
+    #[error("serialization error: {0}")]
+    Serialization(String),
+
+    /// An index operation error occurred.
+    #[error("index error: {0}")]
+    Index(String),
 }
 
 impl Error {

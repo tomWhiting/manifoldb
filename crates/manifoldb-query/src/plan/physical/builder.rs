@@ -287,6 +287,17 @@ impl PlannerCatalog {
                 && i.columns.first().is_some_and(|c| c == column)
         })
     }
+
+    /// Merge another catalog into this one.
+    ///
+    /// Indexes and tables from the other catalog are added to this catalog.
+    /// Duplicates are not checked - if the same index exists in both, it will appear twice.
+    #[must_use]
+    pub fn merge(mut self, other: PlannerCatalog) -> Self {
+        self.tables.extend(other.tables);
+        self.indexes.extend(other.indexes);
+        self
+    }
 }
 
 impl Default for PhysicalPlanner {

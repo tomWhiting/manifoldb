@@ -21,6 +21,7 @@ use manifoldb_query::plan::logical::{
 };
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
+use manifoldb_query::ast::Statement;
 use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
 
@@ -55,25 +56,93 @@ pub fn execute_query_with_limit<T: Transaction>(
     params: &[Value],
     max_rows_in_memory: usize,
 ) -> Result<ResultSet> {
+    execute_query_with_catalog(tx, sql, params, max_rows_in_memory, None)
+}
+
+/// Execute a SELECT query with a custom planner catalog.
+///
+/// This allows callers to provide additional index information (e.g., payload indexes)
+/// that the query planner can use for index selection.
+///
+/// # Arguments
+///
+/// * `tx` - The transaction to execute against
+/// * `sql` - The SQL query to execute
+/// * `params` - The parameter values
+/// * `max_rows_in_memory` - Maximum rows operators can materialize (0 = no limit)
+/// * `external_catalog` - Optional catalog with additional index info (merged with schema indexes)
+pub fn execute_query_with_catalog<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    sql: &str,
+    params: &[Value],
+    max_rows_in_memory: usize,
+    external_catalog: Option<PlannerCatalog>,
+) -> Result<ResultSet> {
     // Parse SQL using ExtendedParser to support MATCH syntax
     let stmt = ExtendedParser::parse_single(sql)?;
 
-    // Build logical plan
+    // Check if this is an EXPLAIN statement
+    let (is_explain, inner_stmt) = match &stmt {
+        Statement::Explain(inner) => (true, inner.as_ref()),
+        other => (false, other),
+    };
+
+    // Build logical plan from the inner statement
     let mut builder = PlanBuilder::new();
-    let logical_plan = builder.build_statement(&stmt).map_err(|e| Error::Parse(e.to_string()))?;
+    let logical_plan = builder.build_statement(inner_stmt).map_err(|e| Error::Parse(e.to_string()))?;
 
     // Build catalog with available indexes from schema
-    let catalog = build_planner_catalog(tx)?;
+    let mut catalog = build_planner_catalog(tx)?;
+
+    // Merge in external catalog indexes (e.g., payload indexes)
+    if let Some(external) = external_catalog {
+        catalog = catalog.merge(external);
+    }
 
     // Build physical plan with catalog for index selection
     let planner = PhysicalPlanner::new().with_catalog(catalog);
     let physical_plan = planner.plan(&logical_plan);
+
+    // If EXPLAIN, return the plan as a text result instead of executing
+    if is_explain {
+        return Ok(build_explain_result(&logical_plan, &physical_plan));
+    }
 
     // Create execution context with parameters and row limit
     let ctx = create_context_with_limit(params, max_rows_in_memory);
 
     // Execute the plan against storage
     execute_physical_plan(tx, &physical_plan, &logical_plan, &ctx)
+}
+
+/// Build a result set containing the EXPLAIN output.
+fn build_explain_result(logical: &LogicalPlan, physical: &PhysicalPlan) -> ResultSet {
+    let schema = Arc::new(Schema::new(vec!["plan".to_string()]));
+
+    let mut rows = Vec::new();
+
+    // Add logical plan header
+    rows.push(Row::new(schema.clone(), vec![Value::from("=== Logical Plan ===")]));
+
+    // Add logical plan tree (convert DisplayTree to String)
+    let logical_tree = logical.display_tree().to_string();
+    for line in logical_tree.lines() {
+        rows.push(Row::new(schema.clone(), vec![Value::from(line)]));
+    }
+
+    // Add separator
+    rows.push(Row::new(schema.clone(), vec![Value::from("")]));
+
+    // Add physical plan header
+    rows.push(Row::new(schema.clone(), vec![Value::from("=== Physical Plan ===")]));
+
+    // Add physical plan tree (convert to String)
+    let physical_tree = physical.display_tree().to_string();
+    for line in physical_tree.lines() {
+        rows.push(Row::new(schema.clone(), vec![Value::from(line)]));
+    }
+
+    ResultSet::with_rows(schema, rows)
 }
 
 /// Execute a DML statement (INSERT, UPDATE, DELETE) and return the affected row count.

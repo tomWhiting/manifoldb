@@ -33,6 +33,7 @@ pub use logical::{
 };
 
 pub use physical::{
-    Cost, CostModel, FullScanNode, HashJoinNode, HnswSearchNode, IndexRangeScanNode, IndexScanNode,
-    NestedLoopJoinNode, PhysicalPlan, PhysicalPlanner,
+    Cost, CostModel, FullScanNode, HashJoinNode, HnswSearchNode, IndexInfo as PlannerIndexInfo,
+    IndexRangeScanNode, IndexScanNode, IndexType as PlannerIndexType, NestedLoopJoinNode,
+    PhysicalPlan, PhysicalPlanner, PlannerCatalog, TableStats,
 };

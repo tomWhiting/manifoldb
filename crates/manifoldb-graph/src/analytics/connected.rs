@@ -566,7 +566,10 @@ fn tarjan_dfs(start: usize, adjacency: &[Vec<usize>], state: &mut TarjanState) {
                         work_stack.push((w, 0, 0)); // Visit w
                     } else if state.on_stack[w] {
                         // w is on stack, update lowlink
-                        state.lowlink[v] = state.lowlink[v].min(state.index[w].unwrap());
+                        // index[w] is Some because we checked is_none() above
+                        if let Some(w_index) = state.index[w] {
+                            state.lowlink[v] = state.lowlink[v].min(w_index);
+                        }
                         work_stack.push((v, neighbor_idx + 1, 1)); // Continue with next neighbor
                     } else {
                         // w already processed, continue
@@ -574,17 +577,20 @@ fn tarjan_dfs(start: usize, adjacency: &[Vec<usize>], state: &mut TarjanState) {
                     }
                 } else {
                     // All neighbors processed, check if v is a root
-                    if state.lowlink[v] == state.index[v].unwrap() {
-                        // v is root of an SCC, pop the component
-                        let component_id = state.num_components;
-                        state.num_components += 1;
+                    // index[v] is Some because v was visited in phase 0
+                    if let Some(v_index) = state.index[v] {
+                        if state.lowlink[v] == v_index {
+                            // v is root of an SCC, pop the component
+                            let component_id = state.num_components;
+                            state.num_components += 1;
 
-                        loop {
-                            let w = state.stack.pop().unwrap();
-                            state.on_stack[w] = false;
-                            state.component[w] = Some(component_id);
-                            if w == v {
-                                break;
+                            // Pop nodes from stack until we reach v
+                            while let Some(w) = state.stack.pop() {
+                                state.on_stack[w] = false;
+                                state.component[w] = Some(component_id);
+                                if w == v {
+                                    break;
+                                }
                             }
                         }
                     }

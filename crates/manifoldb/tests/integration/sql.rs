@@ -1214,3 +1214,64 @@ fn test_vector_distance_null_handling() {
         }
     }
 }
+
+// ============================================================================
+// EXPLAIN Tests
+// ============================================================================
+
+#[test]
+fn test_explain_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Run EXPLAIN on a simple query
+    let result = db.query("EXPLAIN SELECT * FROM users WHERE age > 21").expect("explain failed");
+
+    // Should have at least some rows (plan output)
+    assert!(!result.is_empty(), "EXPLAIN should return plan output");
+
+    // Check that we have a 'plan' column
+    let plan_idx = result.column_index("plan").expect("plan column not found");
+
+    // First row should be the logical plan header
+    let first_row = result.rows().first().expect("no rows");
+    if let Some(Value::String(line)) = first_row.get(plan_idx) {
+        assert!(
+            line.contains("Logical Plan"),
+            "Expected Logical Plan header, got: {}",
+            line
+        );
+    }
+
+    // Should also have physical plan output
+    let has_physical = result.rows().iter().any(|row| {
+        if let Some(Value::String(line)) = row.get(plan_idx) {
+            line.contains("Physical Plan")
+        } else {
+            false
+        }
+    });
+    assert!(has_physical, "EXPLAIN should include Physical Plan");
+}
+
+#[test]
+fn test_explain_with_join() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Run EXPLAIN on a join query
+    let result = db
+        .query("EXPLAIN SELECT * FROM users u JOIN orders o ON u.id = o.user_id")
+        .expect("explain failed");
+
+    assert!(!result.is_empty(), "EXPLAIN should return plan output");
+
+    // Should mention Join somewhere in the output
+    let plan_idx = result.column_index("plan").expect("plan column not found");
+    let has_join = result.rows().iter().any(|row| {
+        if let Some(Value::String(line)) = row.get(plan_idx) {
+            line.contains("Join")
+        } else {
+            false
+        }
+    });
+    assert!(has_join, "EXPLAIN of JOIN query should mention Join in plan");
+}

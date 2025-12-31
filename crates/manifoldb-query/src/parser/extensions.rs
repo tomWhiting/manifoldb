@@ -1312,11 +1312,9 @@ impl ExtendedParser {
         let op_chars: Vec<char> = op.chars().collect();
 
         // Find the operator position
-        let op_pos = Self::find_operator(&chars, &op_chars);
-        if op_pos.is_none() {
+        let Some(op_pos) = Self::find_operator(&chars, &op_chars) else {
             return input.to_string();
-        }
-        let op_pos = op_pos.unwrap();
+        };
 
         // Find the left operand (go backwards to find start)
         let left_end = op_pos;

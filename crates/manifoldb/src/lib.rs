@@ -142,7 +142,7 @@
 // Re-export core types
 pub use manifoldb_core::{
     CollectionId, DeleteResult, Edge, EdgeId, EdgeType, Entity, EntityId, Label, Property,
-    TransactionError, TransactionResult, Value,
+    ScoredEntity, ScoredId, TransactionError, TransactionResult, Value, VectorData,
 };
 
 // Re-export storage types
@@ -151,21 +151,31 @@ pub use manifoldb_storage::{StorageEngine, Transaction};
 // Modules
 pub mod backup;
 pub mod cache;
-pub mod collection;
 pub mod config;
 pub mod database;
 pub mod error;
 pub mod execution;
+mod filter;
+pub mod index;
 pub mod metrics;
+mod search;
 pub mod prepared;
 pub mod schema;
 pub mod transaction;
 pub mod vector;
 
+// Collection module - internal implementation details
+// Note: This is being deprecated in favor of the unified Entity API.
+// Users should use Entity.with_vector() and db.search() instead.
+#[doc(hidden)]
+pub mod collection;
+
 // Public API re-exports
 pub use config::{Config, DatabaseBuilder};
 pub use database::{Database, FromValue, QueryParams, QueryResult, QueryRow};
 pub use error::{Error, Result};
+pub use filter::Filter;
+pub use search::EntitySearchBuilder;
 pub use metrics::{
     CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot, QueryMetrics, QueryMetricsSnapshot,
     StorageMetrics, StorageMetricsSnapshot, TransactionMetrics, TransactionMetricsSnapshot,
@@ -176,3 +186,10 @@ pub use transaction::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
     TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,
 };
+
+// Re-export distance metrics for collection configuration
+pub use manifoldb_vector::distance::sparse::SparseDistanceMetric;
+pub use manifoldb_vector::distance::DistanceMetric;
+
+// Re-export index types
+pub use index::{IndexInfo, IndexMetadata, IndexStats, IndexType};

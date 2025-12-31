@@ -53,6 +53,7 @@ use crate::cache::{extract_cache_hint, CacheHint, CacheMetrics, QueryCache, Quer
 use crate::config::{Config, DatabaseBuilder};
 use crate::error::{Error, Result};
 use crate::execution::{execute_statement, extract_tables_from_sql};
+use crate::index::{IndexInfo, IndexManager, IndexMetadata, IndexStats, IndexType};
 use crate::metrics::{CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot};
 use crate::prepared::{PreparedStatement, PreparedStatementCache};
 use crate::schema::SchemaManager;
@@ -153,6 +154,8 @@ struct DatabaseInner {
     prepared_cache: PreparedStatementCache,
     /// Database metrics.
     db_metrics: Arc<DatabaseMetrics>,
+    /// Payload index manager.
+    index_manager: IndexManager,
 }
 
 impl Database {
@@ -226,9 +229,10 @@ impl Database {
         let query_cache = QueryCache::new(config.query_cache_config.clone());
         let prepared_cache = PreparedStatementCache::default();
         let db_metrics = Arc::new(DatabaseMetrics::new());
+        let index_manager = IndexManager::new(manager.engine_arc());
 
         // Initialize prepared cache with current schema version
-        let inner = DatabaseInner { manager, config, query_cache, prepared_cache, db_metrics };
+        let inner = DatabaseInner { manager, config, query_cache, prepared_cache, db_metrics, index_manager };
         let db = Self { inner: Arc::new(inner) };
 
         // Load initial schema version
@@ -687,6 +691,172 @@ impl Database {
         self.inner.query_cache.metrics().reset();
     }
 
+    // =========================================================================
+    // Payload Indexing
+    // =========================================================================
+
+    /// Create an index on a property for entities with the given label.
+    ///
+    /// Indexes speed up filtered vector searches by allowing the query planner
+    /// to narrow down candidates using B-tree lookups instead of scanning all entities.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The entity label to index (e.g., "Symbol", "Document")
+    /// * `property` - The property to index (e.g., "language", "category")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index already exists or creation fails.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create an index on the "language" property for "Symbol" entities
+    /// db.create_index("Symbol", "language")?;
+    ///
+    /// // Now searches filtering by language will use the index
+    /// ```
+    pub fn create_index(&self, label: &str, property: &str) -> Result<()> {
+        self.create_index_with_type(label, property, IndexType::Equality)
+    }
+
+    /// Create an index with a specific type.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The entity label to index
+    /// * `property` - The property to index
+    /// * `index_type` - The type of index (Equality, Range, or Prefix)
+    ///
+    /// # Index Types
+    ///
+    /// - `Equality`: Best for enum-like fields. Supports `eq`, `ne`, `in` operators.
+    /// - `Range`: Best for numeric fields. Supports `gt`, `gte`, `lt`, `lte`, `range`.
+    /// - `Prefix`: Best for paths/names. Supports `starts_with`.
+    pub fn create_index_with_type(&self, label: &str, property: &str, index_type: IndexType) -> Result<()> {
+        self.inner.index_manager.create_index(label, property, index_type)
+    }
+
+    /// Drop an index.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The entity label
+    /// * `property` - The indexed property
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index doesn't exist.
+    pub fn drop_index(&self, label: &str, property: &str) -> Result<()> {
+        self.inner.index_manager.drop_index(label, property)
+    }
+
+    /// List all indexes in the database.
+    ///
+    /// # Returns
+    ///
+    /// A vector of index information including label, property, type, and entry count.
+    pub fn list_indexes(&self) -> Result<Vec<IndexInfo>> {
+        self.inner.index_manager.list_indexes()
+    }
+
+    /// Get statistics for a specific index.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The entity label
+    /// * `property` - The indexed property
+    ///
+    /// # Returns
+    ///
+    /// Index statistics including entry count, distinct values, and selectivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index doesn't exist.
+    pub fn index_stats(&self, label: &str, property: &str) -> Result<IndexStats> {
+        self.inner.index_manager.index_stats(label, property)
+    }
+
+    /// Get metadata for an index, or None if it doesn't exist.
+    ///
+    /// This is useful for checking if an index exists without triggering an error.
+    pub fn get_index_metadata(&self, label: &str, property: &str) -> Result<Option<IndexMetadata>> {
+        self.inner.index_manager.get_index_metadata(label, property)
+    }
+
+    /// Look up entity IDs matching a filter value using an index.
+    ///
+    /// This is a low-level API primarily used by the query planner.
+    /// Returns None if no index exists for the label/property combination.
+    ///
+    /// # Arguments
+    ///
+    /// * `label` - The entity label
+    /// * `property` - The indexed property
+    /// * `value` - The value to match
+    pub fn index_lookup(&self, label: &str, property: &str, value: &manifoldb_core::Value) -> Result<Option<Vec<EntityId>>> {
+        self.inner.index_manager.lookup_eq(label, property, value)
+    }
+
+    /// Build a planner catalog from the current state of the database.
+    ///
+    /// This creates a snapshot of index metadata that the query planner can use
+    /// for index selection and cost estimation.
+    ///
+    /// # Returns
+    ///
+    /// A `PlannerCatalog` populated with:
+    /// - Payload indexes (as B-tree indexes on label.property)
+    /// - Index statistics for selectivity estimation
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    /// use manifoldb_query::{PhysicalPlanner, PlanBuilder};
+    ///
+    /// let db = Database::in_memory()?;
+    /// db.create_index("Symbol", "language")?;
+    ///
+    /// // Get catalog with current index info
+    /// let catalog = db.build_planner_catalog()?;
+    ///
+    /// // Use it for query planning
+    /// let planner = PhysicalPlanner::new().with_catalog(catalog);
+    /// ```
+    pub fn build_planner_catalog(&self) -> Result<manifoldb_query::PlannerCatalog> {
+        use manifoldb_query::{PlannerCatalog, PlannerIndexInfo, TableStats};
+
+        let mut catalog = PlannerCatalog::new();
+
+        // Add payload indexes
+        for idx in self.list_indexes()? {
+            // Create index name as "label_property_idx"
+            let index_name = format!("{}_{}_idx", idx.label, idx.property);
+
+            // All payload indexes are B-tree style
+            let planner_idx = PlannerIndexInfo::btree(
+                index_name,
+                &idx.label, // Use label as "table" name
+                vec![idx.property.clone()],
+            );
+
+            catalog = catalog.with_index(planner_idx);
+
+            // Also add table stats based on index entry count
+            // This gives the planner row count estimates
+            catalog = catalog.with_table(TableStats::new(&idx.label, idx.entry_count as usize));
+        }
+
+        Ok(catalog)
+    }
+
     /// Prepare a SQL statement for repeated execution.
     ///
     /// Prepared statements cache the parsed AST and query plan, amortizing
@@ -1041,14 +1211,34 @@ impl Database {
 
         for (id, entity, bytes) in &entities_with_ids {
             let key = id.as_u64().to_be_bytes();
-            tx.storage_mut_ref()
-                .map_err(Error::Transaction)?
-                .put("nodes", &key, bytes)
+            let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
+
+            storage.put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
-            // Phase 5: Index maintenance
+            // Phase 5a: Label index maintenance
+            // Key format: <length:2 bytes><label:N bytes><entity_id:8 bytes>
+            for label in &entity.labels {
+                let label_bytes = label.as_str().as_bytes();
+                let len = label_bytes.len() as u16;
+                let mut label_key = Vec::with_capacity(2 + label_bytes.len() + 8);
+                label_key.extend_from_slice(&len.to_be_bytes());
+                label_key.extend_from_slice(label_bytes);
+                label_key.extend_from_slice(&id.as_u64().to_be_bytes());
+                storage.put("label_index", &label_key, &[])
+                    .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
+            }
+
+            // Phase 5b: Index maintenance (schema-based indexes)
             EntityIndexMaintenance::on_insert(&mut tx, entity)
                 .map_err(|e| Error::Execution(format!("Index maintenance failed: {}", e)))?;
+
+            // Phase 5c: Payload index maintenance
+            self.inner.index_manager.on_entity_upsert_tx(
+                tx.storage_mut_ref().map_err(Error::Transaction)?,
+                entity,
+                None, // New entity, no old version
+            )?;
         }
 
         // Phase 6: Commit
@@ -2301,27 +2491,80 @@ impl Database {
         // Phase 7: Sequential writes for inserts
         for (id, entity, bytes) in &serialized_inserts {
             let key = id.as_u64().to_be_bytes();
-            tx.storage_mut_ref()
-                .map_err(Error::Transaction)?
-                .put("nodes", &key, bytes)
+            let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
+
+            storage.put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
-            // Index maintenance for insert
+            // Label index maintenance for insert
+            for label in &entity.labels {
+                let label_bytes = label.as_str().as_bytes();
+                let len = label_bytes.len() as u16;
+                let mut label_key = Vec::with_capacity(2 + label_bytes.len() + 8);
+                label_key.extend_from_slice(&len.to_be_bytes());
+                label_key.extend_from_slice(label_bytes);
+                label_key.extend_from_slice(&id.as_u64().to_be_bytes());
+                storage.put("label_index", &label_key, &[])
+                    .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
+            }
+
+            // Index maintenance for insert (schema-based indexes)
             EntityIndexMaintenance::on_insert(&mut tx, entity)
                 .map_err(|e| Error::Execution(format!("Index maintenance failed: {}", e)))?;
+
+            // Payload index maintenance for insert
+            self.inner.index_manager.on_entity_upsert_tx(
+                tx.storage_mut_ref().map_err(Error::Transaction)?,
+                entity,
+                None, // New entity, no old version
+            )?;
         }
 
         // Phase 8: Sequential writes for updates
         for (id, new_entity, old_entity, bytes) in &serialized_updates {
             let key = id.as_u64().to_be_bytes();
-            tx.storage_mut_ref()
-                .map_err(Error::Transaction)?
-                .put("nodes", &key, bytes)
+            let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
+
+            storage.put("nodes", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
-            // Index maintenance for update
+            // Label index maintenance for update - remove old labels not in new
+            for old_label in &old_entity.labels {
+                if !new_entity.labels.contains(old_label) {
+                    let label_bytes = old_label.as_str().as_bytes();
+                    let len = label_bytes.len() as u16;
+                    let mut label_key = Vec::with_capacity(2 + label_bytes.len() + 8);
+                    label_key.extend_from_slice(&len.to_be_bytes());
+                    label_key.extend_from_slice(label_bytes);
+                    label_key.extend_from_slice(&id.as_u64().to_be_bytes());
+                    storage.delete("label_index", &label_key)
+                        .map_err(|e| Error::Execution(format!("Failed to delete label index: {}", e)))?;
+                }
+            }
+            // Add new labels not in old
+            for new_label in &new_entity.labels {
+                if !old_entity.labels.contains(new_label) {
+                    let label_bytes = new_label.as_str().as_bytes();
+                    let len = label_bytes.len() as u16;
+                    let mut label_key = Vec::with_capacity(2 + label_bytes.len() + 8);
+                    label_key.extend_from_slice(&len.to_be_bytes());
+                    label_key.extend_from_slice(label_bytes);
+                    label_key.extend_from_slice(&id.as_u64().to_be_bytes());
+                    storage.put("label_index", &label_key, &[])
+                        .map_err(|e| Error::Execution(format!("Failed to write label index: {}", e)))?;
+                }
+            }
+
+            // Index maintenance for update (schema-based indexes)
             EntityIndexMaintenance::on_update(&mut tx, old_entity, new_entity)
                 .map_err(|e| Error::Execution(format!("Index maintenance failed: {}", e)))?;
+
+            // Payload index maintenance for update
+            self.inner.index_manager.on_entity_upsert_tx(
+                tx.storage_mut_ref().map_err(Error::Transaction)?,
+                new_entity,
+                Some(old_entity),
+            )?;
         }
 
         // Phase 9: Commit
@@ -2541,9 +2784,15 @@ impl Database {
                 }
             }
 
-            // Remove from property indexes before deleting
+            // Remove from property indexes before deleting (schema-based indexes)
             EntityIndexMaintenance::on_delete(&mut tx, &entity)
                 .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
+
+            // Remove from payload indexes before deleting
+            self.inner.index_manager.on_entity_delete_tx(
+                tx.storage_mut_ref().map_err(Error::Transaction)?,
+                &entity,
+            )?;
 
             // Remove from HNSW/vector indexes
             crate::vector::remove_entity_from_indexes(&mut tx, &entity)
@@ -2866,6 +3115,142 @@ impl Database {
             CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
 
         Ok(collections.into_iter().map(|c| c.as_str().to_string()).collect())
+    }
+
+    // ========================================================================
+    // Unified Entity API
+    // ========================================================================
+
+    /// Create a search builder for vector similarity search.
+    ///
+    /// This is the unified search API that returns [`ScoredEntity`] results
+    /// instead of collection-specific point types.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - The name of the collection to search
+    /// * `vector_name` - The name of the vector field to search
+    ///
+    /// # Returns
+    ///
+    /// A [`EntitySearchBuilder`] that can be configured with query vector,
+    /// filters, and limits before executing the search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the collection doesn't exist.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, Filter, ScoredEntity};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create collection and insert data...
+    ///
+    /// // Search for similar entities
+    /// let results: Vec<ScoredEntity> = db.search("documents", "embedding")
+    ///     .query(query_vector)
+    ///     .filter(Filter::eq("language", "rust"))
+    ///     .limit(10)
+    ///     .execute()?;
+    ///
+    /// for result in results {
+    ///     println!("Entity {}: score {:.4}", result.entity.id.as_u64(), result.score);
+    /// }
+    /// ```
+    pub fn search(
+        &self,
+        collection: &str,
+        vector_name: &str,
+    ) -> Result<crate::search::EntitySearchBuilder> {
+        let handle = self.collection(collection)?;
+        Ok(crate::search::EntitySearchBuilder::new(handle, vector_name))
+    }
+
+    /// Upsert an entity into a collection.
+    ///
+    /// This is the unified upsert API that handles entities with optional vectors.
+    /// The entity's properties are stored as payload, and any vectors attached
+    /// to the entity are stored in the appropriate vector indexes.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection` - The name of the collection to upsert into
+    /// * `entity` - The entity to upsert (may include vectors via `with_vector()`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The collection doesn't exist
+    /// - Vector dimensions don't match the collection schema
+    /// - A storage error occurs
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, Entity, EntityId, VectorData, DistanceMetric};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// // Create collection with vector configuration
+    /// db.create_collection("documents")?
+    ///     .with_dense_vector("embedding", 768, DistanceMetric::Cosine)
+    ///     .build()?;
+    ///
+    /// // Create entity with vector
+    /// let entity = Entity::new(EntityId::new(1))
+    ///     .with_label("Document")
+    ///     .with_property("title", "Hello World")
+    ///     .with_property("language", "rust")
+    ///     .with_vector("embedding", vec![0.1f32; 768]);
+    ///
+    /// // Upsert entity (stores both properties and vectors)
+    /// db.upsert("documents", &entity)?;
+    /// ```
+    pub fn upsert(&self, collection: &str, entity: &Entity) -> Result<()> {
+        use crate::search::entity_to_point_struct;
+
+        let handle = self.collection(collection)?;
+        let point = entity_to_point_struct(entity, collection);
+
+        handle.upsert_point(point).map_err(|e| Error::Collection(e.to_string()))
+    }
+
+    /// Upsert multiple entities into a collection.
+    ///
+    /// More efficient than calling `upsert` multiple times.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use manifoldb::{Database, Entity, EntityId};
+    ///
+    /// let db = Database::in_memory()?;
+    ///
+    /// let entities: Vec<Entity> = (0..100)
+    ///     .map(|i| {
+    ///         Entity::new(EntityId::new(i))
+    ///             .with_label("Document")
+    ///             .with_property("index", i as i64)
+    ///             .with_vector("embedding", vec![0.1f32; 768])
+    ///     })
+    ///     .collect();
+    ///
+    /// db.upsert_batch("documents", &entities)?;
+    /// ```
+    pub fn upsert_batch(&self, collection: &str, entities: &[Entity]) -> Result<()> {
+        use crate::search::entity_to_point_struct;
+
+        let handle = self.collection(collection)?;
+
+        for entity in entities {
+            let point = entity_to_point_struct(entity, collection);
+            handle.upsert_point(point).map_err(|e| Error::Collection(e.to_string()))?;
+        }
+
+        Ok(())
     }
 }
 

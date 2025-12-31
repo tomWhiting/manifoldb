@@ -153,7 +153,7 @@ impl Decoder for Entity {
             offset += consumed;
         }
 
-        Ok(Self { id, labels, properties })
+        Ok(Self { id, labels, properties, vectors: HashMap::new() })
     }
 }
 
