@@ -86,7 +86,11 @@ pub struct IndexMetadata {
 
 impl IndexMetadata {
     /// Create new index metadata.
-    pub fn new(label: impl Into<String>, property: impl Into<String>, index_type: IndexType) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        property: impl Into<String>,
+        index_type: IndexType,
+    ) -> Self {
         Self {
             label: label.into(),
             property: property.into(),
@@ -151,11 +155,8 @@ pub struct IndexStats {
 
 impl From<IndexMetadata> for IndexStats {
     fn from(meta: IndexMetadata) -> Self {
-        let selectivity = if meta.distinct_values > 0 {
-            1.0 / meta.distinct_values as f64
-        } else {
-            1.0
-        };
+        let selectivity =
+            if meta.distinct_values > 0 { 1.0 / meta.distinct_values as f64 } else { 1.0 };
 
         Self {
             entry_count: meta.entry_count,
@@ -202,11 +203,17 @@ fn parse_catalog_key(key: &[u8]) -> Option<(String, String)> {
 ///
 /// The entity_id is appended as 8 bytes big-endian to ensure uniqueness
 /// and allow multiple entities to have the same property value.
-fn make_index_key(label: &str, property: &str, value: &Value, entity_id: EntityId) -> Result<Vec<u8>> {
+fn make_index_key(
+    label: &str,
+    property: &str,
+    value: &Value,
+    entity_id: EntityId,
+) -> Result<Vec<u8>> {
     let encoded_value = encode_sortable(value)
         .map_err(|e| Error::InvalidInput(format!("Cannot index value: {e}")))?;
 
-    let mut key = Vec::with_capacity(label.len() + 1 + property.len() + 1 + encoded_value.len() + 8);
+    let mut key =
+        Vec::with_capacity(label.len() + 1 + property.len() + 1 + encoded_value.len() + 8);
     key.extend_from_slice(label.as_bytes());
     key.push(0x00);
     key.extend_from_slice(property.as_bytes());
@@ -272,9 +279,7 @@ impl IndexManager {
     pub fn create_index(&self, label: &str, property: &str, index_type: IndexType) -> Result<()> {
         // Check if index already exists
         if self.get_index_metadata(label, property)?.is_some() {
-            return Err(Error::InvalidInput(format!(
-                "Index already exists on {label}.{property}"
-            )));
+            return Err(Error::InvalidInput(format!("Index already exists on {label}.{property}")));
         }
 
         // Create metadata
@@ -341,7 +346,10 @@ impl IndexManager {
 
             if let Some(data) = tx.get(tables::names::NODES, &entity_key)? {
                 // Decode entity using bincode
-                if let Ok((entity, _)) = bincode::serde::decode_from_slice::<Entity, _>(&data, bincode::config::standard()) {
+                if let Ok((entity, _)) = bincode::serde::decode_from_slice::<Entity, _>(
+                    &data,
+                    bincode::config::standard(),
+                ) {
                     // Get property value
                     if let Some(value) = entity.get_property(property) {
                         // Create index entry
@@ -381,9 +389,7 @@ impl IndexManager {
     pub fn drop_index(&self, label: &str, property: &str) -> Result<()> {
         // Check if index exists
         if self.get_index_metadata(label, property)?.is_none() {
-            return Err(Error::InvalidInput(format!(
-                "No index exists on {label}.{property}"
-            )));
+            return Err(Error::InvalidInput(format!("No index exists on {label}.{property}")));
         }
 
         let mut tx = self.engine.begin_write()?;
@@ -432,8 +438,9 @@ impl IndexManager {
         let catalog_key = make_catalog_key(label, property);
 
         if let Some(data) = tx.get(INDEX_CATALOG_TABLE, &catalog_key)? {
-            let (metadata, _): (IndexMetadata, _) = bincode::serde::decode_from_slice(&data, bincode::config::standard())
-                .map_err(|e| Error::Serialization(e.to_string()))?;
+            let (metadata, _): (IndexMetadata, _) =
+                bincode::serde::decode_from_slice(&data, bincode::config::standard())
+                    .map_err(|e| Error::Serialization(e.to_string()))?;
             Ok(Some(metadata))
         } else {
             Ok(None)
@@ -448,7 +455,10 @@ impl IndexManager {
 
         let mut indexes = Vec::new();
         while let Some((_key, value)) = cursor.next()? {
-            if let Ok((metadata, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(&value, bincode::config::standard()) {
+            if let Ok((metadata, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(
+                &value,
+                bincode::config::standard(),
+            ) {
                 indexes.push(IndexInfo::from(metadata));
             }
         }
@@ -458,7 +468,8 @@ impl IndexManager {
 
     /// Get statistics for an index.
     pub fn index_stats(&self, label: &str, property: &str) -> Result<IndexStats> {
-        let metadata = self.get_index_metadata(label, property)?
+        let metadata = self
+            .get_index_metadata(label, property)?
             .ok_or_else(|| Error::InvalidInput(format!("No index exists on {label}.{property}")))?;
 
         Ok(IndexStats::from(metadata))
@@ -467,7 +478,12 @@ impl IndexManager {
     /// Lookup entity IDs matching a filter value using the index.
     ///
     /// Returns None if no index exists for this label/property combination.
-    pub fn lookup_eq(&self, label: &str, property: &str, value: &Value) -> Result<Option<Vec<EntityId>>> {
+    pub fn lookup_eq(
+        &self,
+        label: &str,
+        property: &str,
+        value: &Value,
+    ) -> Result<Option<Vec<EntityId>>> {
         // Check if index exists
         if self.get_index_metadata(label, property)?.is_none() {
             return Ok(None);
@@ -499,7 +515,12 @@ impl IndexManager {
     }
 
     /// Lookup entity IDs matching an "in" filter using the index.
-    pub fn lookup_in(&self, label: &str, property: &str, values: &[Value]) -> Result<Option<Vec<EntityId>>> {
+    pub fn lookup_in(
+        &self,
+        label: &str,
+        property: &str,
+        values: &[Value],
+    ) -> Result<Option<Vec<EntityId>>> {
         // Check if index exists
         if self.get_index_metadata(label, property)?.is_none() {
             return Ok(None);
@@ -555,7 +576,10 @@ impl IndexManager {
 
                 let mut metas = Vec::new();
                 while let Some((_, value)) = cursor.next()? {
-                    if let Ok((m, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(&value, bincode::config::standard()) {
+                    if let Ok((m, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(
+                        &value,
+                        bincode::config::standard(),
+                    ) {
                         metas.push(m);
                     }
                 }
@@ -591,11 +615,7 @@ impl IndexManager {
 
     /// Maintain index on entity delete.
     /// This version works within an existing transaction.
-    pub fn on_entity_delete_tx<T: Transaction>(
-        &self,
-        tx: &mut T,
-        entity: &Entity,
-    ) -> Result<()> {
+    pub fn on_entity_delete_tx<T: Transaction>(&self, tx: &mut T, entity: &Entity) -> Result<()> {
         for label in &entity.labels {
             let label_str = label.as_str();
 
@@ -620,7 +640,10 @@ impl IndexManager {
 
                 let mut metas = Vec::new();
                 while let Some((_, value)) = cursor.next()? {
-                    if let Ok((m, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(&value, bincode::config::standard()) {
+                    if let Ok((m, _)) = bincode::serde::decode_from_slice::<IndexMetadata, _>(
+                        &value,
+                        bincode::config::standard(),
+                    ) {
                         metas.push(m);
                     }
                 }

@@ -167,8 +167,7 @@ impl<E: StorageEngine> CollectionHandle<E> {
     ///     .with_vector("text", vec![0.1; 768]))?;
     /// ```
     pub fn upsert_point(&self, point: PointStruct) -> ApiResult<()> {
-        let payload =
-            point.payload.map(|v| VectorPayload::from_value(v)).unwrap_or_default();
+        let payload = point.payload.map(|v| VectorPayload::from_value(v)).unwrap_or_default();
 
         let vectors = self.convert_vectors_to_store(point.vectors)?;
 

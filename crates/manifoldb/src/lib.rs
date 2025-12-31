@@ -158,9 +158,9 @@ pub mod execution;
 mod filter;
 pub mod index;
 pub mod metrics;
-mod search;
 pub mod prepared;
 pub mod schema;
+mod search;
 pub mod transaction;
 pub mod vector;
 
@@ -175,13 +175,13 @@ pub use config::{Config, DatabaseBuilder};
 pub use database::{Database, FromValue, QueryParams, QueryResult, QueryRow};
 pub use error::{Error, Result};
 pub use filter::Filter;
-pub use search::EntitySearchBuilder;
 pub use metrics::{
     CacheMetricsSnapshot, DatabaseMetrics, MetricsSnapshot, QueryMetrics, QueryMetricsSnapshot,
     StorageMetrics, StorageMetricsSnapshot, TransactionMetrics, TransactionMetricsSnapshot,
     VectorMetrics, VectorMetricsSnapshot,
 };
 pub use prepared::{PreparedStatement, PreparedStatementCache};
+pub use search::EntitySearchBuilder;
 pub use transaction::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
     TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,

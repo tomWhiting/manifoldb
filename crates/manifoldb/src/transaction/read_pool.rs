@@ -435,8 +435,9 @@ mod tests {
     #[test]
     fn test_concurrent_access() {
         let engine = create_test_engine();
-        let pool =
-            Arc::new(ReadPool::new(engine, ReadPoolConfig::default()).expect("pool creation failed"));
+        let pool = Arc::new(
+            ReadPool::new(engine, ReadPoolConfig::default()).expect("pool creation failed"),
+        );
 
         let handles: Vec<_> = (0..8)
             .map(|_| {

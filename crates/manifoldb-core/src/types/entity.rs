@@ -169,12 +169,7 @@ impl Entity {
     /// Create a new entity with the given ID.
     #[must_use]
     pub fn new(id: EntityId) -> Self {
-        Self {
-            id,
-            labels: Vec::new(),
-            properties: HashMap::new(),
-            vectors: HashMap::new(),
-        }
+        Self { id, labels: Vec::new(), properties: HashMap::new(), vectors: HashMap::new() }
     }
 
     /// Add a label to this entity.
@@ -335,9 +330,8 @@ mod tests {
 
     #[test]
     fn entity_vectors_iter() {
-        let entity = Entity::new(EntityId::new(1))
-            .with_vector("a", vec![0.1])
-            .with_vector("b", vec![0.2]);
+        let entity =
+            Entity::new(EntityId::new(1)).with_vector("a", vec![0.1]).with_vector("b", vec![0.2]);
 
         let names: Vec<_> = entity.vectors_iter().map(|(n, _)| n).collect();
         assert_eq!(names.len(), 2);

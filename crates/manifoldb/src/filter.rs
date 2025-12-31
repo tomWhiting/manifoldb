@@ -490,9 +490,16 @@ fn value_to_json(value: &manifoldb_core::Value) -> JsonValue {
                     .collect(),
             )
         }
-        manifoldb_core::Value::Vector(v) => {
-            JsonValue::Array(v.iter().map(|f| JsonValue::Number(serde_json::Number::from_f64(*f as f64).unwrap_or_else(|| serde_json::Number::from(0)))).collect())
-        }
+        manifoldb_core::Value::Vector(v) => JsonValue::Array(
+            v.iter()
+                .map(|f| {
+                    JsonValue::Number(
+                        serde_json::Number::from_f64(*f as f64)
+                            .unwrap_or_else(|| serde_json::Number::from(0)),
+                    )
+                })
+                .collect(),
+        ),
     }
 }
 

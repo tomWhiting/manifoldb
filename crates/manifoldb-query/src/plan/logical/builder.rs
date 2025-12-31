@@ -17,6 +17,8 @@
 // Allow map_unwrap_or - the closure form is clearer here
 #![allow(clippy::map_unwrap_or)]
 
+use std::collections::HashMap;
+
 use crate::ast::{
     self, CreateCollectionStatement, CreateIndexStatement, CreateTableStatement, DeleteStatement,
     DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
@@ -57,13 +59,17 @@ use super::validate::{PlanError, PlanResult};
 pub struct PlanBuilder {
     /// Counter for generating unique aliases.
     alias_counter: usize,
+    /// CTE plans indexed by name.
+    /// When a CTE is defined, its plan is stored here.
+    /// When a table reference matches a CTE name, the plan is inlined.
+    cte_plans: HashMap<String, LogicalPlan>,
 }
 
 impl PlanBuilder {
     /// Creates a new plan builder.
     #[must_use]
-    pub const fn new() -> Self {
-        Self { alias_counter: 0 }
+    pub fn new() -> Self {
+        Self { alias_counter: 0, cte_plans: HashMap::new() }
     }
 
     /// Generates a unique alias.
@@ -105,6 +111,13 @@ impl PlanBuilder {
 
     /// Builds a logical plan from a SELECT statement.
     pub fn build_select(&mut self, select: &SelectStatement) -> PlanResult<LogicalPlan> {
+        // Process CTEs first - build plans for each and store them
+        // CTEs can reference earlier CTEs in the same WITH clause
+        for cte in &select.with_clauses {
+            let cte_plan = self.build_select(&cte.query)?;
+            self.cte_plans.insert(cte.name.name.clone(), cte_plan);
+        }
+
         // Start with FROM clause
         let mut plan = self.build_from(&select.from)?;
 
@@ -183,6 +196,16 @@ impl PlanBuilder {
             TableRef::Table { name, alias } => {
                 let table_name =
                     name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+                // Check if this is a CTE reference (CTE names shadow actual table names)
+                if let Some(cte_plan) = self.cte_plans.get(&table_name) {
+                    // Clone the CTE plan and apply alias if specified
+                    let plan = cte_plan.clone();
+                    if let Some(a) = alias {
+                        return Ok(plan.alias(&a.name.name));
+                    }
+                    return Ok(plan);
+                }
 
                 let mut scan = ScanNode::new(table_name);
                 if let Some(a) = alias {
@@ -1112,5 +1135,103 @@ mod tests {
 
         let logical = builder.build_expr(&expr).unwrap();
         assert_eq!(logical.to_string(), "(age > 21)");
+    }
+
+    // ========================================================================
+    // Common Table Expression (CTE) Tests
+    // ========================================================================
+
+    #[test]
+    fn simple_cte() {
+        let plan = build_query(
+            "WITH active_users AS (SELECT * FROM users WHERE status = 'active')
+             SELECT * FROM active_users WHERE age > 21",
+        )
+        .unwrap();
+
+        // The plan should have nested filters (one from CTE, one from main query)
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Filter")); // At least one filter
+        assert!(output.contains("Project")); // CTE is a subquery with projection
+    }
+
+    #[test]
+    fn multiple_ctes() {
+        let plan = build_query(
+            "WITH
+                dept_totals AS (SELECT dept_id, SUM(salary) as total FROM employees GROUP BY dept_id),
+                high_spenders AS (SELECT * FROM dept_totals WHERE total > 100000)
+             SELECT * FROM high_spenders",
+        )
+        .unwrap();
+
+        // The plan should have an aggregate (from dept_totals CTE)
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Aggregate"));
+    }
+
+    #[test]
+    fn cte_referenced_multiple_times() {
+        let plan = build_query(
+            "WITH temp AS (SELECT id, value FROM data)
+             SELECT t1.id, t1.value, t2.value
+             FROM temp t1
+             JOIN temp t2 ON t1.id = t2.id + 1",
+        )
+        .unwrap();
+
+        // The plan should have a join
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Join"));
+    }
+
+    #[test]
+    fn cte_shadows_table_name() {
+        // If there's a CTE named 'users', it should shadow any actual table named 'users'
+        let plan = build_query(
+            "WITH users AS (SELECT 1 AS id, 'test' AS name)
+             SELECT * FROM users",
+        )
+        .unwrap();
+
+        // The plan should NOT have a scan for 'users' table
+        // It should instead inline the CTE's projection
+        let output = format!("{}", plan.display_tree());
+        // The output should show values or projection, not a real table scan
+        assert!(output.contains("Project"));
+    }
+
+    #[test]
+    fn cte_with_aggregation() {
+        let plan = build_query(
+            "WITH summary AS (
+                SELECT category, COUNT(*) as cnt
+                FROM products
+                GROUP BY category
+             )
+             SELECT * FROM summary ORDER BY cnt DESC",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Aggregate"));
+        assert!(output.contains("Sort"));
+    }
+
+    #[test]
+    fn nested_cte_reference() {
+        // Second CTE references the first
+        let plan = build_query(
+            "WITH
+                base AS (SELECT id, value FROM data WHERE value > 0),
+                doubled AS (SELECT id, value * 2 AS doubled_value FROM base)
+             SELECT * FROM doubled",
+        )
+        .unwrap();
+
+        // Should produce a valid plan with nested projections
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Filter")); // from base CTE's WHERE clause
+        assert!(output.contains("Project")); // from doubled CTE's projection
     }
 }

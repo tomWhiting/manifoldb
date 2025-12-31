@@ -14,7 +14,7 @@ use crate::ast::{
     JoinClause, JoinCondition, JoinType, Literal, OnConflict, OrderByExpr, ParameterRef,
     QualifiedName, SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias,
     TableConstraint, TableRef, UnaryOp, UpdateStatement, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowSpec,
+    WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -106,9 +106,8 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
 /// Converts a sqlparser Query to our `SelectStatement`.
 fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
     // Handle WITH clause if present
-    if query.with.is_some() {
-        return Err(ParseError::Unsupported("WITH clause".to_string()));
-    }
+    let with_clauses =
+        if let Some(with) = query.with { convert_with_clause(with)? } else { vec![] };
 
     let body = match *query.body {
         sp::SetExpr::Select(select) => convert_select(*select)?,
@@ -181,7 +180,30 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
         result.offset = Some(convert_expr(offset_expr.value)?);
     }
 
+    // Add WITH clauses to the result
+    result.with_clauses = with_clauses;
+
     Ok(result)
+}
+
+/// Converts a sqlparser WITH clause to our `WithClause` list.
+fn convert_with_clause(with: sp::With) -> ParseResult<Vec<WithClause>> {
+    // Recursive CTEs are not supported yet
+    if with.recursive {
+        return Err(ParseError::Unsupported("WITH RECURSIVE".to_string()));
+    }
+
+    with.cte_tables
+        .into_iter()
+        .map(|cte| {
+            let name = convert_ident(cte.alias.name);
+            let columns: Vec<Identifier> =
+                cte.alias.columns.into_iter().map(convert_ident).collect();
+            let query = convert_query(*cte.query)?;
+
+            Ok(WithClause { name, columns, query: Box::new(query) })
+        })
+        .collect()
 }
 
 /// Converts a sqlparser Select to our `SelectStatement`.
@@ -212,6 +234,7 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
     let having = select.having.map(convert_expr).transpose()?;
 
     Ok(SelectStatement {
+        with_clauses: vec![], // CTEs are handled at the Query level, not Select level
         distinct,
         projection,
         from,
