@@ -91,8 +91,9 @@ impl ExtendedParser {
             return Self::parse_drop_collection(input);
         }
 
-        // Step 1: Extract MATCH clauses (they're not valid SQL)
-        let (sql_without_match, match_patterns) = Self::extract_match_clauses(input)?;
+        // Step 1: Extract MATCH and OPTIONAL MATCH clauses (they're not valid SQL)
+        let (sql_without_match, match_patterns, optional_patterns) =
+            Self::extract_match_clauses(input)?;
 
         // Step 2: Pre-process vector operators
         let preprocessed = Self::preprocess_vector_ops(&sql_without_match);
@@ -105,6 +106,11 @@ impl ExtendedParser {
             Self::restore_vector_ops(stmt);
             if let Some(pattern) = match_patterns.get(i) {
                 Self::add_match_clause(stmt, pattern.clone());
+            }
+            if let Some(opt_patterns) = optional_patterns.get(i) {
+                for pattern in opt_patterns {
+                    Self::add_optional_match_clause(stmt, pattern.clone());
+                }
             }
         }
 
@@ -1194,33 +1200,153 @@ impl ExtendedParser {
         Ok(stmts.remove(0))
     }
 
-    /// Extracts MATCH clauses from the SQL and returns the modified SQL.
-    fn extract_match_clauses(input: &str) -> ParseResult<(String, Vec<GraphPattern>)> {
+    /// Extracts MATCH and OPTIONAL MATCH clauses from the SQL and returns the modified SQL.
+    ///
+    /// Returns a tuple of (modified SQL, required MATCH patterns, OPTIONAL MATCH patterns per statement).
+    ///
+    /// The expected syntax is:
+    /// ```sql
+    /// SELECT ... FROM MATCH (pattern) OPTIONAL MATCH (opt_pattern1) OPTIONAL MATCH (opt_pattern2) WHERE ...
+    /// ```
+    ///
+    /// Where OPTIONAL MATCH clauses follow the required MATCH and apply to it.
+    fn extract_match_clauses(
+        input: &str,
+    ) -> ParseResult<(String, Vec<GraphPattern>, Vec<Vec<GraphPattern>>)> {
         let mut result = String::with_capacity(input.len());
-        let mut patterns = Vec::new();
+        let mut match_patterns: Vec<GraphPattern> = Vec::new();
+        let mut optional_patterns: Vec<Vec<GraphPattern>> = Vec::new();
         let mut remaining = input;
 
-        while let Some(match_pos) = Self::find_match_keyword(remaining) {
-            // Add everything before MATCH
-            result.push_str(&remaining[..match_pos]);
+        loop {
+            // Find the next OPTIONAL MATCH or MATCH keyword
+            let optional_pos = Self::find_optional_match_keyword(remaining);
+            let match_pos = Self::find_match_keyword(remaining);
 
-            // Find the end of the MATCH clause (WHERE, ORDER BY, GROUP BY, LIMIT, or ;)
-            let after_match = &remaining[match_pos + 5..]; // Skip "MATCH"
-            let end_pos = Self::find_match_end(after_match);
+            // Determine which comes first
+            match (optional_pos, match_pos) {
+                (Some(opt_pos), Some(m_pos)) if opt_pos < m_pos => {
+                    // OPTIONAL MATCH comes before a regular MATCH
+                    // This shouldn't normally happen in valid syntax, but handle it
+                    result.push_str(&remaining[..opt_pos]);
 
-            let pattern_str = after_match[..end_pos].trim();
-            let pattern = Self::parse_graph_pattern(pattern_str)?;
-            patterns.push(pattern);
+                    // Skip "OPTIONAL" and whitespace before "MATCH"
+                    let after_optional = &remaining[opt_pos + 8..]; // "OPTIONAL" = 8 chars
+                    let after_optional_trimmed = after_optional.trim_start();
+                    let whitespace_len = after_optional.len() - after_optional_trimmed.len();
 
-            remaining = &after_match[end_pos..];
+                    // Skip "MATCH"
+                    let after_match = &after_optional[whitespace_len + 5..];
+                    let end_pos = Self::find_match_end(after_match);
+
+                    let pattern_str = after_match[..end_pos].trim();
+                    let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+                    // Attach to the last required MATCH, or create a standalone entry
+                    if let Some(last_optionals) = optional_patterns.last_mut() {
+                        last_optionals.push(pattern);
+                    } else {
+                        // No required MATCH yet - this is unusual but handle it
+                        optional_patterns.push(vec![pattern]);
+                    }
+
+                    remaining = &after_match[end_pos..];
+                }
+                (Some(opt_pos), None) => {
+                    // Only OPTIONAL MATCH found (no more required MATCH)
+                    result.push_str(&remaining[..opt_pos]);
+
+                    let after_optional = &remaining[opt_pos + 8..];
+                    let after_optional_trimmed = after_optional.trim_start();
+                    let whitespace_len = after_optional.len() - after_optional_trimmed.len();
+
+                    let after_match = &after_optional[whitespace_len + 5..];
+                    let end_pos = Self::find_match_end(after_match);
+
+                    let pattern_str = after_match[..end_pos].trim();
+                    let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+                    // Attach to the last required MATCH
+                    if let Some(last_optionals) = optional_patterns.last_mut() {
+                        last_optionals.push(pattern);
+                    } else {
+                        // No required MATCH yet - unusual but handle it
+                        optional_patterns.push(vec![pattern]);
+                    }
+
+                    remaining = &after_match[end_pos..];
+                }
+                (_, Some(m_pos)) => {
+                    // Regular MATCH comes first (or there's no OPTIONAL MATCH in this part)
+                    result.push_str(&remaining[..m_pos]);
+
+                    let after_match = &remaining[m_pos + 5..]; // Skip "MATCH"
+                    let end_pos = Self::find_match_end(after_match);
+
+                    let pattern_str = after_match[..end_pos].trim();
+                    let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+                    // Store the required match pattern
+                    match_patterns.push(pattern);
+                    // Create a new (empty) vector for optional patterns that will follow this MATCH
+                    optional_patterns.push(Vec::new());
+
+                    remaining = &after_match[end_pos..];
+                }
+                (None, None) => {
+                    // No more MATCH clauses
+                    break;
+                }
+            }
         }
 
         result.push_str(remaining);
 
-        Ok((result, patterns))
+        Ok((result, match_patterns, optional_patterns))
+    }
+
+    /// Finds the position of the OPTIONAL MATCH keyword pair (case-insensitive, word boundary).
+    fn find_optional_match_keyword(input: &str) -> Option<usize> {
+        let input_upper = input.to_uppercase();
+        let mut search_from = 0;
+
+        while let Some(pos) = input_upper[search_from..].find("OPTIONAL") {
+            let absolute_pos = search_from + pos;
+
+            // Check word boundaries for OPTIONAL
+            let before_ok =
+                absolute_pos == 0 || !input.as_bytes()[absolute_pos - 1].is_ascii_alphanumeric();
+            let after_ok = absolute_pos + 8 >= input.len()
+                || !input.as_bytes()[absolute_pos + 8].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                // Check if MATCH follows after whitespace
+                let after_optional = &input_upper[absolute_pos + 8..];
+                let after_optional_trimmed = after_optional.trim_start();
+
+                if after_optional_trimmed.starts_with("MATCH") {
+                    // Check word boundary after MATCH
+                    let match_start =
+                        absolute_pos + 8 + (after_optional.len() - after_optional_trimmed.len());
+                    let match_end = match_start + 5;
+                    let match_after_ok = match_end >= input.len()
+                        || !input.as_bytes()[match_end].is_ascii_alphanumeric();
+
+                    if match_after_ok {
+                        return Some(absolute_pos);
+                    }
+                }
+            }
+
+            search_from = absolute_pos + 8;
+        }
+
+        None
     }
 
     /// Finds the position of the MATCH keyword (case-insensitive, word boundary).
+    ///
+    /// This function skips "MATCH" when it's part of "OPTIONAL MATCH".
     fn find_match_keyword(input: &str) -> Option<usize> {
         let input_upper = input.to_uppercase();
         let mut search_from = 0;
@@ -1235,7 +1361,12 @@ impl ExtendedParser {
                 || !input.as_bytes()[absolute_pos + 5].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
-                return Some(absolute_pos);
+                // Check if this is part of "OPTIONAL MATCH" - look backwards for OPTIONAL
+                let is_optional_match = Self::is_preceded_by_optional(&input_upper, absolute_pos);
+
+                if !is_optional_match {
+                    return Some(absolute_pos);
+                }
             }
 
             search_from = absolute_pos + 5;
@@ -1244,7 +1375,35 @@ impl ExtendedParser {
         None
     }
 
+    /// Checks if a MATCH at the given position is preceded by OPTIONAL (with whitespace).
+    fn is_preceded_by_optional(input_upper: &str, match_pos: usize) -> bool {
+        if match_pos < 8 {
+            // "OPTIONAL" is 8 chars, so not enough room
+            return false;
+        }
+
+        // Look backwards from match_pos, skipping whitespace
+        let before_match = &input_upper[..match_pos];
+        let trimmed = before_match.trim_end();
+
+        // Check if it ends with "OPTIONAL"
+        if trimmed.len() >= 8 && trimmed.ends_with("OPTIONAL") {
+            // Check word boundary before OPTIONAL
+            let optional_start = trimmed.len() - 8;
+            if optional_start == 0 {
+                return true;
+            }
+            let byte_before = trimmed.as_bytes()[optional_start - 1];
+            return !byte_before.is_ascii_alphanumeric();
+        }
+
+        false
+    }
+
     /// Finds the end of a MATCH clause.
+    ///
+    /// A MATCH clause ends at the next SQL keyword (WHERE, ORDER BY, etc.),
+    /// another MATCH or OPTIONAL MATCH clause, or a semicolon.
     fn find_match_end(input: &str) -> usize {
         let input_upper = input.to_uppercase();
 
@@ -1258,6 +1417,8 @@ impl ExtendedParser {
             "UNION",
             "INTERSECT",
             "EXCEPT",
+            "OPTIONAL", // Stop at OPTIONAL MATCH
+            "MATCH",    // Stop at the next MATCH (for multiple OPTIONAL MATCHes)
         ];
 
         let mut min_pos = input.len();
@@ -1266,7 +1427,9 @@ impl ExtendedParser {
             if let Some(pos) = input_upper.find(keyword) {
                 // Check word boundary
                 let before_ok = pos == 0 || !input.as_bytes()[pos - 1].is_ascii_alphanumeric();
-                if before_ok && pos < min_pos {
+                let after_ok = pos + keyword.len() >= input.len()
+                    || !input.as_bytes()[pos + keyword.len()].is_ascii_alphanumeric();
+                if before_ok && after_ok && pos < min_pos {
                     min_pos = pos;
                 }
             }
@@ -1708,6 +1871,16 @@ impl ExtendedParser {
             }
             _ => {}
         }
+    }
+
+    /// Adds an OPTIONAL MATCH clause to a statement.
+    ///
+    /// OPTIONAL MATCH clauses are joined using LEFT OUTER JOIN semantics.
+    fn add_optional_match_clause(stmt: &mut Statement, pattern: GraphPattern) {
+        if let Statement::Select(select) = stmt {
+            select.optional_match_clauses.push(pattern);
+        }
+        // OPTIONAL MATCH is not supported for UPDATE/DELETE - just ignore
     }
 
     /// Parses a graph pattern string.
@@ -2341,7 +2514,7 @@ mod tests {
 
     #[test]
     fn extract_match_clause() {
-        let (sql, patterns) = ExtendedParser::extract_match_clauses(
+        let (sql, patterns, optional_patterns) = ExtendedParser::extract_match_clauses(
             "SELECT * FROM users MATCH (u)-[:FOLLOWS]->(f) WHERE u.id = 1",
         )
         .unwrap();
@@ -2350,6 +2523,8 @@ mod tests {
         assert!(sql.contains("WHERE u.id = 1"));
         assert!(!sql.to_uppercase().contains("MATCH"));
         assert_eq!(patterns.len(), 1);
+        // No optional patterns in this query
+        assert!(optional_patterns.is_empty() || optional_patterns.iter().all(|v| v.is_empty()));
     }
 
     #[test]
@@ -2999,5 +3174,145 @@ mod tests {
             Some(BinaryOp::MaxSim)
         ));
         assert!(ExtendedParser::parse_distance_function_name("UNKNOWN").is_none());
+    }
+
+    // ============================================================================
+    // OPTIONAL MATCH Tests
+    // ============================================================================
+
+    #[test]
+    fn extract_optional_match_clause() {
+        let (sql, patterns, optional_patterns) = ExtendedParser::extract_match_clauses(
+            "SELECT u.name, p.title \
+             FROM users \
+             MATCH (u:User) \
+             OPTIONAL MATCH (u)-[:LIKES]->(p:Post) \
+             WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        // The SQL should not contain MATCH or OPTIONAL MATCH
+        assert!(!sql.to_uppercase().contains("MATCH"));
+        assert!(!sql.to_uppercase().contains("OPTIONAL"));
+
+        // One required MATCH pattern
+        assert_eq!(patterns.len(), 1);
+
+        // One set of optional patterns with one pattern in it
+        assert_eq!(optional_patterns.len(), 1);
+        assert_eq!(optional_patterns[0].len(), 1);
+    }
+
+    #[test]
+    fn extract_multiple_optional_match_clauses() {
+        let (sql, patterns, optional_patterns) = ExtendedParser::extract_match_clauses(
+            "SELECT u.name, p.title, c.text \
+             FROM entities \
+             MATCH (u:User) \
+             OPTIONAL MATCH (u)-[:LIKES]->(p:Post) \
+             OPTIONAL MATCH (u)-[:WROTE]->(c:Comment) \
+             WHERE u.active = true",
+        )
+        .unwrap();
+
+        assert!(!sql.to_uppercase().contains("MATCH"));
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(optional_patterns.len(), 1);
+        // Two optional patterns for the same statement
+        assert_eq!(optional_patterns[0].len(), 2);
+    }
+
+    #[test]
+    fn parse_optional_match_in_select() {
+        let stmts = ExtendedParser::parse(
+            "SELECT u.name, p.title \
+             FROM users \
+             MATCH (u:User) \
+             OPTIONAL MATCH (u)-[:LIKES]->(p:Post) \
+             WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            // Required MATCH should be present
+            assert!(select.match_clause.is_some());
+            // One optional MATCH clause
+            assert_eq!(select.optional_match_clauses.len(), 1);
+            // WHERE should be preserved
+            assert!(select.where_clause.is_some());
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_optional_match_pattern_structure() {
+        let stmts = ExtendedParser::parse(
+            "SELECT * FROM entities MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(f:User)",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            let optional = &select.optional_match_clauses[0];
+            // The optional pattern should have one path
+            assert_eq!(optional.paths.len(), 1);
+            let path = &optional.paths[0];
+            // Start node should be `u`
+            assert_eq!(path.start.variable.as_ref().map(|v| v.name.as_str()), Some("u"));
+            // Should have one step
+            assert_eq!(path.steps.len(), 1);
+            // Edge type should be FOLLOWS
+            let (edge, node) = &path.steps[0];
+            assert_eq!(edge.edge_types[0].name, "FOLLOWS");
+            // End node should be `f:User`
+            assert_eq!(node.variable.as_ref().map(|v| v.name.as_str()), Some("f"));
+            assert_eq!(node.labels[0].name, "User");
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn find_optional_match_keyword() {
+        // Should find OPTIONAL MATCH at position 0
+        assert_eq!(ExtendedParser::find_optional_match_keyword("OPTIONAL MATCH (a)"), Some(0));
+
+        // Should find with leading whitespace
+        assert_eq!(ExtendedParser::find_optional_match_keyword("  OPTIONAL MATCH (a)"), Some(2));
+
+        // Should not find plain MATCH
+        assert_eq!(ExtendedParser::find_optional_match_keyword("MATCH (a)"), None);
+
+        // Should not find OPTIONAL without MATCH
+        assert_eq!(ExtendedParser::find_optional_match_keyword("OPTIONAL something else"), None);
+
+        // Case insensitive
+        assert_eq!(ExtendedParser::find_optional_match_keyword("optional match (a)"), Some(0));
+    }
+
+    #[test]
+    fn find_match_skips_optional_match() {
+        // find_match_keyword should NOT match the MATCH inside "OPTIONAL MATCH"
+        let input = "OPTIONAL MATCH (a) MATCH (b)";
+        let pos = ExtendedParser::find_match_keyword(input);
+        // Should find the standalone MATCH, not the one in OPTIONAL MATCH
+        assert_eq!(pos, Some(19)); // Position of the second MATCH
+
+        // When there's only OPTIONAL MATCH, should return None
+        assert_eq!(ExtendedParser::find_match_keyword("OPTIONAL MATCH (a)"), None);
+    }
+
+    #[test]
+    fn optional_match_order_of_clauses() {
+        // OPTIONAL MATCH should come after required MATCH
+        let (_, patterns, optional_patterns) = ExtendedParser::extract_match_clauses(
+            "SELECT * FROM entities MATCH (a) OPTIONAL MATCH (b)",
+        )
+        .unwrap();
+
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(optional_patterns.len(), 1);
+        assert_eq!(optional_patterns[0].len(), 1);
     }
 }

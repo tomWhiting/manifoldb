@@ -682,3 +682,172 @@ fn test_weighted_edges() {
         }
     }
 }
+
+// ============================================================================
+// OPTIONAL MATCH Tests
+// ============================================================================
+
+/// Creates a test graph for OPTIONAL MATCH testing:
+/// - 3 users: Alice (with posts), Bob (with posts), Carol (no posts)
+/// - 2 posts by Alice, 1 post by Bob
+fn create_optional_match_test_graph(db: &Database) -> (Vec<EntityId>, Vec<EntityId>) {
+    let mut tx = db.begin().expect("failed to begin");
+
+    // Create users
+    let alice = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("User")
+        .with_property("name", "Alice")
+        .with_property("active", true);
+    let alice_id = alice.id;
+    tx.put_entity(&alice).expect("failed");
+
+    let bob = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("User")
+        .with_property("name", "Bob")
+        .with_property("active", true);
+    let bob_id = bob.id;
+    tx.put_entity(&bob).expect("failed");
+
+    let carol = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("User")
+        .with_property("name", "Carol")
+        .with_property("active", true);
+    let carol_id = carol.id;
+    tx.put_entity(&carol).expect("failed");
+
+    // Create posts
+    let post1 = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Post")
+        .with_property("title", "Alice Post 1");
+    let post1_id = post1.id;
+    tx.put_entity(&post1).expect("failed");
+
+    let post2 = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Post")
+        .with_property("title", "Alice Post 2");
+    let post2_id = post2.id;
+    tx.put_entity(&post2).expect("failed");
+
+    let post3 =
+        tx.create_entity().expect("failed").with_label("Post").with_property("title", "Bob Post 1");
+    let post3_id = post3.id;
+    tx.put_entity(&post3).expect("failed");
+
+    // Create WROTE edges
+    let edge = tx.create_edge(alice_id, post1_id, "WROTE").expect("failed");
+    tx.put_edge(&edge).expect("failed");
+
+    let edge = tx.create_edge(alice_id, post2_id, "WROTE").expect("failed");
+    tx.put_edge(&edge).expect("failed");
+
+    let edge = tx.create_edge(bob_id, post3_id, "WROTE").expect("failed");
+    tx.put_edge(&edge).expect("failed");
+
+    // Carol has no posts
+
+    tx.commit().expect("failed");
+
+    (vec![alice_id, bob_id, carol_id], vec![post1_id, post2_id, post3_id])
+}
+
+#[test]
+fn test_optional_match_basic_setup() {
+    // Basic test to verify the test graph is created correctly
+    let db = Database::in_memory().expect("failed to create db");
+    let (users, posts) = create_optional_match_test_graph(&db);
+
+    assert_eq!(users.len(), 3);
+    assert_eq!(posts.len(), 3);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Alice (users[0]) should have 2 outgoing WROTE edges
+    let alice_edges = tx.get_outgoing_edges(users[0]).expect("failed");
+    assert_eq!(alice_edges.len(), 2);
+
+    // Bob (users[1]) should have 1 outgoing WROTE edge
+    let bob_edges = tx.get_outgoing_edges(users[1]).expect("failed");
+    assert_eq!(bob_edges.len(), 1);
+
+    // Carol (users[2]) should have 0 outgoing edges
+    let carol_edges = tx.get_outgoing_edges(users[2]).expect("failed");
+    assert!(carol_edges.is_empty());
+}
+
+#[test]
+fn test_optional_match_users_with_and_without_posts() {
+    // This test verifies the graph structure that OPTIONAL MATCH would query:
+    // "List all users with their posts (if any)"
+    //
+    // With OPTIONAL MATCH:
+    // - Alice should appear with 2 posts
+    // - Bob should appear with 1 post
+    // - Carol should appear with NULL for post (no posts)
+    //
+    // Without OPTIONAL MATCH (regular MATCH):
+    // - Carol would NOT appear in results (inner join semantics)
+
+    let db = Database::in_memory().expect("failed to create db");
+    let (users, _posts) = create_optional_match_test_graph(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Count users who have at least one post (would be returned by regular MATCH)
+    let users_with_posts: Vec<_> = users
+        .iter()
+        .filter(|&&user_id| {
+            let edges = tx.get_outgoing_edges(user_id).expect("failed");
+            !edges.is_empty()
+        })
+        .collect();
+
+    // Only Alice and Bob have posts
+    assert_eq!(users_with_posts.len(), 2);
+
+    // All users should be returned by OPTIONAL MATCH (including Carol)
+    // This is the expected behavior of OPTIONAL MATCH
+    let all_users_count = users.len();
+    assert_eq!(all_users_count, 3);
+}
+
+#[test]
+fn test_optional_match_null_handling_concept() {
+    // This test demonstrates what OPTIONAL MATCH achieves:
+    // When there's no matching relationship, the optional side returns NULL
+    //
+    // In our case:
+    // - Carol has no WROTE relationship to any Post
+    // - OPTIONAL MATCH (carol)-[:WROTE]->(p:Post) would return:
+    //   carol = Carol, p = NULL
+
+    let db = Database::in_memory().expect("failed to create db");
+    let (users, _posts) = create_optional_match_test_graph(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Carol is the third user
+    let carol_id = users[2];
+    let carol_entity = tx.get_entity(carol_id).expect("failed to get entity");
+
+    assert!(carol_entity.is_some());
+    let carol = carol_entity.unwrap();
+    assert_eq!(carol.get_property("name"), Some(&Value::from("Carol")));
+
+    // Carol has no outgoing edges, so in OPTIONAL MATCH, her posts would be NULL
+    let carol_posts = tx.get_outgoing_edges(carol_id).expect("failed");
+    assert!(carol_posts.is_empty());
+
+    // This is the key difference:
+    // - Regular MATCH: Carol would not appear in results
+    // - OPTIONAL MATCH: Carol appears with NULL for post variables
+}

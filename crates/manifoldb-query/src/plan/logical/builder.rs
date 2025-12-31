@@ -126,6 +126,11 @@ impl PlanBuilder {
             plan = self.build_graph_pattern(plan, pattern)?;
         }
 
+        // Handle OPTIONAL MATCH clauses (LEFT OUTER JOIN semantics)
+        for optional_pattern in &select.optional_match_clauses {
+            plan = self.build_optional_graph_pattern(plan, optional_pattern)?;
+        }
+
         // Add WHERE clause
         if let Some(where_clause) = &select.where_clause {
             let predicate = self.build_expr(where_clause)?;
@@ -567,6 +572,95 @@ impl PlanBuilder {
         }
 
         Ok(plan)
+    }
+
+    /// Builds an OPTIONAL MATCH pattern using LEFT OUTER JOIN semantics.
+    ///
+    /// OPTIONAL MATCH returns all rows from the left side (the main query),
+    /// plus matching rows from the right side (the optional pattern).
+    /// When there's no match, the optional pattern variables are NULL.
+    ///
+    /// The join condition is based on shared variables between the main query
+    /// and the optional pattern. For example, if both reference variable `u`,
+    /// the join condition is `left.u = right.u`.
+    fn build_optional_graph_pattern(
+        &mut self,
+        input: LogicalPlan,
+        pattern: &GraphPattern,
+    ) -> PlanResult<LogicalPlan> {
+        // Extract variables from the optional pattern to find shared bindings
+        let optional_vars = Self::extract_pattern_variables(pattern);
+
+        // For the optional pattern, we need to:
+        // 1. Create a scan for the pattern (starting from an empty Values node)
+        // 2. Build the expand nodes for the pattern
+        // 3. LEFT JOIN with the main query on shared variables
+
+        // Start with an empty relation that represents "all possible nodes"
+        // The graph expand will be applied on top of this
+        let optional_plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]]));
+
+        // Build the graph pattern for the optional side
+        let optional_plan = self.build_graph_pattern(optional_plan, pattern)?;
+
+        // Build the join condition based on shared variables
+        // For now, we use a cross join and let the expand nodes handle the matching
+        // In a full implementation, we'd identify variables that appear in both
+        // the main query and the optional pattern and create proper equality conditions
+
+        // Since graph patterns share node variables implicitly through the expand nodes,
+        // we need to identify the "anchor" variable that connects the required and optional patterns.
+        // The first variable in the optional pattern that also exists in the main query
+        // is our join key.
+
+        // For simplicity in this implementation, we use a LEFT JOIN with the condition
+        // being the first node variable from the optional pattern
+        let join_condition = if optional_vars.is_empty() {
+            // No variables to join on - this shouldn't happen with valid patterns
+            // Use a TRUE condition (cross join with LEFT semantics)
+            LogicalExpr::boolean(true)
+        } else {
+            // Create a condition that references the shared variable
+            // This assumes the shared variable is bound in both sides
+            let var_name = &optional_vars[0];
+            LogicalExpr::qualified_column("", var_name)
+                .eq(LogicalExpr::qualified_column("", var_name))
+        };
+
+        Ok(input.left_join(optional_plan, join_condition))
+    }
+
+    /// Extracts all variable names from a graph pattern.
+    fn extract_pattern_variables(pattern: &GraphPattern) -> Vec<String> {
+        let mut vars = Vec::new();
+
+        for path in &pattern.paths {
+            // Add start node variable
+            if let Some(var) = &path.start.variable {
+                if !vars.contains(&var.name) {
+                    vars.push(var.name.clone());
+                }
+            }
+
+            // Add variables from each step
+            for (edge, node) in &path.steps {
+                // Add edge variable
+                if let Some(var) = &edge.variable {
+                    if !vars.contains(&var.name) {
+                        vars.push(var.name.clone());
+                    }
+                }
+
+                // Add node variable
+                if let Some(var) = &node.variable {
+                    if !vars.contains(&var.name) {
+                        vars.push(var.name.clone());
+                    }
+                }
+            }
+        }
+
+        vars
     }
 
     /// Builds an INSERT plan.

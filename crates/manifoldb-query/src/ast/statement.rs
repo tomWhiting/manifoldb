@@ -92,6 +92,10 @@ pub struct SelectStatement {
     pub from: Vec<TableRef>,
     /// Optional MATCH clause for graph patterns.
     pub match_clause: Option<GraphPattern>,
+    /// OPTIONAL MATCH clauses for left outer join graph patterns.
+    /// Each pattern is joined with the main query using a LEFT OUTER JOIN,
+    /// returning NULL for unmatched optional patterns.
+    pub optional_match_clauses: Vec<GraphPattern>,
     /// Optional WHERE clause.
     pub where_clause: Option<Expr>,
     /// Optional GROUP BY clause.
@@ -118,6 +122,7 @@ impl SelectStatement {
             projection,
             from: vec![],
             match_clause: None,
+            optional_match_clauses: vec![],
             where_clause: None,
             group_by: vec![],
             having: None,
@@ -153,6 +158,16 @@ impl SelectStatement {
     #[must_use]
     pub fn match_clause(mut self, pattern: GraphPattern) -> Self {
         self.match_clause = Some(pattern);
+        self
+    }
+
+    /// Adds an OPTIONAL MATCH clause.
+    ///
+    /// OPTIONAL MATCH clauses are joined using LEFT OUTER JOIN semantics,
+    /// returning NULL for variables in the optional pattern when no match exists.
+    #[must_use]
+    pub fn optional_match_clause(mut self, pattern: GraphPattern) -> Self {
+        self.optional_match_clauses.push(pattern);
         self
     }
 
@@ -282,6 +297,7 @@ impl MatchStatement {
             projection,
             from: vec![], // Graph patterns don't need a FROM clause
             match_clause: Some(self.pattern.clone()),
+            optional_match_clauses: vec![], // TODO: Add support for OPTIONAL MATCH in standalone Cypher
             where_clause: self.where_clause.clone(),
             group_by: vec![],
             having: None,

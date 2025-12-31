@@ -238,7 +238,8 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
         distinct,
         projection,
         from,
-        match_clause: None, // Handled separately by extension parser
+        match_clause: None,             // Handled separately by extension parser
+        optional_match_clauses: vec![], // Handled separately by extension parser
         where_clause,
         group_by,
         having,
