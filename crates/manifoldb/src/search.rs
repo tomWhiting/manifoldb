@@ -169,9 +169,7 @@ impl TraversalPatternBuilder {
     ///
     /// This is equivalent to Cypher's `*min..max` syntax.
     ///
-    /// # Panics
-    ///
-    /// Panics if no steps have been added yet.
+    /// If no steps have been added yet, returns `self` unchanged.
     #[must_use]
     pub fn variable_length(mut self, min: usize, max: usize) -> Self {
         let steps = self.pattern.steps();

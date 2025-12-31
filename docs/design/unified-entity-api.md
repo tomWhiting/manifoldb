@@ -17,7 +17,7 @@ This document covers the complete architectural evolution of ManifoldDB:
 | 3 | Query Planner Integration | ✅ Complete |
 | 4 | Complete SQL | ⚠️ ~95% Complete |
 | 5 | Complete Cypher | ⚠️ ~40% Complete |
-| 6 | Graph-Constrained Vector Search | ❌ Not Started |
+| 6 | Graph-Constrained Vector Search | ✅ Complete |
 
 ---
 
@@ -97,6 +97,37 @@ SELECT * FROM active_users WHERE age > 21
 
 **Tests:** 17 tests (8 parser + 9 plan builder)
 **Review:** `docs/reviews/sql-cte-review.md`
+
+#### Graph-Constrained Vector Search - ✅ Complete
+
+```rust
+// Search for similar symbols within a repository's containment hierarchy
+let results = db.search("symbols", "embedding")
+    .query(query_vector)
+    .within_traversal(repo_id, |p| p
+        .edge_out("CONTAINS")
+        .variable_length(1, 10)
+    )
+    .filter(Filter::eq("visibility", "public"))
+    .limit(10)
+    .execute()?;
+```
+
+**Implementation (Done):**
+- [x] Add `TraversalConstraint` struct to hold start entity + pattern
+- [x] Add `TraversalPatternBuilder` with fluent API (`edge_out()`, `edge_in()`, `variable_length()`)
+- [x] Add `EntitySearchBuilder::within_traversal()` method
+- [x] Execute traversal and collect reachable entity IDs
+- [x] Post-filter vector search results against traversal set
+- [x] Fix edge encoding to match graph layer (`encode_edge_key()` + `Edge::encode()`)
+
+**Files modified:**
+- `manifoldb/src/search.rs` - Added TraversalConstraint, TraversalPatternBuilder, within_traversal()
+- `manifoldb/src/lib.rs` - Re-exported new types
+- `manifoldb/src/transaction/handle.rs` - Fixed edge encoding for graph layer compatibility
+
+**Tests:** 6 integration tests in `tests/integration/graph_vector_search.rs`
+**Review:** `docs/reviews/graph-constrained-vector-search-review.md`
 
 ---
 
@@ -271,7 +302,7 @@ WITH [1, 2, 3] AS nums RETURN [x IN nums WHERE x > 1] AS filtered
 
 | Task | Effort | Why |
 |------|--------|-----|
-| CTEs (WITH clause) | Medium | Well-defined, clear scope, useful |
+| ~~CTEs (WITH clause)~~ | ~~Medium~~ | ✅ Complete |
 | OPTIONAL MATCH | Medium | Clear mapping to LEFT JOIN |
 | UNWIND | Small | Simple list expansion |
 
@@ -289,7 +320,6 @@ WITH [1, 2, 3] AS nums RETURN [x IN nums WHERE x > 1] AS filtered
 |------|--------|-----|
 | Standalone Cypher parser | Large | Unlocks full Cypher |
 | Window functions (full) | Large | Frame specs, all functions |
-| Graph-constrained vector search | Large | Novel feature |
 | Cost-based optimizer | Medium | Performance optimization |
 
 ---
@@ -394,4 +424,4 @@ Test file locations:
 
 ---
 
-*Last updated: January 1, 2026 - Completed payload index integration and EXPLAIN command*
+*Last updated: January 1, 2026 - Completed Graph-Constrained Vector Search API*
