@@ -68,6 +68,38 @@ This document covers the complete architectural evolution of ManifoldDB:
 | EXPLAIN | ✅ | Shows logical + physical plans |
 | CTEs (WITH clause) | ✅ | Non-recursive CTEs, multiple CTEs, CTE shadowing |
 
+### Recently Completed SQL Features
+
+#### CTEs (WITH clause) - ✅ Complete
+
+```sql
+WITH active_users AS (
+    SELECT * FROM users WHERE status = 'active'
+)
+SELECT * FROM active_users WHERE age > 21
+```
+
+**Implementation (Done):**
+- [x] Add `WithClause` to AST (`ast/statement.rs`)
+- [x] Parse WITH in `parser/sql.rs`
+- [x] Add CTE resolution in `PlanBuilder`
+- [x] Inline CTE plans when referenced
+- [x] Support multiple CTEs in one WITH clause
+- [x] CTE names shadow table names (standard SQL)
+- [x] Later CTEs can reference earlier CTEs
+- [ ] Recursive CTEs (out of scope, separate task)
+
+**Files modified:**
+- `manifoldb-query/src/ast/statement.rs` - Added `WithClause` struct
+- `manifoldb-query/src/ast/mod.rs` - Re-exported `WithClause`
+- `manifoldb-query/src/parser/sql.rs` - Added `convert_with_clause()`
+- `manifoldb-query/src/plan/logical/builder.rs` - Added `cte_plans` HashMap
+
+**Tests:** 17 tests (8 parser + 9 plan builder)
+**Review:** `docs/reviews/sql-cte-review.md`
+
+---
+
 ### Missing SQL Features
 
 #### 1. Window Functions - Large Effort
