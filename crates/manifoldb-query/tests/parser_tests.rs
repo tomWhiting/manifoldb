@@ -1331,9 +1331,9 @@ mod standalone_match {
     fn parse_match_full_syntax() {
         // Test full Cypher-style syntax as described in the task
         let stmts = ExtendedParser::parse(
-            r#"MATCH (a:User)-[:FOLLOWS]->(b:User)
+            r"MATCH (a:User)-[:FOLLOWS]->(b:User)
                WHERE a.name = 'Alice'
-               RETURN b.name"#,
+               RETURN b.name",
         )
         .unwrap();
 

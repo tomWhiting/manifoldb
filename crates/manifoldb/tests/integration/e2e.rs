@@ -3,6 +3,8 @@
 //! These tests exercise complete workflows combining graph, vector, and SQL
 //! operations, simulating real embedded database scenarios.
 
+#![allow(clippy::unreadable_literal)]
+
 use std::collections::{HashMap, HashSet};
 
 use manifoldb::{Database, EntityId, Value};

@@ -4,6 +4,7 @@
 //! PathPattern, and TraversalIterator on various graph topologies.
 
 #![allow(unused_variables)]
+#![allow(clippy::many_single_char_names)]
 
 use manifoldb_core::{Edge, EdgeType, Entity, EntityId};
 use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};

@@ -1,5 +1,8 @@
 //! Integration tests for the transaction manager.
 
+#![allow(clippy::unreadable_literal)]
+#![allow(clippy::many_single_char_names)]
+
 use manifoldb::transaction::{TransactionManager, VectorSyncStrategy};
 use manifoldb::{DeleteResult, EntityId, TransactionError};
 use manifoldb_storage::backends::RedbEngine;

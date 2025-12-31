@@ -3,6 +3,8 @@
 //! These tests verify the correctness of PageRank, Betweenness Centrality,
 //! Community Detection, and Connected Components algorithms on various graph topologies.
 
+#![allow(clippy::manual_range_contains)]
+
 use manifoldb_core::{Edge, Entity, EntityId};
 use manifoldb_graph::analytics::{
     BetweennessCentrality, BetweennessCentralityConfig, CommunityDetection,

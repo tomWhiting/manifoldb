@@ -412,7 +412,7 @@ impl IndexManager {
 
             let mut keys = Vec::new();
             while let Some((key, _)) = cursor.next()? {
-                keys.push(key.to_vec());
+                keys.push(key.clone());
             }
             keys
         };
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_index_type_default() {
-        let index_type: IndexType = Default::default();
+        let index_type: IndexType = IndexType::default();
         assert_eq!(index_type, IndexType::Equality);
     }
 

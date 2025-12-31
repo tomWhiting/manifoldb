@@ -792,6 +792,6 @@ mod tests {
 
     #[test]
     fn zero_heuristic_is_default() {
-        let _h = ZeroHeuristic::default();
+        let _h = ZeroHeuristic;
     }
 }

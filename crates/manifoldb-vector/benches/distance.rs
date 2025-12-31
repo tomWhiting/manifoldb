@@ -4,6 +4,8 @@
 //!
 //! Compare SIMD vs scalar: `cargo bench -p manifoldb-vector --features scalar`
 
+#![allow(missing_docs)]
+
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use manifoldb_vector::distance::{
     cosine_distance, cosine_similarity, cosine_similarity_with_norms, dot_product,

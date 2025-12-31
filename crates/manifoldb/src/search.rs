@@ -257,15 +257,10 @@ fn json_to_value(json: &serde_json::Value) -> Option<manifoldb_core::Value> {
     match json {
         serde_json::Value::Null => Some(manifoldb_core::Value::Null),
         serde_json::Value::Bool(b) => Some(manifoldb_core::Value::Bool(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(manifoldb_core::Value::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(manifoldb_core::Value::Float(f))
-            } else {
-                None
-            }
-        }
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(manifoldb_core::Value::Int)
+            .or_else(|| n.as_f64().map(manifoldb_core::Value::Float)),
         serde_json::Value::String(s) => Some(manifoldb_core::Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
             // Check if it's a vector (all f32)
@@ -288,7 +283,7 @@ fn json_to_value(json: &serde_json::Value) -> Option<manifoldb_core::Value> {
 }
 
 /// Convert Entity to collection PointStruct for upserting.
-pub(crate) fn entity_to_point_struct(
+pub fn entity_to_point_struct(
     entity: &Entity,
     collection_name: &str,
 ) -> crate::collection::PointStruct {

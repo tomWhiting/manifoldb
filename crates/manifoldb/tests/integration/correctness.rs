@@ -8,6 +8,10 @@
 //! These tests use small, hand-crafted datasets where results are
 //! independently verifiable.
 
+#![allow(clippy::map_entry)]
+#![allow(clippy::set_contains_or_insert)]
+#![allow(clippy::explicit_iter_loop)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use manifoldb::{Database, EntityId, Value};

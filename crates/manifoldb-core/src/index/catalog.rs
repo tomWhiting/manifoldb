@@ -604,7 +604,7 @@ mod tests {
             .column("email")
             .index_type(IndexType::BTree)
             .unique(true)
-            .created_at(1234567890)
+            .created_at(1_234_567_890)
             .build();
 
         // Need to set ID for encoding
@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(decoded.columns, vec!["email"]);
         assert_eq!(decoded.index_type, IndexType::BTree);
         assert!(decoded.is_unique);
-        assert_eq!(decoded.created_at, 1234567890);
+        assert_eq!(decoded.created_at, 1_234_567_890);
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
         let def = IndexDef::builder("idx_composite", "test")
             .columns(["a", "b", "c"])
             .index_type(IndexType::Hash)
-            .created_at(9999999999)
+            .created_at(9_999_999_999)
             .build();
 
         let mut def_with_id = def;

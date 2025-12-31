@@ -479,7 +479,7 @@ mod tests {
             Value::Bool(false),
             Value::Int(0),
             Value::Float(0.0),
-            Value::String("".into()),
+            Value::String(String::new()),
             Value::Bytes(vec![]),
         ];
 
