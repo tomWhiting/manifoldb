@@ -15,7 +15,7 @@ This document covers the complete architectural evolution of ManifoldDB:
 | 1 | Unified Entity API | ✅ Complete |
 | 2 | Payload Indexing | ✅ Complete |
 | 3 | Query Planner Integration | ✅ Complete |
-| 4 | Complete SQL | ⚠️ ~90% Complete |
+| 4 | Complete SQL | ⚠️ ~95% Complete |
 | 5 | Complete Cypher | ⚠️ ~40% Complete |
 | 6 | Graph-Constrained Vector Search | ❌ Not Started |
 
@@ -66,31 +66,11 @@ This document covers the complete architectural evolution of ManifoldDB:
 | MATCH clause (graph) | ✅ | Graph pattern matching |
 | Vector distance (<->) | ✅ | Full support |
 | EXPLAIN | ✅ | Shows logical + physical plans |
+| CTEs (WITH clause) | ✅ | Non-recursive CTEs, multiple CTEs, CTE shadowing |
 
 ### Missing SQL Features
 
-#### 1. CTEs (WITH clause) - Medium Effort
-
-```sql
-WITH active_users AS (
-    SELECT * FROM users WHERE status = 'active'
-)
-SELECT * FROM active_users WHERE age > 21
-```
-
-**Implementation:**
-- [ ] Add `WithClause` to AST (`ast/statement.rs`)
-- [ ] Parse WITH in `parser/sql.rs`
-- [ ] Add CTE resolution in `PlanBuilder`
-- [ ] Materialize CTE results, reference by name
-- [ ] Support recursive CTEs (optional, harder)
-
-**Files to modify:**
-- `manifoldb-query/src/ast/statement.rs`
-- `manifoldb-query/src/parser/sql.rs`
-- `manifoldb-query/src/plan/logical/builder.rs`
-
-#### 2. Window Functions - Large Effort
+#### 1. Window Functions - Large Effort
 
 ```sql
 SELECT name, salary,
@@ -128,7 +108,7 @@ FROM employees
 | AVG() OVER | Aggregate | Medium |
 | COUNT() OVER | Aggregate | Medium |
 
-#### 3. Correlated Subqueries - Medium Effort
+#### 2. Correlated Subqueries - Medium Effort
 
 ```sql
 SELECT * FROM orders o
