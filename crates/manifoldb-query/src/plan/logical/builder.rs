@@ -416,6 +416,10 @@ impl PlanBuilder {
             // Vector aggregates
             "VECTOR_AVG" => Some(AggregateFunction::VectorAvg),
             "VECTOR_CENTROID" => Some(AggregateFunction::VectorCentroid),
+            // Boolean aggregates
+            "BOOL_AND" => Some(AggregateFunction::BoolAnd),
+            "BOOL_OR" => Some(AggregateFunction::BoolOr),
+            "EVERY" => Some(AggregateFunction::BoolAnd), // SQL standard synonym for BOOL_AND
             _ => None,
         }
     }
