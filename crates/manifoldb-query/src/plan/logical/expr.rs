@@ -722,6 +722,56 @@ impl LogicalExpr {
         }
     }
 
+    /// Creates a sample standard deviation aggregate (STDDEV).
+    #[must_use]
+    pub fn stddev_samp(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::StddevSamp, args: vec![expr], distinct }
+    }
+
+    /// Creates a population standard deviation aggregate (STDDEV_POP).
+    #[must_use]
+    pub fn stddev_pop(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::StddevPop, args: vec![expr], distinct }
+    }
+
+    /// Creates a sample variance aggregate (VARIANCE).
+    #[must_use]
+    pub fn variance_samp(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::VarianceSamp,
+            args: vec![expr],
+            distinct,
+        }
+    }
+
+    /// Creates a population variance aggregate (VAR_POP).
+    #[must_use]
+    pub fn variance_pop(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::VariancePop, args: vec![expr], distinct }
+    }
+
+    /// Creates a continuous percentile aggregate (percentileCont).
+    /// The percentile argument should be between 0.0 and 1.0.
+    #[must_use]
+    pub fn percentile_cont(percentile: Self, expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::PercentileCont,
+            args: vec![percentile, expr],
+            distinct: false,
+        }
+    }
+
+    /// Creates a discrete percentile aggregate (percentileDisc).
+    /// The percentile argument should be between 0.0 and 1.0.
+    #[must_use]
+    pub fn percentile_disc(percentile: Self, expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::PercentileDisc,
+            args: vec![percentile, expr],
+            distinct: false,
+        }
+    }
+
     // ========== Window Functions ==========
 
     /// Creates a ROW_NUMBER window function.
@@ -1759,6 +1809,24 @@ pub enum AggregateFunction {
     ArrayAgg,
     /// `STRING_AGG(expr, separator)`.
     StringAgg,
+    /// Sample standard deviation (n-1 denominator).
+    /// SQL: STDDEV, STDDEV_SAMP; Cypher: stDev
+    StddevSamp,
+    /// Population standard deviation (n denominator).
+    /// SQL: STDDEV_POP; Cypher: stDevP
+    StddevPop,
+    /// Sample variance (n-1 denominator).
+    /// SQL: VARIANCE, VAR_SAMP
+    VarianceSamp,
+    /// Population variance (n denominator).
+    /// SQL: VAR_POP
+    VariancePop,
+    /// Continuous percentile (interpolates between values).
+    /// Cypher: percentileCont(percentile, expr)
+    PercentileCont,
+    /// Discrete percentile (returns exact value from set).
+    /// Cypher: percentileDisc(percentile, expr)
+    PercentileDisc,
     /// Vector average.
     VectorAvg,
     /// Vector centroid.
@@ -1775,6 +1843,12 @@ impl fmt::Display for AggregateFunction {
             Self::Max => "MAX",
             Self::ArrayAgg => "ARRAY_AGG",
             Self::StringAgg => "STRING_AGG",
+            Self::StddevSamp => "STDDEV",
+            Self::StddevPop => "STDDEV_POP",
+            Self::VarianceSamp => "VARIANCE",
+            Self::VariancePop => "VAR_POP",
+            Self::PercentileCont => "PERCENTILE_CONT",
+            Self::PercentileDisc => "PERCENTILE_DISC",
             Self::VectorAvg => "VECTOR_AVG",
             Self::VectorCentroid => "VECTOR_CENTROID",
         };

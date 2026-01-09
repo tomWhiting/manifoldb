@@ -474,8 +474,10 @@ These feature groups can be implemented independently:
 | jsonb_agg | ✓ | ✓ | | | | | Needs impl |
 | bool_and | | | | | | | Not impl |
 | bool_or | | | | | | | Not impl |
-| stddev | | | | | | | Not impl |
-| variance | | | | | | | Not impl |
+| stddev | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| stddev_pop | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| variance | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| var_pop | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 
 ## 1.14 Scalar Functions
 
@@ -761,10 +763,10 @@ These feature groups can be implemented independently:
 | avg() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | min() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | max() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| percentileCont() | | | | | | | Not impl |
-| percentileDisc() | | | | | | | Not impl |
-| stDev() | | | | | | | Not impl |
-| stDevP() | | | | | | | Not impl |
+| percentileCont() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| percentileDisc() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| stDev() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| stDevP() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 
 ## 2.10 List Functions
 

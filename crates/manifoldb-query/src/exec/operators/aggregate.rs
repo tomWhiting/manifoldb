@@ -469,6 +469,8 @@ struct Accumulator {
     func: Option<AggregateFunction>,
     count: i64,
     sum: f64,
+    /// Sum of squared values for variance/stddev calculations.
+    sum_sq: f64,
     min: Option<Value>,
     max: Option<Value>,
     /// Collected values for array_agg.
@@ -477,6 +479,10 @@ struct Accumulator {
     string_values: Vec<String>,
     /// Delimiter for string_agg (captured from first row).
     string_delimiter: Option<String>,
+    /// Collected numeric values for percentile calculations.
+    percentile_values: Vec<f64>,
+    /// Percentile argument (0.0 to 1.0) for percentile functions.
+    percentile_arg: Option<f64>,
 }
 
 impl Accumulator {
@@ -566,6 +572,28 @@ impl Accumulator {
                     self.string_values.push(s);
                 }
             }
+            AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarianceSamp
+            | AggregateFunction::VariancePop => {
+                // For variance/stddev we need sum and sum of squares
+                let v = value_to_f64(value);
+                self.sum += v;
+                self.sum_sq += v * v;
+            }
+            AggregateFunction::PercentileCont | AggregateFunction::PercentileDisc => {
+                // Capture the percentile argument from the first argument on first call
+                // Note: In Cypher, percentileCont(0.5, n.value) has percentile first
+                if self.percentile_arg.is_none() {
+                    self.percentile_arg = values.first().map(value_to_f64);
+                }
+                // Collect the numeric values from the second argument
+                if let Some(expr_value) = values.get(1) {
+                    if !matches!(expr_value, Value::Null) {
+                        self.percentile_values.push(value_to_f64(expr_value));
+                    }
+                }
+            }
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => {
                 // Vector aggregates - not implemented yet
             }
@@ -606,6 +634,90 @@ impl Accumulator {
                     Value::String(self.string_values.join(delimiter))
                 }
             }
+            Some(AggregateFunction::VarianceSamp) => {
+                // Sample variance: sum((x - mean)^2) / (n - 1)
+                // Using computational formula: (sum_sq - sum^2/n) / (n - 1)
+                if self.count < 2 {
+                    Value::Null
+                } else {
+                    let n = self.count as f64;
+                    let variance = (self.sum_sq - (self.sum * self.sum) / n) / (n - 1.0);
+                    Value::Float(variance)
+                }
+            }
+            Some(AggregateFunction::VariancePop) => {
+                // Population variance: sum((x - mean)^2) / n
+                // Using computational formula: (sum_sq - sum^2/n) / n
+                if self.count == 0 {
+                    Value::Null
+                } else {
+                    let n = self.count as f64;
+                    let variance = (self.sum_sq - (self.sum * self.sum) / n) / n;
+                    Value::Float(variance)
+                }
+            }
+            Some(AggregateFunction::StddevSamp) => {
+                // Sample stddev: sqrt(sample variance)
+                if self.count < 2 {
+                    Value::Null
+                } else {
+                    let n = self.count as f64;
+                    let variance = (self.sum_sq - (self.sum * self.sum) / n) / (n - 1.0);
+                    Value::Float(variance.sqrt())
+                }
+            }
+            Some(AggregateFunction::StddevPop) => {
+                // Population stddev: sqrt(population variance)
+                if self.count == 0 {
+                    Value::Null
+                } else {
+                    let n = self.count as f64;
+                    let variance = (self.sum_sq - (self.sum * self.sum) / n) / n;
+                    Value::Float(variance.sqrt())
+                }
+            }
+            Some(AggregateFunction::PercentileCont) => {
+                // Continuous percentile: interpolates between values
+                if self.percentile_values.is_empty() {
+                    return Value::Null;
+                }
+                let percentile = self.percentile_arg.unwrap_or(0.5);
+                let mut sorted = self.percentile_values.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+                let n = sorted.len();
+                if n == 1 {
+                    return Value::Float(sorted[0]);
+                }
+
+                // Calculate the index position (0-based)
+                let pos = percentile * (n - 1) as f64;
+                let lower_idx = pos.floor() as usize;
+                let upper_idx = pos.ceil() as usize;
+                let frac = pos - pos.floor();
+
+                if lower_idx == upper_idx || upper_idx >= n {
+                    Value::Float(sorted[lower_idx.min(n - 1)])
+                } else {
+                    // Linear interpolation
+                    let result = sorted[lower_idx] + frac * (sorted[upper_idx] - sorted[lower_idx]);
+                    Value::Float(result)
+                }
+            }
+            Some(AggregateFunction::PercentileDisc) => {
+                // Discrete percentile: returns exact value from set
+                if self.percentile_values.is_empty() {
+                    return Value::Null;
+                }
+                let percentile = self.percentile_arg.unwrap_or(0.5);
+                let mut sorted = self.percentile_values.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+                let n = sorted.len();
+                // Find the first value whose position >= percentile * n
+                let idx = ((percentile * n as f64).ceil() as usize).saturating_sub(1).min(n - 1);
+                Value::Float(sorted[idx])
+            }
             Some(AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid) => Value::Null,
             None => {
                 // Fallback for unknown or unset function type
@@ -629,6 +741,11 @@ impl Accumulator {
             | AggregateFunction::Max => Value::Null,
             AggregateFunction::ArrayAgg => Value::Null,
             AggregateFunction::StringAgg => Value::Null,
+            AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarianceSamp
+            | AggregateFunction::VariancePop => Value::Null,
+            AggregateFunction::PercentileCont | AggregateFunction::PercentileDisc => Value::Null,
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => Value::Null,
         }
     }
@@ -1222,6 +1339,595 @@ mod tests {
         let result = row.get(0).unwrap();
 
         assert_eq!(result, &Value::Null);
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for variance functions ==========
+
+    #[test]
+    fn hash_aggregate_variance_samp() {
+        // Test sample variance: values 2, 4, 4, 4, 5, 5, 7, 9
+        // Mean = 5, Sum of squared deviations = 32, n = 8, variance = 32/7 ≈ 4.571
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(2)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(5)],
+                vec![Value::Int(5)],
+                vec![Value::Int(7)],
+                vec![Value::Int(9)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::variance_samp(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // Sample variance = 32/7 ≈ 4.571428
+            assert!((v - 4.571_428_571).abs() < 0.0001, "Expected ~4.571, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_variance_pop() {
+        // Test population variance: values 2, 4, 4, 4, 5, 5, 7, 9
+        // Mean = 5, Sum of squared deviations = 32, n = 8, variance = 32/8 = 4.0
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(2)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(5)],
+                vec![Value::Int(5)],
+                vec![Value::Int(7)],
+                vec![Value::Int(9)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::variance_pop(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // Population variance = 32/8 = 4.0
+            assert!((v - 4.0).abs() < 0.0001, "Expected 4.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_variance_single_value() {
+        // Test variance with single value - should return NULL for sample, 0 for population
+        let input: BoxedOperator =
+            Box::new(ValuesOp::with_columns(vec!["n".to_string()], vec![vec![Value::Int(5)]]));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::variance_samp(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // Sample variance with 1 value is NULL (division by n-1 = 0)
+        assert_eq!(row.get(0).unwrap(), &Value::Null);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_variance_pop_single_value() {
+        // Population variance with single value should be 0
+        let input: BoxedOperator =
+            Box::new(ValuesOp::with_columns(vec!["n".to_string()], vec![vec![Value::Int(5)]]));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::variance_pop(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            assert!((v - 0.0).abs() < 0.0001, "Expected 0.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for stddev functions ==========
+
+    #[test]
+    fn hash_aggregate_stddev_samp() {
+        // Test sample standard deviation: values 2, 4, 4, 4, 5, 5, 7, 9
+        // Sample variance ≈ 4.571, stddev ≈ 2.138
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(2)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(5)],
+                vec![Value::Int(5)],
+                vec![Value::Int(7)],
+                vec![Value::Int(9)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::stddev_samp(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // sqrt(4.571428) ≈ 2.138
+            assert!((v - 2.138_089_935).abs() < 0.0001, "Expected ~2.138, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_stddev_pop() {
+        // Test population standard deviation: values 2, 4, 4, 4, 5, 5, 7, 9
+        // Population variance = 4.0, stddev = 2.0
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(2)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(4)],
+                vec![Value::Int(5)],
+                vec![Value::Int(5)],
+                vec![Value::Int(7)],
+                vec![Value::Int(9)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::stddev_pop(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // sqrt(4.0) = 2.0
+            assert!((v - 2.0).abs() < 0.0001, "Expected 2.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_stddev_with_nulls() {
+        // Test that stddev skips NULLs
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(10)],
+                vec![Value::Null],
+                vec![Value::Int(20)],
+                vec![Value::Int(30)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![
+            LogicalExpr::stddev_pop(LogicalExpr::column("n"), false),
+            LogicalExpr::avg(LogicalExpr::column("n"), false),
+        ];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // Values 10, 20, 30 => mean = 20, variance = (100 + 0 + 100)/3 = 200/3
+        // stddev_pop = sqrt(200/3) ≈ 8.165
+        if let Value::Float(v) = row.get(0).unwrap() {
+            assert!((v - 8.164_965_8).abs() < 0.001, "Expected ~8.165, got {}", v);
+        } else {
+            panic!("Expected Float for stddev");
+        }
+        // AVG should be 20
+        assert_eq!(row.get(1).unwrap(), &Value::Float(20.0));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_stddev_with_group_by() {
+        // Test stddev with GROUP BY
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("A"), Value::Int(100)],
+                vec![Value::from("A"), Value::Int(200)],
+                vec![Value::from("A"), Value::Int(150)],
+                vec![Value::from("B"), Value::Int(50)],
+                vec![Value::from("B"), Value::Int(50)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::stddev_pop(LogicalExpr::column("salary"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            if let Value::Float(stddev) = row.get(1).unwrap() {
+                if dept == &Value::from("A") {
+                    // Values 100, 200, 150 => mean = 150
+                    // variance = (2500 + 2500 + 0)/3 = 5000/3
+                    // stddev = sqrt(5000/3) ≈ 40.82
+                    assert!(
+                        (stddev - 40.824_829).abs() < 0.01,
+                        "Dept A: Expected ~40.82, got {}",
+                        stddev
+                    );
+                } else if dept == &Value::from("B") {
+                    // All same values => stddev = 0
+                    assert!((stddev - 0.0).abs() < 0.01, "Dept B: Expected 0.0, got {}", stddev);
+                }
+            } else {
+                panic!("Expected Float");
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for percentile functions ==========
+
+    #[test]
+    fn hash_aggregate_percentile_cont_median() {
+        // Test percentileCont at 0.5 (median) with odd count
+        // Values: 1, 2, 3, 4, 5 => median = 3
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(1)],
+                vec![Value::Int(2)],
+                vec![Value::Int(3)],
+                vec![Value::Int(4)],
+                vec![Value::Int(5)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::percentile_cont(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            assert!((v - 3.0).abs() < 0.0001, "Expected 3.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_cont_interpolated() {
+        // Test percentileCont at 0.5 with even count (interpolation needed)
+        // Values: 1, 2, 3, 4 => median = (2 + 3) / 2 = 2.5
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(1)],
+                vec![Value::Int(2)],
+                vec![Value::Int(3)],
+                vec![Value::Int(4)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::percentile_cont(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            assert!((v - 2.5).abs() < 0.0001, "Expected 2.5, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_cont_quartiles() {
+        // Test percentileCont at various percentiles
+        // Values: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            (1..=10).map(|i| vec![Value::Int(i)]).collect(),
+        ));
+
+        let group_by = vec![];
+        // Test 25th percentile
+        let aggregates = vec![LogicalExpr::percentile_cont(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.25)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // 25th percentile at position 0.25 * 9 = 2.25
+            // Interpolate between index 2 (value 3) and index 3 (value 4)
+            // Result = 3 + 0.25 * (4 - 3) = 3.25
+            assert!((v - 3.25).abs() < 0.0001, "Expected 3.25, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_disc_median() {
+        // Test percentileDisc at 0.5 (median) - returns exact value
+        // Values: 1, 2, 3, 4 => should return 2 (first value >= 50% position)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(1)],
+                vec![Value::Int(2)],
+                vec![Value::Int(3)],
+                vec![Value::Int(4)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::percentile_disc(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // Should be 2 (discrete value at position ceil(0.5 * 4) - 1 = 1)
+            assert!((v - 2.0).abs() < 0.0001, "Expected 2.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_disc_extremes() {
+        // Test percentileDisc at 0 and 1
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(10)],
+                vec![Value::Int(20)],
+                vec![Value::Int(30)],
+                vec![Value::Int(40)],
+                vec![Value::Int(50)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![
+            LogicalExpr::percentile_disc(
+                LogicalExpr::Literal(crate::ast::Literal::Float(0.0)),
+                LogicalExpr::column("n"),
+            ),
+            LogicalExpr::percentile_disc(
+                LogicalExpr::Literal(crate::ast::Literal::Float(1.0)),
+                LogicalExpr::column("n"),
+            ),
+        ];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // 0th percentile should be minimum (10)
+        if let Value::Float(v) = row.get(0).unwrap() {
+            assert!((v - 10.0).abs() < 0.0001, "0th percentile: Expected 10.0, got {}", v);
+        }
+        // 100th percentile should be maximum (50)
+        if let Value::Float(v) = row.get(1).unwrap() {
+            assert!((v - 50.0).abs() < 0.0001, "100th percentile: Expected 50.0, got {}", v);
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_with_nulls() {
+        // Test that percentile functions skip NULLs
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(1)],
+                vec![Value::Null],
+                vec![Value::Int(3)],
+                vec![Value::Null],
+                vec![Value::Int(5)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::percentile_cont(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        if let Value::Float(v) = row.get(0).unwrap() {
+            // Values 1, 3, 5 => median = 3
+            assert!((v - 3.0).abs() < 0.0001, "Expected 3.0, got {}", v);
+        } else {
+            panic!("Expected Float");
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_percentile_empty_returns_null() {
+        // Test that percentile returns NULL for all-NULL input
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![vec![Value::Null], vec![Value::Null]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::percentile_cont(
+            LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+            LogicalExpr::column("n"),
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Null);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_multiple_statistical_aggregates() {
+        // Test multiple statistical aggregates together
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(10)],
+                vec![Value::Int(20)],
+                vec![Value::Int(30)],
+                vec![Value::Int(40)],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![
+            LogicalExpr::avg(LogicalExpr::column("n"), false),
+            LogicalExpr::variance_pop(LogicalExpr::column("n"), false),
+            LogicalExpr::stddev_pop(LogicalExpr::column("n"), false),
+            LogicalExpr::percentile_cont(
+                LogicalExpr::Literal(crate::ast::Literal::Float(0.5)),
+                LogicalExpr::column("n"),
+            ),
+        ];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+
+        // AVG = 25
+        assert_eq!(row.get(0).unwrap(), &Value::Float(25.0));
+
+        // Variance (pop) = ((10-25)^2 + (20-25)^2 + (30-25)^2 + (40-25)^2) / 4
+        //                = (225 + 25 + 25 + 225) / 4 = 500/4 = 125
+        if let Value::Float(v) = row.get(1).unwrap() {
+            assert!((v - 125.0).abs() < 0.0001, "Variance: Expected 125.0, got {}", v);
+        }
+
+        // Stddev (pop) = sqrt(125) ≈ 11.18
+        if let Value::Float(v) = row.get(2).unwrap() {
+            assert!((v - 11.180_339_8).abs() < 0.001, "Stddev: Expected ~11.18, got {}", v);
+        }
+
+        // Median = (20 + 30) / 2 = 25
+        if let Value::Float(v) = row.get(3).unwrap() {
+            assert!((v - 25.0).abs() < 0.0001, "Median: Expected 25.0, got {}", v);
+        }
 
         op.close().unwrap();
     }
