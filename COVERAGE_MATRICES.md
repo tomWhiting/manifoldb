@@ -61,16 +61,17 @@ Recursive CTEs
 └── Status: ✅ Complete with tests (Jan 2026)
 
 Cypher Writing Clauses
-├── CREATE: New GraphCreate logical node + operator
-├── MERGE: Depends on CREATE, new GraphMerge node + operator
+├── CREATE: ✅ GraphCreate logical node + operator complete
+├── MERGE: ✅ GraphMerge node + operator complete
 ├── SET: Depends on MERGE (for ON CREATE/MATCH), new GraphSet node
 ├── DELETE: Independent, new GraphDelete node + operator
 └── REMOVE: Similar to SET, new GraphRemove node
 
 CALL/YIELD Procedures
-├── New: ProcedureCall logical node
-├── New: Procedure registry infrastructure
-└── Then: Wire up existing graph algorithms as procedures
+├── ProcedureCall logical node: ✅ Complete
+├── Procedure registry infrastructure: ✅ Complete
+├── PageRank/ShortestPath built-in procedures: ✅ Complete
+└── Status: ✅ Complete with tests (Jan 2026)
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -579,14 +580,14 @@ These feature groups can be implemented independently:
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
 | **CREATE** |
-| CREATE node | | | | | | | Not implemented |
-| CREATE relationship | | | | | | | Not implemented |
-| CREATE with properties | | | | | | | Not implemented |
+| CREATE node | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| CREATE relationship | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| CREATE with properties | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **MERGE** |
-| MERGE node | | | | | | | Not implemented |
-| MERGE relationship | | | | | | | Not implemented |
-| ON CREATE SET | | | | | | | Not implemented |
-| ON MATCH SET | | | | | | | Not implemented |
+| MERGE node | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| MERGE relationship | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| ON CREATE SET | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| ON MATCH SET | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **SET** |
 | SET property | | | | | | | Not implemented |
 | SET properties (+=) | | | | | | | Not implemented |
@@ -636,10 +637,10 @@ These feature groups can be implemented independently:
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| CALL procedure() | | | | | | | Not implemented |
-| YIELD columns | | | | | | | Not implemented |
-| YIELD * | | | | | | | Not implemented |
-| YIELD with WHERE | | | | | | | Not implemented |
+| CALL procedure() | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
+| YIELD columns | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
+| YIELD * | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
+| YIELD with WHERE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
 
 ## 2.6 Operators
 
