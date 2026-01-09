@@ -21,6 +21,17 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **EXPLAIN command** - Shows logical and physical plan trees
 - ✅ **Payload Indexing** - B-tree indexes on entity properties
 
+### Completed January 2026
+
+- ✅ **WITH RECURSIVE** - Recursive CTEs with working table management
+- ✅ **Basic Window Functions** - ROW_NUMBER, RANK, DENSE_RANK with PARTITION BY/ORDER BY
+- ✅ **SQL Core Functions** - String (position, concat_ws, ltrim, rtrim, replace, split_part, regexp_match, regexp_replace, format), Numeric (exp, ln, log, log10, trig functions, degrees, radians, sign, pi), Date/Time (date_part, extract, date_trunc, to_timestamp, to_date, to_char)
+- ✅ **Variable-Length Paths** - Full execution with BFS traversal and cycle detection
+- ✅ **UNWIND Clause** - List expansion to rows
+- ✅ **Cypher CREATE/MERGE** - Parsing and logical/physical planning (execution TBD)
+- ✅ **Cypher SET/DELETE/REMOVE** - Parsing and logical/physical planning (execution TBD)
+- ✅ **CALL/YIELD Infrastructure** - Procedure registry, ProcedureCall plan node, algo.pageRank, algo.shortestPath
+
 ---
 
 ## Architecture Overview
@@ -88,19 +99,19 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Define a complete intermediate representation that both SQL and Cypher compile to.
 
 - [ ] Design complete logical plan node taxonomy (see LOGICAL_PLAN_SPECIFICATION.md)
-- [ ] Implement missing logical plan nodes:
-  - `Window` - Window function evaluation
-  - `RecursiveCTE` - Recursive CTE evaluation
-  - `Procedure` - CALL ... YIELD procedure invocation
-  - `ShortestPath` - Graph shortest path computation
-  - `AllShortestPaths` - All shortest paths computation
-  - `GraphCreate` - CREATE for nodes/edges
-  - `GraphMerge` - MERGE with ON CREATE/ON MATCH
-  - `GraphSet` - SET property updates
-  - `GraphRemove` - REMOVE property/label
-  - `GraphDelete` - DELETE nodes/edges
-  - `DetachDelete` - DETACH DELETE
-  - `Foreach` - Cypher FOREACH iteration
+- [x] Implement missing logical plan nodes:
+  - [x] `Window` - Window function evaluation ✅ Jan 2026
+  - [x] `RecursiveCTE` - Recursive CTE evaluation ✅ Jan 2026
+  - [x] `Procedure` - CALL ... YIELD procedure invocation ✅ Jan 2026
+  - [ ] `ShortestPath` - Graph shortest path computation
+  - [ ] `AllShortestPaths` - All shortest paths computation
+  - [x] `GraphCreate` - CREATE for nodes/edges ✅ Jan 2026
+  - [x] `GraphMerge` - MERGE with ON CREATE/ON MATCH ✅ Jan 2026
+  - [x] `GraphSet` - SET property updates ✅ Jan 2026
+  - [x] `GraphRemove` - REMOVE property/label ✅ Jan 2026
+  - [x] `GraphDelete` - DELETE nodes/edges ✅ Jan 2026
+  - [x] `DetachDelete` - DETACH DELETE ✅ Jan 2026 (part of GraphDelete)
+  - [ ] `Foreach` - Cypher FOREACH iteration
 - [ ] Add type system for plan nodes (input/output schemas)
 - [ ] Implement plan validation and sanity checks
 
@@ -126,7 +137,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 
 - [x] **CTEs** (basic support complete)
   - [x] Non-recursive CTEs with multiple CTE support
-  - [ ] WITH RECURSIVE support (currently rejected)
+  - [x] WITH RECURSIVE support ✅ Jan 2026
   - [ ] SEARCH DEPTH/BREADTH FIRST
   - [ ] CYCLE detection clause
   - [ ] MATERIALIZED/NOT MATERIALIZED hints
@@ -168,30 +179,30 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 2.2 Function Library
 **Goal:** Implement PostgreSQL-compatible function library.
 
-- [ ] **String Functions** (Tier 1)
-  - [ ] length, char_length, octet_length
-  - [ ] substring, substr, position, strpos
-  - [ ] upper, lower, initcap
-  - [ ] ltrim, rtrim, btrim, trim
+- [x] **String Functions** (Tier 1) - Mostly complete ✅ Jan 2026
+  - [x] length, char_length, octet_length
+  - [x] substring, substr, position, strpos
+  - [x] upper, lower, initcap
+  - [x] ltrim, rtrim, btrim, trim
   - [ ] lpad, rpad
-  - [ ] concat, concat_ws
-  - [ ] replace, translate
-  - [ ] split_part, string_to_array
-  - [ ] format
-  - [ ] regexp_match, regexp_replace, regexp_split_to_array
+  - [x] concat, concat_ws
+  - [x] replace, translate
+  - [x] split_part, string_to_array
+  - [x] format
+  - [x] regexp_match, regexp_replace, regexp_split_to_array
 
-- [ ] **Numeric Functions** (Tier 1)
-  - [ ] abs, sign, ceil, floor, round, trunc
-  - [ ] sqrt, cbrt, power, exp, ln, log, log10
-  - [ ] mod, div
-  - [ ] sin, cos, tan, asin, acos, atan, atan2
-  - [ ] degrees, radians
-  - [ ] random, setseed
+- [x] **Numeric Functions** (Tier 1) - Complete ✅ Jan 2026
+  - [x] abs, sign, ceil, floor, round, trunc
+  - [x] sqrt, cbrt, power, exp, ln, log, log10
+  - [x] mod, div
+  - [x] sin, cos, tan, asin, acos, atan, atan2
+  - [x] degrees, radians
+  - [x] random, setseed
 
-- [ ] **Date/Time Functions** (Tier 1)
-  - [ ] now, current_timestamp, current_date, current_time
-  - [ ] date_part, extract, date_trunc
-  - [ ] to_timestamp, to_date, to_char
+- [x] **Date/Time Functions** (Tier 1) - Mostly complete ✅ Jan 2026
+  - [x] now, current_timestamp, current_date, current_time
+  - [x] date_part, extract, date_trunc
+  - [x] to_timestamp, to_date, to_char
   - [ ] age, date_add, date_subtract
   - [ ] make_timestamp, make_date, make_time
   - [ ] timezone, at time zone
@@ -203,8 +214,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] bool_and, bool_or, every
   - [ ] FILTER clause on aggregates
 
-- [ ] **Window Functions** (Tier 2)
-  - [ ] row_number, rank, dense_rank, ntile
+- [x] **Window Functions** (Tier 2) - Basic ranking complete ✅ Jan 2026
+  - [x] row_number, rank, dense_rank ✅ Jan 2026
+  - [ ] ntile
   - [ ] lag, lead
   - [ ] first_value, last_value, nth_value
   - [ ] percent_rank, cume_dist
@@ -243,14 +255,14 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 2.4 Physical Operators
 **Goal:** Implement missing physical operators.
 
-- [ ] **WindowOp** - Window function evaluation
-  - [ ] Partition management
+- [x] **WindowOp** - Window function evaluation ✅ Jan 2026
+  - [x] Partition management
   - [ ] Frame calculation
-  - [ ] Support all ranking functions
+  - [x] Support ranking functions (row_number, rank, dense_rank)
 
-- [ ] **RecursiveCTEOp** - Recursive CTE execution
-  - [ ] Working table management
-  - [ ] Cycle detection
+- [x] **RecursiveCTEOp** - Recursive CTE execution ✅ Jan 2026
+  - [x] Working table management
+  - [x] Cycle detection
   - [ ] Depth/breadth-first ordering
 
 - [ ] **IndexNestedLoopJoinOp** - Index-accelerated joins
@@ -264,22 +276,22 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.1 Parser Extensions
 **Goal:** Parse complete openCypher queries.
 
-- [ ] **Writing Clauses**
-  - [ ] CREATE (nodes and relationships)
-  - [ ] MERGE with ON CREATE SET and ON MATCH SET
-  - [ ] SET (properties and labels)
-  - [ ] REMOVE (properties and labels)
-  - [ ] DELETE and DETACH DELETE
+- [x] **Writing Clauses** - Parsing + planning complete ✅ Jan 2026
+  - [x] CREATE (nodes and relationships) ✅ Jan 2026
+  - [x] MERGE with ON CREATE SET and ON MATCH SET ✅ Jan 2026
+  - [x] SET (properties and labels) ✅ Jan 2026
+  - [x] REMOVE (properties and labels) ✅ Jan 2026
+  - [x] DELETE and DETACH DELETE ✅ Jan 2026
   - [ ] FOREACH
 
 - [ ] **Reading Clauses**
   - [ ] MANDATORY MATCH (optional, Neo4j extension)
   - [ ] Full label expressions (:Label1|Label2, :Label1&Label2)
 
-- [ ] **Path Functions**
+- [x] **Path Functions** - Variable-length paths complete ✅ Jan 2026
   - [ ] shortestPath() pattern function
   - [ ] allShortestPaths() pattern function
-  - [ ] Variable-length path improvements
+  - [x] Variable-length path execution ✅ Jan 2026
 
 - [ ] **Subqueries**
   - [ ] EXISTS { } subquery
@@ -342,27 +354,27 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.4 Logical Plan Generation
 **Goal:** Generate correct logical plans from Cypher AST.
 
-- [ ] Implement Cypher → Logical Plan translation for:
-  - [ ] MATCH with complex patterns
-  - [ ] CREATE patterns
-  - [ ] MERGE with conditions
-  - [ ] SET/REMOVE operations
-  - [ ] DELETE/DETACH DELETE
-  - [ ] WITH clause chaining
-  - [ ] UNION/UNION ALL
-  - [ ] CALL ... YIELD
+- [x] Implement Cypher → Logical Plan translation for:
+  - [x] MATCH with complex patterns
+  - [x] CREATE patterns ✅ Jan 2026
+  - [x] MERGE with conditions ✅ Jan 2026
+  - [x] SET/REMOVE operations ✅ Jan 2026
+  - [x] DELETE/DETACH DELETE ✅ Jan 2026
+  - [x] WITH clause chaining
+  - [x] UNION/UNION ALL
+  - [x] CALL ... YIELD ✅ Jan 2026
 
 #### 3.5 Physical Operators
 **Goal:** Implement Cypher-specific operators.
 
-- [ ] **GraphCreateOp** - Create nodes and edges
-- [ ] **GraphMergeOp** - Merge with create/match logic
-- [ ] **GraphSetOp** - Set properties/labels
-- [ ] **GraphRemoveOp** - Remove properties/labels
-- [ ] **GraphDeleteOp** - Delete with referential checks
+- [x] **GraphCreateOp** - Create nodes and edges ✅ Jan 2026 (planning only)
+- [x] **GraphMergeOp** - Merge with create/match logic ✅ Jan 2026 (planning only)
+- [x] **GraphSetOp** - Set properties/labels ✅ Jan 2026 (planning only)
+- [x] **GraphRemoveOp** - Remove properties/labels ✅ Jan 2026 (planning only)
+- [x] **GraphDeleteOp** - Delete with referential checks ✅ Jan 2026 (planning only)
 - [ ] **ShortestPathOp** - BFS-based shortest path
 - [ ] **AllShortestPathsOp** - All shortest paths
-- [ ] **VariableLengthExpandOp** - Multi-hop expansion
+- [x] **VariableLengthExpandOp** - Multi-hop expansion ✅ Jan 2026
 
 ---
 
@@ -371,16 +383,16 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 4.1 CALL/YIELD Infrastructure
 **Goal:** Implement procedure call framework.
 
-- [ ] Design procedure registry interface
-- [ ] Implement CALL ... YIELD parsing (both languages)
-- [ ] Create `ProcedureCall` logical plan node
-- [ ] Implement procedure dispatcher
+- [x] Design procedure registry interface ✅ Jan 2026
+- [x] Implement CALL ... YIELD parsing (both languages) ✅ Jan 2026
+- [x] Create `ProcedureCall` logical plan node ✅ Jan 2026
+- [x] Implement procedure dispatcher ✅ Jan 2026
 - [ ] Add built-in procedure discovery (SHOW PROCEDURES)
 
 #### 4.2 Path Algorithms
 **Goal:** Expose path algorithms as procedures.
 
-- [ ] `algo.shortestPath(start, end, config) YIELD path, cost`
+- [x] `algo.shortestPath(start, end, config) YIELD path, cost` ✅ Jan 2026
 - [ ] `algo.allShortestPaths(start, end, config) YIELD path, cost`
 - [ ] `algo.dijkstra(start, end, weightProperty) YIELD path, cost`
 - [ ] `algo.astar(start, end, heuristic, weightProperty) YIELD path, cost`
@@ -390,7 +402,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 4.3 Centrality Algorithms
 **Goal:** Expose centrality algorithms as procedures.
 
-- [ ] `algo.pageRank(config) YIELD node, score`
+- [x] `algo.pageRank(config) YIELD node, score` ✅ Jan 2026
 - [ ] `algo.betweennessCentrality(config) YIELD node, score`
 - [ ] `algo.closenessCentrality(config) YIELD node, score`
 - [ ] `algo.degreeCentrality(config) YIELD node, score`
