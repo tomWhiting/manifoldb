@@ -1034,12 +1034,11 @@ fn test_variable_length_path_range() {
         for node in queue {
             let edges = tx.get_outgoing_edges(node).expect("failed");
             for edge in edges {
-                if !visited.contains(&edge.target) {
-                    visited.insert(edge.target);
+                if visited.insert(edge.target) {
                     let new_depth = depth_map[&node] + 1;
                     depth_map.insert(edge.target, new_depth);
 
-                    if new_depth >= 1 && new_depth <= 3 {
+                    if (1..=3).contains(&new_depth) {
                         reachable.insert(edge.target);
                     }
 
@@ -1110,8 +1109,7 @@ fn test_variable_length_path_min_only() {
     while let Some((node, depth)) = queue.pop() {
         let edges = tx.get_outgoing_edges(node).expect("failed");
         for edge in edges {
-            if !visited.contains(&edge.target) {
-                visited.insert(edge.target);
+            if visited.insert(edge.target) {
                 let new_depth = depth + 1;
 
                 // Only add if depth >= 2
@@ -1152,12 +1150,11 @@ fn test_variable_length_path_max_only() {
 
         let edges = tx.get_outgoing_edges(node).expect("failed");
         for edge in edges {
-            if !visited.contains(&edge.target) {
-                visited.insert(edge.target);
+            if visited.insert(edge.target) {
                 let new_depth = depth + 1;
 
-                // Only add if depth >= 1 and <= 2
-                if new_depth >= 1 && new_depth <= 2 {
+                // Only add if depth in range 1..=2
+                if (1..=2).contains(&new_depth) {
                     reachable.insert(edge.target);
                 }
 
@@ -1190,8 +1187,7 @@ fn test_variable_length_path_unbounded() {
     while let Some(node) = queue.pop() {
         let edges = tx.get_outgoing_edges(node).expect("failed");
         for edge in edges {
-            if !visited.contains(&edge.target) {
-                visited.insert(edge.target);
+            if visited.insert(edge.target) {
                 reachable.insert(edge.target);
                 queue.push(edge.target);
             }
@@ -1221,8 +1217,7 @@ fn test_variable_length_path_cycle_detection() {
     while let Some(node) = queue.pop() {
         let edges = tx.get_outgoing_edges(node).expect("failed");
         for edge in edges {
-            if !visited.contains(&edge.target) {
-                visited.insert(edge.target);
+            if visited.insert(edge.target) {
                 queue.push(edge.target);
             }
         }
