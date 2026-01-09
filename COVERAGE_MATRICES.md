@@ -743,10 +743,10 @@ These feature groups can be implemented independently:
 | **Null Handling** |
 | coalesce() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | **Type Conversion** |
-| toBoolean() | ✓ | ✓ | | | | | |
-| toInteger() | ✓ | ✓ | | | | | |
-| toFloat() | ✓ | ✓ | | | | | |
-| toString() | ✓ | ✓ | | | | | |
+| toBoolean() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| toInteger() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| toFloat() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| toString() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | **Path Functions** |
 | startNode(r) | ✓ | ✓ | | | | | |
 | endNode(r) | ✓ | ✓ | | | | | |

@@ -1728,6 +1728,49 @@ pub enum ScalarFunction {
     /// Returns NULL if the argument is NULL.
     Keys,
 
+    // Cypher type conversion functions
+    /// `toBoolean(expression)`.
+    ///
+    /// Converts a value to a boolean.
+    /// - `toBoolean("true")` → true
+    /// - `toBoolean("false")` → false
+    /// - `toBoolean(0)` → false
+    /// - `toBoolean(non-zero)` → true
+    /// - `toBoolean(null)` → null
+    ///
+    /// Returns NULL for invalid conversions.
+    ToBoolean,
+    /// `toInteger(expression)`.
+    ///
+    /// Converts a value to an integer.
+    /// - `toInteger("123")` → 123
+    /// - `toInteger(3.14)` → 3 (truncates)
+    /// - `toInteger(true)` → 1, `toInteger(false)` → 0
+    /// - `toInteger(null)` → null
+    ///
+    /// Returns NULL for invalid conversions.
+    ToInteger,
+    /// `toFloat(expression)`.
+    ///
+    /// Converts a value to a float.
+    /// - `toFloat("3.14")` → 3.14
+    /// - `toFloat(3)` → 3.0
+    /// - `toFloat(true)` → 1.0, `toFloat(false)` → 0.0
+    /// - `toFloat(null)` → null
+    ///
+    /// Returns NULL for invalid conversions.
+    ToFloat,
+    /// `toString(expression)`.
+    ///
+    /// Converts a value to a string.
+    /// - `toString(123)` → "123"
+    /// - `toString(true)` → "true"
+    /// - `toString(3.14)` → "3.14"
+    /// - `toString(null)` → null
+    ///
+    /// Returns NULL for null input.
+    CypherToString,
+
     // Other
     /// Custom/user-defined function.
     Custom(u32), // Index into function registry
@@ -1827,6 +1870,11 @@ impl fmt::Display for ScalarFunction {
             Self::Id => "ID",
             Self::Properties => "PROPERTIES",
             Self::Keys => "KEYS",
+            // Cypher type conversion functions
+            Self::ToBoolean => "toBoolean",
+            Self::ToInteger => "toInteger",
+            Self::ToFloat => "toFloat",
+            Self::CypherToString => "toString",
             // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };
