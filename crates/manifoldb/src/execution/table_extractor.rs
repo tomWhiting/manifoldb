@@ -130,6 +130,13 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::DropCollection(_) => {
             // These don't reference tables
         }
+
+        // Graph DML operations - may have an optional input plan
+        LogicalPlan::GraphCreate { input, .. } | LogicalPlan::GraphMerge { input, .. } => {
+            if let Some(input) = input {
+                collect_tables_from_plan(input, tables);
+            }
+        }
     }
 }
 

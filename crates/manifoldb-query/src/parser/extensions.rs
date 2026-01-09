@@ -46,11 +46,12 @@
 //! ```
 
 use crate::ast::{
-    BinaryOp, CreateCollectionStatement, DataType, DistanceMetric, DropCollectionStatement,
-    EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern, Identifier, MatchStatement,
+    BinaryOp, CreateCollectionStatement, CreateGraphStatement, CreateNodeRef, CreatePathStep,
+    CreatePattern, DataType, DistanceMetric, DropCollectionStatement, EdgeDirection, EdgeLength,
+    EdgePattern, Expr, GraphPattern, Identifier, MatchStatement, MergeGraphStatement, MergePattern,
     NodePattern, OrderByExpr, ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition,
-    QualifiedName, ReturnItem, SelectStatement, ShortestPathPattern, Statement, VectorDef,
-    VectorTypeDef, WeightSpec,
+    QualifiedName, ReturnItem, SelectStatement, SetAction, ShortestPathPattern, Statement,
+    VectorDef, VectorTypeDef, WeightSpec,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -89,6 +90,16 @@ impl ExtendedParser {
         // Check for DROP COLLECTION statement (not supported by sqlparser)
         if Self::is_drop_collection(input) {
             return Self::parse_drop_collection(input);
+        }
+
+        // Check for Cypher-style CREATE graph statement
+        if Self::is_cypher_create(input) {
+            return Self::parse_cypher_create(input);
+        }
+
+        // Check for Cypher-style MERGE graph statement
+        if Self::is_cypher_merge(input) {
+            return Self::parse_cypher_merge(input);
         }
 
         // Step 1: Extract MATCH and OPTIONAL MATCH clauses (they're not valid SQL)
@@ -144,6 +155,66 @@ impl ExtendedParser {
     fn is_drop_collection(input: &str) -> bool {
         let upper = input.trim().to_uppercase();
         upper.starts_with("DROP COLLECTION") || upper.starts_with("DROP IF EXISTS COLLECTION")
+    }
+
+    /// Checks if the input is a Cypher-style CREATE statement for graphs.
+    ///
+    /// A Cypher CREATE starts with either:
+    /// - `CREATE (...)` - create node(s)
+    /// - `MATCH ... CREATE ...` - create after matching
+    ///
+    /// It should NOT be confused with `CREATE TABLE` or `CREATE INDEX`.
+    fn is_cypher_create(input: &str) -> bool {
+        let trimmed = input.trim();
+        let upper = trimmed.to_uppercase();
+
+        // Check for CREATE followed by graph pattern
+        if upper.starts_with("CREATE") {
+            let after_create = trimmed[6..].trim_start();
+            // Must be followed by '(' for a node pattern
+            // NOT followed by TABLE, INDEX, COLLECTION, etc.
+            if after_create.starts_with('(') {
+                return true;
+            }
+        }
+
+        // Check for MATCH ... CREATE pattern
+        if upper.starts_with("MATCH") && upper.contains("CREATE") {
+            // Ensure CREATE is followed by a graph pattern, not TABLE/INDEX
+            if let Some(pos) = upper.find("CREATE") {
+                let after_create = &trimmed[pos + 6..].trim_start();
+                if after_create.starts_with('(') {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Checks if the input is a Cypher-style MERGE statement.
+    fn is_cypher_merge(input: &str) -> bool {
+        let trimmed = input.trim();
+        let upper = trimmed.to_uppercase();
+
+        // MERGE starts the statement or follows MATCH
+        if upper.starts_with("MERGE") {
+            let after_merge = trimmed[5..].trim_start();
+            // Must be followed by '(' for a node pattern
+            return after_merge.starts_with('(');
+        }
+
+        // Check for MATCH ... MERGE pattern
+        if upper.starts_with("MATCH") && upper.contains("MERGE") {
+            if let Some(pos) = upper.find("MERGE") {
+                let after_merge = &trimmed[pos + 5..].trim_start();
+                if after_merge.starts_with('(') {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Parses a DROP COLLECTION statement.
@@ -268,6 +339,478 @@ impl ExtendedParser {
         let stmt = CreateCollectionStatement { if_not_exists, name, vectors, payload_fields };
 
         Ok(vec![Statement::CreateCollection(Box::new(stmt))])
+    }
+
+    /// Parses a Cypher-style CREATE statement for graph nodes and relationships.
+    ///
+    /// Syntax:
+    /// ```text
+    /// CREATE (n:Label {props})
+    /// CREATE (n:Label {props}) RETURN n
+    /// MATCH (a), (b) WHERE ... CREATE (a)-[:TYPE {props}]->(b)
+    /// ```
+    fn parse_cypher_create(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        // Check if we have a preceding MATCH clause
+        let (match_clause, where_clause, create_start) = if upper.starts_with("MATCH") {
+            // Find CREATE keyword position
+            let create_pos = Self::find_keyword_pos(&upper, "CREATE").ok_or_else(|| {
+                ParseError::InvalidPattern("expected CREATE keyword".to_string())
+            })?;
+
+            // Find WHERE position (if any, must be before CREATE)
+            let where_pos = Self::find_keyword_pos(&upper[..create_pos], "WHERE");
+
+            // Parse the MATCH pattern
+            let match_end = where_pos.unwrap_or(create_pos);
+            let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+            let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+            // Parse WHERE clause if present
+            let where_expr = if let Some(wp) = where_pos {
+                let where_content = &input[wp + 5..create_pos]; // +5 for "WHERE"
+                Some(Self::parse_where_expression(where_content.trim())?)
+            } else {
+                None
+            };
+
+            (Some(pattern), where_expr, create_pos)
+        } else if upper.starts_with("CREATE") {
+            (None, None, 0)
+        } else {
+            return Err(ParseError::InvalidPattern(
+                "expected CREATE or MATCH keyword".to_string(),
+            ));
+        };
+
+        // Parse after CREATE
+        let after_create = &input[create_start + 6..].trim_start(); // 6 = "CREATE".len()
+        let upper_after_create = after_create.to_uppercase();
+
+        // Find RETURN position if present
+        let return_pos = Self::find_keyword_pos(&upper_after_create, "RETURN");
+
+        // Parse CREATE patterns
+        let patterns_end = return_pos.unwrap_or(after_create.len());
+        let patterns_str = &after_create[..patterns_end].trim();
+        let patterns = Self::parse_create_patterns(patterns_str)?;
+
+        // Parse RETURN clause if present
+        let return_clause = if let Some(rp) = return_pos {
+            let return_content = &after_create[rp + 6..].trim(); // 6 = "RETURN".len()
+            Self::parse_return_items(return_content)?
+        } else {
+            vec![]
+        };
+
+        let stmt = CreateGraphStatement {
+            match_clause,
+            where_clause,
+            patterns,
+            return_clause,
+        };
+
+        Ok(vec![Statement::Create(Box::new(stmt))])
+    }
+
+    /// Parses CREATE patterns (nodes and relationships).
+    fn parse_create_patterns(input: &str) -> ParseResult<Vec<CreatePattern>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("empty CREATE pattern".to_string()));
+        }
+
+        let mut patterns = Vec::new();
+        let mut current = input;
+
+        while !current.is_empty() {
+            // Check if this looks like a path pattern (contains relationship)
+            if Self::looks_like_path_pattern(current) {
+                let (pattern, remaining) = Self::parse_create_path_pattern(current)?;
+                patterns.push(pattern);
+                current = remaining.trim();
+            } else {
+                // Parse as simple node pattern
+                let (node, remaining) = Self::parse_create_node_pattern(current)?;
+                patterns.push(node);
+                current = remaining.trim();
+            }
+
+            // Skip comma separator
+            if current.starts_with(',') {
+                current = current[1..].trim();
+            }
+        }
+
+        Ok(patterns)
+    }
+
+    /// Checks if the pattern looks like a path (contains relationship arrow).
+    fn looks_like_path_pattern(input: &str) -> bool {
+        // Look for relationship patterns: -[...]-> or <-[..]-
+        input.contains("->") || input.contains("<-")
+    }
+
+    /// Parses a single CREATE node pattern like `(n:Label {props})`.
+    fn parse_create_node_pattern(input: &str) -> ParseResult<(CreatePattern, &str)> {
+        let (node, remaining) = Self::parse_node_pattern(input)?;
+
+        let pattern = CreatePattern::Node {
+            variable: node.variable,
+            labels: node.labels,
+            properties: node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
+        };
+
+        Ok((pattern, remaining))
+    }
+
+    /// Parses a CREATE path pattern like `(a)-[:TYPE]->(b)`.
+    fn parse_create_path_pattern(input: &str) -> ParseResult<(CreatePattern, &str)> {
+        // Parse the start node
+        let (start_node, after_start) = Self::parse_node_pattern(input)?;
+
+        let start = if start_node.variable.is_some()
+            && start_node.labels.is_empty()
+            && start_node.properties.is_empty()
+        {
+            // Just a variable reference to an existing node
+            CreateNodeRef::Variable(start_node.variable.clone().ok_or_else(|| {
+                ParseError::InvalidPattern("expected variable in node reference".to_string())
+            })?)
+        } else {
+            CreateNodeRef::New {
+                variable: start_node.variable,
+                labels: start_node.labels,
+                properties: start_node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
+            }
+        };
+
+        // Parse path steps (relationships and destination nodes)
+        let (steps, remaining) = Self::parse_create_path_steps(after_start.trim())?;
+
+        if steps.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "expected at least one relationship in path pattern".to_string(),
+            ));
+        }
+
+        let pattern = CreatePattern::Path { start, steps };
+
+        Ok((pattern, remaining))
+    }
+
+    /// Parses path steps like `-[:TYPE]->(b)-[:TYPE2]->(c)`.
+    fn parse_create_path_steps(input: &str) -> ParseResult<(Vec<CreatePathStep>, &str)> {
+        let mut steps = Vec::new();
+        let mut current = input;
+
+        while !current.is_empty() {
+            // Check if we're at a relationship start
+            if !current.starts_with("-[") && !current.starts_with("<-[") {
+                break; // No more relationships
+            }
+
+            // Parse edge pattern - this consumes the full edge including -> or <-
+            let (edge, after_edge) = Self::parse_edge_pattern(current)?;
+            let is_outgoing = edge.direction == EdgeDirection::Right;
+
+            // The edge parsing already consumed the arrow, so after_edge points to the next node
+            let after_edge = after_edge.trim();
+
+            // Parse destination node
+            let (dest_node, after_dest) = Self::parse_node_pattern(after_edge)?;
+
+            let destination = if dest_node.variable.is_some()
+                && dest_node.labels.is_empty()
+                && dest_node.properties.is_empty()
+            {
+                CreateNodeRef::Variable(dest_node.variable.clone().ok_or_else(|| {
+                    ParseError::InvalidPattern("expected variable in node reference".to_string())
+                })?)
+            } else {
+                CreateNodeRef::New {
+                    variable: dest_node.variable,
+                    labels: dest_node.labels,
+                    properties: dest_node
+                        .properties
+                        .into_iter()
+                        .map(|p| (p.name, p.value))
+                        .collect(),
+                }
+            };
+
+            let rel_type = edge.edge_types.into_iter().next().ok_or_else(|| {
+                ParseError::InvalidPattern("expected relationship type in CREATE".to_string())
+            })?;
+
+            steps.push(CreatePathStep {
+                rel_variable: edge.variable,
+                rel_type,
+                rel_properties: edge.properties.into_iter().map(|p| (p.name, p.value)).collect(),
+                outgoing: is_outgoing,
+                destination,
+            });
+
+            current = after_dest.trim();
+        }
+
+        Ok((steps, current))
+    }
+
+    /// Parses a Cypher-style MERGE statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// MERGE (n:Label {key: value})
+    /// MERGE (n:Label {key: value}) ON CREATE SET n.prop = val ON MATCH SET n.prop = val
+    /// MATCH (a), (b) WHERE ... MERGE (a)-[:TYPE]->(b)
+    /// ```
+    fn parse_cypher_merge(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        // Check if we have a preceding MATCH clause
+        let (match_clause, where_clause, merge_start) = if upper.starts_with("MATCH") {
+            // Find MERGE keyword position
+            let merge_pos = Self::find_keyword_pos(&upper, "MERGE").ok_or_else(|| {
+                ParseError::InvalidPattern("expected MERGE keyword".to_string())
+            })?;
+
+            // Find WHERE position (if any, must be before MERGE)
+            let where_pos = Self::find_keyword_pos(&upper[..merge_pos], "WHERE");
+
+            // Parse the MATCH pattern
+            let match_end = where_pos.unwrap_or(merge_pos);
+            let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+            let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+            // Parse WHERE clause if present
+            let where_expr = if let Some(wp) = where_pos {
+                let where_content = &input[wp + 5..merge_pos]; // +5 for "WHERE"
+                Some(Self::parse_where_expression(where_content.trim())?)
+            } else {
+                None
+            };
+
+            (Some(pattern), where_expr, merge_pos)
+        } else if upper.starts_with("MERGE") {
+            (None, None, 0)
+        } else {
+            return Err(ParseError::InvalidPattern(
+                "expected MERGE or MATCH keyword".to_string(),
+            ));
+        };
+
+        // Parse after MERGE
+        let after_merge = &input[merge_start + 5..].trim_start(); // 5 = "MERGE".len()
+        let upper_after_merge = after_merge.to_uppercase();
+
+        // Find ON CREATE, ON MATCH, RETURN positions
+        let on_create_pos = Self::find_keyword_pos(&upper_after_merge, "ON CREATE");
+        let on_match_pos = Self::find_keyword_pos(&upper_after_merge, "ON MATCH");
+        let return_pos = Self::find_keyword_pos(&upper_after_merge, "RETURN");
+
+        // Pattern ends at first clause
+        let pattern_end = on_create_pos
+            .or(on_match_pos)
+            .or(return_pos)
+            .unwrap_or(after_merge.len());
+
+        // Parse the MERGE pattern
+        let pattern_str = &after_merge[..pattern_end].trim();
+        let pattern = Self::parse_merge_pattern(pattern_str)?;
+
+        // Parse ON CREATE SET clause
+        let on_create = if let Some(pos) = on_create_pos {
+            let start = pos + 9; // "ON CREATE".len()
+            let end = on_match_pos
+                .filter(|&p| p > pos)
+                .or(return_pos)
+                .unwrap_or(after_merge.len());
+            Self::parse_set_actions(&after_merge[start..end])?
+        } else {
+            vec![]
+        };
+
+        // Parse ON MATCH SET clause
+        let on_match = if let Some(pos) = on_match_pos {
+            let start = pos + 8; // "ON MATCH".len()
+            let end = on_create_pos
+                .filter(|&p| p > pos)
+                .or(return_pos)
+                .unwrap_or(after_merge.len());
+            Self::parse_set_actions(&after_merge[start..end])?
+        } else {
+            vec![]
+        };
+
+        // Parse RETURN clause if present
+        let return_clause = if let Some(rp) = return_pos {
+            let return_content = &after_merge[rp + 6..].trim(); // 6 = "RETURN".len()
+            Self::parse_return_items(return_content)?
+        } else {
+            vec![]
+        };
+
+        let stmt = MergeGraphStatement {
+            match_clause,
+            where_clause,
+            pattern,
+            on_create,
+            on_match,
+            return_clause,
+        };
+
+        Ok(vec![Statement::Merge(Box::new(stmt))])
+    }
+
+    /// Parses a MERGE pattern.
+    fn parse_merge_pattern(input: &str) -> ParseResult<MergePattern> {
+        let input = input.trim();
+
+        if Self::looks_like_path_pattern(input) {
+            // Parse relationship pattern: (a)-[:TYPE]->(b)
+            let (start_node, after_start) = Self::parse_node_pattern(input)?;
+
+            // Start node should just be a variable reference
+            let start = start_node.variable.ok_or_else(|| {
+                ParseError::InvalidPattern(
+                    "MERGE relationship requires named start node".to_string(),
+                )
+            })?;
+
+            // Parse the relationship - parse_edge_pattern already consumes the arrow
+            let after_start = after_start.trim();
+            let (edge, after_edge) = Self::parse_edge_pattern(after_start)?;
+
+            // Parse end node - after_edge already points past the arrow
+            let (end_node, _) = Self::parse_node_pattern(after_edge.trim())?;
+
+            let end = end_node.variable.ok_or_else(|| {
+                ParseError::InvalidPattern("MERGE relationship requires named end node".to_string())
+            })?;
+
+            let rel_type = edge.edge_types.into_iter().next().ok_or_else(|| {
+                ParseError::InvalidPattern("MERGE relationship requires type".to_string())
+            })?;
+
+            Ok(MergePattern::Relationship {
+                start,
+                rel_variable: edge.variable,
+                rel_type,
+                match_properties: edge.properties.into_iter().map(|p| (p.name, p.value)).collect(),
+                end,
+            })
+        } else {
+            // Parse node pattern: (n:Label {props})
+            let (node, _) = Self::parse_node_pattern(input)?;
+
+            let variable = node.variable.ok_or_else(|| {
+                ParseError::InvalidPattern("MERGE node requires variable".to_string())
+            })?;
+
+            Ok(MergePattern::Node {
+                variable,
+                labels: node.labels,
+                match_properties: node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
+            })
+        }
+    }
+
+    /// Parses SET actions (for ON CREATE SET, ON MATCH SET).
+    fn parse_set_actions(input: &str) -> ParseResult<Vec<SetAction>> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Must start with SET keyword
+        if !upper.starts_with("SET") {
+            return Ok(vec![]); // No SET clause
+        }
+
+        let after_set = &input[3..].trim(); // 3 = "SET".len()
+
+        let mut actions = Vec::new();
+        let mut current = *after_set;
+
+        while !current.is_empty() {
+            // Parse property assignment: var.prop = expr
+            let (action, remaining) = Self::parse_single_set_action(current)?;
+            actions.push(action);
+
+            current = remaining.trim();
+            if current.starts_with(',') {
+                current = current[1..].trim();
+            } else {
+                break;
+            }
+        }
+
+        Ok(actions)
+    }
+
+    /// Parses a single SET action.
+    fn parse_single_set_action(input: &str) -> ParseResult<(SetAction, &str)> {
+        let input = input.trim();
+
+        // Parse variable name
+        let dot_pos =
+            input.find('.').ok_or_else(|| ParseError::InvalidPattern("expected '.'".to_string()))?;
+
+        let variable = Identifier::new(&input[..dot_pos]);
+        let after_dot = &input[dot_pos + 1..];
+
+        // Parse property name
+        let eq_pos = after_dot.find('=').ok_or_else(|| {
+            ParseError::InvalidPattern("expected '=' in SET clause".to_string())
+        })?;
+
+        let property = Identifier::new(after_dot[..eq_pos].trim());
+        let after_eq = &after_dot[eq_pos + 1..];
+
+        // Parse value expression - find end at comma or end of input
+        let value_end = Self::find_expression_end(after_eq.trim());
+        let value_str = &after_eq.trim()[..value_end];
+        let value = Self::parse_where_expression(value_str.trim())?;
+
+        let remaining = &after_eq.trim()[value_end..];
+
+        Ok((SetAction::Property { variable, property, value }, remaining))
+    }
+
+    /// Finds the end of an expression (at comma or end of input).
+    fn find_expression_end(input: &str) -> usize {
+        let mut paren_depth: i32 = 0;
+        let mut bracket_depth: i32 = 0;
+        let mut brace_depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
+
+        for (i, c) in input.char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+
+            match c {
+                '\\' => escape_next = true,
+                '\'' if !in_string => in_string = true,
+                '\'' if in_string => in_string = false,
+                '(' if !in_string => paren_depth += 1,
+                ')' if !in_string => paren_depth = paren_depth.saturating_sub(1),
+                '[' if !in_string => bracket_depth += 1,
+                ']' if !in_string => bracket_depth = bracket_depth.saturating_sub(1),
+                '{' if !in_string => brace_depth += 1,
+                '}' if !in_string => brace_depth = brace_depth.saturating_sub(1),
+                ',' if !in_string && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    return i;
+                }
+                _ => {}
+            }
+        }
+
+        input.len()
     }
 
     /// Parses collection definitions (vectors and payload fields).
@@ -3314,5 +3857,317 @@ mod tests {
         assert_eq!(patterns.len(), 1);
         assert_eq!(optional_patterns.len(), 1);
         assert_eq!(optional_patterns[0].len(), 1);
+    }
+
+    // ========== CREATE Tests ==========
+
+    #[test]
+    fn is_cypher_create_basic() {
+        assert!(ExtendedParser::is_cypher_create("CREATE (n:Person)"));
+        assert!(ExtendedParser::is_cypher_create("create (n)"));
+        assert!(ExtendedParser::is_cypher_create("  CREATE (n:Label {name: 'test'})"));
+    }
+
+    #[test]
+    fn is_cypher_create_false_for_sql() {
+        // SQL CREATE should not be detected as Cypher CREATE
+        assert!(!ExtendedParser::is_cypher_create("CREATE TABLE users (id INT)"));
+        assert!(!ExtendedParser::is_cypher_create("CREATE INDEX idx ON users(id)"));
+    }
+
+    #[test]
+    fn parse_cypher_create_simple_node() {
+        let result = ExtendedParser::parse_cypher_create("CREATE (n)");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert!(stmt.match_clause.is_none());
+                assert!(stmt.where_clause.is_none());
+                assert_eq!(stmt.patterns.len(), 1);
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_node_with_label() {
+        let result = ExtendedParser::parse_cypher_create("CREATE (n:Person)");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert_eq!(stmt.patterns.len(), 1);
+                match &stmt.patterns[0] {
+                    CreatePattern::Node { variable, labels, .. } => {
+                        assert_eq!(variable.as_ref().map(|i| i.name.as_str()), Some("n"));
+                        assert_eq!(labels.len(), 1);
+                        assert_eq!(labels[0].name, "Person");
+                    }
+                    _ => panic!("Expected node pattern"),
+                }
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_node_with_properties() {
+        let result =
+            ExtendedParser::parse_cypher_create("CREATE (n:Person {name: 'Alice', age: 30})");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert_eq!(stmt.patterns.len(), 1);
+                match &stmt.patterns[0] {
+                    CreatePattern::Node { properties, .. } => {
+                        assert_eq!(properties.len(), 2);
+                        assert_eq!(properties[0].0.name, "name");
+                        assert_eq!(properties[1].0.name, "age");
+                    }
+                    _ => panic!("Expected node pattern"),
+                }
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_relationship() {
+        let result = ExtendedParser::parse_cypher_create("CREATE (a)-[:KNOWS]->(b)");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert_eq!(stmt.patterns.len(), 1);
+                match &stmt.patterns[0] {
+                    CreatePattern::Path { start, steps } => {
+                        match start {
+                            CreateNodeRef::New { variable, .. } => {
+                                assert_eq!(
+                                    variable.as_ref().map(|i| i.name.as_str()),
+                                    Some("a")
+                                );
+                            }
+                            CreateNodeRef::Variable(ident) => {
+                                assert_eq!(ident.name.as_str(), "a");
+                            }
+                        }
+                        assert_eq!(steps.len(), 1);
+                        assert_eq!(steps[0].rel_type.name, "KNOWS");
+                    }
+                    _ => panic!("Expected path pattern"),
+                }
+            }
+            _ => panic!("Expected Create statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_with_match() {
+        let result = ExtendedParser::parse_cypher_create(
+            "MATCH (a:Person {name: 'Alice'}) CREATE (b:Person)-[:FRIEND]->(a)",
+        );
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert!(stmt.match_clause.is_some());
+                assert_eq!(stmt.patterns.len(), 1);
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_with_return() {
+        let result = ExtendedParser::parse_cypher_create("CREATE (n:Person) RETURN n");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert_eq!(stmt.return_clause.len(), 1);
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    // ========== MERGE Tests ==========
+
+    #[test]
+    fn is_cypher_merge_basic() {
+        assert!(ExtendedParser::is_cypher_merge("MERGE (n:Person)"));
+        assert!(ExtendedParser::is_cypher_merge("merge (n)"));
+        assert!(ExtendedParser::is_cypher_merge("  MERGE (n:Label {id: 1})"));
+    }
+
+    #[test]
+    fn is_cypher_merge_false_for_non_merge() {
+        assert!(!ExtendedParser::is_cypher_merge("CREATE (n:Person)"));
+        assert!(!ExtendedParser::is_cypher_merge("SELECT * FROM table"));
+    }
+
+    #[test]
+    fn parse_cypher_merge_simple_node() {
+        let result = ExtendedParser::parse_cypher_merge("MERGE (n:Person)");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert!(stmt.match_clause.is_none());
+                assert!(stmt.where_clause.is_none());
+                assert!(stmt.on_create.is_empty());
+                assert!(stmt.on_match.is_empty());
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_key_properties() {
+        let result =
+            ExtendedParser::parse_cypher_merge("MERGE (n:Person {email: 'test@example.com'})");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => match &stmt.pattern {
+                MergePattern::Node { match_properties, .. } => {
+                    assert_eq!(match_properties.len(), 1);
+                    assert_eq!(match_properties[0].0.name, "email");
+                }
+                _ => panic!("Expected node pattern"),
+            },
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_on_create_set() {
+        let result = ExtendedParser::parse_cypher_merge(
+            "MERGE (n:Person {id: 1}) ON CREATE SET n.created = true",
+        );
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert_eq!(stmt.on_create.len(), 1);
+                assert!(stmt.on_match.is_empty());
+                match &stmt.on_create[0] {
+                    SetAction::Property { variable, property, .. } => {
+                        assert_eq!(variable.name, "n");
+                        assert_eq!(property.name, "created");
+                    }
+                    _ => panic!("Expected Property action"),
+                }
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_on_match_set() {
+        let result = ExtendedParser::parse_cypher_merge(
+            "MERGE (n:Person {id: 1}) ON MATCH SET n.updated = true",
+        );
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert!(stmt.on_create.is_empty());
+                assert_eq!(stmt.on_match.len(), 1);
+                match &stmt.on_match[0] {
+                    SetAction::Property { variable, property, .. } => {
+                        assert_eq!(variable.name, "n");
+                        assert_eq!(property.name, "updated");
+                    }
+                    _ => panic!("Expected Property action"),
+                }
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_both_on_clauses() {
+        let result = ExtendedParser::parse_cypher_merge(
+            "MERGE (n:Person {id: 1}) ON CREATE SET n.created = true ON MATCH SET n.updated = true",
+        );
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert_eq!(stmt.on_create.len(), 1);
+                assert_eq!(stmt.on_match.len(), 1);
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_return() {
+        let result = ExtendedParser::parse_cypher_merge("MERGE (n:Person {id: 1}) RETURN n");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert_eq!(stmt.return_clause.len(), 1);
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_with_match() {
+        let result =
+            ExtendedParser::parse_cypher_merge("MATCH (p:Person) MERGE (n:Account {owner: p.id})");
+        assert!(result.is_ok());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => {
+                assert!(stmt.match_clause.is_some());
+            }
+            _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_merge_relationship() {
+        let result = ExtendedParser::parse_cypher_merge("MERGE (a:Person)-[:KNOWS]->(b:Person)");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Merge(stmt) => match &stmt.pattern {
+                MergePattern::Relationship { rel_type, .. } => {
+                    assert_eq!(rel_type.name, "KNOWS");
+                }
+                _ => panic!("Expected relationship pattern"),
+            },
+            _ => panic!("Expected MergeGraph statement"),
+        }
     }
 }

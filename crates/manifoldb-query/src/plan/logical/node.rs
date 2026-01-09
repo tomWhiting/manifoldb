@@ -22,7 +22,7 @@ use super::ddl::{
     DropTableNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
-use super::graph::{ExpandNode, PathScanNode};
+use super::graph::{ExpandNode, GraphCreateNode, GraphMergeNode, PathScanNode};
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
     SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
@@ -250,6 +250,23 @@ pub enum LogicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    // ========== Graph DML Nodes ==========
+    /// Cypher CREATE operation (nodes and/or relationships).
+    GraphCreate {
+        /// The create node.
+        node: Box<GraphCreateNode>,
+        /// Optional input plan (from MATCH clause).
+        input: Option<Box<LogicalPlan>>,
+    },
+
+    /// Cypher MERGE operation (upsert semantics).
+    GraphMerge {
+        /// The merge node.
+        node: Box<GraphMergeNode>,
+        /// Optional input plan (from MATCH clause).
+        input: Option<Box<LogicalPlan>>,
+    },
 }
 
 impl LogicalPlan {
@@ -448,6 +465,11 @@ impl LogicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_) => vec![],
+
+            // Graph DML nodes (optional input)
+            Self::GraphCreate { input: Some(input), .. }
+            | Self::GraphMerge { input: Some(input), .. } => vec![input.as_ref()],
+            Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
         }
     }
 
@@ -493,6 +515,11 @@ impl LogicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_) => vec![],
+
+            // Graph DML nodes (optional input)
+            Self::GraphCreate { input: Some(input), .. }
+            | Self::GraphMerge { input: Some(input), .. } => vec![input.as_mut()],
+            Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
         }
     }
 
@@ -535,6 +562,8 @@ impl LogicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::GraphCreate { .. } => "GraphCreate",
+            Self::GraphMerge { .. } => "GraphMerge",
         }
     }
 
@@ -796,6 +825,21 @@ impl DisplayTree<'_> {
                 if node.cascade {
                     write!(f, " CASCADE")?;
                 }
+            }
+            LogicalPlan::GraphCreate { node, .. } => {
+                write!(f, "GraphCreate: {} nodes, {} relationships", node.nodes.len(), node.relationships.len())?;
+            }
+            LogicalPlan::GraphMerge { node, .. } => {
+                let pattern_desc = match &node.pattern {
+                    super::graph::MergePatternSpec::Node { variable, labels, .. } => {
+                        let labels_str = if labels.is_empty() { String::new() } else { format!(":{}", labels.join(":")) };
+                        format!("({}{})", variable, labels_str)
+                    }
+                    super::graph::MergePatternSpec::Relationship { start_var, rel_type, end_var, .. } => {
+                        format!("({start_var})-[:{rel_type}]->({end_var})")
+                    }
+                };
+                write!(f, "GraphMerge: {pattern_desc}")?;
             }
         }
         Ok(())

@@ -34,6 +34,10 @@ pub enum Statement {
     DropCollection(DropCollectionStatement),
     /// MATCH statement (Cypher-style graph query).
     Match(Box<MatchStatement>),
+    /// Cypher CREATE statement for creating nodes and relationships.
+    Create(Box<CreateGraphStatement>),
+    /// Cypher MERGE statement for upserting nodes and relationships.
+    Merge(Box<MergeGraphStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
 }
@@ -1213,6 +1217,298 @@ impl DropCollectionStatement {
     pub const fn cascade(mut self) -> Self {
         self.cascade = true;
         self
+    }
+}
+
+// ============================================================================
+// Cypher Graph Mutation Statements
+// ============================================================================
+
+/// A Cypher CREATE statement for creating nodes and relationships.
+///
+/// The CREATE clause is used to create new nodes and relationships in the graph.
+///
+/// # Examples
+///
+/// Create a single node:
+/// ```text
+/// CREATE (u:User {name: 'Alice', age: 30})
+/// ```
+///
+/// Create a node and return it:
+/// ```text
+/// CREATE (u:User {name: 'Bob'}) RETURN u
+/// ```
+///
+/// Create a relationship after MATCH:
+/// ```text
+/// MATCH (a:User {name: 'Alice'}), (b:User {name: 'Bob'})
+/// CREATE (a)-[:FOLLOWS {since: '2024-01-01'}]->(b)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateGraphStatement {
+    /// Optional preceding MATCH clause to bind variables.
+    pub match_clause: Option<GraphPattern>,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// Patterns to create (nodes and relationships).
+    pub patterns: Vec<CreatePattern>,
+    /// Optional RETURN clause.
+    pub return_clause: Vec<ReturnItem>,
+}
+
+impl CreateGraphStatement {
+    /// Creates a new CREATE statement with the given patterns.
+    #[must_use]
+    pub fn new(patterns: Vec<CreatePattern>) -> Self {
+        Self { match_clause: None, where_clause: None, patterns, return_clause: vec![] }
+    }
+
+    /// Adds a MATCH clause to this CREATE statement.
+    #[must_use]
+    pub fn with_match(mut self, pattern: GraphPattern) -> Self {
+        self.match_clause = Some(pattern);
+        self
+    }
+
+    /// Adds a WHERE clause to this CREATE statement.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Adds a RETURN clause to this CREATE statement.
+    #[must_use]
+    pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
+        self.return_clause = items;
+        self
+    }
+}
+
+/// A pattern to create (node or relationship).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreatePattern {
+    /// Create a node.
+    Node {
+        /// Variable name for the created node.
+        variable: Option<Identifier>,
+        /// Labels for the node.
+        labels: Vec<Identifier>,
+        /// Properties to set on the node.
+        properties: Vec<(Identifier, Expr)>,
+    },
+    /// Create a relationship between two nodes.
+    Relationship {
+        /// Start node variable (must be bound from MATCH or earlier CREATE).
+        start: Identifier,
+        /// Relationship variable (optional).
+        rel_variable: Option<Identifier>,
+        /// Relationship type.
+        rel_type: Identifier,
+        /// Properties to set on the relationship.
+        properties: Vec<(Identifier, Expr)>,
+        /// End node variable (must be bound from MATCH or earlier CREATE).
+        end: Identifier,
+    },
+    /// Create a full path pattern (e.g., (a)-[:KNOWS]->(b)-[:LIKES]->(c)).
+    Path {
+        /// The starting node (can be new or existing).
+        start: CreateNodeRef,
+        /// Steps in the path (each step is a relationship and destination node).
+        steps: Vec<CreatePathStep>,
+    },
+}
+
+/// Reference to a node in a CREATE path pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateNodeRef {
+    /// Reference an existing variable (bound from MATCH).
+    Variable(Identifier),
+    /// Create a new node.
+    New {
+        /// Variable name for the created node.
+        variable: Option<Identifier>,
+        /// Labels for the node.
+        labels: Vec<Identifier>,
+        /// Properties to set on the node.
+        properties: Vec<(Identifier, Expr)>,
+    },
+}
+
+/// A step in a CREATE path pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatePathStep {
+    /// Relationship variable (optional).
+    pub rel_variable: Option<Identifier>,
+    /// Relationship type.
+    pub rel_type: Identifier,
+    /// Properties for the relationship.
+    pub rel_properties: Vec<(Identifier, Expr)>,
+    /// Direction (true = outgoing ->, false = incoming <-).
+    pub outgoing: bool,
+    /// The destination node.
+    pub destination: CreateNodeRef,
+}
+
+/// A Cypher MERGE statement for upserting nodes and relationships.
+///
+/// MERGE creates nodes/relationships if they don't exist, or matches them if they do.
+/// It supports ON CREATE and ON MATCH clauses to conditionally set properties.
+///
+/// # Examples
+///
+/// MERGE with ON CREATE/ON MATCH:
+/// ```text
+/// MERGE (u:User {email: 'alice@example.com'})
+/// ON CREATE SET u.created_at = timestamp()
+/// ON MATCH SET u.last_seen = timestamp()
+/// ```
+///
+/// MERGE a relationship:
+/// ```text
+/// MATCH (a:User), (b:User)
+/// WHERE a.name = 'Alice' AND b.name = 'Bob'
+/// MERGE (a)-[:KNOWS]->(b)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeGraphStatement {
+    /// Optional preceding MATCH clause to bind variables.
+    pub match_clause: Option<GraphPattern>,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// The pattern to merge (match or create).
+    pub pattern: MergePattern,
+    /// Actions to perform when creating a new entity.
+    pub on_create: Vec<SetAction>,
+    /// Actions to perform when matching an existing entity.
+    pub on_match: Vec<SetAction>,
+    /// Optional RETURN clause.
+    pub return_clause: Vec<ReturnItem>,
+}
+
+impl MergeGraphStatement {
+    /// Creates a new MERGE statement with the given pattern.
+    #[must_use]
+    pub fn new(pattern: MergePattern) -> Self {
+        Self {
+            match_clause: None,
+            where_clause: None,
+            pattern,
+            on_create: vec![],
+            on_match: vec![],
+            return_clause: vec![],
+        }
+    }
+
+    /// Adds a MATCH clause to this MERGE statement.
+    #[must_use]
+    pub fn with_match(mut self, pattern: GraphPattern) -> Self {
+        self.match_clause = Some(pattern);
+        self
+    }
+
+    /// Adds a WHERE clause to this MERGE statement.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Adds ON CREATE actions.
+    #[must_use]
+    pub fn on_create(mut self, actions: Vec<SetAction>) -> Self {
+        self.on_create = actions;
+        self
+    }
+
+    /// Adds ON MATCH actions.
+    #[must_use]
+    pub fn on_match(mut self, actions: Vec<SetAction>) -> Self {
+        self.on_match = actions;
+        self
+    }
+
+    /// Adds a RETURN clause.
+    #[must_use]
+    pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
+        self.return_clause = items;
+        self
+    }
+}
+
+/// A pattern for MERGE operation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergePattern {
+    /// Merge a node.
+    Node {
+        /// Variable name for the merged node.
+        variable: Identifier,
+        /// Labels for matching/creating.
+        labels: Vec<Identifier>,
+        /// Properties to match on (key properties for upsert).
+        match_properties: Vec<(Identifier, Expr)>,
+    },
+    /// Merge a relationship between two bound nodes.
+    Relationship {
+        /// Start node variable (must be bound).
+        start: Identifier,
+        /// Relationship variable (optional).
+        rel_variable: Option<Identifier>,
+        /// Relationship type.
+        rel_type: Identifier,
+        /// Properties to match on.
+        match_properties: Vec<(Identifier, Expr)>,
+        /// End node variable (must be bound).
+        end: Identifier,
+    },
+}
+
+/// An action to perform in SET clause or ON CREATE/ON MATCH.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetAction {
+    /// Set a single property: SET n.prop = value
+    Property {
+        /// The variable to set the property on.
+        variable: Identifier,
+        /// The property name.
+        property: Identifier,
+        /// The value expression.
+        value: Expr,
+    },
+    /// Set multiple properties from a map: SET n = {props} or SET n += {props}
+    Properties {
+        /// The variable to set properties on.
+        variable: Identifier,
+        /// The properties as an expression (should evaluate to a map).
+        properties: Expr,
+        /// Whether to replace all properties (=) or merge (+= ).
+        replace: bool,
+    },
+    /// Add a label: SET n:Label
+    Label {
+        /// The variable to add the label to.
+        variable: Identifier,
+        /// The label to add.
+        label: Identifier,
+    },
+}
+
+impl SetAction {
+    /// Creates a property assignment action.
+    #[must_use]
+    pub fn property(
+        variable: impl Into<Identifier>,
+        property: impl Into<Identifier>,
+        value: Expr,
+    ) -> Self {
+        Self::Property { variable: variable.into(), property: property.into(), value }
+    }
+
+    /// Creates a label assignment action.
+    #[must_use]
+    pub fn label(variable: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
+        Self::Label { variable: variable.into(), label: label.into() }
     }
 }
 

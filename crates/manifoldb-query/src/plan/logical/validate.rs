@@ -339,6 +339,16 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 ));
             }
         }
+        LogicalPlan::GraphCreate { input, .. } => {
+            if let Some(input) = input {
+                validate_plan(input)?;
+            }
+        }
+        LogicalPlan::GraphMerge { input, .. } => {
+            if let Some(input) = input {
+                validate_plan(input)?;
+            }
+        }
     }
 
     Ok(())

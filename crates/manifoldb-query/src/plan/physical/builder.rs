@@ -396,6 +396,16 @@ impl PhysicalPlanner {
             LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
             LogicalPlan::CreateCollection(node) => PhysicalPlan::CreateCollection(node.clone()),
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
+
+            // Graph DML nodes - build physical plans for these
+            LogicalPlan::GraphCreate { node, input } => {
+                let input_plan = input.as_ref().map(|i| Box::new(self.plan(i)));
+                PhysicalPlan::GraphCreate { node: node.clone(), input: input_plan }
+            }
+            LogicalPlan::GraphMerge { node, input } => {
+                let input_plan = input.as_ref().map(|i| Box::new(self.plan(i)));
+                PhysicalPlan::GraphMerge { node: node.clone(), input: input_plan }
+            }
         }
     }
 

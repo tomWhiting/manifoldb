@@ -21,7 +21,8 @@ use crate::ast::DistanceMetric;
 use crate::ast::WindowFunction;
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, ExpandDirection, ExpandLength, JoinType, LogicalExpr, SetOpType, SortOrder,
+    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphMergeNode, JoinType,
+    LogicalExpr, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -291,6 +292,23 @@ pub enum PhysicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    // ========== Graph DML Operations ==========
+    /// Cypher CREATE operation.
+    GraphCreate {
+        /// The create node configuration.
+        node: Box<GraphCreateNode>,
+        /// Optional input plan (from MATCH clause).
+        input: Option<Box<PhysicalPlan>>,
+    },
+
+    /// Cypher MERGE operation.
+    GraphMerge {
+        /// The merge node configuration.
+        node: Box<GraphMergeNode>,
+        /// Optional input plan (from MATCH clause).
+        input: Option<Box<PhysicalPlan>>,
+    },
 }
 
 // ============================================================================
@@ -1653,6 +1671,11 @@ impl PhysicalPlan {
 
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter().collect(),
+
+            // Graph DML operations (optional input)
+            Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {
+                input.as_ref().map_or(vec![], |i| vec![i.as_ref()])
+            }
         }
     }
 
@@ -1703,6 +1726,11 @@ impl PhysicalPlan {
 
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter_mut().collect(),
+
+            // Graph DML operations (optional input)
+            Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {
+                input.as_mut().map_or(vec![], |i| vec![i.as_mut()])
+            }
         }
     }
 
@@ -1762,6 +1790,8 @@ impl PhysicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::GraphCreate { .. } => "GraphCreate",
+            Self::GraphMerge { .. } => "GraphMerge",
         }
     }
 
@@ -1803,6 +1833,8 @@ impl PhysicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_) => Cost::zero(),
+            // Graph DML operations - cost is based on input if present
+            Self::GraphCreate { .. } | Self::GraphMerge { .. } => Cost::default(),
         }
     }
 
@@ -2176,6 +2208,29 @@ impl DisplayTree<'_> {
                 }
                 if node.cascade {
                     write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::GraphCreate { node, .. } => {
+                write!(
+                    f,
+                    "GraphCreate: {} nodes, {} relationships",
+                    node.nodes.len(),
+                    node.relationships.len()
+                )?;
+                if !node.returning.is_empty() {
+                    write!(f, " RETURN {} items", node.returning.len())?;
+                }
+            }
+            PhysicalPlan::GraphMerge { node, .. } => {
+                write!(f, "GraphMerge")?;
+                if !node.on_create.is_empty() {
+                    write!(f, " ON CREATE {} SET", node.on_create.len())?;
+                }
+                if !node.on_match.is_empty() {
+                    write!(f, " ON MATCH {} SET", node.on_match.len())?;
+                }
+                if !node.returning.is_empty() {
+                    write!(f, " RETURN {} items", node.returning.len())?;
                 }
             }
         }
