@@ -2578,3 +2578,406 @@ fn all_centrality_algorithms_on_two_communities() {
         "Bridge nodes should have above-average closeness"
     );
 }
+
+// ============================================================================
+// Triangle Count and Clustering Coefficient tests
+// ============================================================================
+
+use manifoldb_graph::analytics::{TriangleCount, TriangleCountConfig};
+
+#[test]
+fn triangle_count_empty_graph() {
+    let engine = create_test_engine();
+    let tx = engine.begin_read().unwrap();
+
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    assert!(result.node_triangles.is_empty());
+    assert_eq!(result.total_triangles, 0);
+    assert!(result.coefficients.is_empty());
+    assert!((result.global_coefficient - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_single_node() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+    let node = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Single node has no triangles
+    assert_eq!(result.node_triangles.len(), 1);
+    assert_eq!(result.triangles_for(node.id), Some(0));
+    assert_eq!(result.total_triangles, 0);
+    // Node with degree 0 has clustering coefficient 0
+    assert!((result.coefficient_for(node.id).unwrap() - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_linear_graph() {
+    let engine = create_test_engine();
+    let nodes = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Linear graph A -> B -> C -> D has no triangles
+    assert_eq!(result.total_triangles, 0);
+    for &node in &nodes {
+        assert_eq!(result.triangles_for(node), Some(0));
+    }
+}
+
+#[test]
+fn triangle_count_star_graph() {
+    let engine = create_test_engine();
+    let (center, spokes) = create_star_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Star graph has no triangles (spokes aren't connected to each other)
+    assert_eq!(result.total_triangles, 0);
+    assert_eq!(result.triangles_for(center), Some(0));
+    for &spoke in &spokes {
+        assert_eq!(result.triangles_for(spoke), Some(0));
+    }
+
+    // Center has 5 neighbors but none are connected to each other
+    // So clustering coefficient is 0
+    assert!((result.coefficient_for(center).unwrap() - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_complete_graph() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // In a complete graph K4:
+    // Total triangles = C(4,3) = 4
+    assert_eq!(result.total_triangles, 4);
+
+    // Each node participates in C(3,2) = 3 triangles
+    // (choosing 2 other nodes to form a triangle)
+    for &node in &nodes {
+        assert_eq!(result.triangles_for(node), Some(3));
+    }
+
+    // All nodes have clustering coefficient 1.0 (fully connected neighborhood)
+    for &node in &nodes {
+        let coef = result.coefficient_for(node).unwrap();
+        assert!(
+            (coef - 1.0).abs() < f64::EPSILON,
+            "Expected coefficient 1.0, got {} for node {:?}",
+            coef,
+            node
+        );
+    }
+
+    // Global coefficient should be 1.0
+    assert!((result.global_coefficient - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_complete_graph_k5() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // In a complete graph K5:
+    // Total triangles = C(5,3) = 10
+    assert_eq!(result.total_triangles, 10);
+
+    // Each node participates in C(4,2) = 6 triangles
+    for &node in &nodes {
+        assert_eq!(result.triangles_for(node), Some(6));
+    }
+}
+
+#[test]
+fn triangle_count_single_triangle() {
+    // Create exactly one triangle: A -> B -> C -> A
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let mut nodes = Vec::new();
+    for i in 0..3 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_label("Node").with_property("index", i as i64)
+        })
+        .unwrap();
+        nodes.push(node.id);
+    }
+
+    // Create bidirectional edges to form a triangle
+    for i in 0..3 {
+        let src = nodes[i];
+        let tgt = nodes[(i + 1) % 3];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "EDGE", |id| Edge::new(id, src, tgt, "EDGE"))
+            .unwrap();
+        EdgeStore::create(&mut tx, &id_gen, tgt, src, "EDGE", |id| Edge::new(id, tgt, src, "EDGE"))
+            .unwrap();
+    }
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Should have exactly 1 triangle
+    assert_eq!(result.total_triangles, 1);
+
+    // Each node participates in 1 triangle
+    for &node in &nodes {
+        assert_eq!(result.triangles_for(node), Some(1));
+    }
+
+    // Each node has degree 2, and 1 edge exists between neighbors
+    // coefficient = 2 * 1 / (2 * 1) = 1.0
+    for &node in &nodes {
+        let coef = result.coefficient_for(node).unwrap();
+        assert!(
+            (coef - 1.0).abs() < f64::EPSILON,
+            "Expected coefficient 1.0, got {} for node {:?}",
+            coef,
+            node
+        );
+    }
+}
+
+#[test]
+fn triangle_count_two_communities() {
+    let engine = create_test_engine();
+    let (community1, community2) = create_two_community_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // The graph structure is:
+    // A -- B -- C -- D -- E -- F
+    // where each "--" is bidirectional
+    // No triangles exist in this linear structure
+    assert_eq!(result.total_triangles, 0);
+
+    // All nodes should have 0 triangles
+    for &node in &community1 {
+        assert_eq!(result.triangles_for(node), Some(0));
+    }
+    for &node in &community2 {
+        assert_eq!(result.triangles_for(node), Some(0));
+    }
+
+    // Bridge nodes (C and D) have degree 2 but their neighbors aren't connected
+    // So clustering coefficient is 0
+    let bridge_c = community1[2];
+    let bridge_d = community2[0];
+    assert!((result.coefficient_for(bridge_c).unwrap() - 0.0).abs() < f64::EPSILON);
+    assert!((result.coefficient_for(bridge_d).unwrap() - 0.0).abs() < f64::EPSILON);
+}
+
+/// Create a graph with triangles and varying clustering coefficients
+fn create_triangle_test_graph(engine: &RedbEngine) -> Vec<EntityId> {
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create 5 nodes
+    let mut nodes = Vec::new();
+    for i in 0..5 {
+        let node = NodeStore::create(&mut tx, &id_gen, |id| {
+            Entity::new(id).with_label("Node").with_property("index", i as i64)
+        })
+        .unwrap()
+        .id;
+        nodes.push(node);
+    }
+
+    // Create a graph:
+    //     0 --- 1
+    //    /|\   /
+    //   / | \ /
+    //  4  |  2
+    //     |
+    //     3
+    //
+    // Edges (bidirectional):
+    // 0-1, 0-2, 0-3, 0-4, 1-2
+    let edges = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2)];
+
+    for (i, j) in edges {
+        let src = nodes[i];
+        let tgt = nodes[j];
+        EdgeStore::create(&mut tx, &id_gen, src, tgt, "EDGE", |id| Edge::new(id, src, tgt, "EDGE"))
+            .unwrap();
+        EdgeStore::create(&mut tx, &id_gen, tgt, src, "EDGE", |id| Edge::new(id, tgt, src, "EDGE"))
+            .unwrap();
+    }
+
+    tx.commit().unwrap();
+    nodes
+}
+
+#[test]
+fn triangle_count_mixed_clustering() {
+    let engine = create_test_engine();
+    let nodes = create_triangle_test_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Graph has one triangle: 0-1-2
+    assert_eq!(result.total_triangles, 1);
+
+    // Node 0 participates in 1 triangle, has degree 4
+    // C(0) = 2 * 1 / (4 * 3) = 2/12 = 1/6
+    assert_eq!(result.triangles_for(nodes[0]), Some(1));
+    let c0 = result.coefficient_for(nodes[0]).unwrap();
+    assert!((c0 - 1.0 / 6.0).abs() < 1e-6, "Expected 1/6, got {}", c0);
+
+    // Node 1 participates in 1 triangle, has degree 2
+    // C(1) = 2 * 1 / (2 * 1) = 1.0
+    assert_eq!(result.triangles_for(nodes[1]), Some(1));
+    let c1 = result.coefficient_for(nodes[1]).unwrap();
+    assert!((c1 - 1.0).abs() < 1e-6, "Expected 1.0, got {}", c1);
+
+    // Node 2 participates in 1 triangle, has degree 2
+    // C(2) = 2 * 1 / (2 * 1) = 1.0
+    assert_eq!(result.triangles_for(nodes[2]), Some(1));
+    let c2 = result.coefficient_for(nodes[2]).unwrap();
+    assert!((c2 - 1.0).abs() < 1e-6, "Expected 1.0, got {}", c2);
+
+    // Node 3 participates in 0 triangles, has degree 1
+    // C(3) = 0 (degree < 2)
+    assert_eq!(result.triangles_for(nodes[3]), Some(0));
+    let c3 = result.coefficient_for(nodes[3]).unwrap();
+    assert!((c3 - 0.0).abs() < f64::EPSILON);
+
+    // Node 4 participates in 0 triangles, has degree 1
+    // C(4) = 0 (degree < 2)
+    assert_eq!(result.triangles_for(nodes[4]), Some(0));
+    let c4 = result.coefficient_for(nodes[4]).unwrap();
+    assert!((c4 - 0.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_result_methods() {
+    let engine = create_test_engine();
+    let _nodes = create_complete_graph(&engine, 4);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Test sorted_by_triangles
+    let sorted = result.sorted_by_triangles();
+    assert_eq!(sorted.len(), 4);
+    // All have same count in complete graph
+    for (_, count) in &sorted {
+        assert_eq!(*count, 3);
+    }
+
+    // Test sorted_by_coefficient
+    let sorted_coef = result.sorted_by_coefficient();
+    assert_eq!(sorted_coef.len(), 4);
+    for (_, coef) in &sorted_coef {
+        assert!((*coef - 1.0).abs() < f64::EPSILON);
+    }
+
+    // Test top_n_by_triangles
+    let top2 = result.top_n_by_triangles(2);
+    assert_eq!(top2.len(), 2);
+
+    // Test top_n_by_coefficient
+    let top2_coef = result.top_n_by_coefficient(2);
+    assert_eq!(top2_coef.len(), 2);
+
+    // Test max_triangles
+    let max_tri = result.max_triangles().unwrap();
+    assert_eq!(max_tri.1, 3);
+
+    // Test max_coefficient
+    let max_coef = result.max_coefficient().unwrap();
+    assert!((max_coef.1 - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn triangle_count_for_nodes_subset() {
+    let engine = create_test_engine();
+    let nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+
+    // Compute for first 3 nodes only (forms K3)
+    let subset = &nodes[0..3];
+    let result = TriangleCount::compute_for_nodes(&tx, subset, &config).unwrap();
+
+    // K3 has 1 triangle
+    assert_eq!(result.total_triangles, 1);
+
+    // Each node in subset participates in 1 triangle
+    for &node in subset {
+        assert_eq!(result.triangles_for(node), Some(1));
+    }
+
+    // Nodes not in subset shouldn't be in result
+    assert!(result.triangles_for(nodes[3]).is_none());
+    assert!(result.triangles_for(nodes[4]).is_none());
+}
+
+#[test]
+fn triangle_count_graph_too_large() {
+    let engine = create_test_engine();
+    let _nodes = create_complete_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    // Set very low limit
+    let config = TriangleCountConfig::default().with_max_graph_nodes(Some(2));
+    let result = TriangleCount::compute(&tx, &config);
+
+    // Should fail due to graph size limit
+    assert!(result.is_err());
+    if let Err(GraphError::GraphTooLarge { node_count, limit }) = result {
+        assert_eq!(node_count, 5);
+        assert_eq!(limit, 2);
+    } else {
+        panic!("Expected GraphTooLarge error");
+    }
+}
+
+#[test]
+fn triangle_count_cycle_graph() {
+    let engine = create_test_engine();
+    let nodes = create_cycle_graph(&engine, 5);
+
+    let tx = engine.begin_read().unwrap();
+    let config = TriangleCountConfig::default();
+    let result = TriangleCount::compute(&tx, &config).unwrap();
+
+    // Cycle graph (directed) has no triangles
+    // Each node has in-degree 1 and out-degree 1
+    // No two neighbors of any node are connected
+    assert_eq!(result.total_triangles, 0);
+
+    for &node in &nodes {
+        assert_eq!(result.triangles_for(node), Some(0));
+    }
+}

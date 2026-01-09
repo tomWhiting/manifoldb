@@ -891,8 +891,8 @@ These feature groups can be implemented independently:
 | Label Propagation | ✓ | | ✓ | `algo.labelPropagation()` |
 | Connected Components | ✓ | | ✓ | `algo.connectedComponents()` |
 | Strongly Connected Components | ✓ | | ✓ | `algo.stronglyConnectedComponents()` |
-| Triangle Count | | | | Needs impl |
-| Local Clustering Coefficient | | | | Needs impl |
+| Triangle Count | ✓ | ✓ | ✓ | `algo.triangleCount()` |
+| Local Clustering Coefficient | ✓ | ✓ | ✓ | `algo.localClusteringCoefficient()` |
 
 ## 3.4 Similarity Algorithms
 

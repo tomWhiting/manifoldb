@@ -18,6 +18,7 @@
 //! - [`CommunityDetection`] - Label Propagation for community detection
 //! - [`LouvainCommunityDetection`] - Louvain modularity optimization algorithm
 //! - [`ConnectedComponents`] - Weakly and strongly connected components
+//! - [`TriangleCount`] - Triangle counting and local clustering coefficients
 //!
 //! # Example
 //!
@@ -52,6 +53,7 @@ mod degree;
 mod eigenvector;
 mod louvain;
 mod pagerank;
+mod triangle;
 
 pub use centrality::{BetweennessCentrality, BetweennessCentralityConfig, CentralityResult};
 pub use closeness::{ClosenessCentrality, ClosenessCentralityConfig, ClosenessCentralityResult};
@@ -63,3 +65,4 @@ pub use eigenvector::{
 };
 pub use louvain::{LouvainCommunityDetection, LouvainConfig, LouvainResult};
 pub use pagerank::{PageRank, PageRankConfig, PageRankResult};
+pub use triangle::{TriangleCount, TriangleCountConfig, TriangleCountResult};
