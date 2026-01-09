@@ -2657,7 +2657,8 @@ mod utility_statements {
         match stmt {
             Statement::Utility(util) => {
                 if let UtilityStatement::Set(set_stmt) = *util {
-                    assert_eq!(set_stmt.name.name, "timezone");
+                    // Note: sqlparser 0.60 normalizes TIMEZONE/timezone to uppercase
+                    assert_eq!(set_stmt.name.name, "TIMEZONE");
                     assert!(set_stmt.value.is_some());
                 } else {
                     panic!("expected SET");

@@ -50,7 +50,7 @@ rayon = "1.10"
 tokio = { version = "1", features = ["full"] }
 
 # Query parsing
-sqlparser = "0.52"
+sqlparser = "0.60"
 
 # Date/time and regex
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
