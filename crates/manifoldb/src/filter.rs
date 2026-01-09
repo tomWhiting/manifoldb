@@ -500,6 +500,16 @@ fn value_to_json(value: &manifoldb_core::Value) -> JsonValue {
                 })
                 .collect(),
         ),
+        manifoldb_core::Value::Point { x, y, z, srid } => {
+            let mut map = serde_json::Map::new();
+            map.insert("x".to_string(), serde_json::json!(*x));
+            map.insert("y".to_string(), serde_json::json!(*y));
+            if let Some(z_val) = z {
+                map.insert("z".to_string(), serde_json::json!(*z_val));
+            }
+            map.insert("srid".to_string(), serde_json::json!(*srid));
+            JsonValue::Object(map)
+        }
     }
 }
 

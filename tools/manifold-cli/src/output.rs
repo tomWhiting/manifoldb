@@ -136,6 +136,10 @@ pub fn format_value(value: &Value) -> String {
             let elements: Vec<String> = arr.iter().map(format_value).collect();
             format!("[{}]", elements.join(", "))
         }
+        Value::Point { x, y, z, srid } => match z {
+            Some(z_val) => format!("point({{x: {x}, y: {y}, z: {z_val}, srid: {srid}}})"),
+            None => format!("point({{x: {x}, y: {y}, srid: {srid}}})"),
+        },
     }
 }
 
@@ -163,6 +167,16 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
+        Value::Point { x, y, z, srid } => {
+            let mut map = serde_json::Map::new();
+            map.insert("x".to_string(), serde_json::json!(*x));
+            map.insert("y".to_string(), serde_json::json!(*y));
+            if let Some(z_val) = z {
+                map.insert("z".to_string(), serde_json::json!(*z_val));
+            }
+            map.insert("srid".to_string(), serde_json::json!(*srid));
+            serde_json::Value::Object(map)
+        }
     }
 }
 

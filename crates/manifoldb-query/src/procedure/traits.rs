@@ -208,6 +208,7 @@ fn value_type_name(value: &Value) -> String {
         Value::SparseVector(_) => "SPARSE_VECTOR".to_string(),
         Value::MultiVector(_) => "MULTI_VECTOR".to_string(),
         Value::Array(_) => "ARRAY".to_string(),
+        Value::Point { .. } => "POINT".to_string(),
     }
 }
 

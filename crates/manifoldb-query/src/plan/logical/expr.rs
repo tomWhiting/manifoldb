@@ -1978,6 +1978,65 @@ pub enum ScalarFunction {
     /// Returns NULL for null input.
     CypherToString,
 
+    // Cypher spatial functions
+    /// `point(map)`.
+    ///
+    /// Constructs a spatial point from a map with coordinate properties.
+    ///
+    /// Supports two coordinate systems:
+    /// - **Geographic (WGS84)**: `{latitude, longitude}` or `{latitude, longitude, height}`
+    /// - **Cartesian**: `{x, y}` or `{x, y, z}`
+    ///
+    /// Optional `srid` property can specify the spatial reference system:
+    /// - 4326: WGS84 2D geographic (default for lat/lon)
+    /// - 7203: WGS84 3D geographic
+    /// - 0: Cartesian 2D (default for x/y)
+    /// - 9157: Cartesian 3D
+    ///
+    /// # Examples
+    /// - `point({latitude: 40.7128, longitude: -74.0060})` → NYC geographic point
+    /// - `point({x: 1.0, y: 2.0})` → 2D cartesian point
+    /// - `point({x: 1.0, y: 2.0, z: 3.0, srid: 9157})` → 3D cartesian point
+    Point,
+
+    /// `point.distance(point1, point2)`.
+    ///
+    /// Calculates the distance between two points.
+    ///
+    /// - For **geographic points**: Returns distance in meters using the haversine formula
+    /// - For **cartesian points**: Returns Euclidean distance
+    ///
+    /// Returns NULL if either argument is NULL or not a point.
+    ///
+    /// # Examples
+    /// ```cypher
+    /// WITH point({latitude: 40.7128, longitude: -74.0060}) AS nyc,
+    ///      point({latitude: 34.0522, longitude: -118.2437}) AS la
+    /// RETURN point.distance(nyc, la) AS distance_meters
+    /// ```
+    PointDistance,
+
+    /// `point.withinBBox(point, lowerLeft, upperRight)`.
+    ///
+    /// Tests if a point falls within a bounding box defined by two corner points.
+    ///
+    /// The bounding box is defined by:
+    /// - `lowerLeft`: The lower-left corner (min x/longitude, min y/latitude)
+    /// - `upperRight`: The upper-right corner (max x/longitude, max y/latitude)
+    ///
+    /// Returns TRUE if the point is inside the box, FALSE otherwise.
+    /// Returns NULL if any argument is NULL or not a point.
+    ///
+    /// # Examples
+    /// ```cypher
+    /// MATCH (p:Place)
+    /// WHERE point.withinBBox(p.location,
+    ///   point({latitude: 40.0, longitude: -75.0}),
+    ///   point({latitude: 41.0, longitude: -73.0}))
+    /// RETURN p
+    /// ```
+    PointWithinBBox,
+
     // Other
     /// Custom/user-defined function.
     Custom(u32), // Index into function registry
@@ -2129,6 +2188,10 @@ impl fmt::Display for ScalarFunction {
             Self::ToInteger => "toInteger",
             Self::ToFloat => "toFloat",
             Self::CypherToString => "toString",
+            // Spatial functions
+            Self::Point => "point",
+            Self::PointDistance => "point.distance",
+            Self::PointWithinBBox => "point.withinBBox",
             // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };

@@ -2837,6 +2837,21 @@ fn evaluate_scalar_function(
             cypher_datetime_truncate(args)
         }
 
+        // ========== Cypher Spatial Functions ==========
+        ScalarFunction::Point => {
+            // point({latitude: 40.7128, longitude: -74.0060}) - geographic point
+            // point({x: 1.0, y: 2.0}) - cartesian point
+            cypher_point(args)
+        }
+        ScalarFunction::PointDistance => {
+            // point.distance(point1, point2) - distance between two points
+            cypher_point_distance(args)
+        }
+        ScalarFunction::PointWithinBBox => {
+            // point.withinBBox(point, lowerLeft, upperRight) - bounding box test
+            cypher_point_within_bbox(args)
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -3357,6 +3372,16 @@ fn value_to_json(val: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::Bytes(b) => serde_json::Value::String(base64_encode(b)),
+        Value::Point { x, y, z, srid } => {
+            let mut map = serde_json::Map::new();
+            map.insert("x".to_string(), serde_json::json!(*x));
+            map.insert("y".to_string(), serde_json::json!(*y));
+            if let Some(z_val) = z {
+                map.insert("z".to_string(), serde_json::json!(*z_val));
+            }
+            map.insert("srid".to_string(), serde_json::json!(*srid));
+            serde_json::Value::Object(map)
+        }
     }
 }
 
@@ -4609,6 +4634,176 @@ fn cypher_datetime_truncate(args: &[Value]) -> OperatorResult<Value> {
     }
 }
 
+// ========== Cypher Spatial Functions ==========
+
+/// point(map) - Constructs a spatial point from a map with coordinate properties.
+///
+/// Supports two coordinate systems:
+/// - **Geographic (WGS84)**: `{latitude, longitude}` or `{latitude, longitude, height}`
+/// - **Cartesian**: `{x, y}` or `{x, y, z}`
+fn cypher_point(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Null) | None => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try parsing as JSON map
+            if s.starts_with('{') {
+                if let Some(json) = parse_json(s) {
+                    return point_from_json_map(&json);
+                }
+            }
+            Ok(Value::Null)
+        }
+        Some(Value::Point { .. }) => {
+            // Already a point, return as-is
+            Ok(args[0].clone())
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// point.distance(point1, point2) - Calculates distance between two points.
+///
+/// - For geographic points: Returns distance in meters using the haversine formula
+/// - For cartesian points: Returns Euclidean distance
+fn cypher_point_distance(args: &[Value]) -> OperatorResult<Value> {
+    if args.len() < 2 {
+        return Ok(Value::Null);
+    }
+
+    let p1 = match &args[0] {
+        Value::Point { x, y, z, srid } => (*x, *y, *z, *srid),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let p2 = match &args[1] {
+        Value::Point { x, y, z, srid } => (*x, *y, *z, *srid),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    // Check if both points are in the same coordinate system
+    let is_geographic_1 = matches!(p1.3, 4326 | 7203);
+    let is_geographic_2 = matches!(p2.3, 4326 | 7203);
+
+    if is_geographic_1 != is_geographic_2 {
+        // Cannot compute distance between geographic and cartesian points
+        return Ok(Value::Null);
+    }
+
+    let distance = if is_geographic_1 {
+        // Haversine formula for geographic distance (in meters)
+        haversine_distance(p1.1, p1.0, p2.1, p2.0) // lat1, lon1, lat2, lon2
+    } else {
+        // Euclidean distance for cartesian points
+        let dx = p2.0 - p1.0;
+        let dy = p2.1 - p1.1;
+        let dz = match (p1.2, p2.2) {
+            (Some(z1), Some(z2)) => z2 - z1,
+            _ => 0.0,
+        };
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+
+    Ok(Value::Float(distance))
+}
+
+/// point.withinBBox(point, lowerLeft, upperRight) - Tests if point is within bounding box.
+fn cypher_point_within_bbox(args: &[Value]) -> OperatorResult<Value> {
+    if args.len() < 3 {
+        return Ok(Value::Null);
+    }
+
+    let point = match &args[0] {
+        Value::Point { x, y, .. } => (*x, *y),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let lower_left = match &args[1] {
+        Value::Point { x, y, .. } => (*x, *y),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let upper_right = match &args[2] {
+        Value::Point { x, y, .. } => (*x, *y),
+        Value::Null => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    // Check if point is within bounding box
+    let within = point.0 >= lower_left.0
+        && point.0 <= upper_right.0
+        && point.1 >= lower_left.1
+        && point.1 <= upper_right.1;
+
+    Ok(Value::Bool(within))
+}
+
+/// Constructs a Point value from a JSON map.
+fn point_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    let obj = match json.as_object() {
+        Some(o) => o,
+        None => return Ok(Value::Null),
+    };
+
+    // Check for geographic coordinates (latitude/longitude)
+    if let (Some(lat), Some(lon)) = (obj.get("latitude"), obj.get("longitude")) {
+        let latitude = json_to_f64(lat).unwrap_or(0.0);
+        let longitude = json_to_f64(lon).unwrap_or(0.0);
+        let height = obj.get("height").and_then(json_to_f64);
+        let srid = obj
+            .get("srid")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or_else(|| if height.is_some() { 7203 } else { 4326 });
+
+        return Ok(Value::Point { x: longitude, y: latitude, z: height, srid });
+    }
+
+    // Check for cartesian coordinates (x/y)
+    if let (Some(x_val), Some(y_val)) = (obj.get("x"), obj.get("y")) {
+        let x = json_to_f64(x_val).unwrap_or(0.0);
+        let y = json_to_f64(y_val).unwrap_or(0.0);
+        let z = obj.get("z").and_then(json_to_f64);
+        let srid = obj
+            .get("srid")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or_else(|| if z.is_some() { 9157 } else { 0 });
+
+        return Ok(Value::Point { x, y, z, srid });
+    }
+
+    Ok(Value::Null)
+}
+
+/// Helper to convert JSON number to f64.
+fn json_to_f64(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        _ => None,
+    }
+}
+
+/// Haversine formula to calculate distance between two geographic points.
+/// Returns distance in meters.
+fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
+
+    let lat1_rad = lat1.to_radians();
+    let lat2_rad = lat2.to_radians();
+    let delta_lat = (lat2 - lat1).to_radians();
+    let delta_lon = (lon2 - lon1).to_radians();
+
+    let a = (delta_lat / 2.0).sin().powi(2)
+        + lat1_rad.cos() * lat2_rad.cos() * (delta_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().asin();
+
+    EARTH_RADIUS_METERS * c
+}
+
 // ========== Cypher Temporal Helper Functions ==========
 
 /// Parses an ISO 8601 datetime string and returns the Cypher datetime format.
@@ -5692,6 +5887,10 @@ fn value_to_string(value: &Value) -> String {
         Value::MultiVector(v) => format!("{v:?}"),
         Value::Bytes(b) => format!("{b:?}"),
         Value::Array(a) => format!("{a:?}"),
+        Value::Point { x, y, z, srid } => match z {
+            Some(z_val) => format!("point({{x: {x}, y: {y}, z: {z_val}, srid: {srid}}})"),
+            None => format!("point({{x: {x}, y: {y}, srid: {srid}}})"),
+        },
     }
 }
 
@@ -11095,6 +11294,241 @@ mod tests {
                 Value::String("2024-01-15T14:30:45".to_string()),
             ],
         );
+        assert_eq!(result, Value::Null);
+    }
+
+    // =============================================================================
+    // Cypher Spatial Function Tests
+    // =============================================================================
+
+    #[test]
+    fn test_cypher_point_geographic_2d() {
+        // point({latitude: 40.7128, longitude: -74.0060}) - NYC
+        let result = eval_fn(
+            ScalarFunction::Point,
+            vec![Value::String(r#"{"latitude": 40.7128, "longitude": -74.0060}"#.to_string())],
+        );
+        match result {
+            Value::Point { x, y, z, srid } => {
+                assert!((x - (-74.0060)).abs() < 1e-6, "longitude should be -74.0060");
+                assert!((y - 40.7128).abs() < 1e-6, "latitude should be 40.7128");
+                assert!(z.is_none(), "z should be None for 2D point");
+                assert_eq!(srid, 4326, "srid should be 4326 for geographic 2D");
+            }
+            _ => panic!("Expected Point, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_geographic_3d() {
+        // point({latitude: 40.7128, longitude: -74.0060, height: 100.0})
+        let result = eval_fn(
+            ScalarFunction::Point,
+            vec![Value::String(
+                r#"{"latitude": 40.7128, "longitude": -74.0060, "height": 100.0}"#.to_string(),
+            )],
+        );
+        match result {
+            Value::Point { x, y, z, srid } => {
+                assert!((x - (-74.0060)).abs() < 1e-6);
+                assert!((y - 40.7128).abs() < 1e-6);
+                assert!((z.unwrap() - 100.0).abs() < 1e-6);
+                assert_eq!(srid, 7203, "srid should be 7203 for geographic 3D");
+            }
+            _ => panic!("Expected Point, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_cartesian_2d() {
+        // point({x: 1.0, y: 2.0})
+        let result = eval_fn(
+            ScalarFunction::Point,
+            vec![Value::String(r#"{"x": 1.0, "y": 2.0}"#.to_string())],
+        );
+        match result {
+            Value::Point { x, y, z, srid } => {
+                assert!((x - 1.0).abs() < 1e-6);
+                assert!((y - 2.0).abs() < 1e-6);
+                assert!(z.is_none());
+                assert_eq!(srid, 0, "srid should be 0 for cartesian 2D");
+            }
+            _ => panic!("Expected Point, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_cartesian_3d() {
+        // point({x: 1.0, y: 2.0, z: 3.0})
+        let result = eval_fn(
+            ScalarFunction::Point,
+            vec![Value::String(r#"{"x": 1.0, "y": 2.0, "z": 3.0}"#.to_string())],
+        );
+        match result {
+            Value::Point { x, y, z, srid } => {
+                assert!((x - 1.0).abs() < 1e-6);
+                assert!((y - 2.0).abs() < 1e-6);
+                assert!((z.unwrap() - 3.0).abs() < 1e-6);
+                assert_eq!(srid, 9157, "srid should be 9157 for cartesian 3D");
+            }
+            _ => panic!("Expected Point, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_with_explicit_srid() {
+        // point({x: 1.0, y: 2.0, srid: 4326})
+        let result = eval_fn(
+            ScalarFunction::Point,
+            vec![Value::String(r#"{"x": 1.0, "y": 2.0, "srid": 4326}"#.to_string())],
+        );
+        match result {
+            Value::Point { srid, .. } => {
+                assert_eq!(srid, 4326, "explicit srid should be respected");
+            }
+            _ => panic!("Expected Point, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_null_input() {
+        let result = eval_fn(ScalarFunction::Point, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_point_invalid_input() {
+        let result = eval_fn(ScalarFunction::Point, vec![Value::Int(42)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_point_distance_geographic() {
+        // Distance between NYC and LA (approximately 3,935 km)
+        let nyc = Value::Point { x: -74.0060, y: 40.7128, z: None, srid: 4326 };
+        let la = Value::Point { x: -118.2437, y: 34.0522, z: None, srid: 4326 };
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![nyc, la]);
+        match result {
+            Value::Float(d) => {
+                // Distance should be approximately 3,935 km (3,935,000 meters)
+                // Allow 5% tolerance for haversine approximation
+                assert!(
+                    d > 3_700_000.0 && d < 4_200_000.0,
+                    "distance should be ~3.9M meters, got {d}"
+                );
+            }
+            _ => panic!("Expected Float, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_distance_cartesian_2d() {
+        // Distance between (0, 0) and (3, 4) should be 5
+        let p1 = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+        let p2 = Value::Point { x: 3.0, y: 4.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![p1, p2]);
+        match result {
+            Value::Float(d) => {
+                assert!((d - 5.0).abs() < 1e-6, "distance should be 5.0, got {d}");
+            }
+            _ => panic!("Expected Float, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_distance_cartesian_3d() {
+        // Distance between (0, 0, 0) and (1, 2, 2) should be 3
+        let p1 = Value::Point { x: 0.0, y: 0.0, z: Some(0.0), srid: 9157 };
+        let p2 = Value::Point { x: 1.0, y: 2.0, z: Some(2.0), srid: 9157 };
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![p1, p2]);
+        match result {
+            Value::Float(d) => {
+                assert!((d - 3.0).abs() < 1e-6, "distance should be 3.0, got {d}");
+            }
+            _ => panic!("Expected Float, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_cypher_point_distance_mixed_coordinates() {
+        // Distance between geographic and cartesian points should return NULL
+        let geo = Value::Point { x: -74.0, y: 40.0, z: None, srid: 4326 };
+        let cart = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![geo, cart]);
+        assert_eq!(result, Value::Null, "mixed coordinate systems should return NULL");
+    }
+
+    #[test]
+    fn test_cypher_point_distance_null() {
+        let point = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![Value::Null, point.clone()]);
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(ScalarFunction::PointDistance, vec![point, Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_point_within_bbox_inside() {
+        // Point at (0.5, 0.5) inside box from (0, 0) to (1, 1)
+        let point = Value::Point { x: 0.5, y: 0.5, z: None, srid: 0 };
+        let lower_left = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+        let upper_right = Value::Point { x: 1.0, y: 1.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointWithinBBox, vec![point, lower_left, upper_right]);
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_cypher_point_within_bbox_outside() {
+        // Point at (2, 2) outside box from (0, 0) to (1, 1)
+        let point = Value::Point { x: 2.0, y: 2.0, z: None, srid: 0 };
+        let lower_left = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+        let upper_right = Value::Point { x: 1.0, y: 1.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointWithinBBox, vec![point, lower_left, upper_right]);
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_cypher_point_within_bbox_on_edge() {
+        // Point at (0, 0.5) on edge of box from (0, 0) to (1, 1)
+        let point = Value::Point { x: 0.0, y: 0.5, z: None, srid: 0 };
+        let lower_left = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+        let upper_right = Value::Point { x: 1.0, y: 1.0, z: None, srid: 0 };
+
+        let result = eval_fn(ScalarFunction::PointWithinBBox, vec![point, lower_left, upper_right]);
+        assert_eq!(result, Value::Bool(true), "points on edge should be inside");
+    }
+
+    #[test]
+    fn test_cypher_point_within_bbox_geographic() {
+        // Test with geographic coordinates (NYC area)
+        let nyc = Value::Point { x: -74.0, y: 40.7, z: None, srid: 4326 };
+        let sw_corner = Value::Point { x: -75.0, y: 40.0, z: None, srid: 4326 };
+        let ne_corner = Value::Point { x: -73.0, y: 41.0, z: None, srid: 4326 };
+
+        let result = eval_fn(ScalarFunction::PointWithinBBox, vec![nyc, sw_corner, ne_corner]);
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_cypher_point_within_bbox_null() {
+        let point = Value::Point { x: 0.5, y: 0.5, z: None, srid: 0 };
+        let lower_left = Value::Point { x: 0.0, y: 0.0, z: None, srid: 0 };
+
+        let result = eval_fn(
+            ScalarFunction::PointWithinBBox,
+            vec![Value::Null, lower_left.clone(), point.clone()],
+        );
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(ScalarFunction::PointWithinBBox, vec![point, Value::Null, lower_left]);
         assert_eq!(result, Value::Null);
     }
 

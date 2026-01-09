@@ -98,6 +98,31 @@ pub enum Value {
     MultiVector(Vec<Vec<f32>>),
     /// Array of values
     Array(Vec<Value>),
+    /// Spatial point for geographic and cartesian data.
+    ///
+    /// Points can be either 2D or 3D and support both geographic (lat/lon) and cartesian coordinates.
+    /// - Geographic points use WGS84 (SRID 4326) with latitude (-90 to 90) and longitude (-180 to 180)
+    /// - Cartesian points use x, y, z coordinates
+    ///
+    /// # Fields
+    /// - `x` - x coordinate (or longitude for geographic)
+    /// - `y` - y coordinate (or latitude for geographic)
+    /// - `z` - optional z coordinate (height/elevation)
+    /// - `srid` - Spatial Reference System Identifier (4326 for WGS84 geographic, 0 for cartesian)
+    Point {
+        /// X coordinate (or longitude for geographic points)
+        x: f64,
+        /// Y coordinate (or latitude for geographic points)
+        y: f64,
+        /// Optional Z coordinate (height/elevation)
+        z: Option<f64>,
+        /// Spatial Reference System Identifier
+        /// - 4326: WGS84 geographic coordinates (default for lat/lon)
+        /// - 7203: WGS84 3D geographic coordinates
+        /// - 0: Cartesian 2D (default for x/y without srid)
+        /// - 9157: Cartesian 3D
+        srid: u32,
+    },
 }
 
 impl Value {
@@ -181,6 +206,74 @@ impl Value {
             Self::MultiVector(v) => Some(v),
             _ => None,
         }
+    }
+
+    /// Returns the value as a point if it is one.
+    ///
+    /// Returns a tuple of (x, y, z, srid) where z is optional.
+    #[inline]
+    #[must_use]
+    pub const fn as_point(&self) -> Option<(f64, f64, Option<f64>, u32)> {
+        match self {
+            Self::Point { x, y, z, srid } => Some((*x, *y, *z, *srid)),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if this value is a geographic point (SRID 4326 or 7203).
+    #[inline]
+    #[must_use]
+    pub const fn is_geographic_point(&self) -> bool {
+        matches!(self, Self::Point { srid: 4326 | 7203, .. })
+    }
+
+    /// Returns `true` if this value is a cartesian point (SRID 0 or 9157).
+    #[inline]
+    #[must_use]
+    pub const fn is_cartesian_point(&self) -> bool {
+        matches!(self, Self::Point { srid: 0 | 9157, .. })
+    }
+
+    /// Creates a 2D geographic point (WGS84 - SRID 4326).
+    ///
+    /// # Arguments
+    /// * `latitude` - Latitude in degrees (-90 to 90)
+    /// * `longitude` - Longitude in degrees (-180 to 180)
+    #[must_use]
+    pub const fn geographic_2d(latitude: f64, longitude: f64) -> Self {
+        Self::Point { x: longitude, y: latitude, z: None, srid: 4326 }
+    }
+
+    /// Creates a 3D geographic point (WGS84 - SRID 7203).
+    ///
+    /// # Arguments
+    /// * `latitude` - Latitude in degrees (-90 to 90)
+    /// * `longitude` - Longitude in degrees (-180 to 180)
+    /// * `height` - Height/elevation in meters
+    #[must_use]
+    pub const fn geographic_3d(latitude: f64, longitude: f64, height: f64) -> Self {
+        Self::Point { x: longitude, y: latitude, z: Some(height), srid: 7203 }
+    }
+
+    /// Creates a 2D cartesian point.
+    ///
+    /// # Arguments
+    /// * `x` - X coordinate
+    /// * `y` - Y coordinate
+    #[must_use]
+    pub const fn cartesian_2d(x: f64, y: f64) -> Self {
+        Self::Point { x, y, z: None, srid: 0 }
+    }
+
+    /// Creates a 3D cartesian point.
+    ///
+    /// # Arguments
+    /// * `x` - X coordinate
+    /// * `y` - Y coordinate
+    /// * `z` - Z coordinate
+    #[must_use]
+    pub const fn cartesian_3d(x: f64, y: f64, z: f64) -> Self {
+        Self::Point { x, y, z: Some(z), srid: 9157 }
     }
 }
 
@@ -303,5 +396,65 @@ mod tests {
         // Multi-vector should not be accessible as dense or sparse
         assert!(multi.as_vector().is_none());
         assert!(multi.as_sparse_vector().is_none());
+    }
+
+    #[test]
+    fn point_geographic_2d() {
+        let point = Value::geographic_2d(40.7128, -74.0060);
+        assert!(point.is_geographic_point());
+        assert!(!point.is_cartesian_point());
+
+        let (x, y, z, srid) = point.as_point().unwrap();
+        assert!((x - (-74.0060)).abs() < 1e-10);
+        assert!((y - 40.7128).abs() < 1e-10);
+        assert!(z.is_none());
+        assert_eq!(srid, 4326);
+    }
+
+    #[test]
+    fn point_geographic_3d() {
+        let point = Value::geographic_3d(40.7128, -74.0060, 100.0);
+        assert!(point.is_geographic_point());
+        assert!(!point.is_cartesian_point());
+
+        let (x, y, z, srid) = point.as_point().unwrap();
+        assert!((x - (-74.0060)).abs() < 1e-10);
+        assert!((y - 40.7128).abs() < 1e-10);
+        assert!((z.unwrap() - 100.0).abs() < 1e-10);
+        assert_eq!(srid, 7203);
+    }
+
+    #[test]
+    fn point_cartesian_2d() {
+        let point = Value::cartesian_2d(1.0, 2.0);
+        assert!(point.is_cartesian_point());
+        assert!(!point.is_geographic_point());
+
+        let (x, y, z, srid) = point.as_point().unwrap();
+        assert!((x - 1.0).abs() < 1e-10);
+        assert!((y - 2.0).abs() < 1e-10);
+        assert!(z.is_none());
+        assert_eq!(srid, 0);
+    }
+
+    #[test]
+    fn point_cartesian_3d() {
+        let point = Value::cartesian_3d(1.0, 2.0, 3.0);
+        assert!(point.is_cartesian_point());
+        assert!(!point.is_geographic_point());
+
+        let (x, y, z, srid) = point.as_point().unwrap();
+        assert!((x - 1.0).abs() < 1e-10);
+        assert!((y - 2.0).abs() < 1e-10);
+        assert!((z.unwrap() - 3.0).abs() < 1e-10);
+        assert_eq!(srid, 9157);
+    }
+
+    #[test]
+    fn point_as_point_non_point() {
+        let value = Value::Int(42);
+        assert!(value.as_point().is_none());
+        assert!(!value.is_geographic_point());
+        assert!(!value.is_cartesian_point());
     }
 }

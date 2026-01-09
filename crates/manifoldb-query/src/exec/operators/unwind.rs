@@ -114,6 +114,7 @@ impl UnwindOp {
                                 Value::SparseVector(_) => "sparse_vector",
                                 Value::MultiVector(_) => "multi_vector",
                                 Value::Array(_) => "array",
+                                Value::Point { .. } => "point",
                             };
                             return Err(ParseError::Execution(format!(
                                 "UNWIND requires a list, but got {type_name}"

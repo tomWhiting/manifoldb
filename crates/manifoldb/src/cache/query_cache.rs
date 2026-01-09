@@ -439,6 +439,14 @@ fn hash_value(value: &Value, hasher: &mut DefaultHasher) {
                 hash_value(v, hasher);
             }
         }
+        Value::Point { x, y, z, srid } => {
+            x.to_bits().hash(hasher);
+            y.to_bits().hash(hasher);
+            if let Some(z_val) = z {
+                z_val.to_bits().hash(hasher);
+            }
+            srid.hash(hasher);
+        }
     }
 }
 

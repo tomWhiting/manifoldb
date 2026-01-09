@@ -217,5 +217,9 @@ fn value_to_string(value: &Value) -> String {
         Value::Array(arr) => {
             format!("[{}]", arr.iter().map(value_to_string).collect::<Vec<_>>().join(","))
         }
+        Value::Point { x, y, z, srid } => match z {
+            Some(z_val) => format!("point({{x: {x}, y: {y}, z: {z_val}, srid: {srid}}})"),
+            None => format!("point({{x: {x}, y: {y}, srid: {srid}}})"),
+        },
     }
 }

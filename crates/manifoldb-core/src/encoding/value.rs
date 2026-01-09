@@ -35,6 +35,7 @@ mod tags {
     pub const ARRAY: u8 = 0x07;
     pub const SPARSE_VECTOR: u8 = 0x08;
     pub const MULTI_VECTOR: u8 = 0x09;
+    pub const POINT: u8 = 0x0A;
 }
 
 impl Encoder for Value {
@@ -119,6 +120,25 @@ impl Encoder for Value {
                 buf.extend_from_slice(&len.to_be_bytes());
                 for val in arr {
                     val.encode_to(buf)?;
+                }
+            }
+            Self::Point { x, y, z, srid } => {
+                buf.push(tags::POINT);
+                // Encode SRID (4 bytes)
+                buf.extend_from_slice(&srid.to_be_bytes());
+                // Encode x (8 bytes)
+                buf.extend_from_slice(&x.to_be_bytes());
+                // Encode y (8 bytes)
+                buf.extend_from_slice(&y.to_be_bytes());
+                // Encode z presence flag (1 byte) and optional z (8 bytes)
+                match z {
+                    Some(z_val) => {
+                        buf.push(1);
+                        buf.extend_from_slice(&z_val.to_be_bytes());
+                    }
+                    None => {
+                        buf.push(0);
+                    }
                 }
             }
         }
@@ -323,6 +343,47 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
                 offset += consumed;
             }
             Ok((Value::Array(arr), offset))
+        }
+        tags::POINT => {
+            // Point format: tag(1) + srid(4) + x(8) + y(8) + z_flag(1) + optional z(8)
+            // Minimum size: 1 + 4 + 8 + 8 + 1 = 22 bytes (without z)
+            // Maximum size: 1 + 4 + 8 + 8 + 1 + 8 = 30 bytes (with z)
+            if rest.len() < 21 {
+                // 4 (srid) + 8 (x) + 8 (y) + 1 (z_flag)
+                return Err(CoreError::Encoding("unexpected end of input for point".to_owned()));
+            }
+            let srid_bytes: [u8; 4] = rest[..4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read srid".to_owned()))?;
+            let srid = u32::from_be_bytes(srid_bytes);
+
+            let x_bytes: [u8; 8] = rest[4..12]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read x".to_owned()))?;
+            let x = f64::from_be_bytes(x_bytes);
+
+            let y_bytes: [u8; 8] = rest[12..20]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read y".to_owned()))?;
+            let y = f64::from_be_bytes(y_bytes);
+
+            let z_flag = rest[20];
+            let (z, consumed) = if z_flag != 0 {
+                if rest.len() < 29 {
+                    // 21 + 8 for z
+                    return Err(CoreError::Encoding(
+                        "unexpected end of input for point z coordinate".to_owned(),
+                    ));
+                }
+                let z_bytes: [u8; 8] = rest[21..29]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read z".to_owned()))?;
+                (Some(f64::from_be_bytes(z_bytes)), 30) // tag(1) + srid(4) + x(8) + y(8) + z_flag(1) + z(8)
+            } else {
+                (None, 22) // tag(1) + srid(4) + x(8) + y(8) + z_flag(1)
+            };
+
+            Ok((Value::Point { x, y, z, srid }, consumed))
         }
         _ => Err(CoreError::Encoding(format!("unknown type tag: {tag:#x}"))),
     }

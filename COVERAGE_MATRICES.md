@@ -868,9 +868,9 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
-| point() | | | | | | | Not impl |
-| point.distance() | | | | | | | Not impl |
-| point.withinBBox() | | | | | | | Not impl |
+| point() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Geographic (lat/lon) and cartesian (x/y) coordinates (Jan 2026)† |
+| point.distance() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Haversine (geo) / Euclidean (cart) distance (Jan 2026)† |
+| point.withinBBox() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Bounding box containment test (Jan 2026)† |
 
 ---
 
@@ -999,7 +999,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | String Functions | 10 | 10 | 0 | 0 |
 | Math Functions | 15 | 13 | 0 | 2 |
 | Temporal Functions | 10 | 7 | 0 | 3 |
-| Spatial Functions | 5 | 0 | 0 | 5 |
+| Spatial Functions | 5 | 3 | 0 | 2 |
 
 ## Vector Coverage
 

@@ -2334,6 +2334,10 @@ impl PlanBuilder {
                     "LOCALTIME" => Some(ScalarFunction::CypherLocalTime),
                     "DURATION" => Some(ScalarFunction::CypherDuration),
                     "DATETIME.TRUNCATE" => Some(ScalarFunction::CypherDatetimeTruncate),
+                    // Cypher spatial functions
+                    "POINT" => Some(ScalarFunction::Point),
+                    "POINT.DISTANCE" => Some(ScalarFunction::PointDistance),
+                    "POINT.WITHINBBOX" => Some(ScalarFunction::PointWithinBBox),
                     _ => None,
                 };
 
