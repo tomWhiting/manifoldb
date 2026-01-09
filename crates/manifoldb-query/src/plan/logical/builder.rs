@@ -483,18 +483,15 @@ impl PlanBuilder {
     }
 
     /// Builds a window function expression from an AST function with OVER clause.
+    ///
+    /// Supports:
+    /// - Ranking functions: ROW_NUMBER, RANK, DENSE_RANK
+    /// - Value functions: LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
+    /// - Aggregate functions: SUM, AVG, COUNT, MIN, MAX (as window functions)
     fn build_window_function(&mut self, func: &ast::FunctionCall) -> PlanResult<LogicalExpr> {
         let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
-        // Parse the window function type
-        let window_func = match name.as_str() {
-            "ROW_NUMBER" => WindowFunction::RowNumber,
-            "RANK" => WindowFunction::Rank,
-            "DENSE_RANK" => WindowFunction::DenseRank,
-            _ => return Err(PlanError::Unsupported(format!("window function: {name}"))),
-        };
-
-        // Parse the OVER clause
+        // Parse the OVER clause first (required for all window functions)
         let over = func.over.as_ref().ok_or_else(|| {
             PlanError::Unsupported("window function missing OVER clause".to_string())
         })?;
@@ -513,14 +510,209 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<Vec<_>>>()?;
 
-        Ok(LogicalExpr::WindowFunction {
-            func: window_func,
-            arg: None, // TODO: Handle value function arguments when parser supports them
-            default_value: None,
-            partition_by,
-            order_by,
-            frame: over.frame.clone(),
-        })
+        // Parse the window function type and build the expression
+        match name.as_str() {
+            // Ranking functions (no arguments)
+            "ROW_NUMBER" => Ok(LogicalExpr::WindowFunction {
+                func: WindowFunction::RowNumber,
+                arg: None,
+                default_value: None,
+                partition_by,
+                order_by,
+                frame: over.frame.clone(),
+            }),
+            "RANK" => Ok(LogicalExpr::WindowFunction {
+                func: WindowFunction::Rank,
+                arg: None,
+                default_value: None,
+                partition_by,
+                order_by,
+                frame: over.frame.clone(),
+            }),
+            "DENSE_RANK" => Ok(LogicalExpr::WindowFunction {
+                func: WindowFunction::DenseRank,
+                arg: None,
+                default_value: None,
+                partition_by,
+                order_by,
+                frame: over.frame.clone(),
+            }),
+
+            // Value functions (require argument)
+            "LAG" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                let offset = self.get_window_offset(&func.args, 1);
+                let default_value = self.get_window_default(&func.args, 2)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Lag { offset, has_default: default_value.is_some() },
+                    arg: Some(Box::new(arg)),
+                    default_value: default_value.map(Box::new),
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "LEAD" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                let offset = self.get_window_offset(&func.args, 1);
+                let default_value = self.get_window_default(&func.args, 2)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Lead { offset, has_default: default_value.is_some() },
+                    arg: Some(Box::new(arg)),
+                    default_value: default_value.map(Box::new),
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "FIRST_VALUE" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::FirstValue,
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "LAST_VALUE" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::LastValue,
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "NTH_VALUE" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                let n = self.get_window_nth(&func.args)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::NthValue { n },
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+
+            // Aggregate functions as window functions
+            "COUNT" => {
+                let arg = if func.args.is_empty() {
+                    None // COUNT(*)
+                } else {
+                    Some(Box::new(self.build_expr(&func.args[0])?))
+                };
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Aggregate(ast::AggregateWindowFunction::Count),
+                    arg,
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "SUM" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Aggregate(ast::AggregateWindowFunction::Sum),
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "AVG" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Aggregate(ast::AggregateWindowFunction::Avg),
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "MIN" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Aggregate(ast::AggregateWindowFunction::Min),
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "MAX" => {
+                let arg = self.get_window_arg(&func.args, &name)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Aggregate(ast::AggregateWindowFunction::Max),
+                    arg: Some(Box::new(arg)),
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+
+            _ => Err(PlanError::Unsupported(format!("window function: {name}"))),
+        }
+    }
+
+    /// Gets the first argument for a window function.
+    fn get_window_arg(&mut self, args: &[Expr], func_name: &str) -> PlanResult<LogicalExpr> {
+        if args.is_empty() {
+            return Err(PlanError::Unsupported(format!(
+                "{func_name} requires at least one argument"
+            )));
+        }
+        self.build_expr(&args[0])
+    }
+
+    /// Gets the offset argument for LAG/LEAD (default 1).
+    fn get_window_offset(&self, args: &[Expr], arg_index: usize) -> u64 {
+        if args.len() > arg_index {
+            if let Expr::Literal(ast::Literal::Integer(n)) = &args[arg_index] {
+                if *n >= 0 {
+                    return *n as u64;
+                }
+            }
+        }
+        1 // Default offset
+    }
+
+    /// Gets the default value argument for LAG/LEAD.
+    fn get_window_default(
+        &mut self,
+        args: &[Expr],
+        arg_index: usize,
+    ) -> PlanResult<Option<LogicalExpr>> {
+        if args.len() > arg_index {
+            Ok(Some(self.build_expr(&args[arg_index])?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Gets the N argument for NTH_VALUE (1-indexed position).
+    fn get_window_nth(&self, args: &[Expr]) -> PlanResult<u64> {
+        if args.len() < 2 {
+            return Err(PlanError::Unsupported(
+                "NTH_VALUE requires two arguments: NTH_VALUE(expr, n)".to_string(),
+            ));
+        }
+        if let Expr::Literal(ast::Literal::Integer(n)) = &args[1] {
+            if *n >= 1 {
+                return Ok(*n as u64);
+            }
+        }
+        Err(PlanError::Unsupported("NTH_VALUE: n must be a positive integer".to_string()))
     }
 
     /// Builds projection expressions.
@@ -1969,6 +2161,132 @@ mod tests {
             "SELECT name,
                     ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn,
                     RANK() OVER (ORDER BY salary DESC) AS rank
+             FROM employees",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    // ========================================================================
+    // Aggregate Window Function Tests
+    // ========================================================================
+
+    #[test]
+    fn window_sum_running_total() {
+        // SUM(amount) OVER (ORDER BY date) - running total
+        let plan = build_query(
+            "SELECT date, amount, SUM(amount) OVER (ORDER BY date) AS running_total FROM sales",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("SUM"));
+    }
+
+    #[test]
+    fn window_avg_moving_average() {
+        // AVG(value) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+        let plan = build_query(
+            "SELECT date, value, AVG(value) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS weekly_avg FROM metrics",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("AVG"));
+    }
+
+    #[test]
+    fn window_count_cumulative() {
+        // COUNT(*) OVER (ORDER BY date) - cumulative count
+        let plan = build_query(
+            "SELECT date, event, COUNT(*) OVER (ORDER BY date) AS cumulative_count FROM events",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("COUNT"));
+    }
+
+    #[test]
+    fn window_count_with_expression() {
+        // COUNT(column) OVER - counts non-NULL values
+        let plan = build_query(
+            "SELECT date, value, COUNT(value) OVER (ORDER BY date) AS non_null_count FROM data",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("COUNT"));
+    }
+
+    #[test]
+    fn window_min_cumulative() {
+        // MIN(value) OVER (ORDER BY date) - cumulative minimum
+        let plan = build_query(
+            "SELECT date, value, MIN(value) OVER (ORDER BY date) AS cumulative_min FROM data",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("MIN"));
+    }
+
+    #[test]
+    fn window_max_cumulative() {
+        // MAX(value) OVER (ORDER BY date) - cumulative maximum
+        let plan = build_query(
+            "SELECT date, value, MAX(value) OVER (ORDER BY date) AS cumulative_max FROM data",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("MAX"));
+    }
+
+    #[test]
+    fn window_aggregate_with_partition() {
+        // SUM(amount) OVER (PARTITION BY dept ORDER BY date) - per-department running total
+        let plan = build_query(
+            "SELECT dept, date, amount, SUM(amount) OVER (PARTITION BY dept ORDER BY date) AS dept_total FROM sales",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+        assert!(output.contains("SUM"));
+    }
+
+    #[test]
+    fn window_multiple_aggregates() {
+        // Multiple aggregate window functions in one query
+        let plan = build_query(
+            "SELECT date, amount,
+                    SUM(amount) OVER (ORDER BY date) AS running_total,
+                    AVG(amount) OVER (ORDER BY date) AS running_avg,
+                    COUNT(*) OVER (ORDER BY date) AS count
+             FROM sales",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    #[test]
+    fn window_mixed_ranking_and_aggregate() {
+        // Mix ranking and aggregate window functions
+        let plan = build_query(
+            "SELECT name, salary,
+                    ROW_NUMBER() OVER (ORDER BY salary DESC) AS rank,
+                    SUM(salary) OVER (ORDER BY salary DESC) AS cumulative_salary
              FROM employees",
         )
         .unwrap();

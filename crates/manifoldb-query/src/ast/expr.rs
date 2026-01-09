@@ -337,6 +337,27 @@ pub enum WindowFunction {
         /// The 1-indexed position (n) in the frame.
         n: u64,
     },
+    /// Aggregate functions used as window functions.
+    /// Example: `SUM(amount) OVER (ORDER BY date)` for running totals.
+    Aggregate(AggregateWindowFunction),
+}
+
+/// Aggregate functions that can be used as window functions.
+///
+/// These functions compute aggregates over the window frame, enabling
+/// common patterns like running totals, moving averages, and cumulative counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateWindowFunction {
+    /// COUNT(*) or COUNT(expr) over window.
+    Count,
+    /// SUM(expr) over window - for running totals.
+    Sum,
+    /// AVG(expr) over window - for moving averages.
+    Avg,
+    /// MIN(expr) over window - cumulative minimum.
+    Min,
+    /// MAX(expr) over window - cumulative maximum.
+    Max,
 }
 
 impl std::fmt::Display for WindowFunction {
@@ -350,7 +371,21 @@ impl std::fmt::Display for WindowFunction {
             Self::FirstValue => write!(f, "FIRST_VALUE"),
             Self::LastValue => write!(f, "LAST_VALUE"),
             Self::NthValue { n } => write!(f, "NTH_VALUE({n})"),
+            Self::Aggregate(agg) => write!(f, "{agg}"),
         }
+    }
+}
+
+impl std::fmt::Display for AggregateWindowFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::Count => "COUNT",
+            Self::Sum => "SUM",
+            Self::Avg => "AVG",
+            Self::Min => "MIN",
+            Self::Max => "MAX",
+        };
+        write!(f, "{name}")
     }
 }
 

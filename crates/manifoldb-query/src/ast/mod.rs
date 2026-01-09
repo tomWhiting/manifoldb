@@ -14,9 +14,9 @@ pub mod vector;
 
 // Re-export commonly used types at the module level
 pub use expr::{
-    BinaryOp, CaseExpr, Expr, FunctionCall, HybridCombinationMethod, HybridSearchComponent,
-    Identifier, Literal, OrderByExpr, ParameterRef, QualifiedName, UnaryOp, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowFunction, WindowSpec,
+    AggregateWindowFunction, BinaryOp, CaseExpr, Expr, FunctionCall, HybridCombinationMethod,
+    HybridSearchComponent, Identifier, Literal, OrderByExpr, ParameterRef, QualifiedName, UnaryOp,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunction, WindowSpec,
 };
 pub use pattern::{
     EdgeDirection, EdgeLength, EdgePattern, GraphPattern, NodePattern, PathPattern,
