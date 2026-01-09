@@ -424,8 +424,9 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
 
         // Placeholder implementations for other graph mutations
         // TODO: Implement GraphMergeOp
-        PhysicalPlan::GraphMerge { .. }
-        | PhysicalPlan::GraphForeach { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        PhysicalPlan::GraphMerge { .. } | PhysicalPlan::GraphForeach { .. } => {
+            Ok(Box::new(EmptyOp::with_columns(vec![])))
+        }
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
         PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),

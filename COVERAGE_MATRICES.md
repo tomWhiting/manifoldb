@@ -78,10 +78,11 @@ CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
 ├── Procedure registry infrastructure: ✅ Complete
 ├── PageRank/ShortestPath: ✅ Complete
+├── Traversal (bfs, dfs): ✅ Complete (Jan 2026)
 ├── Centrality (betweenness, closeness, degree, eigenvector): ✅ Complete
 ├── Community (labelPropagation, connectedComponents, stronglyConnected): ✅ Complete
 ├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Complete
-└── Status: ✅ 13 procedures registered (Jan 2026)
+└── Status: ✅ 15 procedures registered (Jan 2026)
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -106,7 +107,7 @@ These feature groups can be implemented independently:
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
 3. **Window Functions** - ✅ Complete (Jan 2026) - all ranking/distribution functions implemented
-4. **Graph Algorithms** - ✅ 13 procedures via CALL/YIELD (Jan 2026)
+4. **Graph Algorithms** - ✅ 15 procedures via CALL/YIELD (Jan 2026) - includes BFS/DFS traversal
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---
@@ -853,6 +854,13 @@ These feature groups can be implemented independently:
 ---
 
 # Part 3: Graph Algorithms Coverage
+
+## 3.0 Traversal Algorithms
+
+| Algorithm | Via CALL | Tested | Notes |
+|-----------|----------|--------|-------|
+| BFS (Breadth-First Search) | ✓ | ✓ | `algo.bfs()` - level-by-level traversal (Jan 2026)† |
+| DFS (Depth-First Search) | ✓ | ✓ | `algo.dfs()` - branch exploration (Jan 2026)† |
 
 ## 3.1 Path Algorithms
 

@@ -2244,6 +2244,10 @@ mod builtin_procedures {
         let mut registry = ProcedureRegistry::new();
         register_builtins(&mut registry);
 
+        // Traversal algorithms
+        assert!(registry.contains("algo.bfs"));
+        assert!(registry.contains("algo.dfs"));
+
         // Centrality algorithms
         assert!(registry.contains("algo.pageRank"));
         assert!(registry.contains("algo.betweennessCentrality"));
@@ -2263,7 +2267,7 @@ mod builtin_procedures {
         assert!(registry.contains("algo.allShortestPaths"));
         assert!(registry.contains("algo.sssp"));
 
-        assert_eq!(registry.len(), 13);
+        assert_eq!(registry.len(), 15);
     }
 }
 

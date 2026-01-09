@@ -2,6 +2,11 @@
 //!
 //! This module provides built-in procedures that can be called via CALL statements:
 //!
+//! ## Traversal Algorithms
+//!
+//! - `algo.bfs` - Breadth-first search traversal (level by level)
+//! - `algo.dfs` - Depth-first search traversal (branch exploration)
+//!
 //! ## Centrality Algorithms
 //!
 //! - `algo.pageRank` - Computes PageRank scores for graph nodes
@@ -27,10 +32,12 @@
 mod all_shortest_paths;
 mod astar;
 mod betweenness;
+mod bfs;
 mod closeness;
 mod community;
 mod connected;
 mod degree;
+mod dfs;
 mod dijkstra;
 mod eigenvector;
 mod pagerank;
@@ -40,6 +47,7 @@ mod sssp;
 pub use all_shortest_paths::{execute_all_shortest_paths_with_tx, AllShortestPathsProcedure};
 pub use astar::{execute_astar_with_tx, AStarProcedure};
 pub use betweenness::{execute_betweenness_with_tx, BetweennessCentralityProcedure};
+pub use bfs::{execute_bfs_with_tx, BfsProcedure};
 pub use closeness::{execute_closeness_with_tx, ClosenessCentralityProcedure};
 pub use community::{execute_label_propagation_with_tx, LabelPropagationProcedure};
 pub use connected::{
@@ -47,6 +55,7 @@ pub use connected::{
     ConnectedComponentsProcedure, StronglyConnectedComponentsProcedure,
 };
 pub use degree::{execute_degree_with_tx, DegreeCentralityProcedure};
+pub use dfs::{execute_dfs_with_tx, DfsProcedure};
 pub use dijkstra::{execute_dijkstra_with_tx, DijkstraProcedure};
 pub use eigenvector::{execute_eigenvector_with_tx, EigenvectorCentralityProcedure};
 pub use pagerank::{execute_pagerank_with_tx, PageRankProcedure};
@@ -60,6 +69,10 @@ use std::sync::Arc;
 
 /// Registers all built-in procedures with the given registry.
 pub fn register_builtins(registry: &mut ProcedureRegistry) {
+    // Traversal algorithms
+    registry.register(Arc::new(BfsProcedure));
+    registry.register(Arc::new(DfsProcedure));
+
     // Centrality algorithms
     registry.register(Arc::new(PageRankProcedure));
     registry.register(Arc::new(BetweennessCentralityProcedure));
