@@ -486,7 +486,17 @@ fn evaluate_scalar_function(
 ) -> OperatorResult<Value> {
     use crate::plan::logical::ScalarFunction;
 
+    // Helper to convert value to f64
+    fn value_to_f64(v: &Value) -> Option<f64> {
+        match v {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
     match func {
+        // ========== String Functions ==========
         ScalarFunction::Upper => {
             if let Some(Value::String(s)) = args.first() {
                 Ok(Value::String(s.to_uppercase()))
@@ -503,7 +513,7 @@ fn evaluate_scalar_function(
         }
         ScalarFunction::Length => {
             if let Some(Value::String(s)) = args.first() {
-                Ok(Value::Int(s.len() as i64))
+                Ok(Value::Int(s.chars().count() as i64))
             } else {
                 Ok(Value::Null)
             }
@@ -511,6 +521,181 @@ fn evaluate_scalar_function(
         ScalarFunction::Concat => {
             let result: String = args.iter().map(value_to_string).collect();
             Ok(Value::String(result))
+        }
+        ScalarFunction::Substring => {
+            // SUBSTRING(string, start, [length])
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let start = match args.get(1) {
+                Some(Value::Int(i)) => (*i as usize).saturating_sub(1), // SQL is 1-indexed
+                _ => return Ok(Value::Null),
+            };
+            let chars: Vec<char> = s.chars().collect();
+            if start >= chars.len() {
+                return Ok(Value::String(String::new()));
+            }
+            let len = match args.get(2) {
+                Some(Value::Int(l)) => *l as usize,
+                _ => chars.len() - start,
+            };
+            let result: String = chars.iter().skip(start).take(len).collect();
+            Ok(Value::String(result))
+        }
+        ScalarFunction::Trim => {
+            if let Some(Value::String(s)) = args.first() {
+                Ok(Value::String(s.trim().to_string()))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+        ScalarFunction::Ltrim => {
+            if let Some(Value::String(s)) = args.first() {
+                Ok(Value::String(s.trim_start().to_string()))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+        ScalarFunction::Rtrim => {
+            if let Some(Value::String(s)) = args.first() {
+                Ok(Value::String(s.trim_end().to_string()))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+        ScalarFunction::Replace => {
+            // REPLACE(string, from, to)
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let from = match args.get(1) {
+                Some(Value::String(f)) => f,
+                _ => return Ok(Value::Null),
+            };
+            let to = match args.get(2) {
+                Some(Value::String(t)) => t,
+                _ => return Ok(Value::Null),
+            };
+            Ok(Value::String(s.replace(from.as_str(), to.as_str())))
+        }
+        ScalarFunction::Position => {
+            // POSITION(substring IN string) - typically called as strpos(string, substring)
+            // Args: [substring, string] or [string, substring] depending on call style
+            // We'll support both: strpos(string, substring) and position with two args
+            let (haystack, needle) = if args.len() >= 2 {
+                match (&args[0], &args[1]) {
+                    (Value::String(h), Value::String(n)) => (h, n),
+                    _ => return Ok(Value::Null),
+                }
+            } else {
+                return Ok(Value::Null);
+            };
+            match haystack.find(needle.as_str()) {
+                Some(pos) => Ok(Value::Int((pos + 1) as i64)), // 1-indexed
+                None => Ok(Value::Int(0)),
+            }
+        }
+        ScalarFunction::ConcatWs => {
+            // CONCAT_WS(separator, string, ...)
+            let sep = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let parts: Vec<String> = args
+                .iter()
+                .skip(1)
+                .filter(|v| !matches!(v, Value::Null))
+                .map(value_to_string)
+                .collect();
+            Ok(Value::String(parts.join(sep)))
+        }
+        ScalarFunction::SplitPart => {
+            // SPLIT_PART(string, delimiter, position)
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let delim = match args.get(1) {
+                Some(Value::String(d)) => d,
+                _ => return Ok(Value::Null),
+            };
+            let pos = match args.get(2) {
+                Some(Value::Int(p)) => *p,
+                _ => return Ok(Value::Null),
+            };
+            if pos <= 0 {
+                return Ok(Value::String(String::new()));
+            }
+            let parts: Vec<&str> = s.split(delim.as_str()).collect();
+            let idx = (pos - 1) as usize; // 1-indexed to 0-indexed
+            if idx < parts.len() {
+                Ok(Value::String(parts[idx].to_string()))
+            } else {
+                Ok(Value::String(String::new()))
+            }
+        }
+        ScalarFunction::Format => {
+            // FORMAT(template, args...)
+            // Simple %s substitution (PostgreSQL-style format)
+            let template = match args.first() {
+                Some(Value::String(s)) => s.clone(),
+                _ => return Ok(Value::Null),
+            };
+            let mut result = template;
+            for arg in args.iter().skip(1) {
+                if let Some(pos) = result.find("%s") {
+                    let replacement = value_to_string(arg);
+                    result = format!("{}{}{}", &result[..pos], replacement, &result[pos + 2..]);
+                }
+            }
+            Ok(Value::String(result))
+        }
+        ScalarFunction::RegexpMatch => {
+            // REGEXP_MATCH(string, pattern) - returns first match or null
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let pattern = match args.get(1) {
+                Some(Value::String(p)) => p,
+                _ => return Ok(Value::Null),
+            };
+            match regex::Regex::new(pattern) {
+                Ok(re) => {
+                    if let Some(caps) = re.captures(s) {
+                        // Return the full match or first capture group
+                        let matched = caps.get(1).or_else(|| caps.get(0));
+                        match matched {
+                            Some(m) => Ok(Value::String(m.as_str().to_string())),
+                            None => Ok(Value::Null),
+                        }
+                    } else {
+                        Ok(Value::Null)
+                    }
+                }
+                Err(_) => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::RegexpReplace => {
+            // REGEXP_REPLACE(string, pattern, replacement)
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let pattern = match args.get(1) {
+                Some(Value::String(p)) => p,
+                _ => return Ok(Value::Null),
+            };
+            let replacement = match args.get(2) {
+                Some(Value::String(r)) => r,
+                _ => return Ok(Value::Null),
+            };
+            match regex::Regex::new(pattern) {
+                Ok(re) => Ok(Value::String(re.replace_all(s, replacement.as_str()).to_string())),
+                Err(_) => Ok(Value::Null),
+            }
         }
         ScalarFunction::Coalesce => {
             for arg in args {
@@ -520,6 +705,19 @@ fn evaluate_scalar_function(
             }
             Ok(Value::Null)
         }
+        ScalarFunction::NullIf => {
+            // NULLIF(expr1, expr2) - returns NULL if expr1 = expr2, otherwise expr1
+            if args.len() < 2 {
+                return Ok(Value::Null);
+            }
+            if values_equal(&args[0], &args[1]) {
+                Ok(Value::Null)
+            } else {
+                Ok(args[0].clone())
+            }
+        }
+
+        // ========== Numeric Functions ==========
         ScalarFunction::Abs => match args.first() {
             Some(Value::Int(i)) => Ok(Value::Int(i.abs())),
             Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
@@ -535,16 +733,253 @@ fn evaluate_scalar_function(
             Some(Value::Int(i)) => Ok(Value::Int(*i)),
             _ => Ok(Value::Null),
         },
-        ScalarFunction::Round => match args.first() {
-            Some(Value::Float(f)) => Ok(Value::Float(f.round())),
-            Some(Value::Int(i)) => Ok(Value::Int(*i)),
-            _ => Ok(Value::Null),
-        },
+        ScalarFunction::Round => {
+            let val = match args.first() {
+                Some(Value::Float(f)) => *f,
+                Some(Value::Int(i)) => return Ok(Value::Int(*i)),
+                _ => return Ok(Value::Null),
+            };
+            // Optional precision argument
+            let precision = match args.get(1) {
+                Some(Value::Int(p)) => *p,
+                _ => 0,
+            };
+            if precision == 0 {
+                Ok(Value::Float(val.round()))
+            } else {
+                let factor = 10_f64.powi(precision as i32);
+                Ok(Value::Float((val * factor).round() / factor))
+            }
+        }
+        ScalarFunction::Trunc => {
+            let val = match args.first() {
+                Some(Value::Float(f)) => *f,
+                Some(Value::Int(i)) => return Ok(Value::Int(*i)),
+                _ => return Ok(Value::Null),
+            };
+            let precision = match args.get(1) {
+                Some(Value::Int(p)) => *p,
+                _ => 0,
+            };
+            if precision == 0 {
+                Ok(Value::Float(val.trunc()))
+            } else {
+                let factor = 10_f64.powi(precision as i32);
+                Ok(Value::Float((val * factor).trunc() / factor))
+            }
+        }
         ScalarFunction::Sqrt => match args.first() {
-            Some(Value::Float(f)) => Ok(Value::Float(f.sqrt())),
-            Some(Value::Int(i)) => Ok(Value::Float((*i as f64).sqrt())),
+            Some(Value::Float(f)) if *f >= 0.0 => Ok(Value::Float(f.sqrt())),
+            Some(Value::Int(i)) if *i >= 0 => Ok(Value::Float((*i as f64).sqrt())),
             _ => Ok(Value::Null),
         },
+        ScalarFunction::Power => {
+            let base = value_to_f64(args.first().unwrap_or(&Value::Null));
+            let exp = value_to_f64(args.get(1).unwrap_or(&Value::Null));
+            match (base, exp) {
+                (Some(b), Some(e)) => Ok(Value::Float(b.powf(e))),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Exp => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.exp())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Ln => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) if x > 0.0 => Ok(Value::Float(x.ln())),
+                _ => Ok(Value::Null), // ln of non-positive is undefined
+            }
+        }
+        ScalarFunction::Log => {
+            // LOG(base, x) or LOG(x) for log base 10
+            let (base, x) = if args.len() >= 2 {
+                (
+                    value_to_f64(args.first().unwrap_or(&Value::Null)),
+                    value_to_f64(args.get(1).unwrap_or(&Value::Null)),
+                )
+            } else {
+                (Some(10.0), value_to_f64(args.first().unwrap_or(&Value::Null)))
+            };
+            match (base, x) {
+                (Some(b), Some(v)) if b > 0.0 && b != 1.0 && v > 0.0 => Ok(Value::Float(v.log(b))),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Log10 => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) if x > 0.0 => Ok(Value::Float(x.log10())),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Sin => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.sin())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Cos => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.cos())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Tan => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.tan())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Asin => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) if (-1.0..=1.0).contains(&x) => Ok(Value::Float(x.asin())),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Acos => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) if (-1.0..=1.0).contains(&x) => Ok(Value::Float(x.acos())),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Atan => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.atan())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Atan2 => {
+            let y = value_to_f64(args.first().unwrap_or(&Value::Null));
+            let x = value_to_f64(args.get(1).unwrap_or(&Value::Null));
+            match (y, x) {
+                (Some(y_val), Some(x_val)) => Ok(Value::Float(y_val.atan2(x_val))),
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Degrees => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.to_degrees())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Radians => {
+            let val = value_to_f64(args.first().unwrap_or(&Value::Null));
+            match val {
+                Some(x) => Ok(Value::Float(x.to_radians())),
+                None => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::Sign => match args.first() {
+            Some(Value::Int(i)) => Ok(Value::Int(i.signum())),
+            Some(Value::Float(f)) => {
+                if *f > 0.0 {
+                    Ok(Value::Int(1))
+                } else if *f < 0.0 {
+                    Ok(Value::Int(-1))
+                } else {
+                    Ok(Value::Int(0))
+                }
+            }
+            _ => Ok(Value::Null),
+        },
+        ScalarFunction::Pi => Ok(Value::Float(std::f64::consts::PI)),
+        ScalarFunction::Random => Ok(Value::Float(rand_float())),
+
+        // ========== Date/Time Functions ==========
+        ScalarFunction::Now | ScalarFunction::CurrentDate | ScalarFunction::CurrentTime => {
+            use chrono::Utc;
+            let now = Utc::now();
+            Ok(Value::String(now.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string()))
+        }
+        ScalarFunction::Extract | ScalarFunction::DatePart => {
+            // EXTRACT(field FROM datetime) or DATE_PART('field', datetime)
+            let field = match args.first() {
+                Some(Value::String(s)) => s.to_lowercase(),
+                _ => return Ok(Value::Null),
+            };
+            let datetime_str = match args.get(1) {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            extract_date_part(&field, datetime_str)
+        }
+        ScalarFunction::DateTrunc => {
+            // DATE_TRUNC('field', datetime)
+            let field = match args.first() {
+                Some(Value::String(s)) => s.to_lowercase(),
+                _ => return Ok(Value::Null),
+            };
+            let datetime_str = match args.get(1) {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            truncate_date(&field, datetime_str)
+        }
+        ScalarFunction::ToTimestamp => {
+            // TO_TIMESTAMP(string, format) or TO_TIMESTAMP(epoch)
+            if args.len() == 1 {
+                // Epoch seconds
+                let epoch = value_to_f64(args.first().unwrap_or(&Value::Null));
+                if let Some(secs) = epoch {
+                    use chrono::{TimeZone, Utc};
+                    let whole_secs = secs.trunc() as i64;
+                    let nanos = ((secs.fract()) * 1_000_000_000.0) as u32;
+                    if let Some(dt) = Utc.timestamp_opt(whole_secs, nanos).single() {
+                        return Ok(Value::String(dt.format("%Y-%m-%d %H:%M:%S+00").to_string()));
+                    }
+                }
+                Ok(Value::Null)
+            } else {
+                // String with format
+                let s = match args.first() {
+                    Some(Value::String(s)) => s,
+                    _ => return Ok(Value::Null),
+                };
+                let format = match args.get(1) {
+                    Some(Value::String(f)) => f,
+                    _ => return Ok(Value::Null),
+                };
+                parse_datetime_with_format(s, format)
+            }
+        }
+        ScalarFunction::ToDate => {
+            // TO_DATE(string, format)
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let format = match args.get(1) {
+                Some(Value::String(f)) => f,
+                _ => return Ok(Value::Null),
+            };
+            parse_date_with_format(s, format)
+        }
+        ScalarFunction::ToChar => {
+            // TO_CHAR(datetime, format)
+            let datetime_str = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let format = match args.get(1) {
+                Some(Value::String(f)) => f,
+                _ => return Ok(Value::Null),
+            };
+            format_datetime(datetime_str, format)
+        }
+
+        // ========== Vector Functions ==========
         ScalarFunction::VectorDimension => {
             if let Some(Value::Vector(v)) = args.first() {
                 Ok(Value::Int(v.len() as i64))
@@ -560,8 +995,183 @@ fn evaluate_scalar_function(
                 Ok(Value::Null)
             }
         }
-        _ => Ok(Value::Null),
+
+        // Custom functions (not implemented)
+        ScalarFunction::Custom(_) => Ok(Value::Null),
     }
+}
+
+/// Generates a random float between 0.0 and 1.0.
+fn rand_float() -> f64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64,
+    );
+    (hasher.finish() as f64) / (u64::MAX as f64)
+}
+
+/// Extracts a date part from a datetime string.
+fn extract_date_part(field: &str, datetime_str: &str) -> OperatorResult<Value> {
+    use chrono::{Datelike, Timelike};
+
+    // Try parsing common formats
+    let dt = parse_naive_datetime(datetime_str)?;
+
+    let value = match field {
+        "year" => dt.year() as f64,
+        "month" => dt.month() as f64,
+        "day" => dt.day() as f64,
+        "hour" => dt.hour() as f64,
+        "minute" => dt.minute() as f64,
+        "second" => dt.second() as f64,
+        "millisecond" | "milliseconds" => (dt.nanosecond() / 1_000_000) as f64,
+        "microsecond" | "microseconds" => (dt.nanosecond() / 1_000) as f64,
+        "dow" | "dayofweek" => dt.weekday().num_days_from_sunday() as f64,
+        "doy" | "dayofyear" => dt.ordinal() as f64,
+        "week" => dt.iso_week().week() as f64,
+        "quarter" => ((dt.month() - 1) / 3 + 1) as f64,
+        "epoch" => dt.and_utc().timestamp() as f64,
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::Float(value))
+}
+
+/// Truncates a datetime to the specified precision.
+fn truncate_date(field: &str, datetime_str: &str) -> OperatorResult<Value> {
+    use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+
+    let dt = parse_naive_datetime(datetime_str)?;
+
+    let truncated = match field {
+        "year" => NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(dt.year(), 1, 1).unwrap_or_else(|| dt.date()),
+            NaiveTime::from_hms_opt(0, 0, 0).unwrap_or_default(),
+        ),
+        "month" => NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(dt.year(), dt.month(), 1).unwrap_or_else(|| dt.date()),
+            NaiveTime::from_hms_opt(0, 0, 0).unwrap_or_default(),
+        ),
+        "day" => {
+            NaiveDateTime::new(dt.date(), NaiveTime::from_hms_opt(0, 0, 0).unwrap_or_default())
+        }
+        "hour" => NaiveDateTime::new(
+            dt.date(),
+            NaiveTime::from_hms_opt(dt.hour(), 0, 0).unwrap_or_default(),
+        ),
+        "minute" => NaiveDateTime::new(
+            dt.date(),
+            NaiveTime::from_hms_opt(dt.hour(), dt.minute(), 0).unwrap_or_default(),
+        ),
+        "second" => NaiveDateTime::new(
+            dt.date(),
+            NaiveTime::from_hms_opt(dt.hour(), dt.minute(), dt.second()).unwrap_or_default(),
+        ),
+        "week" => {
+            let days_since_monday = dt.weekday().num_days_from_monday();
+            let monday = dt.date() - chrono::Duration::days(days_since_monday as i64);
+            NaiveDateTime::new(monday, NaiveTime::from_hms_opt(0, 0, 0).unwrap_or_default())
+        }
+        "quarter" => {
+            let quarter_month = ((dt.month() - 1) / 3) * 3 + 1;
+            NaiveDateTime::new(
+                NaiveDate::from_ymd_opt(dt.year(), quarter_month, 1).unwrap_or_else(|| dt.date()),
+                NaiveTime::from_hms_opt(0, 0, 0).unwrap_or_default(),
+            )
+        }
+        _ => return Ok(Value::Null),
+    };
+
+    Ok(Value::String(truncated.format("%Y-%m-%d %H:%M:%S").to_string()))
+}
+
+/// Parses a naive datetime from various formats.
+fn parse_naive_datetime(s: &str) -> OperatorResult<chrono::NaiveDateTime> {
+    use chrono::NaiveDateTime;
+
+    // Try common formats
+    let formats = [
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+    ];
+
+    // Strip timezone suffix if present
+    let s = s.trim_end_matches("+00").trim_end_matches('Z');
+
+    for fmt in &formats {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Ok(dt);
+        }
+    }
+
+    // Try date-only and add midnight
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(date.and_hms_opt(0, 0, 0).unwrap_or_default());
+    }
+
+    Err(crate::error::ParseError::Execution(format!("Cannot parse datetime: {}", s)))
+}
+
+/// Parses a datetime string with PostgreSQL-style format.
+fn parse_datetime_with_format(s: &str, pg_format: &str) -> OperatorResult<Value> {
+    let chrono_format = pg_format_to_chrono(pg_format);
+    use chrono::NaiveDateTime;
+
+    match NaiveDateTime::parse_from_str(s, &chrono_format) {
+        Ok(dt) => Ok(Value::String(dt.format("%Y-%m-%d %H:%M:%S").to_string())),
+        Err(_) => Ok(Value::Null),
+    }
+}
+
+/// Parses a date string with PostgreSQL-style format.
+fn parse_date_with_format(s: &str, pg_format: &str) -> OperatorResult<Value> {
+    let chrono_format = pg_format_to_chrono(pg_format);
+    use chrono::NaiveDate;
+
+    match NaiveDate::parse_from_str(s, &chrono_format) {
+        Ok(d) => Ok(Value::String(d.format("%Y-%m-%d").to_string())),
+        Err(_) => Ok(Value::Null),
+    }
+}
+
+/// Formats a datetime with PostgreSQL-style format.
+fn format_datetime(datetime_str: &str, pg_format: &str) -> OperatorResult<Value> {
+    let dt = parse_naive_datetime(datetime_str)?;
+    let chrono_format = pg_format_to_chrono(pg_format);
+    Ok(Value::String(dt.format(&chrono_format).to_string()))
+}
+
+/// Converts PostgreSQL format specifiers to chrono format specifiers.
+fn pg_format_to_chrono(pg_format: &str) -> String {
+    pg_format
+        .replace("YYYY", "%Y")
+        .replace("YY", "%y")
+        .replace("MM", "%m")
+        .replace("DD", "%d")
+        .replace("HH24", "%H")
+        .replace("HH12", "%I")
+        .replace("HH", "%H")
+        .replace("MI", "%M")
+        .replace("SS", "%S")
+        .replace("MS", "%3f")
+        .replace("US", "%6f")
+        .replace("AM", "%p")
+        .replace("PM", "%p")
+        .replace("am", "%P")
+        .replace("pm", "%P")
+        .replace("TZ", "%Z")
+        .replace("Day", "%A")
+        .replace("Mon", "%b")
+        .replace("Month", "%B")
 }
 
 /// Compares two values for equality.
@@ -1086,5 +1696,487 @@ mod tests {
         let row = Row::new(schema, vec![Value::Int(5), Value::Int(5)]);
         let expr = LogicalExpr::column("a").eq(LogicalExpr::column("b"));
         assert_eq!(evaluate_expr(&expr, &row).unwrap(), Value::Bool(true));
+    }
+
+    // ========== String Function Tests ==========
+
+    fn eval_fn(func: crate::plan::logical::ScalarFunction, args: Vec<Value>) -> Value {
+        evaluate_scalar_function(&func, &args).unwrap()
+    }
+
+    #[test]
+    fn test_string_position() {
+        use crate::plan::logical::ScalarFunction;
+
+        // POSITION('lo' IN 'hello') = 4
+        let result =
+            eval_fn(ScalarFunction::Position, vec![Value::from("hello"), Value::from("lo")]);
+        assert_eq!(result, Value::Int(4));
+
+        // Not found returns 0
+        let result =
+            eval_fn(ScalarFunction::Position, vec![Value::from("hello"), Value::from("xyz")]);
+        assert_eq!(result, Value::Int(0));
+
+        // Empty substring returns 1
+        let result = eval_fn(ScalarFunction::Position, vec![Value::from("hello"), Value::from("")]);
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_string_concat_ws() {
+        use crate::plan::logical::ScalarFunction;
+
+        // CONCAT_WS(', ', 'a', 'b', 'c') = 'a, b, c'
+        let result = eval_fn(
+            ScalarFunction::ConcatWs,
+            vec![Value::from(", "), Value::from("a"), Value::from("b"), Value::from("c")],
+        );
+        assert_eq!(result, Value::String("a, b, c".to_string()));
+
+        // NULLs are skipped
+        let result = eval_fn(
+            ScalarFunction::ConcatWs,
+            vec![Value::from("-"), Value::from("a"), Value::Null, Value::from("c")],
+        );
+        assert_eq!(result, Value::String("a-c".to_string()));
+    }
+
+    #[test]
+    fn test_string_split_part() {
+        use crate::plan::logical::ScalarFunction;
+
+        // SPLIT_PART('a,b,c', ',', 2) = 'b'
+        let result = eval_fn(
+            ScalarFunction::SplitPart,
+            vec![Value::from("a,b,c"), Value::from(","), Value::Int(2)],
+        );
+        assert_eq!(result, Value::String("b".to_string()));
+
+        // Position 1
+        let result = eval_fn(
+            ScalarFunction::SplitPart,
+            vec![Value::from("a,b,c"), Value::from(","), Value::Int(1)],
+        );
+        assert_eq!(result, Value::String("a".to_string()));
+
+        // Position beyond parts returns empty string
+        let result = eval_fn(
+            ScalarFunction::SplitPart,
+            vec![Value::from("a,b,c"), Value::from(","), Value::Int(5)],
+        );
+        assert_eq!(result, Value::String(String::new()));
+    }
+
+    #[test]
+    fn test_string_format() {
+        use crate::plan::logical::ScalarFunction;
+
+        // FORMAT('Hello %s, you have %s messages', 'Alice', 3)
+        let result = eval_fn(
+            ScalarFunction::Format,
+            vec![
+                Value::from("Hello %s, you have %s messages"),
+                Value::from("Alice"),
+                Value::Int(3),
+            ],
+        );
+        assert_eq!(result, Value::String("Hello Alice, you have 3 messages".to_string()));
+    }
+
+    #[test]
+    fn test_string_replace() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(
+            ScalarFunction::Replace,
+            vec![Value::from("hello world"), Value::from("world"), Value::from("there")],
+        );
+        assert_eq!(result, Value::String("hello there".to_string()));
+    }
+
+    #[test]
+    fn test_string_trim_functions() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(ScalarFunction::Trim, vec![Value::from("  hello  ")]);
+        assert_eq!(result, Value::String("hello".to_string()));
+
+        let result = eval_fn(ScalarFunction::Ltrim, vec![Value::from("  hello  ")]);
+        assert_eq!(result, Value::String("hello  ".to_string()));
+
+        let result = eval_fn(ScalarFunction::Rtrim, vec![Value::from("  hello  ")]);
+        assert_eq!(result, Value::String("  hello".to_string()));
+    }
+
+    #[test]
+    fn test_regexp_match() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Match with capture group
+        let result = eval_fn(
+            ScalarFunction::RegexpMatch,
+            vec![Value::from("hello123world"), Value::from(r"(\d+)")],
+        );
+        assert_eq!(result, Value::String("123".to_string()));
+
+        // No match returns NULL
+        let result =
+            eval_fn(ScalarFunction::RegexpMatch, vec![Value::from("hello"), Value::from(r"\d+")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_regexp_replace() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(
+            ScalarFunction::RegexpReplace,
+            vec![Value::from("hello 123 world 456"), Value::from(r"\d+"), Value::from("X")],
+        );
+        assert_eq!(result, Value::String("hello X world X".to_string()));
+    }
+
+    // ========== Numeric Function Tests ==========
+
+    #[test]
+    fn test_numeric_exp() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(ScalarFunction::Exp, vec![Value::Float(1.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - std::f64::consts::E).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // e^0 = 1
+        let result = eval_fn(ScalarFunction::Exp, vec![Value::Int(0)]);
+        assert_eq!(result, Value::Float(1.0));
+    }
+
+    #[test]
+    fn test_numeric_ln() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ln(e) = 1
+        let result = eval_fn(ScalarFunction::Ln, vec![Value::Float(std::f64::consts::E)]);
+        if let Value::Float(f) = result {
+            assert!((f - 1.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // ln(1) = 0
+        let result = eval_fn(ScalarFunction::Ln, vec![Value::Int(1)]);
+        assert_eq!(result, Value::Float(0.0));
+
+        // ln(0) = NULL (undefined)
+        let result = eval_fn(ScalarFunction::Ln, vec![Value::Float(0.0)]);
+        assert_eq!(result, Value::Null);
+
+        // ln(-1) = NULL (undefined)
+        let result = eval_fn(ScalarFunction::Ln, vec![Value::Float(-1.0)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_numeric_log() {
+        use crate::plan::logical::ScalarFunction;
+
+        // LOG(10, 100) = 2
+        let result = eval_fn(ScalarFunction::Log, vec![Value::Int(10), Value::Int(100)]);
+        if let Value::Float(f) = result {
+            assert!((f - 2.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // LOG(2, 8) = 3
+        let result = eval_fn(ScalarFunction::Log, vec![Value::Int(2), Value::Int(8)]);
+        if let Value::Float(f) = result {
+            assert!((f - 3.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_numeric_log10() {
+        use crate::plan::logical::ScalarFunction;
+
+        // log10(100) = 2
+        let result = eval_fn(ScalarFunction::Log10, vec![Value::Int(100)]);
+        if let Value::Float(f) = result {
+            assert!((f - 2.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_numeric_trig() {
+        use crate::plan::logical::ScalarFunction;
+        use std::f64::consts::PI;
+
+        // sin(0) = 0
+        let result = eval_fn(ScalarFunction::Sin, vec![Value::Float(0.0)]);
+        if let Value::Float(f) = result {
+            assert!(f.abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // cos(0) = 1
+        let result = eval_fn(ScalarFunction::Cos, vec![Value::Float(0.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - 1.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // tan(0) = 0
+        let result = eval_fn(ScalarFunction::Tan, vec![Value::Float(0.0)]);
+        if let Value::Float(f) = result {
+            assert!(f.abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // sin(PI/2) ≈ 1
+        let result = eval_fn(ScalarFunction::Sin, vec![Value::Float(PI / 2.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - 1.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_numeric_inverse_trig() {
+        use crate::plan::logical::ScalarFunction;
+        use std::f64::consts::PI;
+
+        // asin(1) = PI/2
+        let result = eval_fn(ScalarFunction::Asin, vec![Value::Float(1.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - PI / 2.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // acos(0) = PI/2
+        let result = eval_fn(ScalarFunction::Acos, vec![Value::Float(0.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - PI / 2.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // atan(0) = 0
+        let result = eval_fn(ScalarFunction::Atan, vec![Value::Float(0.0)]);
+        assert_eq!(result, Value::Float(0.0));
+
+        // atan2(1, 1) = PI/4
+        let result = eval_fn(ScalarFunction::Atan2, vec![Value::Float(1.0), Value::Float(1.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - PI / 4.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // asin(2) = NULL (out of domain)
+        let result = eval_fn(ScalarFunction::Asin, vec![Value::Float(2.0)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_numeric_degrees_radians() {
+        use crate::plan::logical::ScalarFunction;
+        use std::f64::consts::PI;
+
+        // degrees(PI) = 180
+        let result = eval_fn(ScalarFunction::Degrees, vec![Value::Float(PI)]);
+        if let Value::Float(f) = result {
+            assert!((f - 180.0).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+
+        // radians(180) = PI
+        let result = eval_fn(ScalarFunction::Radians, vec![Value::Float(180.0)]);
+        if let Value::Float(f) = result {
+            assert!((f - PI).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_numeric_sign() {
+        use crate::plan::logical::ScalarFunction;
+
+        assert_eq!(eval_fn(ScalarFunction::Sign, vec![Value::Int(42)]), Value::Int(1));
+        assert_eq!(eval_fn(ScalarFunction::Sign, vec![Value::Int(-42)]), Value::Int(-1));
+        assert_eq!(eval_fn(ScalarFunction::Sign, vec![Value::Int(0)]), Value::Int(0));
+        assert_eq!(eval_fn(ScalarFunction::Sign, vec![Value::Float(3.14)]), Value::Int(1));
+        assert_eq!(eval_fn(ScalarFunction::Sign, vec![Value::Float(-3.14)]), Value::Int(-1));
+    }
+
+    #[test]
+    fn test_numeric_pi() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(ScalarFunction::Pi, vec![]);
+        assert_eq!(result, Value::Float(std::f64::consts::PI));
+    }
+
+    #[test]
+    fn test_numeric_trunc() {
+        use crate::plan::logical::ScalarFunction;
+
+        // TRUNC(3.789) = 3
+        let result = eval_fn(ScalarFunction::Trunc, vec![Value::Float(3.789)]);
+        assert_eq!(result, Value::Float(3.0));
+
+        // TRUNC(3.789, 2) = 3.78
+        let result = eval_fn(ScalarFunction::Trunc, vec![Value::Float(3.789), Value::Int(2)]);
+        if let Value::Float(f) = result {
+            assert!((f - 3.78).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    #[test]
+    fn test_numeric_round_with_precision() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ROUND(3.14159, 2) = 3.14
+        let result = eval_fn(ScalarFunction::Round, vec![Value::Float(3.14159), Value::Int(2)]);
+        if let Value::Float(f) = result {
+            assert!((f - 3.14).abs() < 0.0001);
+        } else {
+            panic!("Expected float");
+        }
+    }
+
+    // ========== Date/Time Function Tests ==========
+
+    #[test]
+    fn test_date_part() {
+        use crate::plan::logical::ScalarFunction;
+
+        let ts = "2024-01-15 10:30:45";
+
+        // year
+        let result = eval_fn(ScalarFunction::DatePart, vec![Value::from("year"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(2024.0));
+
+        // month
+        let result = eval_fn(ScalarFunction::DatePart, vec![Value::from("month"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(1.0));
+
+        // day
+        let result = eval_fn(ScalarFunction::DatePart, vec![Value::from("day"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(15.0));
+
+        // hour
+        let result = eval_fn(ScalarFunction::DatePart, vec![Value::from("hour"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(10.0));
+
+        // minute
+        let result =
+            eval_fn(ScalarFunction::DatePart, vec![Value::from("minute"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(30.0));
+
+        // second
+        let result =
+            eval_fn(ScalarFunction::DatePart, vec![Value::from("second"), Value::from(ts)]);
+        assert_eq!(result, Value::Float(45.0));
+    }
+
+    #[test]
+    fn test_date_trunc() {
+        use crate::plan::logical::ScalarFunction;
+
+        let ts = "2024-01-15 10:30:45";
+
+        // trunc to year
+        let result = eval_fn(ScalarFunction::DateTrunc, vec![Value::from("year"), Value::from(ts)]);
+        assert_eq!(result, Value::String("2024-01-01 00:00:00".to_string()));
+
+        // trunc to month
+        let result =
+            eval_fn(ScalarFunction::DateTrunc, vec![Value::from("month"), Value::from(ts)]);
+        assert_eq!(result, Value::String("2024-01-01 00:00:00".to_string()));
+
+        // trunc to day
+        let result = eval_fn(ScalarFunction::DateTrunc, vec![Value::from("day"), Value::from(ts)]);
+        assert_eq!(result, Value::String("2024-01-15 00:00:00".to_string()));
+
+        // trunc to hour
+        let result = eval_fn(ScalarFunction::DateTrunc, vec![Value::from("hour"), Value::from(ts)]);
+        assert_eq!(result, Value::String("2024-01-15 10:00:00".to_string()));
+    }
+
+    #[test]
+    fn test_to_timestamp_epoch() {
+        use crate::plan::logical::ScalarFunction;
+
+        // TO_TIMESTAMP(0) = 1970-01-01 00:00:00
+        let result = eval_fn(ScalarFunction::ToTimestamp, vec![Value::Int(0)]);
+        assert_eq!(result, Value::String("1970-01-01 00:00:00+00".to_string()));
+    }
+
+    #[test]
+    fn test_to_date() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(
+            ScalarFunction::ToDate,
+            vec![Value::from("2024-01-15"), Value::from("YYYY-MM-DD")],
+        );
+        assert_eq!(result, Value::String("2024-01-15".to_string()));
+    }
+
+    #[test]
+    fn test_to_char() {
+        use crate::plan::logical::ScalarFunction;
+
+        let result = eval_fn(
+            ScalarFunction::ToChar,
+            vec![Value::from("2024-01-15 10:30:45"), Value::from("YYYY-MM-DD")],
+        );
+        assert_eq!(result, Value::String("2024-01-15".to_string()));
+    }
+
+    #[test]
+    fn test_nullif() {
+        use crate::plan::logical::ScalarFunction;
+
+        // NULLIF(5, 5) = NULL
+        let result = eval_fn(ScalarFunction::NullIf, vec![Value::Int(5), Value::Int(5)]);
+        assert_eq!(result, Value::Null);
+
+        // NULLIF(5, 3) = 5
+        let result = eval_fn(ScalarFunction::NullIf, vec![Value::Int(5), Value::Int(3)]);
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_substring() {
+        use crate::plan::logical::ScalarFunction;
+
+        // SUBSTRING('hello', 2, 3) = 'ell'
+        let result = eval_fn(
+            ScalarFunction::Substring,
+            vec![Value::from("hello"), Value::Int(2), Value::Int(3)],
+        );
+        assert_eq!(result, Value::String("ell".to_string()));
+
+        // SUBSTRING('hello', 2) = 'ello' (to end)
+        let result = eval_fn(ScalarFunction::Substring, vec![Value::from("hello"), Value::Int(2)]);
+        assert_eq!(result, Value::String("ello".to_string()));
     }
 }

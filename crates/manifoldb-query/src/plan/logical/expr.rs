@@ -664,6 +664,24 @@ pub enum ScalarFunction {
     Substring,
     /// TRIM(string).
     Trim,
+    /// LTRIM(string).
+    Ltrim,
+    /// RTRIM(string).
+    Rtrim,
+    /// REPLACE(string, from, to).
+    Replace,
+    /// POSITION(substring IN string).
+    Position,
+    /// CONCAT_WS(separator, string, ...).
+    ConcatWs,
+    /// SPLIT_PART(string, delimiter, position).
+    SplitPart,
+    /// FORMAT(template, args...).
+    Format,
+    /// REGEXP_MATCH(string, pattern).
+    RegexpMatch,
+    /// REGEXP_REPLACE(string, pattern, replacement).
+    RegexpReplace,
     /// COALESCE(expr, ...).
     Coalesce,
     /// NULLIF(expr1, expr2).
@@ -678,10 +696,44 @@ pub enum ScalarFunction {
     Floor,
     /// ROUND(number, precision).
     Round,
+    /// TRUNC(number, precision).
+    Trunc,
     /// SQRT(number).
     Sqrt,
     /// POWER(base, exponent).
     Power,
+    /// EXP(number) - e^x.
+    Exp,
+    /// LN(number) - natural logarithm.
+    Ln,
+    /// LOG(base, number) - logarithm with base.
+    Log,
+    /// LOG10(number) - base-10 logarithm.
+    Log10,
+    /// SIN(number).
+    Sin,
+    /// COS(number).
+    Cos,
+    /// TAN(number).
+    Tan,
+    /// ASIN(number).
+    Asin,
+    /// ACOS(number).
+    Acos,
+    /// ATAN(number).
+    Atan,
+    /// ATAN2(y, x).
+    Atan2,
+    /// DEGREES(radians).
+    Degrees,
+    /// RADIANS(degrees).
+    Radians,
+    /// SIGN(number).
+    Sign,
+    /// PI().
+    Pi,
+    /// RANDOM().
+    Random,
 
     // Date/time functions
     /// `NOW()`.
@@ -692,6 +744,16 @@ pub enum ScalarFunction {
     CurrentTime,
     /// `EXTRACT(field FROM datetime)`.
     Extract,
+    /// `DATE_PART(field, datetime)`.
+    DatePart,
+    /// `DATE_TRUNC(field, datetime)`.
+    DateTrunc,
+    /// `TO_TIMESTAMP(string, format)`.
+    ToTimestamp,
+    /// `TO_DATE(string, format)`.
+    ToDate,
+    /// `TO_CHAR(datetime, format)`.
+    ToChar,
 
     // Vector functions
     /// `VECTOR_DIMENSION(vector)`.
@@ -707,26 +769,62 @@ pub enum ScalarFunction {
 impl fmt::Display for ScalarFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
+            // String functions
             Self::Upper => "UPPER",
             Self::Lower => "LOWER",
             Self::Length => "LENGTH",
             Self::Concat => "CONCAT",
             Self::Substring => "SUBSTRING",
             Self::Trim => "TRIM",
+            Self::Ltrim => "LTRIM",
+            Self::Rtrim => "RTRIM",
+            Self::Replace => "REPLACE",
+            Self::Position => "POSITION",
+            Self::ConcatWs => "CONCAT_WS",
+            Self::SplitPart => "SPLIT_PART",
+            Self::Format => "FORMAT",
+            Self::RegexpMatch => "REGEXP_MATCH",
+            Self::RegexpReplace => "REGEXP_REPLACE",
             Self::Coalesce => "COALESCE",
             Self::NullIf => "NULLIF",
+            // Numeric functions
             Self::Abs => "ABS",
             Self::Ceil => "CEIL",
             Self::Floor => "FLOOR",
             Self::Round => "ROUND",
+            Self::Trunc => "TRUNC",
             Self::Sqrt => "SQRT",
             Self::Power => "POWER",
+            Self::Exp => "EXP",
+            Self::Ln => "LN",
+            Self::Log => "LOG",
+            Self::Log10 => "LOG10",
+            Self::Sin => "SIN",
+            Self::Cos => "COS",
+            Self::Tan => "TAN",
+            Self::Asin => "ASIN",
+            Self::Acos => "ACOS",
+            Self::Atan => "ATAN",
+            Self::Atan2 => "ATAN2",
+            Self::Degrees => "DEGREES",
+            Self::Radians => "RADIANS",
+            Self::Sign => "SIGN",
+            Self::Pi => "PI",
+            Self::Random => "RANDOM",
+            // Date/time functions
             Self::Now => "NOW",
             Self::CurrentDate => "CURRENT_DATE",
             Self::CurrentTime => "CURRENT_TIME",
             Self::Extract => "EXTRACT",
+            Self::DatePart => "DATE_PART",
+            Self::DateTrunc => "DATE_TRUNC",
+            Self::ToTimestamp => "TO_TIMESTAMP",
+            Self::ToDate => "TO_DATE",
+            Self::ToChar => "TO_CHAR",
+            // Vector functions
             Self::VectorDimension => "VECTOR_DIMENSION",
             Self::VectorNorm => "VECTOR_NORM",
+            // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };
         write!(f, "{name}")
