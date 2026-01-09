@@ -224,6 +224,27 @@ pub enum LogicalExpr {
         /// List of projection items.
         items: Vec<LogicalMapProjectionItem>,
     },
+
+    /// Cypher pattern comprehension expression.
+    ///
+    /// Pattern comprehensions allow inline pattern matching within expressions,
+    /// producing a list of values for each match of the pattern.
+    ///
+    /// Syntax: `[(pattern) WHERE predicate | expression]`
+    ///
+    /// Examples:
+    /// - Get names of friends: `[(p)-[:FRIEND]->(f) | f.name]`
+    /// - With filter: `[(p)-[:KNOWS]->(other) WHERE other.age > 30 | other.name]`
+    /// - Extract IDs: `[(n)-[:HAS]->(item) | id(item)]`
+    PatternComprehension {
+        /// The expand nodes representing the graph pattern steps.
+        /// For each match of the pattern, we bind variables and evaluate the projection.
+        expand_steps: Vec<super::graph::ExpandNode>,
+        /// Optional WHERE filter predicate applied after pattern matching.
+        filter_predicate: Option<Box<LogicalExpr>>,
+        /// The projection expression evaluated for each pattern match.
+        projection_expr: Box<LogicalExpr>,
+    },
 }
 
 /// An item in a logical map projection.
@@ -1148,6 +1169,34 @@ impl fmt::Display for LogicalExpr {
                     }
                 }
                 write!(f, "}}")
+            }
+            Self::PatternComprehension { expand_steps, filter_predicate, projection_expr } => {
+                write!(f, "[(")?;
+                for (i, step) in expand_steps.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ")")?;
+                    }
+                    write!(f, "{}", step.src_var)?;
+                    write!(f, "-[")?;
+                    if let Some(ref edge_var) = step.edge_var {
+                        write!(f, "{edge_var}")?;
+                    }
+                    for (j, et) in step.edge_types.iter().enumerate() {
+                        if j == 0 {
+                            write!(f, ":")?;
+                        } else {
+                            write!(f, "|")?;
+                        }
+                        write!(f, "{et}")?;
+                    }
+                    write!(f, "]{}", step.direction)?;
+                    write!(f, "({}", step.dst_var)?;
+                }
+                write!(f, ")")?;
+                if let Some(filter) = filter_predicate {
+                    write!(f, " WHERE {filter}")?;
+                }
+                write!(f, " | {projection_expr}]")
             }
         }
     }

@@ -626,6 +626,26 @@ pub enum Expr {
         /// List of projection items.
         items: Vec<MapProjectionItem>,
     },
+
+    /// Cypher pattern comprehension expression.
+    ///
+    /// Pattern comprehensions allow inline pattern matching within expressions,
+    /// producing a list of values for each match of the pattern.
+    ///
+    /// Syntax: `[(pattern) WHERE predicate | expression]`
+    ///
+    /// Examples:
+    /// - Get names of friends: `[(p)-[:FRIEND]->(f) | f.name]`
+    /// - With filter: `[(p)-[:KNOWS]->(other) WHERE other.age > 30 | other.name]`
+    /// - Extract IDs: `[(n)-[:HAS]->(item) | id(item)]`
+    PatternComprehension {
+        /// The graph pattern to match (within parentheses).
+        pattern: Box<super::pattern::PathPattern>,
+        /// Optional WHERE filter predicate.
+        filter_predicate: Option<Box<Expr>>,
+        /// The projection expression (after `|`). This is evaluated for each pattern match.
+        projection_expr: Box<Expr>,
+    },
 }
 
 /// An item in a map projection.

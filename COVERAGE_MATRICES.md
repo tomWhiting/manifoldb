@@ -704,7 +704,7 @@ These feature groups can be implemented independently:
 | List comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | List literal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | Map projection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| Pattern comprehension | | | | | | | Not implemented |
+| Pattern comprehension | ✓ | ✓ | ✓ | | | ✓ | Parsed, logical plan complete (Jan 2026)† |
 | Parameters ($param) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 
 ## 2.8 Scalar Functions

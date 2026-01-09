@@ -979,6 +979,66 @@ impl PlanBuilder {
         vars
     }
 
+    /// Converts a path pattern to a list of expand nodes.
+    ///
+    /// This is used for pattern comprehensions where we need the expand steps
+    /// without building a full logical plan tree.
+    fn path_pattern_to_expand_nodes(&mut self, path: &PathPattern) -> PlanResult<Vec<ExpandNode>> {
+        let mut expand_nodes = Vec::new();
+
+        // Start with the starting node
+        let start_var = path
+            .start
+            .variable
+            .as_ref()
+            .map(|v| v.name.clone())
+            .unwrap_or_else(|| self.next_alias("node"));
+
+        // Build expand nodes for each step
+        let mut current_var = start_var;
+
+        for (edge, node) in &path.steps {
+            let dst_var = node
+                .variable
+                .as_ref()
+                .map(|v| v.name.clone())
+                .unwrap_or_else(|| self.next_alias("node"));
+
+            let direction = match edge.direction {
+                ast::EdgeDirection::Right => ExpandDirection::Outgoing,
+                ast::EdgeDirection::Left => ExpandDirection::Incoming,
+                ast::EdgeDirection::Undirected => ExpandDirection::Both,
+            };
+
+            let mut expand = ExpandNode::new(&current_var, &dst_var, direction);
+
+            // Add edge types
+            if !edge.edge_types.is_empty() {
+                expand = expand
+                    .with_edge_types(edge.edge_types.iter().map(|t| t.name.clone()).collect());
+            }
+
+            // Add edge variable
+            if let Some(var) = &edge.variable {
+                expand = expand.with_edge_var(&var.name);
+            }
+
+            // Add variable length
+            expand = expand.with_length(ExpandLength::from_ast(&edge.length));
+
+            // Add node labels
+            if !node.labels.is_empty() {
+                expand =
+                    expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
+            }
+
+            expand_nodes.push(expand);
+            current_var = dst_var;
+        }
+
+        Ok(expand_nodes)
+    }
+
     /// Builds an INSERT plan.
     fn build_insert(&mut self, insert: &InsertStatement) -> PlanResult<LogicalPlan> {
         let table =
@@ -1910,6 +1970,22 @@ impl PlanBuilder {
                 Ok(LogicalExpr::MapProjection {
                     source: Box::new(source_expr),
                     items: logical_items,
+                })
+            }
+
+            Expr::PatternComprehension { pattern, filter_predicate, projection_expr } => {
+                // Convert PathPattern to ExpandNode steps
+                let expand_steps = self.path_pattern_to_expand_nodes(pattern)?;
+                let filter = if let Some(f) = filter_predicate {
+                    Some(Box::new(self.build_expr(f)?))
+                } else {
+                    None
+                };
+                let projection = self.build_expr(projection_expr)?;
+                Ok(LogicalExpr::PatternComprehension {
+                    expand_steps,
+                    filter_predicate: filter,
+                    projection_expr: Box::new(projection),
                 })
             }
         }

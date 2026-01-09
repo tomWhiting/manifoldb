@@ -2169,10 +2169,11 @@ impl ExtendedParser {
         Ok(Self::parse_property_value(input))
     }
 
-    /// Parses a list literal or list comprehension.
+    /// Parses a list literal, list comprehension, or pattern comprehension.
     ///
     /// List literal: `[expr1, expr2, ...]`
     /// List comprehension: `[x IN list WHERE predicate | expression]`
+    /// Pattern comprehension: `[(pattern) WHERE predicate | expression]`
     fn parse_list_or_comprehension(input: &str) -> ParseResult<Expr> {
         let input = input.trim();
 
@@ -2189,6 +2190,12 @@ impl ExtendedParser {
         if inner.is_empty() {
             // Empty list literal
             return Ok(Expr::ListLiteral(vec![]));
+        }
+
+        // Check if this is a pattern comprehension: starts with (
+        // Pattern comprehension syntax: [(pattern) WHERE predicate | expression]
+        if inner.starts_with('(') {
+            return Self::parse_pattern_comprehension(inner);
         }
 
         // Check if this is a list comprehension: look for " IN " at top level
@@ -2333,6 +2340,78 @@ impl ExtendedParser {
         }
 
         Ok(Expr::ListLiteral(elements))
+    }
+
+    /// Parses a pattern comprehension expression.
+    ///
+    /// Syntax: `(pattern) WHERE predicate | expression`
+    ///         or `(pattern) | expression`
+    ///
+    /// Examples:
+    /// - `(p)-[:FRIEND]->(f) | f.name`
+    /// - `(p)-[:KNOWS]->(other) WHERE other.age > 30 | other.name`
+    /// - `(n)-[:HAS]->(item) | id(item)`
+    fn parse_pattern_comprehension(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+
+        // Find the pipe at top level - it separates pattern from projection expression
+        let pipe_pos = Self::find_top_level_operator(input, "|").ok_or_else(|| {
+            ParseError::InvalidPattern(
+                "pattern comprehension must have a '|' followed by projection expression"
+                    .to_string(),
+            )
+        })?;
+
+        // Split into pattern part and projection part
+        let pattern_part = input[..pipe_pos].trim();
+        let projection_part = input[pipe_pos + 1..].trim();
+
+        // Check for WHERE clause in the pattern part
+        let (pattern_str, filter_str) =
+            if let Some(where_pos) = Self::find_top_level_keyword(pattern_part, " WHERE ") {
+                let p = pattern_part[..where_pos].trim();
+                let f = pattern_part[where_pos + 7..].trim();
+                (p, Some(f))
+            } else {
+                (pattern_part, None)
+            };
+
+        // Parse the graph pattern
+        // The pattern starts with '(' which indicates a node pattern
+        let (path_pattern, remaining) = Self::parse_path_pattern(pattern_str)?;
+
+        // Make sure we consumed the entire pattern
+        if !remaining.trim().is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "unexpected content after pattern: {}",
+                remaining
+            )));
+        }
+
+        // Parse the filter predicate if present
+        let filter_predicate = if let Some(filter) = filter_str {
+            if filter.is_empty() {
+                None
+            } else {
+                Some(Box::new(Self::parse_simple_expression(filter)?))
+            }
+        } else {
+            None
+        };
+
+        // Parse the projection expression
+        if projection_part.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "pattern comprehension must have a projection expression after '|'".to_string(),
+            ));
+        }
+        let projection_expr = Box::new(Self::parse_simple_expression(projection_part)?);
+
+        Ok(Expr::PatternComprehension {
+            pattern: Box::new(path_pattern),
+            filter_predicate,
+            projection_expr,
+        })
     }
 
     /// Checks if a string is a simple identifier (no dots, operators, or special characters).
@@ -5675,5 +5754,173 @@ mod tests {
         assert!(!ExtendedParser::is_simple_identifier(""));
         assert!(!ExtendedParser::is_simple_identifier("123abc"));
         assert!(!ExtendedParser::is_simple_identifier("a + b"));
+    }
+
+    // ========== Pattern Comprehension Tests ==========
+
+    #[test]
+    fn parse_pattern_comprehension_simple() {
+        // [(p)-[:FRIEND]->(f) | f.name]
+        let result =
+            ExtendedParser::parse_list_or_comprehension("[(p)-[:FRIEND]->(f) | f.name]").unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, filter_predicate, projection_expr } => {
+                // Pattern should have a start node and one step
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+                assert_eq!(pattern.steps.len(), 1);
+
+                // Step should have FRIEND edge type
+                let (edge, node) = &pattern.steps[0];
+                assert!(!edge.edge_types.is_empty());
+                assert_eq!(edge.edge_types[0].name, "FRIEND");
+                assert!(node.variable.is_some());
+                assert_eq!(node.variable.as_ref().unwrap().name, "f");
+
+                // No filter predicate
+                assert!(filter_predicate.is_none());
+
+                // Projection should be f.name
+                match projection_expr.as_ref() {
+                    Expr::Column(qn) => assert_eq!(qn.to_string(), "f.name"),
+                    _ => panic!("Expected Column for projection"),
+                }
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_with_filter() {
+        // [(p)-[:KNOWS]->(other) WHERE other.age > 30 | other.name]
+        let result = ExtendedParser::parse_list_or_comprehension(
+            "[(p)-[:KNOWS]->(other) WHERE other.age > 30 | other.name]",
+        )
+        .unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, filter_predicate, projection_expr } => {
+                // Pattern start
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+
+                // Edge type
+                let (edge, node) = &pattern.steps[0];
+                assert_eq!(edge.edge_types[0].name, "KNOWS");
+                assert_eq!(node.variable.as_ref().unwrap().name, "other");
+
+                // Filter predicate should be present
+                assert!(filter_predicate.is_some());
+                // The filter is a binary comparison: other.age > 30
+
+                // Projection
+                match projection_expr.as_ref() {
+                    Expr::Column(qn) => assert_eq!(qn.to_string(), "other.name"),
+                    _ => panic!("Expected Column for projection"),
+                }
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_multi_hop() {
+        // [(a)-[:KNOWS]->(b)-[:FRIEND]->(c) | c.name]
+        let result = ExtendedParser::parse_list_or_comprehension(
+            "[(a)-[:KNOWS]->(b)-[:FRIEND]->(c) | c.name]",
+        )
+        .unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, filter_predicate, projection_expr: _ } => {
+                // Pattern should have two steps
+                assert_eq!(pattern.steps.len(), 2);
+
+                // First step: KNOWS
+                let (edge1, node1) = &pattern.steps[0];
+                assert_eq!(edge1.edge_types[0].name, "KNOWS");
+                assert_eq!(node1.variable.as_ref().unwrap().name, "b");
+
+                // Second step: FRIEND
+                let (edge2, node2) = &pattern.steps[1];
+                assert_eq!(edge2.edge_types[0].name, "FRIEND");
+                assert_eq!(node2.variable.as_ref().unwrap().name, "c");
+
+                // No filter
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_with_labels() {
+        // [(p:Person)-[:FRIEND]->(f:Person) | f.name]
+        let result = ExtendedParser::parse_list_or_comprehension(
+            "[(p:Person)-[:FRIEND]->(f:Person) | f.name]",
+        )
+        .unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, .. } => {
+                // Start node has Person label
+                assert!(!pattern.start.labels.is_empty());
+                assert_eq!(pattern.start.labels[0].name, "Person");
+
+                // End node has Person label
+                let (_, node) = &pattern.steps[0];
+                assert!(!node.labels.is_empty());
+                assert_eq!(node.labels[0].name, "Person");
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_incoming() {
+        // [(p)<-[:FOLLOWS]-(follower) | follower.name]
+        let result = ExtendedParser::parse_list_or_comprehension(
+            "[(p)<-[:FOLLOWS]-(follower) | follower.name]",
+        )
+        .unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, .. } => {
+                // Edge direction should be incoming (Left)
+                let (edge, _) = &pattern.steps[0];
+                assert_eq!(edge.direction, crate::ast::EdgeDirection::Left);
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_undirected() {
+        // [(p)-[:KNOWS]-(friend) | friend.name]
+        let result =
+            ExtendedParser::parse_list_or_comprehension("[(p)-[:KNOWS]-(friend) | friend.name]")
+                .unwrap();
+        match result {
+            Expr::PatternComprehension { pattern, .. } => {
+                // Edge direction should be undirected
+                let (edge, _) = &pattern.steps[0];
+                assert_eq!(edge.direction, crate::ast::EdgeDirection::Undirected);
+            }
+            _ => panic!("Expected PatternComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_error_no_pipe() {
+        // [(p)-[:FRIEND]->(f)] - missing projection
+        let result = ExtendedParser::parse_list_or_comprehension("[(p)-[:FRIEND]->(f)]");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("pattern comprehension must have a '|'"));
+    }
+
+    #[test]
+    fn parse_pattern_comprehension_error_empty_projection() {
+        // [(p)-[:FRIEND]->(f) | ] - empty projection
+        let result = ExtendedParser::parse_list_or_comprehension("[(p)-[:FRIEND]->(f) | ]");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("projection expression"));
     }
 }
