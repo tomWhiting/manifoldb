@@ -14,6 +14,7 @@ use super::operators::{
     filter::FilterOp,
     graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
     graph_create::GraphCreateOp,
+    graph_remove::GraphRemoveOp,
     graph_set::GraphSetOp,
     join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp},
     limit::LimitOp,
@@ -402,6 +403,12 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
             Ok(Box::new(GraphCreateOp::new((**node).clone(), input_op)))
         }
 
+        // Graph REMOVE operations
+        PhysicalPlan::GraphRemove { node, input } => {
+            let input_op = build_operator_tree(input)?;
+            Ok(Box::new(GraphRemoveOp::new((**node).clone(), input_op)))
+        }
+
         // Graph SET operations
         PhysicalPlan::GraphSet { node, input } => {
             let input_op = build_operator_tree(input)?;
@@ -412,7 +419,6 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         // TODO: Implement GraphMergeOp, GraphDeleteOp, etc.
         PhysicalPlan::GraphMerge { .. }
         | PhysicalPlan::GraphDelete { .. }
-        | PhysicalPlan::GraphRemove { .. }
         | PhysicalPlan::GraphForeach { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
