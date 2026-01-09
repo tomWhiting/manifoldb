@@ -120,7 +120,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] `GraphRemove` - REMOVE property/label ✅ Jan 2026
   - [x] `GraphDelete` - DELETE nodes/edges ✅ Jan 2026
   - [x] `DetachDelete` - DETACH DELETE ✅ Jan 2026 (part of GraphDelete)
-  - [ ] `Foreach` - Cypher FOREACH iteration
+  - [x] `Foreach` - Cypher FOREACH iteration ✅ Jan 2026
 - [ ] Add type system for plan nodes (input/output schemas)
 - [ ] Implement plan validation and sanity checks
 
@@ -164,10 +164,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] TABLESAMPLE clause
   - [ ] LATERAL subqueries
 
-- [ ] **DDL Extensions**
-  - [ ] ALTER TABLE (ADD/DROP/ALTER COLUMN)
+- [x] **DDL Extensions** (partial)
+  - [x] ALTER TABLE (ADD/DROP/ALTER COLUMN) ✅ Jan 2026
   - [ ] ALTER INDEX
-  - [ ] CREATE/ALTER/DROP VIEW
+  - [x] CREATE VIEW / DROP VIEW ✅ Jan 2026 (ALTER VIEW not implemented)
   - [ ] CREATE/ALTER/DROP SCHEMA
   - [ ] CREATE/ALTER/DROP FUNCTION
   - [ ] CREATE/ALTER/DROP TRIGGER
@@ -292,7 +292,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] SET (properties and labels) ✅ Jan 2026
   - [x] REMOVE (properties and labels) ✅ Jan 2026
   - [x] DELETE and DETACH DELETE ✅ Jan 2026
-  - [ ] FOREACH
+  - [x] FOREACH ✅ Jan 2026
 
 - [ ] **Reading Clauses**
   - [ ] MANDATORY MATCH (optional, Neo4j extension)
@@ -303,10 +303,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] allShortestPaths() pattern function
   - [x] Variable-length path execution ✅ Jan 2026
 
-- [ ] **Subqueries**
-  - [ ] EXISTS { } subquery
-  - [ ] COUNT { } subquery
-  - [ ] CALL { } subquery (inline)
+- [x] **Subqueries** (parsing + planning complete) ✅ Jan 2026
+  - [x] EXISTS { } subquery ✅ Jan 2026
+  - [x] COUNT { } subquery ✅ Jan 2026
+  - [x] CALL { } subquery (inline) ✅ Jan 2026
 
 - [ ] **Advanced Patterns**
   - [ ] Quantified path patterns (GQL)
@@ -318,20 +318,20 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 
 - [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
 - [x] Map projections: `node{.prop1, .prop2, key: expr}` ✅ Jan 2026
-- [ ] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]`
+- [x] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]` ✅ Jan 2026
 - [x] CASE expressions (simple and searched) ✅ Complete
 - [x] Parameter syntax ($param) ✅ Complete
 
 #### 3.3 Function Library
 **Goal:** Implement openCypher function library.
 
-- [x] **Scalar Functions** - Partial
+- [x] **Scalar Functions** - Mostly complete ✅ Jan 2026
   - [x] head, tail, last ✅ Jan 2026
   - [x] coalesce ✅ Complete
   - [x] size (for lists, strings) ✅ Jan 2026
   - [ ] length (for paths)
-  - [ ] type, labels, id, properties
-  - [ ] keys, nodes, relationships
+  - [x] type, labels, id, properties, keys ✅ Jan 2026
+  - [ ] nodes, relationships
   - [ ] startNode, endNode
   - [ ] toBoolean, toInteger, toFloat, toString
 
@@ -340,10 +340,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] percentileCont, percentileDisc
   - [ ] stDev, stDevP
 
-- [ ] **List Functions**
+- [x] **List Functions** ✅ Jan 2026
   - [x] range, reverse ✅ Jan 2026
-  - [ ] reduce (fold operation)
-  - [ ] all, any, none, single (predicate tests)
+  - [x] reduce (fold operation) ✅ Jan 2026
+  - [x] all, any, none, single (predicate tests) ✅ Jan 2026
 
 - [ ] **String Functions**
   - [ ] Same as SQL tier + specific Cypher names
