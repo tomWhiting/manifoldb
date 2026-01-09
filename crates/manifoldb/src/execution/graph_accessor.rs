@@ -360,8 +360,8 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
 
 use manifoldb_graph::traversal::Direction;
 use manifoldb_query::exec::graph_accessor::{
-    CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphAccessor,
-    GraphMutator, NeighborResult, NodeScanResult, PathFindConfig, PathMatchResult,
+    CreateEdgeRequest, CreateNodeRequest, DeleteResult, GraphAccessError, GraphAccessResult,
+    GraphAccessor, GraphMutator, NeighborResult, NodeScanResult, PathFindConfig, PathMatchResult,
     ShortestPathConfig, ShortestPathResult, TraversalResult,
 };
 
@@ -469,6 +469,84 @@ where
             .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
 
         Ok(edge)
+    }
+
+    fn delete_node(&self, id: EntityId) -> GraphAccessResult<DeleteResult> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Use delete_entity_checked which fails if the node has edges
+        match tx.delete_entity_checked(id) {
+            Ok(true) => Ok(DeleteResult::node_deleted()),
+            Ok(false) => Ok(DeleteResult::not_found()),
+            Err(e) => {
+                // Check if it's the "has edges" error
+                let err_msg = e.to_string();
+                if err_msg.contains("still has edges") || err_msg.contains("HasEdges") {
+                    Err(GraphAccessError::Internal(format!(
+                        "cannot delete node {:?} because it still has relationships. \
+                         Use DETACH DELETE to delete the node and its relationships.",
+                        id
+                    )))
+                } else {
+                    Err(GraphAccessError::Internal(format!("failed to delete entity: {e}")))
+                }
+            }
+        }
+    }
+
+    fn delete_node_detach(&self, id: EntityId) -> GraphAccessResult<DeleteResult> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Use delete_entity_cascade which deletes edges first
+        let core_result = tx
+            .delete_entity_cascade(id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to delete entity: {e}")))?;
+
+        if core_result.entity_deleted {
+            Ok(DeleteResult::detach_deleted(core_result.edges_deleted_count()))
+        } else {
+            // Node didn't exist, but we may have deleted some edges
+            Ok(DeleteResult { nodes_deleted: 0, edges_deleted: core_result.edges_deleted_count() })
+        }
+    }
+
+    fn delete_edge(&self, id: manifoldb_core::EdgeId) -> GraphAccessResult<bool> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        tx.delete_edge(id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to delete edge: {e}")))
+    }
+
+    fn node_has_edges(&self, id: EntityId) -> GraphAccessResult<bool> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        tx.has_edges(id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to check edges: {e}")))
     }
 }
 
