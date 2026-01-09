@@ -618,8 +618,8 @@ These feature groups can be implemented independently:
 | COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
 | CALL { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
 | **Path Functions** |
-| shortestPath() | ✓ | ✓ | ✓ | ✓ | | ✓ | Pattern function with L/O/T (Jan 2026) |
-| allShortestPaths() | ✓ | ✓ | ✓ | ✓ | | ✓ | Pattern function with L/O/T (Jan 2026) |
+| shortestPath() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |
+| allShortestPaths() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |
 | nodes(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | relationships(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | length(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
@@ -857,10 +857,10 @@ These feature groups can be implemented independently:
 
 | Algorithm | Via CALL | Via Query | Tested | Notes |
 |-----------|----------|-----------|--------|-------|
-| Shortest Path (BFS) | ✓ | ✓ | ✓ | `algo.shortestPath()` + `shortestPath()` pattern (Jan 2026) |
+| Shortest Path (BFS) | ✓ | ✓ | ✓ | `algo.shortestPath()` + `shortestPath()` pattern with execution (Jan 2026)† |
 | Weighted Shortest Path (Dijkstra) | ✓ | | ✓ | `algo.dijkstra()` |
 | A* Search | ✓ | | ✓ | `algo.astar()` |
-| All Shortest Paths | ✓ | ✓ | ✓ | `algo.allShortestPaths()` + `allShortestPaths()` pattern (Jan 2026) |
+| All Shortest Paths | ✓ | ✓ | ✓ | `algo.allShortestPaths()` + `allShortestPaths()` pattern with execution (Jan 2026)† |
 | Single-Source Shortest Paths | ✓ | | ✓ | `algo.sssp()` |
 | All-Pairs Shortest Paths | | | | Needs impl |
 

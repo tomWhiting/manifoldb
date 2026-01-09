@@ -12,6 +12,7 @@ use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::graph_accessor::{
     GraphAccessError, GraphAccessResult, GraphAccessor, PathFindConfig, PathStepConfig,
+    ShortestPathConfig, ShortestPathResult,
 };
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
@@ -577,5 +578,374 @@ mod tests {
                 "path_edges".to_string()
             ]
         );
+    }
+}
+
+// ============================================================================
+// Shortest Path Operator
+// ============================================================================
+
+use crate::plan::physical::ShortestPathExecNode;
+
+/// Shortest path operator.
+///
+/// Finds the shortest path(s) between source and target nodes using BFS.
+/// Supports both single path and all shortest paths modes.
+pub struct ShortestPathOp {
+    /// Base operator state.
+    base: OperatorBase,
+    /// Shortest path execution configuration.
+    node: ShortestPathExecNode,
+    /// Input operator (provides source and target nodes).
+    input: BoxedOperator,
+    /// Current input row.
+    current_input: Option<Row>,
+    /// Found paths for current input.
+    paths: Vec<ShortestPathResult>,
+    /// Position in paths.
+    position: usize,
+    /// Graph accessor for actual storage traversal.
+    graph: Option<Arc<dyn GraphAccessor>>,
+}
+
+impl ShortestPathOp {
+    /// Creates a new shortest path operator.
+    #[must_use]
+    pub fn new(node: ShortestPathExecNode, input: BoxedOperator) -> Self {
+        // Build output schema: input columns + path_variable (as a map containing nodes/edges)
+        let mut columns: Vec<String> =
+            input.schema().columns().into_iter().map(|s| s.to_owned()).collect();
+
+        // Add the path variable column
+        if let Some(ref path_var) = node.path_variable {
+            columns.push(path_var.clone());
+        } else {
+            columns.push("path".to_string());
+        }
+
+        let schema = Arc::new(Schema::new(columns));
+
+        Self {
+            base: OperatorBase::new(schema),
+            node,
+            input,
+            current_input: None,
+            paths: Vec::new(),
+            position: 0,
+            graph: None,
+        }
+    }
+
+    /// Converts `ExpandDirection` to `traversal::Direction`.
+    fn to_graph_direction(dir: &ExpandDirection) -> Direction {
+        match dir {
+            ExpandDirection::Outgoing => Direction::Outgoing,
+            ExpandDirection::Incoming => Direction::Incoming,
+            ExpandDirection::Both => Direction::Both,
+        }
+    }
+
+    /// Gets the source entity ID from the current input row.
+    fn get_source_id(&self, row: &Row) -> Option<EntityId> {
+        row.get_by_name(&self.node.src_var).and_then(|v| match v {
+            Value::Int(id) => Some(EntityId::new(*id as u64)),
+            _ => None,
+        })
+    }
+
+    /// Gets the target entity ID from the current input row.
+    fn get_target_id(&self, row: &Row) -> Option<EntityId> {
+        row.get_by_name(&self.node.dst_var).and_then(|v| match v {
+            Value::Int(id) => Some(EntityId::new(*id as u64)),
+            _ => None,
+        })
+    }
+
+    /// Builds the shortest path configuration from the exec node.
+    fn build_config(&self) -> ShortestPathConfig {
+        let direction = Self::to_graph_direction(&self.node.direction);
+        let edge_types: Vec<EdgeType> =
+            self.node.edge_types.iter().map(|s| EdgeType::new(s.as_str())).collect();
+
+        let mut config = ShortestPathConfig::new(direction)
+            .with_edge_types(edge_types)
+            .with_find_all(self.node.find_all);
+
+        if let Some(max) = self.node.max_length {
+            config = config.with_max_depth(max);
+        }
+
+        config
+    }
+
+    /// Finds shortest path(s) between source and target.
+    fn find_shortest_paths(
+        &self,
+        source: EntityId,
+        target: EntityId,
+    ) -> GraphAccessResult<Vec<ShortestPathResult>> {
+        let graph = self.graph.as_ref().ok_or(GraphAccessError::NoStorage)?;
+        let config = self.build_config();
+        graph.shortest_path(source, target, &config)
+    }
+
+    /// Converts a path result to a Value (JSON string with _nodes and _edges).
+    fn path_to_value(&self, path: &ShortestPathResult) -> Value {
+        // The nodes(), relationships(), and length() functions expect a JSON object string
+        // with _nodes and _edges arrays containing node/edge IDs
+        let nodes: Vec<i64> = path.nodes.iter().map(|n| n.as_u64() as i64).collect();
+        let edges: Vec<i64> = path.edges.iter().map(|e| e.as_u64() as i64).collect();
+
+        // Format as JSON string that can be parsed by path functions
+        let json = format!(
+            r#"{{"_nodes": {:?}, "_edges": {:?}, "_length": {}}}"#,
+            nodes, edges, path.length
+        );
+
+        Value::String(json)
+    }
+}
+
+impl Operator for ShortestPathOp {
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        self.input.open(ctx)?;
+        self.current_input = None;
+        self.paths.clear();
+        self.position = 0;
+        // Capture the graph accessor from the context
+        self.graph = Some(ctx.graph_arc());
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        loop {
+            // Return next path if available
+            if self.position < self.paths.len() {
+                if let Some(input_row) = &self.current_input {
+                    let path = &self.paths[self.position];
+                    self.position += 1;
+
+                    // Build output row: input values + path value
+                    let mut values = input_row.values().to_vec();
+                    values.push(self.path_to_value(path));
+
+                    let row = Row::new(self.base.schema(), values);
+                    self.base.inc_rows_produced();
+                    return Ok(Some(row));
+                }
+            }
+
+            // Get next input row
+            match self.input.next()? {
+                Some(row) => {
+                    let source_id = self.get_source_id(&row);
+                    let target_id = self.get_target_id(&row);
+
+                    if let (Some(src), Some(tgt)) = (source_id, target_id) {
+                        self.paths = self.find_shortest_paths(src, tgt).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("shortest path failed: {e}"))
+                        })?;
+                        self.current_input = Some(row);
+                        self.position = 0;
+                    } else {
+                        // Missing source or target, skip this row
+                        continue;
+                    }
+                }
+                None => {
+                    self.base.set_finished();
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        self.input.close()?;
+        self.paths.clear();
+        self.graph = None; // Release graph accessor reference
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "ShortestPath"
+    }
+}
+
+#[cfg(test)]
+mod shortest_path_tests {
+    use super::*;
+    use crate::exec::operators::values::ValuesOp;
+    use crate::plan::physical::Cost;
+
+    fn make_two_node_input() -> BoxedOperator {
+        // Input with source and target node IDs
+        Box::new(ValuesOp::with_columns(
+            vec!["a".to_string(), "b".to_string()],
+            vec![vec![Value::Int(1), Value::Int(5)], vec![Value::Int(2), Value::Int(6)]],
+        ))
+    }
+
+    #[test]
+    fn shortest_path_requires_graph_storage() {
+        // Tests that ShortestPathOp returns an error when no graph storage is configured
+        let node = ShortestPathExecNode::new("a", "b")
+            .with_path_variable("p")
+            .with_direction(ExpandDirection::Both)
+            .with_cost(Cost::default());
+
+        let mut op = ShortestPathOp::new(node, make_two_node_input());
+
+        // ExecutionContext::new() creates context with NullGraphAccessor
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        // Should return an error on first next() since NullGraphAccessor returns NoStorage
+        let result = op.next();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("shortest path failed"));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn shortest_path_schema_construction() {
+        // Test that schema is correctly constructed
+        let node = ShortestPathExecNode::new("a", "b")
+            .with_path_variable("mypath")
+            .with_direction(ExpandDirection::Outgoing)
+            .with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Should have a, b, and mypath columns
+        assert_eq!(op.schema().columns().len(), 3);
+        assert_eq!(
+            op.schema().columns(),
+            &["a".to_string(), "b".to_string(), "mypath".to_string()]
+        );
+    }
+
+    #[test]
+    fn shortest_path_default_path_variable() {
+        // Test that default path variable is "path"
+        let node = ShortestPathExecNode::new("a", "b").with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Should have a, b, and default "path" columns
+        assert_eq!(op.schema().columns().len(), 3);
+        assert_eq!(op.schema().columns(), &["a".to_string(), "b".to_string(), "path".to_string()]);
+    }
+
+    #[test]
+    fn shortest_path_with_edge_types() {
+        // Test that edge types are properly configured
+        let node = ShortestPathExecNode::new("a", "b")
+            .with_path_variable("p")
+            .with_edge_types(vec!["KNOWS".to_string(), "WORKS_WITH".to_string()])
+            .with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Just check it builds correctly - schema construction doesn't fail
+        assert_eq!(op.schema().columns().len(), 3);
+    }
+
+    #[test]
+    fn shortest_path_with_max_length() {
+        // Test that max length is properly configured
+        let node = ShortestPathExecNode::new("a", "b")
+            .with_path_variable("p")
+            .with_max_length(10)
+            .with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Just check it builds correctly
+        assert_eq!(op.schema().columns().len(), 3);
+    }
+
+    #[test]
+    fn shortest_path_find_all() {
+        // Test that find_all mode is properly configured
+        let node = ShortestPathExecNode::new("a", "b")
+            .with_path_variable("p")
+            .with_find_all(true)
+            .with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Just check it builds correctly
+        assert_eq!(op.schema().columns().len(), 3);
+    }
+
+    #[test]
+    fn path_to_value_format() {
+        // Test that path_to_value produces correct JSON format
+        let node =
+            ShortestPathExecNode::new("a", "b").with_path_variable("p").with_cost(Cost::default());
+
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Create a test path
+        let test_path = ShortestPathResult::new(
+            vec![EntityId::new(1), EntityId::new(2), EntityId::new(3)],
+            vec![manifoldb_core::EdgeId::new(10), manifoldb_core::EdgeId::new(20)],
+        );
+
+        let value = op.path_to_value(&test_path);
+
+        // Should be a JSON string
+        if let Value::String(json) = value {
+            assert!(json.contains("\"_nodes\""));
+            assert!(json.contains("\"_edges\""));
+            assert!(json.contains("\"_length\": 2"));
+            assert!(json.contains("[1, 2, 3]"));
+            assert!(json.contains("[10, 20]"));
+        } else {
+            panic!("Expected Value::String, got {:?}", value);
+        }
+    }
+
+    #[test]
+    fn operator_lifecycle() {
+        // Test that the operator lifecycle (open/close) works correctly
+        let node =
+            ShortestPathExecNode::new("a", "b").with_path_variable("p").with_cost(Cost::default());
+
+        let mut op = ShortestPathOp::new(node, make_two_node_input());
+
+        // Initially not open
+        assert_eq!(op.state(), OperatorState::Created);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        // Now should be open
+        assert_eq!(op.state(), OperatorState::Open);
+
+        // Close should work
+        op.close().unwrap();
+        assert_eq!(op.state(), OperatorState::Closed);
+    }
+
+    #[test]
+    fn operator_name() {
+        let node = ShortestPathExecNode::new("a", "b").with_cost(Cost::default());
+        let op = ShortestPathOp::new(node, make_two_node_input());
+
+        assert_eq!(op.name(), "ShortestPath");
     }
 }

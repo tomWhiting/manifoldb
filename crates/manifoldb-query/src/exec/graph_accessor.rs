@@ -97,6 +97,84 @@ pub struct PathFindConfig {
     pub allow_cycles: bool,
 }
 
+/// Configuration for shortest path finding.
+#[derive(Debug, Clone)]
+pub struct ShortestPathConfig {
+    /// Direction to traverse edges.
+    pub direction: Direction,
+    /// Edge type filters (empty means any).
+    pub edge_types: Vec<EdgeType>,
+    /// Maximum path length (None for unlimited).
+    pub max_depth: Option<usize>,
+    /// Whether to find all shortest paths.
+    pub find_all: bool,
+}
+
+impl Default for ShortestPathConfig {
+    fn default() -> Self {
+        Self {
+            direction: Direction::Both,
+            edge_types: Vec::new(),
+            max_depth: None,
+            find_all: false,
+        }
+    }
+}
+
+impl ShortestPathConfig {
+    /// Create a new shortest path configuration.
+    pub fn new(direction: Direction) -> Self {
+        Self { direction, ..Default::default() }
+    }
+
+    /// Set edge type filters.
+    pub fn with_edge_types(mut self, types: Vec<EdgeType>) -> Self {
+        self.edge_types = types;
+        self
+    }
+
+    /// Set maximum path depth.
+    pub fn with_max_depth(mut self, max: usize) -> Self {
+        self.max_depth = Some(max);
+        self
+    }
+
+    /// Set whether to find all shortest paths.
+    pub fn with_find_all(mut self, find_all: bool) -> Self {
+        self.find_all = find_all;
+        self
+    }
+}
+
+/// Result of a shortest path search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortestPathResult {
+    /// The nodes in the path, from source to target.
+    pub nodes: Vec<EntityId>,
+    /// The edges connecting the nodes.
+    pub edges: Vec<EdgeId>,
+    /// The total length of the path (number of edges).
+    pub length: usize,
+}
+
+impl ShortestPathResult {
+    /// Create a new shortest path result.
+    pub fn new(nodes: Vec<EntityId>, edges: Vec<EdgeId>) -> Self {
+        let length = edges.len();
+        Self { nodes, edges, length }
+    }
+
+    /// Get the source node.
+    pub fn source(&self) -> Option<EntityId> {
+        self.nodes.first().copied()
+    }
+
+    /// Get the target node.
+    pub fn target(&self) -> Option<EntityId> {
+        self.nodes.last().copied()
+    }
+}
+
 /// Configuration for a single step in a path pattern.
 #[derive(Debug, Clone)]
 pub struct PathStepConfig {
@@ -190,6 +268,17 @@ pub trait GraphAccessor: Send + Sync {
         start: EntityId,
         config: &PathFindConfig,
     ) -> GraphAccessResult<Vec<PathMatchResult>>;
+
+    /// Find the shortest path(s) between two nodes.
+    ///
+    /// Uses BFS for unweighted shortest path.
+    /// Returns `None` if no path exists.
+    fn shortest_path(
+        &self,
+        source: EntityId,
+        target: EntityId,
+        config: &ShortestPathConfig,
+    ) -> GraphAccessResult<Vec<ShortestPathResult>>;
 }
 
 /// A null implementation of `GraphAccessor` that returns no results.
@@ -241,6 +330,15 @@ impl GraphAccessor for NullGraphAccessor {
         _start: EntityId,
         _config: &PathFindConfig,
     ) -> GraphAccessResult<Vec<PathMatchResult>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn shortest_path(
+        &self,
+        _source: EntityId,
+        _target: EntityId,
+        _config: &ShortestPathConfig,
+    ) -> GraphAccessResult<Vec<ShortestPathResult>> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -373,6 +471,53 @@ where
             .map(|matches| matches.into_iter().map(PathMatchResult::from).collect())
             .map_err(|e| GraphAccessError::Internal(e.to_string()))
     }
+
+    fn shortest_path(
+        &self,
+        source: EntityId,
+        target: EntityId,
+        config: &ShortestPathConfig,
+    ) -> GraphAccessResult<Vec<ShortestPathResult>> {
+        use manifoldb_graph::traversal::{AllShortestPaths, ShortestPath};
+
+        if config.find_all {
+            // Find all shortest paths
+            let mut finder = AllShortestPaths::new(source, target, config.direction);
+
+            if let Some(max) = config.max_depth {
+                finder = finder.with_max_depth(max);
+            }
+
+            for edge_type in &config.edge_types {
+                finder = finder.with_edge_type(edge_type.clone());
+            }
+
+            finder
+                .find(&self.tx)
+                .map(|paths| {
+                    paths.into_iter().map(|p| ShortestPathResult::new(p.nodes, p.edges)).collect()
+                })
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))
+        } else {
+            // Find single shortest path
+            let mut finder = ShortestPath::new(source, target, config.direction);
+
+            if let Some(max) = config.max_depth {
+                finder = finder.with_max_depth(max);
+            }
+
+            if !config.edge_types.is_empty() {
+                finder = finder.with_edge_types(config.edge_types.iter().cloned());
+            }
+
+            finder
+                .find(&self.tx)
+                .map(|opt| {
+                    opt.map(|p| vec![ShortestPathResult::new(p.nodes, p.edges)]).unwrap_or_default()
+                })
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -435,5 +580,64 @@ mod tests {
         let config = PathFindConfig { steps: vec![], limit: None, allow_cycles: false };
         let result = accessor.find_paths(EntityId::new(1), &config);
         assert!(matches!(result, Err(GraphAccessError::NoStorage)));
+    }
+
+    #[test]
+    fn null_accessor_shortest_path_returns_no_storage() {
+        let accessor = NullGraphAccessor;
+        let config = ShortestPathConfig::default();
+        let result = accessor.shortest_path(EntityId::new(1), EntityId::new(2), &config);
+        assert!(matches!(result, Err(GraphAccessError::NoStorage)));
+    }
+
+    #[test]
+    fn shortest_path_config_default() {
+        let config = ShortestPathConfig::default();
+        assert_eq!(config.direction, Direction::Both);
+        assert!(config.edge_types.is_empty());
+        assert!(config.max_depth.is_none());
+        assert!(!config.find_all);
+    }
+
+    #[test]
+    fn shortest_path_config_builder() {
+        let config = ShortestPathConfig::new(Direction::Outgoing)
+            .with_edge_types(vec![EdgeType::new("KNOWS")])
+            .with_max_depth(5)
+            .with_find_all(true);
+
+        assert_eq!(config.direction, Direction::Outgoing);
+        assert_eq!(config.edge_types.len(), 1);
+        assert_eq!(config.max_depth, Some(5));
+        assert!(config.find_all);
+    }
+
+    #[test]
+    fn shortest_path_result_creation() {
+        let result = ShortestPathResult::new(
+            vec![EntityId::new(1), EntityId::new(2), EntityId::new(3)],
+            vec![EdgeId::new(10), EdgeId::new(20)],
+        );
+        assert_eq!(result.source(), Some(EntityId::new(1)));
+        assert_eq!(result.target(), Some(EntityId::new(3)));
+        assert_eq!(result.length, 2);
+        assert_eq!(result.nodes.len(), 3);
+        assert_eq!(result.edges.len(), 2);
+    }
+
+    #[test]
+    fn shortest_path_result_empty_path() {
+        let result = ShortestPathResult::new(vec![], vec![]);
+        assert_eq!(result.source(), None);
+        assert_eq!(result.target(), None);
+        assert_eq!(result.length, 0);
+    }
+
+    #[test]
+    fn shortest_path_result_single_node() {
+        let result = ShortestPathResult::new(vec![EntityId::new(42)], vec![]);
+        assert_eq!(result.source(), Some(EntityId::new(42)));
+        assert_eq!(result.target(), Some(EntityId::new(42)));
+        assert_eq!(result.length, 0);
     }
 }

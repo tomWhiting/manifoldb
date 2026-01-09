@@ -12,7 +12,7 @@ use super::operator::{BoxedOperator, OperatorResult, OperatorState};
 use super::operators::{
     aggregate::{HashAggregateOp, SortMergeAggregateOp},
     filter::FilterOp,
-    graph::{GraphExpandOp, GraphPathScanOp},
+    graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
     join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp},
     limit::LimitOp,
     project::ProjectOp,
@@ -363,21 +363,7 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
 
         PhysicalPlan::ShortestPath { node, input } => {
             let input_op = build_operator_tree(input)?;
-            // ShortestPath uses the existing GraphPathScanOp infrastructure
-            // with path tracking enabled to collect the shortest path
-            // For now, create a placeholder that returns the path variable columns
-            let _ = (node, input_op); // Suppress unused warnings
-                                      // TODO: Implement ShortestPathOp that uses manifoldb_graph::traversal::ShortestPath
-                                      // This would involve:
-                                      // 1. Reading source/target nodes from input
-                                      // 2. Running BFS/Dijkstra via ShortestPath/AllShortestPaths
-                                      // 3. Returning path results with nodes, edges, and length
-            let columns = vec![
-                node.path_variable.clone().unwrap_or_else(|| "path".to_string()),
-                format!("{}", node.src_var),
-                format!("{}", node.dst_var),
-            ];
-            Ok(Box::new(EmptyOp::with_columns(columns)))
+            Ok(Box::new(ShortestPathOp::new((**node).clone(), input_op)))
         }
 
         // DML operations (not fully implemented)

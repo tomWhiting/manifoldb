@@ -39,7 +39,7 @@ pub use analytics::{
     CommunityDetectionOpConfig, PageRankOp, PageRankOpConfig,
 };
 pub use filter::FilterOp;
-pub use graph::{GraphExpandOp, GraphPathScanOp};
+pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};
 pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
 pub use limit::LimitOp;
 pub use project::ProjectOp;
