@@ -1487,6 +1487,38 @@ fn evaluate_scalar_function(
             jsonb_strip_nulls(args)
         }
 
+        // ========== Cypher Entity Functions ==========
+        ScalarFunction::Type => {
+            // TYPE(relationship)
+            // Returns the type (string) of a relationship.
+            // For now, we expect the argument to be a map with an "_edge_type" key,
+            // or return NULL if not found.
+            cypher_type(args)
+        }
+        ScalarFunction::Labels => {
+            // LABELS(node)
+            // Returns a list of labels for a node.
+            // Expects a map with a "_labels" key or returns NULL.
+            cypher_labels(args)
+        }
+        ScalarFunction::Id => {
+            // ID(entity)
+            // Returns the internal ID of a node or relationship.
+            // Expects an integer or a map with "_id" key.
+            cypher_id(args)
+        }
+        ScalarFunction::Properties => {
+            // PROPERTIES(entity)
+            // Returns a map of all properties of a node or relationship.
+            // Expects a map and returns properties (excluding internal keys).
+            cypher_properties(args)
+        }
+        ScalarFunction::Keys => {
+            // KEYS(map_or_entity)
+            // Returns a list of property keys from a map or entity.
+            cypher_keys(args)
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -2201,6 +2233,184 @@ fn strip_nulls_recursive(val: serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(arr.into_iter().map(strip_nulls_recursive).collect())
         }
         other => other,
+    }
+}
+
+// ========== Cypher Entity Functions ==========
+
+/// TYPE(relationship) - Returns the type (string) of a relationship.
+///
+/// In Cypher, relationships have a type (e.g., "KNOWS", "FOLLOWS").
+/// This function extracts that type from the relationship entity.
+///
+/// Currently supports:
+/// - Maps with an "_edge_type" or "_type" key (from internal representation)
+/// - String values (returns as-is, assumed to already be the type)
+fn cypher_type(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::String(s)) => {
+            // If it's a JSON object string, try to extract _edge_type or _type
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    if let Some(serde_json::Value::String(t)) = obj.get("_edge_type") {
+                        return Ok(Value::String(t.clone()));
+                    }
+                    if let Some(serde_json::Value::String(t)) = obj.get("_type") {
+                        return Ok(Value::String(t.clone()));
+                    }
+                }
+            }
+            // If it's a plain string, it might be the type itself
+            Ok(Value::String(s.clone()))
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// LABELS(node) - Returns a list of labels for a node.
+///
+/// In Cypher, nodes can have one or more labels (e.g., "Person", "Employee").
+/// This function extracts those labels from the node entity.
+///
+/// Currently supports:
+/// - Maps with a "_labels" key containing an array
+/// - Arrays (returns as-is, assumed to be labels)
+fn cypher_labels(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Array(labels)) => {
+            // Already an array, return as-is
+            Ok(Value::Array(labels.clone()))
+        }
+        Some(Value::String(s)) => {
+            // If it's a JSON object string, try to extract _labels
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    if let Some(serde_json::Value::Array(labels)) = obj.get("_labels") {
+                        let label_values: Vec<Value> = labels
+                            .iter()
+                            .filter_map(|l| {
+                                if let serde_json::Value::String(s) = l {
+                                    Some(Value::String(s.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        return Ok(Value::Array(label_values));
+                    }
+                }
+            }
+            // If it's just a string, wrap it as a single label
+            Ok(Value::Array(vec![Value::String(s.clone())]))
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// ID(entity) - Returns the internal ID of a node or relationship.
+///
+/// In Cypher, every node and relationship has a unique internal ID.
+/// This function extracts that ID from the entity.
+///
+/// Currently supports:
+/// - Integer values (returns as-is, assumed to be the ID)
+/// - Maps with an "_id" key
+fn cypher_id(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Int(id)) => {
+            // Already an integer, return as-is
+            Ok(Value::Int(*id))
+        }
+        Some(Value::String(s)) => {
+            // If it's a JSON object string, try to extract _id
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    if let Some(serde_json::Value::Number(n)) = obj.get("_id") {
+                        if let Some(id) = n.as_i64() {
+                            return Ok(Value::Int(id));
+                        }
+                    }
+                }
+            }
+            // Try parsing the string as an integer
+            if let Ok(id) = s.parse::<i64>() {
+                return Ok(Value::Int(id));
+            }
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// PROPERTIES(entity) - Returns a map of all properties of a node or relationship.
+///
+/// In Cypher, nodes and relationships can have properties (key-value pairs).
+/// This function returns all properties as a map, excluding internal keys
+/// (those starting with "_").
+///
+/// Currently supports:
+/// - Maps/JSON objects - returns the properties as a JSON string
+fn cypher_properties(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::String(s)) => {
+            // If it's a JSON object string, filter out internal keys
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    // Filter out internal keys (those starting with "_")
+                    let properties: serde_json::Map<String, serde_json::Value> =
+                        obj.into_iter().filter(|(k, _)| !k.starts_with('_')).collect();
+                    let result = serde_json::Value::Object(properties);
+                    return Ok(Value::String(serde_json::to_string(&result).unwrap_or_default()));
+                }
+            }
+            // If it's not parseable as JSON, return empty object
+            Ok(Value::String("{}".to_string()))
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => {
+            // For other types, return empty object
+            Ok(Value::String("{}".to_string()))
+        }
+    }
+}
+
+/// KEYS(map_or_entity) - Returns a list of property keys from a map or entity.
+///
+/// In Cypher, this function returns the keys of a map or the property keys
+/// of a node/relationship. It excludes internal keys (those starting with "_").
+///
+/// Currently supports:
+/// - Maps/JSON objects - returns the keys as a list
+fn cypher_keys(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::String(s)) => {
+            // If it's a JSON object string, extract keys
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    // Filter out internal keys and collect remaining keys
+                    let keys: Vec<Value> = obj
+                        .keys()
+                        .filter(|k| !k.starts_with('_'))
+                        .map(|k| Value::String(k.clone()))
+                        .collect();
+                    return Ok(Value::Array(keys));
+                }
+            }
+            // If it's not parseable as JSON, return empty list
+            Ok(Value::Array(vec![]))
+        }
+        Some(Value::Array(_)) => {
+            // Arrays don't have keys in Cypher semantics
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => {
+            // For other types, return empty list
+            Ok(Value::Array(vec![]))
+        }
     }
 }
 
@@ -4276,5 +4486,177 @@ mod tests {
         } else {
             panic!("Expected array");
         }
+    }
+
+    // ========== Cypher Entity Functions ==========
+
+    #[test]
+    fn test_cypher_type() {
+        use crate::plan::logical::ScalarFunction;
+
+        // TYPE on a JSON object with _edge_type key
+        let relationship = r#"{"_edge_type": "KNOWS", "since": 2020}"#;
+        let result = eval_fn(ScalarFunction::Type, vec![Value::from(relationship)]);
+        assert_eq!(result, Value::from("KNOWS"));
+
+        // TYPE on a JSON object with _type key
+        let relationship = r#"{"_type": "FOLLOWS", "weight": 5}"#;
+        let result = eval_fn(ScalarFunction::Type, vec![Value::from(relationship)]);
+        assert_eq!(result, Value::from("FOLLOWS"));
+
+        // TYPE on a plain string (returns the string itself)
+        let result = eval_fn(ScalarFunction::Type, vec![Value::from("LIKES")]);
+        assert_eq!(result, Value::from("LIKES"));
+
+        // TYPE on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Type, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // TYPE with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Type, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // TYPE on non-relationship (integer) returns NULL
+        let result = eval_fn(ScalarFunction::Type, vec![Value::Int(42)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_labels() {
+        use crate::plan::logical::ScalarFunction;
+
+        // LABELS on a JSON object with _labels key
+        let node = r#"{"_labels": ["Person", "Employee"], "name": "Alice"}"#;
+        let result = eval_fn(ScalarFunction::Labels, vec![Value::from(node)]);
+        assert_eq!(result, Value::Array(vec![Value::from("Person"), Value::from("Employee")]));
+
+        // LABELS on an array returns the array itself
+        let labels = Value::Array(vec![Value::from("User"), Value::from("Admin")]);
+        let result = eval_fn(ScalarFunction::Labels, vec![labels.clone()]);
+        assert_eq!(result, labels);
+
+        // LABELS on a plain string wraps it as a single label
+        let result = eval_fn(ScalarFunction::Labels, vec![Value::from("Manager")]);
+        assert_eq!(result, Value::Array(vec![Value::from("Manager")]));
+
+        // LABELS on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Labels, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // LABELS with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Labels, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // LABELS on node with no labels
+        let node_no_labels = r#"{"_labels": [], "name": "Bob"}"#;
+        let result = eval_fn(ScalarFunction::Labels, vec![Value::from(node_no_labels)]);
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_cypher_id() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ID on an integer returns the integer
+        let result = eval_fn(ScalarFunction::Id, vec![Value::Int(42)]);
+        assert_eq!(result, Value::Int(42));
+
+        // ID on a JSON object with _id key
+        let entity = r#"{"_id": 123, "name": "Alice"}"#;
+        let result = eval_fn(ScalarFunction::Id, vec![Value::from(entity)]);
+        assert_eq!(result, Value::Int(123));
+
+        // ID on a string that's a number
+        let result = eval_fn(ScalarFunction::Id, vec![Value::from("456")]);
+        assert_eq!(result, Value::Int(456));
+
+        // ID on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Id, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // ID with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Id, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // ID on a non-numeric string returns NULL
+        let result = eval_fn(ScalarFunction::Id, vec![Value::from("not-an-id")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_properties() {
+        use crate::plan::logical::ScalarFunction;
+
+        // PROPERTIES on a JSON object (filters out internal keys)
+        let entity = r#"{"_id": 1, "_labels": ["Person"], "name": "Alice", "age": 30}"#;
+        let result = eval_fn(ScalarFunction::Properties, vec![Value::from(entity)]);
+        // Should only contain name and age
+        if let Value::String(s) = result {
+            let json: serde_json::Value = serde_json::from_str(&s).unwrap();
+            assert_eq!(json.get("name"), Some(&serde_json::Value::from("Alice")));
+            assert_eq!(json.get("age"), Some(&serde_json::Value::from(30)));
+            assert!(json.get("_id").is_none());
+            assert!(json.get("_labels").is_none());
+        } else {
+            panic!("Expected string result");
+        }
+
+        // PROPERTIES on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Properties, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // PROPERTIES with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Properties, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // PROPERTIES on non-JSON string returns empty object
+        let result = eval_fn(ScalarFunction::Properties, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::from("{}"));
+
+        // PROPERTIES on entity with no properties (only internal keys)
+        let entity = r#"{"_id": 1, "_labels": ["Person"]}"#;
+        let result = eval_fn(ScalarFunction::Properties, vec![Value::from(entity)]);
+        assert_eq!(result, Value::from("{}"));
+    }
+
+    #[test]
+    fn test_cypher_keys() {
+        use crate::plan::logical::ScalarFunction;
+
+        // KEYS on a JSON object (filters out internal keys)
+        let entity = r#"{"_id": 1, "name": "Alice", "age": 30, "city": "NYC"}"#;
+        let result = eval_fn(ScalarFunction::Keys, vec![Value::from(entity)]);
+        if let Value::Array(keys) = result {
+            assert_eq!(keys.len(), 3);
+            // Keys may be in any order
+            assert!(keys.contains(&Value::from("name")));
+            assert!(keys.contains(&Value::from("age")));
+            assert!(keys.contains(&Value::from("city")));
+            // Should not contain internal keys
+            assert!(!keys.contains(&Value::from("_id")));
+        } else {
+            panic!("Expected array result");
+        }
+
+        // KEYS on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Keys, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // KEYS with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Keys, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // KEYS on non-JSON string returns empty array
+        let result = eval_fn(ScalarFunction::Keys, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::Array(vec![]));
+
+        // KEYS on array returns NULL (per Cypher semantics)
+        let result = eval_fn(ScalarFunction::Keys, vec![Value::Array(vec![Value::Int(1)])]);
+        assert_eq!(result, Value::Null);
+
+        // KEYS on entity with only internal keys
+        let entity = r#"{"_id": 1, "_labels": ["Person"]}"#;
+        let result = eval_fn(ScalarFunction::Keys, vec![Value::from(entity)]);
+        assert_eq!(result, Value::Array(vec![]));
     }
 }

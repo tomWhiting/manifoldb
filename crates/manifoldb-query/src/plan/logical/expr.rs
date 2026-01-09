@@ -1494,6 +1494,28 @@ pub enum ScalarFunction {
     /// Removes null values from a JSONB document.
     JsonbStripNulls,
 
+    // Cypher entity functions
+    /// `TYPE(relationship)`.
+    /// Returns the type (string) of a relationship.
+    /// Returns NULL if the argument is not a relationship or is NULL.
+    Type,
+    /// `LABELS(node)`.
+    /// Returns a list of labels for a node.
+    /// Returns NULL if the argument is not a node or is NULL.
+    Labels,
+    /// `ID(entity)`.
+    /// Returns the internal ID of a node or relationship.
+    /// Returns NULL if the argument is NULL.
+    Id,
+    /// `PROPERTIES(entity)`.
+    /// Returns a map of all properties of a node or relationship.
+    /// Returns NULL if the argument is NULL.
+    Properties,
+    /// `KEYS(map_or_entity)`.
+    /// Returns a list of property keys from a map or entity.
+    /// Returns NULL if the argument is NULL.
+    Keys,
+
     // Other
     /// Custom/user-defined function.
     Custom(u32), // Index into function registry
@@ -1587,6 +1609,12 @@ impl fmt::Display for ScalarFunction {
             Self::JsonbSet => "JSONB_SET",
             Self::JsonbInsert => "JSONB_INSERT",
             Self::JsonbStripNulls => "JSONB_STRIP_NULLS",
+            // Cypher entity functions
+            Self::Type => "TYPE",
+            Self::Labels => "LABELS",
+            Self::Id => "ID",
+            Self::Properties => "PROPERTIES",
+            Self::Keys => "KEYS",
             // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };
