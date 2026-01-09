@@ -812,11 +812,11 @@ These feature groups can be implemented independently:
 
 | Algorithm | Via CALL | Operator | Tested | Notes |
 |-----------|----------|----------|--------|-------|
-| PageRank | | ✓ | ✓ | Has operator |
-| Betweenness Centrality | | ✓ | ✓ | Has operator |
-| Closeness Centrality | | | | In graph crate |
-| Degree Centrality | | | | In graph crate |
-| Eigenvector Centrality | | | | Needs impl |
+| PageRank | ✓ | ✓ | ✓ | `algo.pageRank()` |
+| Betweenness Centrality | ✓ | ✓ | ✓ | `algo.betweennessCentrality()` |
+| Closeness Centrality | ✓ | | ✓ | `algo.closenessCentrality()` |
+| Degree Centrality | ✓ | | ✓ | `algo.degreeCentrality()` |
+| Eigenvector Centrality | ✓ | | ✓ | `algo.eigenvectorCentrality()` |
 
 ## 3.3 Community Detection
 
