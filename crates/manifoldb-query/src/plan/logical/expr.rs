@@ -1519,6 +1519,20 @@ pub enum ScalarFunction {
     ToDate,
     /// `TO_CHAR(datetime, format)`.
     ToChar,
+    /// `AGE(timestamp2, timestamp1)` or `AGE(timestamp)` - Calculate age between timestamps.
+    Age,
+    /// `DATE_ADD(date, interval)` - Add interval to date.
+    DateAdd,
+    /// `DATE_SUBTRACT(date, interval)` - Subtract interval from date.
+    DateSubtract,
+    /// `MAKE_TIMESTAMP(year, month, day, hour, minute, second)` - Construct timestamp.
+    MakeTimestamp,
+    /// `MAKE_DATE(year, month, day)` - Construct date.
+    MakeDate,
+    /// `MAKE_TIME(hour, minute, second)` - Construct time.
+    MakeTime,
+    /// `TIMEZONE(zone, timestamp)` - Convert timestamp to timezone.
+    Timezone,
 
     // Vector functions
     /// `VECTOR_DIMENSION(vector)`.
@@ -1696,6 +1710,13 @@ impl fmt::Display for ScalarFunction {
             Self::ToTimestamp => "TO_TIMESTAMP",
             Self::ToDate => "TO_DATE",
             Self::ToChar => "TO_CHAR",
+            Self::Age => "AGE",
+            Self::DateAdd => "DATE_ADD",
+            Self::DateSubtract => "DATE_SUBTRACT",
+            Self::MakeTimestamp => "MAKE_TIMESTAMP",
+            Self::MakeDate => "MAKE_DATE",
+            Self::MakeTime => "MAKE_TIME",
+            Self::Timezone => "TIMEZONE",
             // Vector functions
             Self::VectorDimension => "VECTOR_DIMENSION",
             Self::VectorNorm => "VECTOR_NORM",
