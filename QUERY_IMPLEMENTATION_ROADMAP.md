@@ -43,6 +43,32 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Cypher Map Projections†** - `node{.property, key: expr, .*}` syntax for property extraction and transformation
 - ✅ **Aggregate Window Functions†** - SUM/AVG/COUNT/MIN/MAX OVER with frame awareness
 
+### Remaining Work (14 Meta-Tasks)
+
+The following meta-tasks cover the remaining 50 items needed for full SQL/Cypher completion:
+
+| # | Meta-Task | Items | Priority | Focus Area |
+|---|-----------|-------|----------|------------|
+| 1 | Type System & Plan Infrastructure | 4 | Medium | Plan node schemas, validation, type inference |
+| 2 | Advanced CTE Features | 4 | Low | SEARCH, CYCLE, MATERIALIZED hints |
+| 3 | Window Function Extensions | 5 | Low | Named windows, GROUPS, FILTER clause |
+| 4 | Advanced SELECT Features | 3 | Low | DISTINCT ON, WITH TIES, TABLESAMPLE |
+| 5 | LATERAL Subqueries | 2 | Medium | LATERAL parser + planner |
+| 6 | View Expansion & Correlated Subqueries | 4 | Medium | View queries, correlated CALL { }, scoping |
+| 7 | DDL: Schema Objects | 3 | Low | SCHEMA, FUNCTION, TRIGGER |
+| 8 | DDL: Table Operations | 3 | Low | ALTER INDEX, TRUNCATE, partitions |
+| 9 | Utility Statements | 4 | Low | EXPLAIN ANALYZE, VACUUM, COPY, SET/SHOW |
+| 10 | JSON Functions Completion | 4 | Low | Path operators, json_each, jsonb_path_query |
+| 11 | Physical Join Operators | 3 | Medium | Index nested loop, sort-merge, hash aggregate |
+| 12 | Cypher Spatial Functions | 4 | Low | point(), distance, withinBBox |
+| 13 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
+| 14 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
+
+**Known Limitations (to be addressed):**
+- **Views**: CREATE/DROP works but SELECT FROM view doesn't expand the definition
+- **CALL { } Subquery**: Uncorrelated works; correlated WITH variable binding pending
+- **Transactions**: Parsing/planning complete; execution needs session state management
+
 ---
 
 ## Architecture Overview
