@@ -44,8 +44,11 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Aggregate Window Functions†** - SUM/AVG/COUNT/MIN/MAX OVER with frame awareness
 - ✅ **JSON Functions Completion†** - #>, #>>, ?, ?|, ?&, json_each, json_array_elements, jsonb_path_query (19 new functions)
 - ✅ **Transaction Execution†** - Session API with BEGIN/COMMIT/ROLLBACK, SAVEPOINT support (24 tests)
+- ✅ **Cypher Spatial Functions†** - Point type, point(), point.distance() (haversine), point.withinBBox() (17 tests)
+- ✅ **Physical Join Operators†** - IndexNestedLoopJoinOp, SortMergeJoinOp, HAVING clause enhancement
+- ✅ **Utility Statements†** - EXPLAIN ANALYZE, ANALYZE, COPY, SET/SHOW (VACUUM/RESET pending sqlparser 0.60)
 
-### Remaining Work (13 Meta-Tasks)
+### Remaining Work (10 Meta-Tasks)
 
 The following meta-tasks cover the remaining items needed for full SQL/Cypher completion:
 
@@ -59,13 +62,10 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 | 6 | View Expansion & Correlated Subqueries | 4 | Medium | View queries, correlated CALL { }, scoping |
 | 7 | DDL: Schema Objects | 3 | Low | SCHEMA, FUNCTION, TRIGGER |
 | 8 | DDL: Table Operations | 3 | Low | ALTER INDEX, TRUNCATE, partitions |
-| 9 | Utility Statements | 4 | Low | EXPLAIN ANALYZE, VACUUM, COPY, SET/SHOW |
-| 10 | Physical Join Operators | 3 | Medium | Index nested loop, sort-merge, hash aggregate |
-| 11 | Cypher Spatial Functions | 4 | Low | point(), distance, withinBBox |
-| 12 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
-| 13 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
+| 9 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
+| 10 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
 
-**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries.
+**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. A separate task exists for upgrading sqlparser to 0.60 (enables VACUUM/RESET parsing).
 
 ---
 
