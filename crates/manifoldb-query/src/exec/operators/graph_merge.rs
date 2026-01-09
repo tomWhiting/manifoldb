@@ -80,7 +80,7 @@ impl GraphMergeOp {
 
     /// Executes the MERGE operation for a single input row.
     fn execute_merge(&self, input_row: Option<&Row>) -> OperatorResult<Row> {
-        match &self.merge_node.pattern.clone() {
+        match &self.merge_node.pattern {
             MergePatternSpec::Node { variable, labels, match_properties } => {
                 self.merge_node_pattern(variable, labels, match_properties, input_row)
             }
@@ -298,7 +298,7 @@ impl GraphMergeOp {
         edge_id: Option<EdgeId>,
         input_row: Option<&Row>,
     ) -> OperatorResult<()> {
-        self.execute_set_actions(&self.merge_node.on_create.clone(), entity_id, edge_id, input_row)
+        self.execute_set_actions(&self.merge_node.on_create, entity_id, edge_id, input_row)
     }
 
     /// Executes ON MATCH SET actions.
@@ -308,7 +308,7 @@ impl GraphMergeOp {
         edge_id: Option<EdgeId>,
         input_row: Option<&Row>,
     ) -> OperatorResult<()> {
-        self.execute_set_actions(&self.merge_node.on_match.clone(), entity_id, edge_id, input_row)
+        self.execute_set_actions(&self.merge_node.on_match, entity_id, edge_id, input_row)
     }
 
     /// Executes a list of SET actions on an entity or edge.
