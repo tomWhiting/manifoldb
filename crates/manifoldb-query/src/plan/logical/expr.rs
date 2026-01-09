@@ -1129,6 +1129,41 @@ pub enum ScalarFunction {
     /// Returns the list in reverse order.
     Reverse,
 
+    // JSON functions
+    /// `JSON_EXTRACT_PATH(json, VARIADIC path)`.
+    /// Extracts a JSON value at the given path.
+    JsonExtractPath,
+    /// `JSONB_EXTRACT_PATH(jsonb, VARIADIC path)`.
+    /// Extracts a JSONB value at the given path.
+    JsonbExtractPath,
+    /// `JSON_EXTRACT_PATH_TEXT(json, VARIADIC path)`.
+    /// Extracts a JSON value at the given path as text.
+    JsonExtractPathText,
+    /// `JSONB_EXTRACT_PATH_TEXT(jsonb, VARIADIC path)`.
+    /// Extracts a JSONB value at the given path as text.
+    JsonbExtractPathText,
+    /// `JSON_BUILD_OBJECT(key1, val1, ...)`.
+    /// Builds a JSON object from key/value pairs.
+    JsonBuildObject,
+    /// `JSONB_BUILD_OBJECT(key1, val1, ...)`.
+    /// Builds a JSONB object from key/value pairs.
+    JsonbBuildObject,
+    /// `JSON_BUILD_ARRAY(val1, val2, ...)`.
+    /// Builds a JSON array from values.
+    JsonBuildArray,
+    /// `JSONB_BUILD_ARRAY(val1, val2, ...)`.
+    /// Builds a JSONB array from values.
+    JsonbBuildArray,
+    /// `JSONB_SET(target, path, value, create_missing)`.
+    /// Sets a value at a path within a JSONB document.
+    JsonbSet,
+    /// `JSONB_INSERT(target, path, value, before)`.
+    /// Inserts a value at a path within a JSONB document.
+    JsonbInsert,
+    /// `JSONB_STRIP_NULLS(jsonb)`.
+    /// Removes null values from a JSONB document.
+    JsonbStripNulls,
+
     // Other
     /// Custom/user-defined function.
     Custom(u32), // Index into function registry
@@ -1199,6 +1234,18 @@ impl fmt::Display for ScalarFunction {
             Self::Tail => "TAIL",
             Self::Last => "LAST",
             Self::Reverse => "REVERSE",
+            // JSON functions
+            Self::JsonExtractPath => "JSON_EXTRACT_PATH",
+            Self::JsonbExtractPath => "JSONB_EXTRACT_PATH",
+            Self::JsonExtractPathText => "JSON_EXTRACT_PATH_TEXT",
+            Self::JsonbExtractPathText => "JSONB_EXTRACT_PATH_TEXT",
+            Self::JsonBuildObject => "JSON_BUILD_OBJECT",
+            Self::JsonbBuildObject => "JSONB_BUILD_OBJECT",
+            Self::JsonBuildArray => "JSON_BUILD_ARRAY",
+            Self::JsonbBuildArray => "JSONB_BUILD_ARRAY",
+            Self::JsonbSet => "JSONB_SET",
+            Self::JsonbInsert => "JSONB_INSERT",
+            Self::JsonbStripNulls => "JSONB_STRIP_NULLS",
             // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };

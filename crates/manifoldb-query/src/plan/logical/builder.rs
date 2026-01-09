@@ -1478,6 +1478,18 @@ impl PlanBuilder {
                     "TAIL" => Some(ScalarFunction::Tail),
                     "LAST" => Some(ScalarFunction::Last),
                     "REVERSE" => Some(ScalarFunction::Reverse),
+                    // JSON functions
+                    "JSON_EXTRACT_PATH" => Some(ScalarFunction::JsonExtractPath),
+                    "JSONB_EXTRACT_PATH" => Some(ScalarFunction::JsonbExtractPath),
+                    "JSON_EXTRACT_PATH_TEXT" => Some(ScalarFunction::JsonExtractPathText),
+                    "JSONB_EXTRACT_PATH_TEXT" => Some(ScalarFunction::JsonbExtractPathText),
+                    "JSON_BUILD_OBJECT" => Some(ScalarFunction::JsonBuildObject),
+                    "JSONB_BUILD_OBJECT" => Some(ScalarFunction::JsonbBuildObject),
+                    "JSON_BUILD_ARRAY" => Some(ScalarFunction::JsonBuildArray),
+                    "JSONB_BUILD_ARRAY" => Some(ScalarFunction::JsonbBuildArray),
+                    "JSONB_SET" => Some(ScalarFunction::JsonbSet),
+                    "JSONB_INSERT" => Some(ScalarFunction::JsonbInsert),
+                    "JSONB_STRIP_NULLS" => Some(ScalarFunction::JsonbStripNulls),
                     _ => None,
                 };
 

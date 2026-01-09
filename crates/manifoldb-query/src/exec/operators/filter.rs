@@ -1153,6 +1153,49 @@ fn evaluate_scalar_function(
             }
         }
 
+        // ========== JSON Functions ==========
+        ScalarFunction::JsonExtractPath | ScalarFunction::JsonbExtractPath => {
+            // JSON_EXTRACT_PATH(json, VARIADIC path_elements)
+            // Returns the JSON value at the specified path
+            json_extract_path(args, false)
+        }
+
+        ScalarFunction::JsonExtractPathText | ScalarFunction::JsonbExtractPathText => {
+            // JSON_EXTRACT_PATH_TEXT(json, VARIADIC path_elements)
+            // Returns the JSON value at the specified path as text
+            json_extract_path(args, true)
+        }
+
+        ScalarFunction::JsonBuildObject | ScalarFunction::JsonbBuildObject => {
+            // JSON_BUILD_OBJECT(key1, val1, key2, val2, ...)
+            // Builds a JSON object from alternating key/value pairs
+            json_build_object(args)
+        }
+
+        ScalarFunction::JsonBuildArray | ScalarFunction::JsonbBuildArray => {
+            // JSON_BUILD_ARRAY(val1, val2, ...)
+            // Builds a JSON array from the arguments
+            json_build_array(args)
+        }
+
+        ScalarFunction::JsonbSet => {
+            // JSONB_SET(target, path, new_value, create_missing)
+            // Sets a value at the specified path within a JSONB document
+            jsonb_set(args)
+        }
+
+        ScalarFunction::JsonbInsert => {
+            // JSONB_INSERT(target, path, new_value, insert_after)
+            // Inserts a value at the specified path within a JSONB document
+            jsonb_insert(args)
+        }
+
+        ScalarFunction::JsonbStripNulls => {
+            // JSONB_STRIP_NULLS(jsonb)
+            // Removes null values from a JSONB document
+            jsonb_strip_nulls(args)
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -1329,6 +1372,545 @@ fn pg_format_to_chrono(pg_format: &str) -> String {
         .replace("Day", "%A")
         .replace("Mon", "%b")
         .replace("Month", "%B")
+}
+
+// ========== JSON Functions ==========
+
+/// Converts a `Value` to a `serde_json::Value`.
+fn value_to_json(val: &Value) -> serde_json::Value {
+    match val {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
+        Value::Vector(v) => serde_json::Value::Array(
+            v.iter()
+                .filter_map(|f| serde_json::Number::from_f64(f64::from(*f)))
+                .map(serde_json::Value::Number)
+                .collect(),
+        ),
+        Value::SparseVector(sv) => serde_json::Value::Object(
+            sv.iter()
+                .filter_map(|(idx, val)| {
+                    serde_json::Number::from_f64(f64::from(*val))
+                        .map(|n| (idx.to_string(), serde_json::Value::Number(n)))
+                })
+                .collect(),
+        ),
+        Value::MultiVector(mv) => serde_json::Value::Array(
+            mv.iter()
+                .map(|v| {
+                    serde_json::Value::Array(
+                        v.iter()
+                            .filter_map(|f| serde_json::Number::from_f64(f64::from(*f)))
+                            .map(serde_json::Value::Number)
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ),
+        Value::Bytes(b) => serde_json::Value::String(base64_encode(b)),
+    }
+}
+
+/// Encodes bytes as base64 string.
+fn base64_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk.first().copied().unwrap_or(0);
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+
+        let _ = write!(result, "{}", BASE64_CHARS[(b0 >> 2) as usize] as char);
+        let _ =
+            write!(result, "{}", BASE64_CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            let _ = write!(
+                result,
+                "{}",
+                BASE64_CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+            );
+        } else {
+            let _ = write!(result, "=");
+        }
+        if chunk.len() > 2 {
+            let _ = write!(result, "{}", BASE64_CHARS[(b2 & 0x3f) as usize] as char);
+        } else {
+            let _ = write!(result, "=");
+        }
+    }
+    result
+}
+
+/// Converts a `serde_json::Value` back to a `Value`.
+#[allow(dead_code)]
+fn json_to_value(json: serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s),
+        serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(json_to_value).collect()),
+        serde_json::Value::Object(obj) => {
+            // Convert object to JSON string representation
+            Value::String(
+                serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default(),
+            )
+        }
+    }
+}
+
+/// Parses a JSON string into a `serde_json::Value`.
+fn parse_json(s: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(s).ok()
+}
+
+/// Extracts a value from JSON at the specified path.
+/// If `as_text` is true, returns the extracted value as a string.
+fn json_extract_path(args: &[Value], as_text: bool) -> OperatorResult<Value> {
+    // First arg is the JSON document
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        // If not a string, try to convert to JSON
+        Some(other) => {
+            let json = value_to_json(other);
+            let json_str = serde_json::to_string(&json).unwrap_or_default();
+            return json_extract_path_impl(&json_str, &args[1..], as_text);
+        }
+    };
+
+    json_extract_path_impl(json_str, &args[1..], as_text)
+}
+
+/// Implementation of JSON path extraction.
+fn json_extract_path_impl(json_str: &str, path: &[Value], as_text: bool) -> OperatorResult<Value> {
+    // Parse the JSON
+    let mut current = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    // Navigate through the path
+    for path_elem in path {
+        let key = match path_elem {
+            Value::String(s) => s.clone(),
+            Value::Int(i) => i.to_string(),
+            Value::Null => return Ok(Value::Null),
+            _ => return Ok(Value::Null),
+        };
+
+        current = match current {
+            serde_json::Value::Object(mut obj) => {
+                obj.remove(&key).unwrap_or(serde_json::Value::Null)
+            }
+            serde_json::Value::Array(arr) => {
+                // Try to parse key as array index
+                if let Ok(idx) = key.parse::<usize>() {
+                    arr.into_iter().nth(idx).unwrap_or(serde_json::Value::Null)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            _ => serde_json::Value::Null,
+        };
+
+        if current.is_null() {
+            return Ok(Value::Null);
+        }
+    }
+
+    // Return result
+    if as_text {
+        // Return as text (no quotes for strings)
+        match current {
+            serde_json::Value::Null => Ok(Value::Null),
+            serde_json::Value::String(s) => Ok(Value::String(s)),
+            other => Ok(Value::String(other.to_string())),
+        }
+    } else {
+        // Return as JSON string representation
+        match current {
+            serde_json::Value::Null => Ok(Value::Null),
+            other => Ok(Value::String(serde_json::to_string(&other).unwrap_or_default())),
+        }
+    }
+}
+
+/// Builds a JSON object from key/value pairs.
+fn json_build_object(args: &[Value]) -> OperatorResult<Value> {
+    // Arguments should come in pairs: key1, val1, key2, val2, ...
+    if args.len() % 2 != 0 {
+        // Odd number of arguments - error
+        return Ok(Value::Null);
+    }
+
+    let mut obj = serde_json::Map::new();
+
+    for chunk in args.chunks(2) {
+        // First element is the key
+        let key = match &chunk[0] {
+            Value::String(s) => s.clone(),
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Null => "null".to_string(),
+            _ => continue,
+        };
+
+        // Second element is the value
+        let val = value_to_json(&chunk[1]);
+        obj.insert(key, val);
+    }
+
+    let json_str = serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+    Ok(Value::String(json_str))
+}
+
+/// Builds a JSON array from values.
+fn json_build_array(args: &[Value]) -> OperatorResult<Value> {
+    let arr: Vec<serde_json::Value> = args.iter().map(value_to_json).collect();
+    let json_str = serde_json::to_string(&serde_json::Value::Array(arr)).unwrap_or_default();
+    Ok(Value::String(json_str))
+}
+
+/// Sets a value at the specified path within a JSONB document.
+/// Args: target, path (as array), new_value, create_missing (optional, default true)
+fn jsonb_set(args: &[Value]) -> OperatorResult<Value> {
+    // Extract arguments
+    let target_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    // Path should be an array of strings/integers
+    let path_values = match args.get(1) {
+        Some(Value::Array(arr)) => arr,
+        Some(Value::String(s)) => {
+            // If it's a string, it might be a JSON array representation
+            if let Some(serde_json::Value::Array(arr)) = parse_json(s) {
+                let path: Vec<String> = arr
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                return jsonb_set_impl(target_str, &path, args.get(2), args.get(3));
+            }
+            return Ok(Value::Null);
+        }
+        _ => return Ok(Value::Null),
+    };
+
+    // Convert path values to strings
+    let path: Vec<String> = path_values
+        .iter()
+        .filter_map(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Int(i) => Some(i.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    jsonb_set_impl(target_str, &path, args.get(2), args.get(3))
+}
+
+/// Implementation of jsonb_set.
+fn jsonb_set_impl(
+    target_str: &str,
+    path: &[String],
+    new_value: Option<&Value>,
+    create_missing: Option<&Value>,
+) -> OperatorResult<Value> {
+    // Parse target JSON
+    let mut target = match parse_json(target_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    // Get new value
+    let new_val = match new_value {
+        Some(v) => value_to_json(v),
+        None => return Ok(Value::Null),
+    };
+
+    // Check create_missing flag (default true)
+    let should_create = match create_missing {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.to_lowercase() == "true",
+        _ => true, // Default to true
+    };
+
+    // Navigate and set
+    if path.is_empty() {
+        return Ok(Value::String(serde_json::to_string(&new_val).unwrap_or_default()));
+    }
+
+    set_json_path(&mut target, path, new_val, should_create);
+
+    Ok(Value::String(serde_json::to_string(&target).unwrap_or_default()))
+}
+
+/// Recursively sets a value at a JSON path.
+fn set_json_path(
+    current: &mut serde_json::Value,
+    path: &[String],
+    new_val: serde_json::Value,
+    create_missing: bool,
+) {
+    if path.is_empty() {
+        return;
+    }
+
+    let key = &path[0];
+    let remaining = &path[1..];
+
+    if remaining.is_empty() {
+        // We're at the target location, set the value
+        match current {
+            serde_json::Value::Object(obj) => {
+                if create_missing || obj.contains_key(key) {
+                    obj.insert(key.clone(), new_val);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                if let Ok(idx) = key.parse::<usize>() {
+                    if idx < arr.len() {
+                        arr[idx] = new_val;
+                    } else if create_missing {
+                        // Extend array with nulls and then set
+                        while arr.len() < idx {
+                            arr.push(serde_json::Value::Null);
+                        }
+                        arr.push(new_val);
+                    }
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // Navigate deeper
+        match current {
+            serde_json::Value::Object(obj) => {
+                if let Some(child) = obj.get_mut(key) {
+                    set_json_path(child, remaining, new_val, create_missing);
+                } else if create_missing {
+                    // Create intermediate object or array based on next key
+                    let next_is_index =
+                        remaining.first().map(|k| k.parse::<usize>().is_ok()).unwrap_or(false);
+                    let mut new_child = if next_is_index {
+                        serde_json::Value::Array(vec![])
+                    } else {
+                        serde_json::Value::Object(serde_json::Map::new())
+                    };
+                    set_json_path(&mut new_child, remaining, new_val, create_missing);
+                    obj.insert(key.clone(), new_child);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                if let Ok(idx) = key.parse::<usize>() {
+                    if idx < arr.len() {
+                        set_json_path(&mut arr[idx], remaining, new_val, create_missing);
+                    } else if create_missing {
+                        // Extend array
+                        while arr.len() <= idx {
+                            arr.push(serde_json::Value::Null);
+                        }
+                        let next_is_index =
+                            remaining.first().map(|k| k.parse::<usize>().is_ok()).unwrap_or(false);
+                        arr[idx] = if next_is_index {
+                            serde_json::Value::Array(vec![])
+                        } else {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        };
+                        set_json_path(&mut arr[idx], remaining, new_val, create_missing);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Inserts a value at the specified path within a JSONB document.
+/// Args: target, path (as array), new_value, insert_after (optional, default false)
+fn jsonb_insert(args: &[Value]) -> OperatorResult<Value> {
+    // Extract arguments
+    let target_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    // Path should be an array
+    let path_values = match args.get(1) {
+        Some(Value::Array(arr)) => arr,
+        Some(Value::String(s)) => {
+            if let Some(serde_json::Value::Array(arr)) = parse_json(s) {
+                let path: Vec<String> = arr
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                return jsonb_insert_impl(target_str, &path, args.get(2), args.get(3));
+            }
+            return Ok(Value::Null);
+        }
+        _ => return Ok(Value::Null),
+    };
+
+    let path: Vec<String> = path_values
+        .iter()
+        .filter_map(|v| match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Int(i) => Some(i.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    jsonb_insert_impl(target_str, &path, args.get(2), args.get(3))
+}
+
+/// Implementation of jsonb_insert.
+fn jsonb_insert_impl(
+    target_str: &str,
+    path: &[String],
+    new_value: Option<&Value>,
+    insert_after: Option<&Value>,
+) -> OperatorResult<Value> {
+    let mut target = match parse_json(target_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    let new_val = match new_value {
+        Some(v) => value_to_json(v),
+        None => return Ok(Value::Null),
+    };
+
+    let after = match insert_after {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.to_lowercase() == "true",
+        _ => false,
+    };
+
+    if path.is_empty() {
+        return Ok(Value::String(target_str.to_string()));
+    }
+
+    insert_json_path(&mut target, path, new_val, after);
+
+    Ok(Value::String(serde_json::to_string(&target).unwrap_or_default()))
+}
+
+/// Recursively inserts a value at a JSON path (for arrays).
+fn insert_json_path(
+    current: &mut serde_json::Value,
+    path: &[String],
+    new_val: serde_json::Value,
+    after: bool,
+) {
+    if path.is_empty() {
+        return;
+    }
+
+    let key = &path[0];
+    let remaining = &path[1..];
+
+    if remaining.is_empty() {
+        // We're at the target location
+        match current {
+            serde_json::Value::Object(obj) => {
+                // For objects, just insert (like set)
+                obj.insert(key.clone(), new_val);
+            }
+            serde_json::Value::Array(arr) => {
+                if let Ok(idx) = key.parse::<usize>() {
+                    let insert_idx = if after { idx + 1 } else { idx };
+                    let insert_idx = insert_idx.min(arr.len());
+                    arr.insert(insert_idx, new_val);
+                }
+            }
+            _ => {}
+        }
+    } else {
+        // Navigate deeper
+        match current {
+            serde_json::Value::Object(obj) => {
+                if let Some(child) = obj.get_mut(key) {
+                    insert_json_path(child, remaining, new_val, after);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                if let Ok(idx) = key.parse::<usize>() {
+                    if idx < arr.len() {
+                        insert_json_path(&mut arr[idx], remaining, new_val, after);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Removes null values from a JSONB document recursively.
+fn jsonb_strip_nulls(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        Some(other) => {
+            // Convert non-string value to JSON
+            let json = value_to_json(other);
+            let stripped = strip_nulls_recursive(json);
+            return Ok(Value::String(serde_json::to_string(&stripped).unwrap_or_default()));
+        }
+    };
+
+    let json = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    let stripped = strip_nulls_recursive(json);
+    Ok(Value::String(serde_json::to_string(&stripped).unwrap_or_default()))
+}
+
+/// Recursively strips null values from a JSON value.
+fn strip_nulls_recursive(val: serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Object(obj) => {
+            let filtered: serde_json::Map<String, serde_json::Value> = obj
+                .into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls_recursive(v)))
+                .collect();
+            serde_json::Value::Object(filtered)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(strip_nulls_recursive).collect())
+        }
+        other => other,
+    }
 }
 
 /// Compares two values for equality.
@@ -2675,5 +3257,237 @@ mod tests {
 
         let result = evaluate_expr(&outer_comprehension, &row).unwrap();
         assert_eq!(result, Value::Array(vec![Value::Int(4), Value::Int(6), Value::Int(8)]));
+    }
+
+    // ========== JSON Function Tests ==========
+
+    #[test]
+    fn test_json_extract_path() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Simple object extraction
+        let json = r#"{"name": "Alice", "age": 30}"#;
+        let result =
+            eval_fn(ScalarFunction::JsonExtractPath, vec![Value::from(json), Value::from("name")]);
+        assert_eq!(result, Value::String("\"Alice\"".to_string()));
+
+        // Nested object extraction
+        let json = r#"{"user": {"name": "Bob", "address": {"city": "NYC"}}}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPath,
+            vec![
+                Value::from(json),
+                Value::from("user"),
+                Value::from("address"),
+                Value::from("city"),
+            ],
+        );
+        assert_eq!(result, Value::String("\"NYC\"".to_string()));
+
+        // Array index extraction
+        let json = r#"{"items": ["a", "b", "c"]}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPath,
+            vec![Value::from(json), Value::from("items"), Value::from("1")],
+        );
+        assert_eq!(result, Value::String("\"b\"".to_string()));
+
+        // Non-existent path returns null
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPath,
+            vec![Value::from(json), Value::from("nonexistent")],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_json_extract_path_text() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Text extraction returns unquoted string
+        let json = r#"{"name": "Alice"}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathText,
+            vec![Value::from(json), Value::from("name")],
+        );
+        assert_eq!(result, Value::String("Alice".to_string()));
+
+        // Number extraction as text
+        let json = r#"{"age": 30}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathText,
+            vec![Value::from(json), Value::from("age")],
+        );
+        assert_eq!(result, Value::String("30".to_string()));
+    }
+
+    #[test]
+    fn test_json_build_object() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Simple object
+        let result = eval_fn(
+            ScalarFunction::JsonBuildObject,
+            vec![Value::from("name"), Value::from("Alice"), Value::from("age"), Value::Int(30)],
+        );
+        // Parse the result to verify it's valid JSON with expected content
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["name"], "Alice");
+        assert_eq!(parsed["age"], 30);
+
+        // Empty object
+        let result = eval_fn(ScalarFunction::JsonBuildObject, vec![]);
+        assert_eq!(result, Value::String("{}".to_string()));
+
+        // Odd number of args returns null
+        let result = eval_fn(ScalarFunction::JsonBuildObject, vec![Value::from("key")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_json_build_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Simple array
+        let result = eval_fn(
+            ScalarFunction::JsonBuildArray,
+            vec![Value::Int(1), Value::from("two"), Value::Bool(true)],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed[0], 1);
+        assert_eq!(parsed[1], "two");
+        assert_eq!(parsed[2], true);
+
+        // Empty array
+        let result = eval_fn(ScalarFunction::JsonBuildArray, vec![]);
+        assert_eq!(result, Value::String("[]".to_string()));
+    }
+
+    #[test]
+    fn test_jsonb_set() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Set existing key
+        let json = r#"{"name": "Alice", "age": 30}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonbSet,
+            vec![Value::from(json), Value::Array(vec![Value::from("name")]), Value::from("Bob")],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["name"], "Bob");
+        assert_eq!(parsed["age"], 30);
+
+        // Set nested key (create_missing = true by default)
+        let json = r#"{"user": {"name": "Alice"}}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonbSet,
+            vec![
+                Value::from(json),
+                Value::Array(vec![Value::from("user"), Value::from("age")]),
+                Value::Int(25),
+            ],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["user"]["name"], "Alice");
+        assert_eq!(parsed["user"]["age"], 25);
+
+        // Set with create_missing = false (should not create new key)
+        let json = r#"{"name": "Alice"}"#;
+        let result = eval_fn(
+            ScalarFunction::JsonbSet,
+            vec![
+                Value::from(json),
+                Value::Array(vec![Value::from("age")]),
+                Value::Int(30),
+                Value::Bool(false),
+            ],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["name"], "Alice");
+        assert!(parsed.get("age").is_none());
+    }
+
+    #[test]
+    fn test_jsonb_insert() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Insert into array (before index)
+        let json = r"[1, 2, 3]";
+        let result = eval_fn(
+            ScalarFunction::JsonbInsert,
+            vec![Value::from(json), Value::Array(vec![Value::from("1")]), Value::Int(99)],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed, serde_json::json!([1, 99, 2, 3]));
+
+        // Insert into array (after index)
+        let result = eval_fn(
+            ScalarFunction::JsonbInsert,
+            vec![
+                Value::from(json),
+                Value::Array(vec![Value::from("1")]),
+                Value::Int(99),
+                Value::Bool(true), // insert_after
+            ],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed, serde_json::json!([1, 2, 99, 3]));
+    }
+
+    #[test]
+    fn test_jsonb_strip_nulls() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Strip nulls from object
+        let json = r#"{"name": "Alice", "age": null, "city": "NYC"}"#;
+        let result = eval_fn(ScalarFunction::JsonbStripNulls, vec![Value::from(json)]);
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["name"], "Alice");
+        assert_eq!(parsed["city"], "NYC");
+        assert!(parsed.get("age").is_none());
+
+        // Strip nulls recursively
+        let json = r#"{"user": {"name": "Alice", "age": null}, "active": null}"#;
+        let result = eval_fn(ScalarFunction::JsonbStripNulls, vec![Value::from(json)]);
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["user"]["name"], "Alice");
+        assert!(parsed["user"].get("age").is_none());
+        assert!(parsed.get("active").is_none());
+
+        // Arrays with nulls are preserved (only object keys are stripped)
+        let json = r#"{"items": [1, null, 3]}"#;
+        let result = eval_fn(ScalarFunction::JsonbStripNulls, vec![Value::from(json)]);
+        let parsed: serde_json::Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(parsed["items"], serde_json::json!([1, null, 3]));
+    }
+
+    #[test]
+    fn test_jsonb_functions_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Null input returns null
+        let result =
+            eval_fn(ScalarFunction::JsonExtractPath, vec![Value::Null, Value::from("key")]);
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(ScalarFunction::JsonbStripNulls, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(
+            ScalarFunction::JsonbSet,
+            vec![Value::Null, Value::Array(vec![Value::from("key")]), Value::from("value")],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_json_extract_with_integer_path() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Using integer for array index
+        let json = r#"["a", "b", "c"]"#;
+        let result =
+            eval_fn(ScalarFunction::JsonExtractPath, vec![Value::from(json), Value::Int(1)]);
+        assert_eq!(result, Value::String("\"b\"".to_string()));
     }
 }

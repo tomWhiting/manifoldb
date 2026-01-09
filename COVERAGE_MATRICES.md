@@ -529,14 +529,19 @@ These feature groups can be implemented independently:
 
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
-| json_extract_path | ✓ | ✓ | | | | | |
-| jsonb_extract_path | ✓ | ✓ | | | | | |
-| json_build_object | ✓ | ✓ | | | | | |
-| jsonb_build_object | ✓ | ✓ | | | | | |
-| json_each | | | | | | | |
-| jsonb_each | | | | | | | |
-| jsonb_set | | | | | | | |
-| jsonb_strip_nulls | | | | | | | |
+| json_extract_path | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_extract_path | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| json_extract_path_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_extract_path_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| json_build_object | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_build_object | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| json_build_array | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_build_array | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_set | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_insert | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| jsonb_strip_nulls | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| json_each | | | | | | | Not impl |
+| jsonb_each | | | | | | | Not impl |
 
 ### Array Functions
 
