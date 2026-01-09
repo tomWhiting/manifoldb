@@ -277,6 +277,64 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
 
         // Window functions should be evaluated by the window operator, not at filter level
         LogicalExpr::WindowFunction { .. } => Ok(Value::Null),
+
+        // List comprehension: [x IN list WHERE predicate | expression]
+        LogicalExpr::ListComprehension {
+            variable,
+            list_expr,
+            filter_predicate,
+            transform_expr,
+        } => {
+            // First evaluate the list expression to get the source list
+            let list_value = evaluate_expr(list_expr, row)?;
+
+            // Extract elements from the list value
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                // If it's a single value, treat it as a one-element list
+                other => vec![other],
+            };
+
+            // Process each element through the comprehension
+            let mut result = Vec::new();
+            for element in elements {
+                // Create a temporary row with the variable bound to the current element
+                // We'll add the variable as a column to the row for evaluation
+                let temp_row = row.with_binding(variable.as_str(), element.clone());
+
+                // Apply filter predicate if present
+                let passes_filter = if let Some(predicate) = filter_predicate {
+                    let filter_result = evaluate_expr(predicate, &temp_row)?;
+                    match filter_result {
+                        Value::Bool(b) => b,
+                        Value::Null => false,
+                        _ => false,
+                    }
+                } else {
+                    true
+                };
+
+                if passes_filter {
+                    // Apply transform expression if present, otherwise use the element itself
+                    let output = if let Some(transform) = transform_expr {
+                        evaluate_expr(transform, &temp_row)?
+                    } else {
+                        element
+                    };
+                    result.push(output);
+                }
+            }
+
+            Ok(Value::Array(result))
+        }
+
+        // List literal: [expr1, expr2, ...]
+        LogicalExpr::ListLiteral(exprs) => {
+            let elements: Vec<Value> =
+                exprs.iter().map(|e| evaluate_expr(e, row)).collect::<OperatorResult<Vec<_>>>()?;
+            Ok(Value::Array(elements))
+        }
     }
 }
 
@@ -996,6 +1054,102 @@ fn evaluate_scalar_function(
                 Ok(Value::Float(f64::from(norm)))
             } else {
                 Ok(Value::Null)
+            }
+        }
+
+        // List/Collection functions
+        ScalarFunction::Range => {
+            // RANGE(start, end) or RANGE(start, end, step)
+            // Returns a list of integers from start to end (inclusive in Cypher)
+            match args {
+                [Value::Int(start), Value::Int(end)] => {
+                    let (start, end) = (*start, *end);
+                    let range: Vec<Value> = if start <= end {
+                        (start..=end).map(Value::Int).collect()
+                    } else {
+                        (end..=start).rev().map(Value::Int).collect()
+                    };
+                    Ok(Value::Array(range))
+                }
+                [Value::Int(start), Value::Int(end), Value::Int(step)] => {
+                    let (start, end, step) = (*start, *end, *step);
+                    if step == 0 {
+                        return Err(crate::error::ParseError::Execution(
+                            "range step cannot be zero".into(),
+                        ));
+                    }
+                    let mut range = Vec::new();
+                    let mut current = start;
+                    if step > 0 {
+                        while current <= end {
+                            range.push(Value::Int(current));
+                            current += step;
+                        }
+                    } else {
+                        while current >= end {
+                            range.push(Value::Int(current));
+                            current += step;
+                        }
+                    }
+                    Ok(Value::Array(range))
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Size => {
+            // SIZE(list) or SIZE(string)
+            match args.first() {
+                Some(Value::Array(arr)) => Ok(Value::Int(arr.len() as i64)),
+                Some(Value::String(s)) => Ok(Value::Int(s.len() as i64)),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Head => {
+            // HEAD(list) - returns first element
+            match args.first() {
+                Some(Value::Array(arr)) => Ok(arr.first().cloned().unwrap_or(Value::Null)),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Tail => {
+            // TAIL(list) - returns list without first element
+            match args.first() {
+                Some(Value::Array(arr)) => {
+                    if arr.is_empty() {
+                        Ok(Value::Array(vec![]))
+                    } else {
+                        Ok(Value::Array(arr[1..].to_vec()))
+                    }
+                }
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Last => {
+            // LAST(list) - returns last element
+            match args.first() {
+                Some(Value::Array(arr)) => Ok(arr.last().cloned().unwrap_or(Value::Null)),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Reverse => {
+            // REVERSE(list) or REVERSE(string)
+            match args.first() {
+                Some(Value::Array(arr)) => {
+                    let reversed: Vec<Value> = arr.iter().rev().cloned().collect();
+                    Ok(Value::Array(reversed))
+                }
+                Some(Value::String(s)) => Ok(Value::String(s.chars().rev().collect())),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
             }
         }
 
@@ -2181,5 +2335,345 @@ mod tests {
         // SUBSTRING('hello', 2) = 'ello' (to end)
         let result = eval_fn(ScalarFunction::Substring, vec![Value::from("hello"), Value::Int(2)]);
         assert_eq!(result, Value::String("ello".to_string()));
+    }
+
+    #[test]
+    fn test_range_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // RANGE(1, 5) = [1, 2, 3, 4, 5]
+        let result = eval_fn(ScalarFunction::Range, vec![Value::Int(1), Value::Int(5)]);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(3),
+                Value::Int(4),
+                Value::Int(5)
+            ])
+        );
+
+        // RANGE(5, 1) = [5, 4, 3, 2, 1] (reverse order)
+        let result = eval_fn(ScalarFunction::Range, vec![Value::Int(5), Value::Int(1)]);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(5),
+                Value::Int(4),
+                Value::Int(3),
+                Value::Int(2),
+                Value::Int(1)
+            ])
+        );
+
+        // RANGE(0, 10, 2) = [0, 2, 4, 6, 8, 10]
+        let result =
+            eval_fn(ScalarFunction::Range, vec![Value::Int(0), Value::Int(10), Value::Int(2)]);
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(0),
+                Value::Int(2),
+                Value::Int(4),
+                Value::Int(6),
+                Value::Int(8),
+                Value::Int(10)
+            ])
+        );
+
+        // RANGE(10, 0, -3) = [10, 7, 4, 1]
+        let result =
+            eval_fn(ScalarFunction::Range, vec![Value::Int(10), Value::Int(0), Value::Int(-3)]);
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(10), Value::Int(7), Value::Int(4), Value::Int(1)])
+        );
+    }
+
+    #[test]
+    fn test_size_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // SIZE([1, 2, 3]) = 3
+        let result = eval_fn(
+            ScalarFunction::Size,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Int(3));
+
+        // SIZE("hello") = 5
+        let result = eval_fn(ScalarFunction::Size, vec![Value::from("hello")]);
+        assert_eq!(result, Value::Int(5));
+
+        // SIZE([]) = 0
+        let result = eval_fn(ScalarFunction::Size, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_head_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // HEAD([1, 2, 3]) = 1
+        let result = eval_fn(
+            ScalarFunction::Head,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Int(1));
+
+        // HEAD([]) = null
+        let result = eval_fn(ScalarFunction::Head, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_tail_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // TAIL([1, 2, 3]) = [2, 3]
+        let result = eval_fn(
+            ScalarFunction::Tail,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(2), Value::Int(3)]));
+
+        // TAIL([1]) = []
+        let result = eval_fn(ScalarFunction::Tail, vec![Value::Array(vec![Value::Int(1)])]);
+        assert_eq!(result, Value::Array(vec![]));
+
+        // TAIL([]) = []
+        let result = eval_fn(ScalarFunction::Tail, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_last_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // LAST([1, 2, 3]) = 3
+        let result = eval_fn(
+            ScalarFunction::Last,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Int(3));
+
+        // LAST([]) = null
+        let result = eval_fn(ScalarFunction::Last, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_reverse_function() {
+        use crate::plan::logical::ScalarFunction;
+
+        // REVERSE([1, 2, 3]) = [3, 2, 1]
+        let result = eval_fn(
+            ScalarFunction::Reverse,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(3), Value::Int(2), Value::Int(1)]));
+
+        // REVERSE("hello") = "olleh"
+        let result = eval_fn(ScalarFunction::Reverse, vec![Value::from("hello")]);
+        assert_eq!(result, Value::String("olleh".to_string()));
+    }
+
+    #[test]
+    fn test_list_comprehension_filter_only() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: [x IN [1, 2, 3, 4, 5] WHERE x > 2]
+        let comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+                LogicalExpr::integer(4),
+                LogicalExpr::integer(5),
+            ])),
+            filter_predicate: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(2)),
+            })),
+            transform_expr: None,
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&comprehension, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![Value::Int(3), Value::Int(4), Value::Int(5)]));
+    }
+
+    #[test]
+    fn test_list_comprehension_transform_only() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: [x IN [1, 2, 3] | x * 2]
+        let comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            filter_predicate: None,
+            transform_expr: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Mul,
+                right: Box::new(LogicalExpr::integer(2)),
+            })),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&comprehension, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![Value::Int(2), Value::Int(4), Value::Int(6)]));
+    }
+
+    #[test]
+    fn test_list_comprehension_filter_and_transform() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: [x IN [1, 2, 3, 4, 5] WHERE x % 2 = 0 | x * x]
+        // (even numbers squared: [4, 16])
+        let comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+                LogicalExpr::integer(4),
+                LogicalExpr::integer(5),
+            ])),
+            filter_predicate: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::BinaryOp {
+                    left: Box::new(LogicalExpr::column("x")),
+                    op: crate::ast::BinaryOp::Mod,
+                    right: Box::new(LogicalExpr::integer(2)),
+                }),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(LogicalExpr::integer(0)),
+            })),
+            transform_expr: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Mul,
+                right: Box::new(LogicalExpr::column("x")),
+            })),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&comprehension, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![Value::Int(4), Value::Int(16)]));
+    }
+
+    #[test]
+    fn test_list_literal() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: [1, 2, 3]
+        let list = LogicalExpr::ListLiteral(vec![
+            LogicalExpr::integer(1),
+            LogicalExpr::integer(2),
+            LogicalExpr::integer(3),
+        ]);
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&list, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+    }
+
+    #[test]
+    fn test_list_comprehension_with_range() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::{LogicalExpr, ScalarFunction};
+        use std::sync::Arc;
+
+        // Test: [x IN range(1, 5) | x * 2]
+        let comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ScalarFunction {
+                func: ScalarFunction::Range,
+                args: vec![LogicalExpr::integer(1), LogicalExpr::integer(5)],
+            }),
+            filter_predicate: None,
+            transform_expr: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Mul,
+                right: Box::new(LogicalExpr::integer(2)),
+            })),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&comprehension, &row).unwrap();
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(2),
+                Value::Int(4),
+                Value::Int(6),
+                Value::Int(8),
+                Value::Int(10)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_nested_list_comprehension() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: [x IN [x IN [1, 2, 3] | x + 1] | x * 2]
+        // Inner: [2, 3, 4], Outer: [4, 6, 8]
+        let inner_comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            filter_predicate: None,
+            transform_expr: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Add,
+                right: Box::new(LogicalExpr::integer(1)),
+            })),
+        };
+
+        let outer_comprehension = LogicalExpr::ListComprehension {
+            variable: "x".to_string(),
+            list_expr: Box::new(inner_comprehension),
+            filter_predicate: None,
+            transform_expr: Some(Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Mul,
+                right: Box::new(LogicalExpr::integer(2)),
+            })),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&outer_comprehension, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![Value::Int(4), Value::Int(6), Value::Int(8)]));
     }
 }

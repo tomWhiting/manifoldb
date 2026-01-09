@@ -1470,6 +1470,13 @@ impl PlanBuilder {
                     // Vector functions
                     "VECTOR_DIMENSION" => Some(ScalarFunction::VectorDimension),
                     "VECTOR_NORM" => Some(ScalarFunction::VectorNorm),
+                    // List/Collection functions
+                    "RANGE" => Some(ScalarFunction::Range),
+                    "SIZE" => Some(ScalarFunction::Size),
+                    "HEAD" => Some(ScalarFunction::Head),
+                    "TAIL" => Some(ScalarFunction::Tail),
+                    "LAST" => Some(ScalarFunction::Last),
+                    "REVERSE" => Some(ScalarFunction::Reverse),
                     _ => None,
                 };
 
@@ -1635,6 +1642,32 @@ impl PlanBuilder {
                     func: ScalarFunction::Custom(0),
                     args: vec![arr, idx],
                 })
+            }
+
+            Expr::ListComprehension { variable, list_expr, filter_predicate, transform_expr } => {
+                let list = self.build_expr(list_expr)?;
+                let filter = if let Some(f) = filter_predicate {
+                    Some(Box::new(self.build_expr(f)?))
+                } else {
+                    None
+                };
+                let transform = if let Some(t) = transform_expr {
+                    Some(Box::new(self.build_expr(t)?))
+                } else {
+                    None
+                };
+                Ok(LogicalExpr::ListComprehension {
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    filter_predicate: filter,
+                    transform_expr: transform,
+                })
+            }
+
+            Expr::ListLiteral(exprs) => {
+                let elements =
+                    exprs.iter().map(|e| self.build_expr(e)).collect::<PlanResult<Vec<_>>>()?;
+                Ok(LogicalExpr::ListLiteral(elements))
             }
         }
     }

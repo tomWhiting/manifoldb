@@ -288,6 +288,18 @@ impl Row {
             .map(|(name, value)| (name.to_string(), value.clone()))
             .collect()
     }
+
+    /// Creates a new row with an additional variable binding.
+    ///
+    /// This is used for list comprehension evaluation where we need to
+    /// temporarily bind a variable name to a value during iteration.
+    #[must_use]
+    pub fn with_binding(&self, name: &str, value: Value) -> Self {
+        let new_schema = Arc::new(self.schema.with_column(name));
+        let mut new_values = self.values.clone();
+        new_values.push(value);
+        Self { schema: new_schema, values: new_values }
+    }
 }
 
 impl IntoIterator for Row {

@@ -554,6 +554,28 @@ pub enum Expr {
         /// Combination method (WeightedSum, RRF).
         method: HybridCombinationMethod,
     },
+
+    /// Cypher list comprehension expression.
+    ///
+    /// Syntax: `[x IN list WHERE predicate | expression]`
+    ///
+    /// Examples:
+    /// - Filter and transform: `[x IN range(1,10) WHERE x % 2 = 0 | x * x]`
+    /// - Just filter: `[x IN names WHERE size(x) > 5]`
+    /// - Just transform: `[x IN numbers | x * 2]`
+    ListComprehension {
+        /// Variable name for iteration.
+        variable: Identifier,
+        /// List expression to iterate over.
+        list_expr: Box<Expr>,
+        /// Optional WHERE filter predicate.
+        filter_predicate: Option<Box<Expr>>,
+        /// Optional transform expression (after `|`). If None, returns the variable.
+        transform_expr: Option<Box<Expr>>,
+    },
+
+    /// A list literal expression: `[expr1, expr2, ...]`.
+    ListLiteral(Vec<Expr>),
 }
 
 /// A component of a hybrid vector search.

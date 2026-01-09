@@ -178,6 +178,28 @@ pub enum LogicalExpr {
         /// Order by expressions (determines ranking order).
         order_by: Vec<SortOrder>,
     },
+
+    /// Cypher list comprehension expression.
+    ///
+    /// Syntax: `[x IN list WHERE predicate | expression]`
+    ///
+    /// Examples:
+    /// - Filter and transform: `[x IN range(1,10) WHERE x % 2 = 0 | x * x]`
+    /// - Just filter: `[x IN names WHERE size(x) > 5]`
+    /// - Just transform: `[x IN numbers | x * 2]`
+    ListComprehension {
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Optional WHERE filter predicate.
+        filter_predicate: Option<Box<LogicalExpr>>,
+        /// Optional transform expression (after `|`). If None, returns the variable.
+        transform_expr: Option<Box<LogicalExpr>>,
+    },
+
+    /// A list literal expression: `[expr1, expr2, ...]`.
+    ListLiteral(Vec<LogicalExpr>),
 }
 
 /// A component of a hybrid vector search expression.
@@ -902,6 +924,26 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
+            Self::ListComprehension { variable, list_expr, filter_predicate, transform_expr } => {
+                write!(f, "[{variable} IN {list_expr}")?;
+                if let Some(filter) = filter_predicate {
+                    write!(f, " WHERE {filter}")?;
+                }
+                if let Some(transform) = transform_expr {
+                    write!(f, " | {transform}")?;
+                }
+                write!(f, "]")
+            }
+            Self::ListLiteral(exprs) => {
+                write!(f, "[")?;
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{expr}")?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
@@ -1019,6 +1061,26 @@ pub enum ScalarFunction {
     /// `VECTOR_NORM(vector)`.
     VectorNorm,
 
+    // List/Collection functions
+    /// `RANGE(start, end)` or `RANGE(start, end, step)`.
+    /// Generates a list of integers from start to end (inclusive).
+    Range,
+    /// `SIZE(list)` or `SIZE(string)`.
+    /// Returns the length of a list or string.
+    Size,
+    /// `HEAD(list)`.
+    /// Returns the first element of a list.
+    Head,
+    /// `TAIL(list)`.
+    /// Returns the list without its first element.
+    Tail,
+    /// `LAST(list)`.
+    /// Returns the last element of a list.
+    Last,
+    /// `REVERSE(list)`.
+    /// Returns the list in reverse order.
+    Reverse,
+
     // Other
     /// Custom/user-defined function.
     Custom(u32), // Index into function registry
@@ -1082,6 +1144,13 @@ impl fmt::Display for ScalarFunction {
             // Vector functions
             Self::VectorDimension => "VECTOR_DIMENSION",
             Self::VectorNorm => "VECTOR_NORM",
+            // List/Collection functions
+            Self::Range => "RANGE",
+            Self::Size => "SIZE",
+            Self::Head => "HEAD",
+            Self::Tail => "TAIL",
+            Self::Last => "LAST",
+            Self::Reverse => "REVERSE",
             // Other
             Self::Custom(id) => return write!(f, "CUSTOM_{id}"),
         };
