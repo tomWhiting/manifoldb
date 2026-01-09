@@ -1484,7 +1484,9 @@ fn convert_isolation_level(level: sp::TransactionIsolationLevel) -> ParseResult<
         sp::TransactionIsolationLevel::ReadCommitted => Ok(IsolationLevel::ReadCommitted),
         sp::TransactionIsolationLevel::RepeatableRead => Ok(IsolationLevel::RepeatableRead),
         sp::TransactionIsolationLevel::Serializable => Ok(IsolationLevel::Serializable),
-        sp::TransactionIsolationLevel::Snapshot => Ok(IsolationLevel::Serializable), // Map to serializable
+        sp::TransactionIsolationLevel::Snapshot => {
+            Err(ParseError::Unsupported("SNAPSHOT isolation level is not supported".to_string()))
+        }
     }
 }
 
