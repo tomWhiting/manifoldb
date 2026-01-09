@@ -100,6 +100,280 @@ fn test_create_table_with_table_constraints() {
 }
 
 // ============================================================================
+// ALTER TABLE Tests
+// ============================================================================
+
+#[test]
+fn test_alter_table_add_column() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE alter_test (id BIGINT, name TEXT)").expect("create table failed");
+
+    // Insert some data
+    db.execute("INSERT INTO alter_test (id, name) VALUES (1, 'Alice')").expect("insert failed");
+
+    // Add a new column
+    let affected =
+        db.execute("ALTER TABLE alter_test ADD COLUMN email TEXT").expect("alter table failed");
+    assert_eq!(affected, 0);
+
+    // Insert data with the new column
+    db.execute("INSERT INTO alter_test (id, name, email) VALUES (2, 'Bob', 'bob@example.com')")
+        .expect("insert with new column failed");
+
+    // Query should work
+    let result = db.query("SELECT * FROM alter_test").expect("query failed");
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_alter_table_add_column_if_not_exists() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with existing email column
+    db.execute("CREATE TABLE alter_exists_test (id BIGINT, email TEXT)")
+        .expect("create table failed");
+
+    // Add column that already exists with IF NOT EXISTS - should succeed silently
+    let affected = db
+        .execute("ALTER TABLE alter_exists_test ADD COLUMN IF NOT EXISTS email TEXT")
+        .expect("alter table if not exists failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_drop_column() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with multiple columns
+    db.execute("CREATE TABLE drop_col_test (id BIGINT, name TEXT, temp_col TEXT)")
+        .expect("create table failed");
+
+    // Drop a column
+    let affected =
+        db.execute("ALTER TABLE drop_col_test DROP COLUMN temp_col").expect("alter table failed");
+    assert_eq!(affected, 0);
+
+    // Insert data - should work with remaining columns
+    db.execute("INSERT INTO drop_col_test (id, name) VALUES (1, 'Test')").expect("insert failed");
+
+    let result = db.query("SELECT * FROM drop_col_test").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_alter_table_drop_column_if_exists() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE drop_if_exists_test (id BIGINT, name TEXT)")
+        .expect("create table failed");
+
+    // Drop column that doesn't exist with IF EXISTS - should succeed silently
+    let affected = db
+        .execute("ALTER TABLE drop_if_exists_test DROP COLUMN IF EXISTS nonexistent")
+        .expect("alter table drop if exists failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_rename_column() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE rename_col_test (id BIGINT, old_name TEXT)")
+        .expect("create table failed");
+
+    // Rename column
+    let affected = db
+        .execute("ALTER TABLE rename_col_test RENAME COLUMN old_name TO new_name")
+        .expect("rename column failed");
+    assert_eq!(affected, 0);
+
+    // Insert data using new column name
+    db.execute("INSERT INTO rename_col_test (id, new_name) VALUES (1, 'Test')")
+        .expect("insert failed");
+
+    let result = db.query("SELECT * FROM rename_col_test").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_alter_table_rename_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE old_table_name (id BIGINT, value TEXT)").expect("create table failed");
+
+    // Rename table (schema-only operation - entities use labels, not schema names)
+    let affected = db
+        .execute("ALTER TABLE old_table_name RENAME TO new_table_name")
+        .expect("rename table failed");
+    assert_eq!(affected, 0);
+
+    // The schema is now renamed - new inserts should work
+    db.execute("INSERT INTO new_table_name (id, value) VALUES (1, 'test')")
+        .expect("insert with new name failed");
+
+    // Query with new table name
+    let result = db.query("SELECT * FROM new_table_name").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_alter_table_if_exists() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Alter a table that doesn't exist with IF EXISTS - should succeed silently
+    let affected = db
+        .execute("ALTER TABLE IF EXISTS nonexistent_table ADD COLUMN new_col TEXT")
+        .expect("alter table if exists failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_alter_column_set_not_null() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE set_not_null_test (id BIGINT, name TEXT)")
+        .expect("create table failed");
+
+    // Alter column to SET NOT NULL
+    let affected = db
+        .execute("ALTER TABLE set_not_null_test ALTER COLUMN name SET NOT NULL")
+        .expect("set not null failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_alter_column_drop_not_null() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with NOT NULL constraint
+    db.execute("CREATE TABLE drop_not_null_test (id BIGINT, name TEXT NOT NULL)")
+        .expect("create table failed");
+
+    // Alter column to DROP NOT NULL
+    let affected = db
+        .execute("ALTER TABLE drop_not_null_test ALTER COLUMN name DROP NOT NULL")
+        .expect("drop not null failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_alter_column_set_default() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE set_default_test (id BIGINT, status TEXT)")
+        .expect("create table failed");
+
+    // Alter column to SET DEFAULT
+    let affected = db
+        .execute("ALTER TABLE set_default_test ALTER COLUMN status SET DEFAULT 'pending'")
+        .expect("set default failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_alter_column_drop_default() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with DEFAULT constraint
+    db.execute("CREATE TABLE drop_default_test (id BIGINT, status TEXT DEFAULT 'active')")
+        .expect("create table failed");
+
+    // Alter column to DROP DEFAULT
+    let affected = db
+        .execute("ALTER TABLE drop_default_test ALTER COLUMN status DROP DEFAULT")
+        .expect("drop default failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_alter_column_set_data_type() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE type_change_test (id BIGINT, score INTEGER)")
+        .expect("create table failed");
+
+    // Alter column type
+    let affected = db
+        .execute("ALTER TABLE type_change_test ALTER COLUMN score SET DATA TYPE BIGINT")
+        .expect("set data type failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_multiple_actions() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE multi_alter_test (id BIGINT, col1 TEXT, col2 TEXT)")
+        .expect("create table failed");
+
+    // Multiple ALTER actions in one statement
+    let affected = db
+        .execute(
+            "ALTER TABLE multi_alter_test
+             ADD COLUMN col3 INTEGER,
+             DROP COLUMN col2",
+        )
+        .expect("multiple alter failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_alter_table_nonexistent_table_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Alter a table that doesn't exist without IF EXISTS - should fail
+    let result = db.execute("ALTER TABLE nonexistent_table ADD COLUMN new_col TEXT");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_alter_table_add_column_duplicate_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with existing column
+    db.execute("CREATE TABLE dup_col_test (id BIGINT, existing_col TEXT)")
+        .expect("create table failed");
+
+    // Try to add a column that already exists without IF NOT EXISTS - should fail
+    let result = db.execute("ALTER TABLE dup_col_test ADD COLUMN existing_col TEXT");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_alter_table_drop_nonexistent_column_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table
+    db.execute("CREATE TABLE drop_missing_test (id BIGINT)").expect("create table failed");
+
+    // Try to drop a column that doesn't exist without IF EXISTS - should fail
+    let result = db.execute("ALTER TABLE drop_missing_test DROP COLUMN nonexistent");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_alter_table_rename_to_existing_table_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create two tables
+    db.execute("CREATE TABLE source_table (id BIGINT)").expect("create source failed");
+    db.execute("CREATE TABLE target_table (id BIGINT)").expect("create target failed");
+
+    // Try to rename to an existing table name - should fail
+    let result = db.execute("ALTER TABLE source_table RENAME TO target_table");
+    assert!(result.is_err());
+}
+
+// ============================================================================
 // DROP TABLE Tests
 // ============================================================================
 

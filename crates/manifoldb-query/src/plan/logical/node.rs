@@ -18,8 +18,8 @@
 use std::fmt;
 
 use super::ddl::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
-    DropIndexNode, DropTableNode, DropViewNode,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
+    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
@@ -254,6 +254,9 @@ pub enum LogicalPlan {
     // ========== DDL Nodes ==========
     /// CREATE TABLE operation.
     CreateTable(CreateTableNode),
+
+    /// ALTER TABLE operation.
+    AlterTable(AlterTableNode),
 
     /// DROP TABLE operation.
     DropTable(DropTableNode),
@@ -529,6 +532,7 @@ impl LogicalPlan {
 
             // DDL nodes (no inputs)
             Self::CreateTable(_)
+            | Self::AlterTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
@@ -596,6 +600,7 @@ impl LogicalPlan {
 
             // DDL nodes (no inputs)
             Self::CreateTable(_)
+            | Self::AlterTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
@@ -651,6 +656,7 @@ impl LogicalPlan {
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
             Self::CreateTable(_) => "CreateTable",
+            Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
             Self::CreateIndex(_) => "CreateIndex",
             Self::DropIndex(_) => "DropIndex",
@@ -896,6 +902,13 @@ impl DisplayTree<'_> {
                     write!(f, " IF NOT EXISTS")?;
                 }
                 write!(f, " ({} columns)", node.columns.len())?;
+            }
+            LogicalPlan::AlterTable(node) => {
+                write!(f, "AlterTable: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                write!(f, " ({} actions)", node.actions.len())?;
             }
             LogicalPlan::DropTable(node) => {
                 write!(f, "DropTable: {}", node.names.join(", "))?;

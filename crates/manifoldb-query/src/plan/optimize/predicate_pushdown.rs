@@ -224,6 +224,7 @@ impl PredicatePushdown {
 
             // DDL operations - no predicate pushdown
             LogicalPlan::CreateTable(_)
+            | LogicalPlan::AlterTable(_)
             | LogicalPlan::DropTable(_)
             | LogicalPlan::CreateIndex(_)
             | LogicalPlan::DropIndex(_)

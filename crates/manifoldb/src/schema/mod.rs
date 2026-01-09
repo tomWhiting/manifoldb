@@ -7,8 +7,13 @@
 #![allow(missing_docs)]
 
 use manifoldb_core::TransactionError;
-use manifoldb_query::ast::{ColumnConstraint, ColumnDef, DataType, IndexColumn, TableConstraint};
-use manifoldb_query::plan::logical::{CreateIndexNode, CreateTableNode, CreateViewNode};
+use manifoldb_query::ast::{
+    AlterColumnAction, AlterTableAction, ColumnConstraint, ColumnDef, DataType, IndexColumn,
+    TableConstraint,
+};
+use manifoldb_query::plan::logical::{
+    AlterTableNode, CreateIndexNode, CreateTableNode, CreateViewNode,
+};
 use manifoldb_storage::Transaction;
 use serde::{Deserialize, Serialize};
 
@@ -420,6 +425,204 @@ impl SchemaManager {
         Ok(())
     }
 
+    /// Alter a table schema.
+    ///
+    /// Supports the following operations:
+    /// - ADD COLUMN
+    /// - DROP COLUMN
+    /// - ALTER COLUMN (SET NOT NULL, DROP NOT NULL, SET DEFAULT, DROP DEFAULT, SET DATA TYPE)
+    /// - RENAME COLUMN
+    /// - RENAME TABLE
+    /// - ADD CONSTRAINT
+    /// - DROP CONSTRAINT
+    pub fn alter_table<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+        node: &AlterTableNode,
+    ) -> Result<(), SchemaError> {
+        let table_name = &node.name;
+
+        // Check if table exists
+        let mut schema = match Self::get_table(tx, table_name)? {
+            Some(s) => s,
+            None => {
+                if node.if_exists {
+                    return Ok(());
+                }
+                return Err(SchemaError::TableNotFound(table_name.clone()));
+            }
+        };
+
+        // Track if we need to rename the table
+        let mut new_table_name: Option<String> = None;
+
+        // Apply each action
+        for action in &node.actions {
+            match action {
+                AlterTableAction::AddColumn { if_not_exists, column } => {
+                    let col_name = &column.name.name;
+                    // Check if column already exists
+                    if schema.columns.iter().any(|c| c.name == *col_name) {
+                        if *if_not_exists {
+                            continue;
+                        }
+                        return Err(SchemaError::ColumnExists(col_name.clone()));
+                    }
+                    schema.columns.push(StoredColumnDef::from_column_def(column));
+                }
+
+                AlterTableAction::DropColumn { if_exists, column_name, cascade: _ } => {
+                    let col_name = &column_name.name;
+                    let col_idx = schema.columns.iter().position(|c| c.name == *col_name);
+                    match col_idx {
+                        Some(idx) => {
+                            schema.columns.remove(idx);
+                        }
+                        None => {
+                            if !*if_exists {
+                                return Err(SchemaError::ColumnNotFound(col_name.clone()));
+                            }
+                        }
+                    }
+                }
+
+                AlterTableAction::AlterColumn { column_name, action: col_action } => {
+                    let col_name = &column_name.name;
+                    let col = schema
+                        .columns
+                        .iter_mut()
+                        .find(|c| c.name == *col_name)
+                        .ok_or_else(|| SchemaError::ColumnNotFound(col_name.clone()))?;
+
+                    match col_action {
+                        AlterColumnAction::SetNotNull => {
+                            // Add NOT NULL constraint if not present
+                            if !col
+                                .constraints
+                                .iter()
+                                .any(|c| matches!(c, StoredColumnConstraint::NotNull))
+                            {
+                                col.constraints.push(StoredColumnConstraint::NotNull);
+                            }
+                        }
+                        AlterColumnAction::DropNotNull => {
+                            // Remove NOT NULL constraint
+                            col.constraints
+                                .retain(|c| !matches!(c, StoredColumnConstraint::NotNull));
+                        }
+                        AlterColumnAction::SetDefault(expr) => {
+                            // Remove any existing DEFAULT, then add new one
+                            col.constraints
+                                .retain(|c| !matches!(c, StoredColumnConstraint::Default { .. }));
+                            col.constraints.push(StoredColumnConstraint::Default {
+                                expression: format!("{expr:?}"),
+                            });
+                        }
+                        AlterColumnAction::DropDefault => {
+                            // Remove DEFAULT constraint
+                            col.constraints
+                                .retain(|c| !matches!(c, StoredColumnConstraint::Default { .. }));
+                        }
+                        AlterColumnAction::SetType { data_type, using: _ } => {
+                            // Change the column type
+                            col.data_type = StoredDataType::from_data_type(data_type);
+                        }
+                    }
+                }
+
+                AlterTableAction::RenameColumn { old_name, new_name } => {
+                    let col = schema
+                        .columns
+                        .iter_mut()
+                        .find(|c| c.name == old_name.name)
+                        .ok_or_else(|| SchemaError::ColumnNotFound(old_name.name.clone()))?;
+                    col.name.clone_from(&new_name.name);
+                }
+
+                AlterTableAction::RenameTable { new_name } => {
+                    // Just store for later - we'll handle the actual rename at the end
+                    new_table_name = Some(
+                        new_name
+                            .parts
+                            .iter()
+                            .map(|p| p.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("."),
+                    );
+                }
+
+                AlterTableAction::AddConstraint(constraint) => {
+                    schema
+                        .constraints
+                        .push(StoredTableConstraint::from_table_constraint(constraint));
+                }
+
+                AlterTableAction::DropConstraint { if_exists, constraint_name, cascade: _ } => {
+                    let name = &constraint_name.name;
+                    let original_len = schema.constraints.len();
+                    schema.constraints.retain(|c| {
+                        let constraint_name = match c {
+                            StoredTableConstraint::PrimaryKey { name, .. } => name.as_ref(),
+                            StoredTableConstraint::Unique { name, .. } => name.as_ref(),
+                            StoredTableConstraint::ForeignKey { name, .. } => name.as_ref(),
+                            StoredTableConstraint::Check { name, .. } => name.as_ref(),
+                        };
+                        constraint_name != Some(name)
+                    });
+                    if schema.constraints.len() == original_len && !*if_exists {
+                        return Err(SchemaError::ConstraintNotFound(name.clone()));
+                    }
+                }
+            }
+        }
+
+        // Handle table rename if requested
+        if let Some(new_name) = new_table_name {
+            // Check if target table name already exists
+            if Self::table_exists(tx, &new_name)? {
+                return Err(SchemaError::TableExists(new_name));
+            }
+
+            // Delete old entry
+            let old_key = Self::table_key(table_name);
+            tx.delete_metadata(&old_key)?;
+            Self::remove_from_list(tx, TABLES_LIST_KEY, table_name)?;
+
+            // Update schema name
+            schema.name.clone_from(&new_name);
+
+            // Store with new name
+            let new_key = Self::table_key(&new_name);
+            let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+                .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+            tx.put_metadata(&new_key, &value)?;
+            Self::add_to_list(tx, TABLES_LIST_KEY, &new_name)?;
+
+            // Update indexes to point to new table name
+            let indexes = Self::list_indexes_for_table(tx, table_name)?;
+            for idx_name in indexes {
+                if let Some(mut idx_schema) = Self::get_index(tx, &idx_name)? {
+                    idx_schema.table.clone_from(&new_name);
+                    let idx_key = Self::index_key(&idx_name);
+                    let idx_value =
+                        bincode::serde::encode_to_vec(&idx_schema, bincode::config::standard())
+                            .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+                    tx.put_metadata(&idx_key, &idx_value)?;
+                }
+            }
+        } else {
+            // Just update the existing schema in place
+            let key = Self::table_key(table_name);
+            let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+                .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+            tx.put_metadata(&key, &value)?;
+        }
+
+        // Increment schema version
+        Self::increment_version(tx)?;
+
+        Ok(())
+    }
+
     /// Create an index schema.
     pub fn create_index<T: Transaction>(
         tx: &mut DatabaseTransaction<T>,
@@ -735,6 +938,15 @@ pub enum SchemaError {
 
     #[error("Table not found: {0}")]
     TableNotFound(String),
+
+    #[error("Column already exists: {0}")]
+    ColumnExists(String),
+
+    #[error("Column not found: {0}")]
+    ColumnNotFound(String),
+
+    #[error("Constraint not found: {0}")]
+    ConstraintNotFound(String),
 
     #[error("Index already exists: {0}")]
     IndexExists(String),

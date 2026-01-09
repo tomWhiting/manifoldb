@@ -20,10 +20,10 @@ use std::fmt;
 use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
-    DropIndexNode, DropTableNode, DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode,
-    GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType,
-    LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
+    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, ExpandDirection, ExpandLength,
+    GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode,
+    GraphSetNode, JoinType, LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -291,6 +291,9 @@ pub enum PhysicalPlan {
     // ========== DDL Operations ==========
     /// CREATE TABLE operation.
     CreateTable(CreateTableNode),
+
+    /// ALTER TABLE operation.
+    AlterTable(AlterTableNode),
 
     /// DROP TABLE operation.
     DropTable(DropTableNode),
@@ -1802,6 +1805,7 @@ impl PhysicalPlan {
             | Self::Update { .. }
             | Self::Delete { .. }
             | Self::CreateTable(_)
+            | Self::AlterTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
@@ -1866,6 +1870,7 @@ impl PhysicalPlan {
             | Self::Update { .. }
             | Self::Delete { .. }
             | Self::CreateTable(_)
+            | Self::AlterTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
@@ -1928,6 +1933,7 @@ impl PhysicalPlan {
                 | Self::Values { .. }
                 | Self::Empty { .. }
                 | Self::CreateTable(_)
+                | Self::AlterTable(_)
                 | Self::DropTable(_)
                 | Self::CreateIndex(_)
                 | Self::DropIndex(_)
@@ -1972,6 +1978,7 @@ impl PhysicalPlan {
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
             Self::CreateTable(_) => "CreateTable",
+            Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
             Self::CreateIndex(_) => "CreateIndex",
             Self::DropIndex(_) => "DropIndex",
@@ -2023,6 +2030,7 @@ impl PhysicalPlan {
             Self::Delete { cost, .. } => *cost,
             // DDL and procedure operations have zero query cost
             Self::CreateTable(_)
+            | Self::AlterTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
@@ -2381,6 +2389,13 @@ impl DisplayTree<'_> {
                     write!(f, " IF NOT EXISTS")?;
                 }
                 write!(f, " ({} columns)", node.columns.len())?;
+            }
+            PhysicalPlan::AlterTable(node) => {
+                write!(f, "AlterTable: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                write!(f, " ({} actions)", node.actions.len())?;
             }
             PhysicalPlan::DropTable(node) => {
                 write!(f, "DropTable: {}", node.names.join(", "))?;

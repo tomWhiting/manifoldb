@@ -15,11 +15,11 @@ use manifoldb_query::exec::operators::{
 };
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
-use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::logical::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, JoinType, LogicalExpr, SetOpNode, UnionNode,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode,
+    DropIndexNode, DropTableNode, JoinType, LogicalExpr, SetOpNode, UnionNode,
 };
+use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
 use manifoldb_query::ExtendedParser;
@@ -174,6 +174,7 @@ pub fn execute_statement<T: Transaction>(
 
         // DDL statements
         LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
+        LogicalPlan::AlterTable(node) => execute_alter_table(tx, node),
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
@@ -227,6 +228,7 @@ pub fn execute_prepared_statement<T: Transaction>(
 
         // DDL statements
         LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
+        LogicalPlan::AlterTable(node) => execute_alter_table(tx, node),
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
@@ -1509,6 +1511,7 @@ fn execute_logical_plan<T: Transaction>(
         }
 
         LogicalPlan::CreateTable(_)
+        | LogicalPlan::AlterTable(_)
         | LogicalPlan::DropTable(_)
         | LogicalPlan::CreateIndex(_)
         | LogicalPlan::DropIndex(_)
@@ -2221,6 +2224,15 @@ fn execute_create_table<T: Transaction>(
     node: &CreateTableNode,
 ) -> Result<u64> {
     SchemaManager::create_table(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
+    Ok(0) // DDL doesn't return row counts
+}
+
+/// Execute an ALTER TABLE statement.
+fn execute_alter_table<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &AlterTableNode,
+) -> Result<u64> {
+    SchemaManager::alter_table(tx, node).map_err(|e| Error::Execution(e.to_string()))?;
     Ok(0) // DDL doesn't return row counts
 }
 

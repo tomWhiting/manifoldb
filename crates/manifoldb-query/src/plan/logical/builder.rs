@@ -20,20 +20,20 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
-    CreateNodeRef, CreatePattern, CreateTableStatement, CreateViewStatement, DeleteGraphStatement,
-    DeleteStatement, DropCollectionStatement, DropIndexStatement, DropTableStatement,
-    DropViewStatement, Expr, ForeachAction as AstForeachAction, ForeachStatement, GraphPattern,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
-    MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern, PathPattern,
-    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
-    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
-    WindowFunction, YieldItem,
+    self, AlterTableStatement, CallStatement, CreateCollectionStatement, CreateGraphStatement,
+    CreateIndexStatement, CreateNodeRef, CreatePattern, CreateTableStatement, CreateViewStatement,
+    DeleteGraphStatement, DeleteStatement, DropCollectionStatement, DropIndexStatement,
+    DropTableStatement, DropViewStatement, Expr, ForeachAction as AstForeachAction,
+    ForeachStatement, GraphPattern, InsertSource, InsertStatement, JoinClause, JoinCondition,
+    JoinType as AstJoinType, MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern,
+    PathPattern, RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement,
+    SetAction as AstSetAction, SetGraphStatement, SetOperation, SetOperator, Statement, TableRef,
+    UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
-    DropIndexNode, DropTableNode, DropViewNode,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
+    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode,
 };
 
 use super::expr::{
@@ -100,6 +100,7 @@ impl PlanBuilder {
                 self.build_statement(inner)
             }
             Statement::CreateTable(create) => self.build_create_table(create),
+            Statement::AlterTable(alter) => self.build_alter_table(alter),
             Statement::CreateIndex(create) => self.build_create_index(create),
             Statement::CreateCollection(create) => self.build_create_collection(create),
             Statement::DropTable(drop) => self.build_drop_table(drop),
@@ -1162,6 +1163,15 @@ impl PlanBuilder {
             .with_constraints(create.constraints.clone());
 
         Ok(LogicalPlan::CreateTable(node))
+    }
+
+    /// Builds an ALTER TABLE plan.
+    fn build_alter_table(&self, alter: &AlterTableStatement) -> PlanResult<LogicalPlan> {
+        let name = alter.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = AlterTableNode::new(name, alter.actions.clone()).with_if_exists(alter.if_exists);
+
+        Ok(LogicalPlan::AlterTable(node))
     }
 
     /// Builds a DROP TABLE plan.

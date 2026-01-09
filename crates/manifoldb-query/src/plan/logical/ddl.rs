@@ -2,6 +2,7 @@
 //!
 //! This module defines logical plan nodes for DDL operations:
 //! - CREATE TABLE
+//! - ALTER TABLE
 //! - DROP TABLE
 //! - CREATE INDEX
 //! - DROP INDEX
@@ -11,7 +12,8 @@
 //! - DROP VIEW
 
 use crate::ast::{
-    ColumnDef, Expr, Identifier, IndexColumn, SelectStatement, TableConstraint, VectorDef,
+    AlterTableAction, ColumnDef, Expr, Identifier, IndexColumn, SelectStatement, TableConstraint,
+    VectorDef,
 };
 
 /// A CREATE TABLE operation.
@@ -45,6 +47,48 @@ impl CreateTableNode {
     #[must_use]
     pub fn with_constraints(mut self, constraints: Vec<TableConstraint>) -> Self {
         self.constraints = constraints;
+        self
+    }
+}
+
+/// An ALTER TABLE operation.
+///
+/// Supports various schema modifications including:
+/// - ADD COLUMN
+/// - DROP COLUMN
+/// - ALTER COLUMN (SET NOT NULL, DROP NOT NULL, SET DEFAULT, DROP DEFAULT, SET DATA TYPE)
+/// - RENAME COLUMN
+/// - RENAME TABLE
+/// - ADD CONSTRAINT
+/// - DROP CONSTRAINT
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterTableNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The table name.
+    pub name: String,
+    /// The alter actions to perform.
+    pub actions: Vec<AlterTableAction>,
+}
+
+impl AlterTableNode {
+    /// Creates a new ALTER TABLE node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, actions: Vec<AlterTableAction>) -> Self {
+        Self { if_exists: false, name: name.into(), actions }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Adds an action.
+    #[must_use]
+    pub fn add_action(mut self, action: AlterTableAction) -> Self {
+        self.actions.push(action);
         self
     }
 }
