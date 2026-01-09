@@ -945,29 +945,29 @@ These feature groups can be implemented independently:
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
-| CTEs | 10 | 5 | 0 | 5 |
-| Window Functions | 25 | 20 | 3 | 2 |
+| CTEs | 10 | 6 | 0 | 4 |
+| Window Functions | 25 | 22 | 1 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
-| DDL | 44 | 26 | 3 | 15 |
-| Transactions | 8 | 0 | 0 | 8 |
+| DDL | 44 | 32 | 3 | 9 |
+| Transactions | 8 | 0 | 8 | 0 |
 | Utility | 10 | 1 | 0 | 9 |
 | Data Types | 25 | 22 | 0 | 3 |
 | Expressions | 40 | 30 | 8 | 2 |
-| Functions | 80 | 30 | 35 | 15 |
+| Functions | 80 | 65 | 5 | 10 |
 
 ## Cypher Coverage
 
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
-| Reading Clauses | 25 | 17 | 3 | 5 |
-| Writing Clauses | 15 | 9 | 0 | 6 |
+| Reading Clauses | 25 | 19 | 3 | 3 |
+| Writing Clauses | 16 | 10 | 5 | 1 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
-| Expressions | 10 | 5 | 0 | 5 |
-| Scalar Functions | 20 | 10 | 5 | 5 |
-| Aggregating Functions | 12 | 6 | 2 | 4 |
-| List Functions | 12 | 8 | 0 | 4 |
-| String Functions | 10 | 8 | 2 | 0 |
+| Expressions | 10 | 7 | 0 | 3 |
+| Scalar Functions | 20 | 18 | 0 | 2 |
+| Aggregating Functions | 12 | 10 | 0 | 2 |
+| List Functions | 12 | 11 | 0 | 1 |
+| String Functions | 10 | 10 | 0 | 0 |
 | Math Functions | 15 | 13 | 0 | 2 |
 | Temporal Functions | 10 | 0 | 0 | 10 |
 | Spatial Functions | 5 | 0 | 0 | 5 |

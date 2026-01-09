@@ -28,8 +28,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **SQL Core Functions** - String (position, concat_ws, ltrim, rtrim, replace, split_part, regexp_match, regexp_replace, format), Numeric (exp, ln, log, log10, trig functions, degrees, radians, sign, pi), Date/Time (date_part, extract, date_trunc, to_timestamp, to_date, to_char)
 - ✅ **Variable-Length Paths** - Full execution with BFS traversal and cycle detection
 - ✅ **UNWIND Clause** - List expansion to rows
-- ✅ **Cypher CREATE/MERGE** - Parsing and logical/physical planning (execution TBD)
-- ✅ **Cypher SET/DELETE/REMOVE** - Parsing and logical/physical planning (execution TBD)
+- ✅ **Cypher CREATE** - Full execution with MATCH + CREATE patterns (Jan 2026)
+- ✅ **Cypher SET/DELETE/REMOVE** - Full execution complete (Jan 2026)
+- ✅ **Cypher MERGE/FOREACH** - Parsing and logical/physical planning (execution TBD)
 - ✅ **CALL/YIELD Infrastructure** - Procedure registry, ProcedureCall plan node, algo.pageRank, algo.shortestPath
 - ✅ **Window Value Functions** - LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
 - ✅ **Cypher List Comprehensions** - `[x IN list WHERE pred | expr]` with list functions (range, size, head, tail, last, reverse)
@@ -288,13 +289,13 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.1 Parser Extensions
 **Goal:** Parse complete openCypher queries.
 
-- [x] **Writing Clauses** - Parsing + planning complete ✅ Jan 2026
-  - [x] CREATE (nodes and relationships) ✅ Jan 2026
-  - [x] MERGE with ON CREATE SET and ON MATCH SET ✅ Jan 2026
-  - [x] SET (properties and labels) ✅ Jan 2026
-  - [x] REMOVE (properties and labels) ✅ Jan 2026
-  - [x] DELETE and DETACH DELETE ✅ Jan 2026
-  - [x] FOREACH ✅ Jan 2026
+- [x] **Writing Clauses** - CREATE, SET, DELETE, REMOVE fully executable ✅ Jan 2026
+  - [x] CREATE (nodes and relationships) ✅ Jan 2026 - Full execution
+  - [x] MERGE with ON CREATE SET and ON MATCH SET ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] SET (properties and labels) ✅ Jan 2026 - Full execution
+  - [x] REMOVE (properties and labels) ✅ Jan 2026 - Full execution
+  - [x] DELETE and DETACH DELETE ✅ Jan 2026 - Full execution
+  - [x] FOREACH ✅ Jan 2026 - Parsing + planning (execution TBD)
 
 - [ ] **Reading Clauses**
   - [ ] MANDATORY MATCH (optional, Neo4j extension)
@@ -305,10 +306,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] allShortestPaths() pattern function ✅ Jan 2026
   - [x] Variable-length path execution ✅ Jan 2026
 
-- [x] **Subqueries** (parsing + planning complete) ✅ Jan 2026
-  - [x] EXISTS { } subquery ✅ Jan 2026
-  - [x] COUNT { } subquery ✅ Jan 2026
-  - [x] CALL { } subquery (inline) ✅ Jan 2026
+- [x] **Subqueries** - EXISTS fully executable, COUNT/CALL planning complete ✅ Jan 2026
+  - [x] EXISTS { } subquery ✅ Jan 2026 - Full execution
+  - [x] COUNT { } subquery ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] CALL { } subquery (inline) ✅ Jan 2026 - Parsing + planning (execution TBD)
 
 - [ ] **Advanced Patterns**
   - [ ] Quantified path patterns (GQL)
@@ -381,13 +382,13 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.5 Physical Operators
 **Goal:** Implement Cypher-specific operators.
 
-- [x] **GraphCreateOp** - Create nodes and edges ✅ Jan 2026 (planning only)
-- [x] **GraphMergeOp** - Merge with create/match logic ✅ Jan 2026 (planning only)
-- [x] **GraphSetOp** - Set properties/labels ✅ Jan 2026 (planning only)
-- [x] **GraphRemoveOp** - Remove properties/labels ✅ Jan 2026 (planning only)
-- [x] **GraphDeleteOp** - Delete with referential checks ✅ Jan 2026 (planning only)
-- [x] **ShortestPathOp** - BFS-based shortest path ✅ Jan 2026 (planning only)
-- [x] **AllShortestPathsOp** - All shortest paths ✅ Jan 2026 (planning only)
+- [x] **GraphCreateOp** - Create nodes and edges ✅ Jan 2026 (full execution)
+- [x] **GraphMergeOp** - Merge with create/match logic ✅ Jan 2026 (planning only, execution TBD)
+- [x] **GraphSetOp** - Set properties/labels ✅ Jan 2026 (full execution)
+- [x] **GraphRemoveOp** - Remove properties/labels ✅ Jan 2026 (full execution)
+- [x] **GraphDeleteOp** - Delete with referential checks ✅ Jan 2026 (full execution)
+- [x] **ShortestPathOp** - BFS-based shortest path ✅ Jan 2026 (full execution)
+- [x] **AllShortestPathsOp** - All shortest paths ✅ Jan 2026 (planning only, execution TBD)
 - [x] **VariableLengthExpandOp** - Multi-hop expansion ✅ Jan 2026
 
 ---
