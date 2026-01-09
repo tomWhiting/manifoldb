@@ -485,6 +485,9 @@ struct Accumulator {
     percentile_arg: Option<f64>,
     /// Collected key-value pairs for json_object_agg/jsonb_object_agg.
     object_entries: Vec<(String, Value)>,
+    /// Boolean accumulator for bool_and (true if all true) and bool_or (true if any true).
+    /// None means no non-NULL values seen yet.
+    bool_result: Option<bool>,
 }
 
 impl Accumulator {
@@ -617,6 +620,26 @@ impl Accumulator {
             }
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => {
                 // Vector aggregates - not implemented yet
+            }
+            AggregateFunction::BoolAnd => {
+                // bool_and: true if ALL non-NULL values are true
+                let b = match value {
+                    Value::Bool(b) => *b,
+                    // For non-boolean values, treat non-NULL non-false as true
+                    Value::Int(i) => *i != 0,
+                    _ => true,
+                };
+                self.bool_result = Some(self.bool_result.unwrap_or(true) && b);
+            }
+            AggregateFunction::BoolOr => {
+                // bool_or: true if ANY non-NULL value is true
+                let b = match value {
+                    Value::Bool(b) => *b,
+                    // For non-boolean values, treat non-NULL non-zero as true
+                    Value::Int(i) => *i != 0,
+                    _ => true,
+                };
+                self.bool_result = Some(self.bool_result.unwrap_or(false) || b);
             }
         }
     }
@@ -764,6 +787,10 @@ impl Accumulator {
                 }
             }
             Some(AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid) => Value::Null,
+            Some(AggregateFunction::BoolAnd | AggregateFunction::BoolOr) => {
+                // Returns NULL if no non-NULL values were seen
+                self.bool_result.map(Value::Bool).unwrap_or(Value::Null)
+            }
             None => {
                 // Fallback for unknown or unset function type
                 if self.min.is_some() {
@@ -794,6 +821,7 @@ impl Accumulator {
             AggregateFunction::JsonAgg | AggregateFunction::JsonbAgg => Value::Null,
             AggregateFunction::JsonObjectAgg | AggregateFunction::JsonbObjectAgg => Value::Null,
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => Value::Null,
+            AggregateFunction::BoolAnd | AggregateFunction::BoolOr => Value::Null,
         }
     }
 }
@@ -2050,6 +2078,417 @@ mod tests {
         if let Value::Float(v) = row.get(3).unwrap() {
             assert!((v - 25.0).abs() < 0.0001, "Median: Expected 25.0, got {}", v);
         }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for bool_and ==========
+
+    #[test]
+    fn hash_aggregate_bool_and_all_true() {
+        // Test bool_and when all values are true
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_active".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Bool(true)], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("is_active"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_one_false() {
+        // Test bool_and when one value is false
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_active".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Bool(false)], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("is_active"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_with_nulls() {
+        // Test bool_and ignores NULLs - only considers non-NULL values
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_active".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Null], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("is_active"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // NULL is skipped, so result is true AND true = true
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_all_nulls() {
+        // Test bool_and with all NULLs returns NULL
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_active".to_string()],
+            vec![vec![Value::Null], vec![Value::Null]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("is_active"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Null);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_with_group_by() {
+        // Test bool_and with GROUP BY
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "is_active".to_string()],
+            vec![
+                vec![Value::from("A"), Value::Bool(true)],
+                vec![Value::from("A"), Value::Bool(true)],
+                vec![Value::from("B"), Value::Bool(true)],
+                vec![Value::from("B"), Value::Bool(false)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("is_active"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let result = row.get(1).unwrap();
+
+            if dept == &Value::from("A") {
+                assert_eq!(result, &Value::Bool(true));
+            } else if dept == &Value::from("B") {
+                assert_eq!(result, &Value::Bool(false));
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for bool_or ==========
+
+    #[test]
+    fn hash_aggregate_bool_or_all_false() {
+        // Test bool_or when all values are false
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["has_error".to_string()],
+            vec![vec![Value::Bool(false)], vec![Value::Bool(false)], vec![Value::Bool(false)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("has_error"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_or_one_true() {
+        // Test bool_or when one value is true
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["has_error".to_string()],
+            vec![vec![Value::Bool(false)], vec![Value::Bool(true)], vec![Value::Bool(false)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("has_error"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_or_with_nulls() {
+        // Test bool_or ignores NULLs - only considers non-NULL values
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["has_error".to_string()],
+            vec![vec![Value::Bool(false)], vec![Value::Null], vec![Value::Bool(false)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("has_error"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // NULL is skipped, so result is false OR false = false
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_or_all_nulls() {
+        // Test bool_or with all NULLs returns NULL
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["has_error".to_string()],
+            vec![vec![Value::Null], vec![Value::Null]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("has_error"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Null);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_or_with_group_by() {
+        // Test bool_or with GROUP BY
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "has_error".to_string()],
+            vec![
+                vec![Value::from("A"), Value::Bool(false)],
+                vec![Value::from("A"), Value::Bool(false)],
+                vec![Value::from("B"), Value::Bool(false)],
+                vec![Value::from("B"), Value::Bool(true)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("has_error"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let result = row.get(1).unwrap();
+
+            if dept == &Value::from("A") {
+                assert_eq!(result, &Value::Bool(false));
+            } else if dept == &Value::from("B") {
+                assert_eq!(result, &Value::Bool(true));
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for every (synonym for bool_and) ==========
+
+    #[test]
+    fn hash_aggregate_every_all_true() {
+        // Test every (synonym for bool_and) when all values are true
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_verified".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Bool(true)], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::every(LogicalExpr::column("is_verified"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_every_one_false() {
+        // Test every (synonym for bool_and) when one value is false
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["is_verified".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Bool(false)], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::every(LogicalExpr::column("is_verified"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    // ========== Test combining boolean aggregates ==========
+
+    #[test]
+    fn hash_aggregate_bool_and_and_bool_or_combined() {
+        // Test both bool_and and bool_or together
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["flag".to_string()],
+            vec![vec![Value::Bool(true)], vec![Value::Bool(false)], vec![Value::Bool(true)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![
+            LogicalExpr::bool_and(LogicalExpr::column("flag")),
+            LogicalExpr::bool_or(LogicalExpr::column("flag")),
+        ];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // bool_and: true AND false AND true = false
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+        // bool_or: true OR false OR true = true
+        assert_eq!(row.get(1).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_with_integers() {
+        // Test bool_and with integer values (non-zero is truthy)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["val".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(2)], vec![Value::Int(3)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("val"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // All non-zero integers are truthy, so result is true
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(true));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_and_with_zero() {
+        // Test bool_and with zero (falsy)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["val".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(0)], vec![Value::Int(2)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_and(LogicalExpr::column("val"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // 0 is falsy, so result is false
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_bool_or_with_all_zeros() {
+        // Test bool_or with all zeros (falsy)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["val".to_string()],
+            vec![vec![Value::Int(0)], vec![Value::Int(0)], vec![Value::Int(0)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::bool_or(LogicalExpr::column("val"))];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        // All zeros are falsy, so result is false
+        assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
 
         op.close().unwrap();
     }

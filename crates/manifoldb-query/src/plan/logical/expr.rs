@@ -814,6 +814,42 @@ impl LogicalExpr {
         }
     }
 
+    /// Creates a BOOL_AND aggregate.
+    ///
+    /// Returns true if ALL non-NULL values are true, NULL if all values are NULL.
+    /// Example: `SELECT bool_and(is_active) FROM users;`
+    #[must_use]
+    pub fn bool_and(expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::BoolAnd,
+            args: vec![expr],
+            distinct: false,
+        }
+    }
+
+    /// Creates a BOOL_OR aggregate.
+    ///
+    /// Returns true if ANY non-NULL value is true, NULL if all values are NULL.
+    /// Example: `SELECT bool_or(has_error) FROM log_entries;`
+    #[must_use]
+    pub fn bool_or(expr: Self) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::BoolOr,
+            args: vec![expr],
+            distinct: false,
+        }
+    }
+
+    /// Creates an EVERY aggregate (SQL standard synonym for BOOL_AND).
+    ///
+    /// Returns true if ALL non-NULL values are true, NULL if all values are NULL.
+    /// Example: `SELECT every(is_verified) FROM accounts;`
+    #[must_use]
+    pub fn every(expr: Self) -> Self {
+        // EVERY is the SQL standard name for BOOL_AND
+        Self::bool_and(expr)
+    }
+
     // ========== Window Functions ==========
 
     /// Creates a ROW_NUMBER window function.
@@ -2007,6 +2043,12 @@ pub enum AggregateFunction {
     VectorAvg,
     /// Vector centroid.
     VectorCentroid,
+    /// `BOOL_AND(expr)` - returns true if ALL non-NULL values are true.
+    /// SQL: BOOL_AND, EVERY (SQL standard synonym)
+    BoolAnd,
+    /// `BOOL_OR(expr)` - returns true if ANY non-NULL value is true.
+    /// SQL: BOOL_OR
+    BoolOr,
 }
 
 impl fmt::Display for AggregateFunction {
@@ -2031,6 +2073,8 @@ impl fmt::Display for AggregateFunction {
             Self::JsonbObjectAgg => "JSONB_OBJECT_AGG",
             Self::VectorAvg => "VECTOR_AVG",
             Self::VectorCentroid => "VECTOR_CENTROID",
+            Self::BoolAnd => "BOOL_AND",
+            Self::BoolOr => "BOOL_OR",
         };
         write!(f, "{name}")
     }

@@ -474,8 +474,9 @@ These feature groups can be implemented independently:
 | jsonb_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | json_object_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | jsonb_object_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| bool_and | | | | | | | Not impl |
-| bool_or | | | | | | | Not impl |
+| bool_and | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| bool_or | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| every | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† SQL-standard synonym for bool_and |
 | stddev | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | stddev_pop | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | variance | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
