@@ -214,11 +214,11 @@ These feature groups can be implemented independently:
 | percent_rank() | | | | | | | Not implemented |
 | cume_dist() | | | | | | | Not implemented |
 | **Value Functions** |
-| lag() | ✓ | ✓ | | | | | Needs impl |
-| lead() | ✓ | ✓ | | | | | Needs impl |
-| first_value() | ✓ | ✓ | | | | | Needs impl |
-| last_value() | ✓ | ✓ | | | | | Needs impl |
-| nth_value() | | | | | | | Not implemented |
+| lag() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| lead() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| first_value() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| last_value() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| nth_value() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | **Aggregate as Window** |
 | count() OVER | ✓ | ✓ | | | | | Needs impl |
 | sum() OVER | ✓ | ✓ | | | | | Needs impl |

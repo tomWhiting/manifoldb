@@ -990,13 +990,31 @@ impl PhysicalPlanner {
             .window_exprs
             .iter()
             .filter_map(|(expr, alias)| {
-                if let LogicalExpr::WindowFunction { func, partition_by, order_by } = expr {
-                    Some(WindowFunctionExpr::new(
-                        *func,
-                        partition_by.clone(),
-                        order_by.clone(),
-                        alias.clone(),
-                    ))
+                if let LogicalExpr::WindowFunction {
+                    func,
+                    arg,
+                    default_value,
+                    partition_by,
+                    order_by,
+                } = expr
+                {
+                    Some(if let Some(arg_expr) = arg {
+                        WindowFunctionExpr::with_arg(
+                            func.clone(),
+                            (**arg_expr).clone(),
+                            default_value.as_ref().map(|d| (**d).clone()),
+                            partition_by.clone(),
+                            order_by.clone(),
+                            alias.clone(),
+                        )
+                    } else {
+                        WindowFunctionExpr::new(
+                            func.clone(),
+                            partition_by.clone(),
+                            order_by.clone(),
+                            alias.clone(),
+                        )
+                    })
                 } else {
                     None
                 }

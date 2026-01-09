@@ -161,11 +161,18 @@ pub enum LogicalExpr {
 
     /// Window function expression.
     ///
-    /// Used for ranking functions like ROW_NUMBER(), RANK(), DENSE_RANK().
+    /// Used for ranking functions like ROW_NUMBER(), RANK(), DENSE_RANK()
+    /// and value functions like LAG(), LEAD(), FIRST_VALUE(), LAST_VALUE(), NTH_VALUE().
     /// Example: `ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)`
+    /// Example: `LAG(salary, 1, 0) OVER (PARTITION BY dept ORDER BY hire_date)`
     WindowFunction {
         /// The window function type.
         func: WindowFunction,
+        /// The expression argument for value functions (e.g., the column to retrieve).
+        /// For ranking functions (ROW_NUMBER, RANK, DENSE_RANK), this is None.
+        arg: Option<Box<LogicalExpr>>,
+        /// Default value for LAG/LEAD when the offset row doesn't exist.
+        default_value: Option<Box<LogicalExpr>>,
         /// Partition by expressions (creates separate numbering per partition).
         partition_by: Vec<LogicalExpr>,
         /// Order by expressions (determines ranking order).
@@ -487,19 +494,130 @@ impl LogicalExpr {
     /// Creates a ROW_NUMBER window function.
     #[must_use]
     pub fn row_number(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
-        Self::WindowFunction { func: WindowFunction::RowNumber, partition_by, order_by }
+        Self::WindowFunction {
+            func: WindowFunction::RowNumber,
+            arg: None,
+            default_value: None,
+            partition_by,
+            order_by,
+        }
     }
 
     /// Creates a RANK window function.
     #[must_use]
     pub fn rank(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
-        Self::WindowFunction { func: WindowFunction::Rank, partition_by, order_by }
+        Self::WindowFunction {
+            func: WindowFunction::Rank,
+            arg: None,
+            default_value: None,
+            partition_by,
+            order_by,
+        }
     }
 
     /// Creates a DENSE_RANK window function.
     #[must_use]
     pub fn dense_rank(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
-        Self::WindowFunction { func: WindowFunction::DenseRank, partition_by, order_by }
+        Self::WindowFunction {
+            func: WindowFunction::DenseRank,
+            arg: None,
+            default_value: None,
+            partition_by,
+            order_by,
+        }
+    }
+
+    /// Creates a LAG window function.
+    ///
+    /// LAG(expr, offset, default) accesses a value from a previous row.
+    /// - `expr`: The value expression to retrieve.
+    /// - `offset`: Number of rows back (default 1).
+    /// - `default_value`: Value to return if offset row doesn't exist.
+    #[must_use]
+    pub fn lag(
+        expr: Self,
+        offset: u64,
+        default_value: Option<Self>,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Lag { offset, has_default: default_value.is_some() },
+            arg: Some(Box::new(expr)),
+            default_value: default_value.map(Box::new),
+            partition_by,
+            order_by,
+        }
+    }
+
+    /// Creates a LEAD window function.
+    ///
+    /// LEAD(expr, offset, default) accesses a value from a following row.
+    /// - `expr`: The value expression to retrieve.
+    /// - `offset`: Number of rows forward (default 1).
+    /// - `default_value`: Value to return if offset row doesn't exist.
+    #[must_use]
+    pub fn lead(
+        expr: Self,
+        offset: u64,
+        default_value: Option<Self>,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Lead { offset, has_default: default_value.is_some() },
+            arg: Some(Box::new(expr)),
+            default_value: default_value.map(Box::new),
+            partition_by,
+            order_by,
+        }
+    }
+
+    /// Creates a FIRST_VALUE window function.
+    ///
+    /// FIRST_VALUE(expr) returns the first value in the window frame.
+    #[must_use]
+    pub fn first_value(expr: Self, partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::FirstValue,
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+        }
+    }
+
+    /// Creates a LAST_VALUE window function.
+    ///
+    /// LAST_VALUE(expr) returns the last value in the window frame.
+    #[must_use]
+    pub fn last_value(expr: Self, partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::LastValue,
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+        }
+    }
+
+    /// Creates an NTH_VALUE window function.
+    ///
+    /// NTH_VALUE(expr, n) returns the nth value in the window frame (1-indexed).
+    #[must_use]
+    pub fn nth_value(
+        expr: Self,
+        n: u64,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::NthValue { n },
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+        }
     }
 
     // ========== Utility Methods ==========
@@ -714,8 +832,53 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::WindowFunction { func, partition_by, order_by } => {
-                write!(f, "{func}() OVER (")?;
+            Self::WindowFunction { func, arg, default_value, partition_by, order_by } => {
+                // Print function name and arguments
+                match func {
+                    WindowFunction::RowNumber
+                    | WindowFunction::Rank
+                    | WindowFunction::DenseRank => {
+                        write!(f, "{func}()")?;
+                    }
+                    WindowFunction::Lag { offset, .. } | WindowFunction::Lead { offset, .. } => {
+                        let name =
+                            if matches!(func, WindowFunction::Lag { .. }) { "LAG" } else { "LEAD" };
+                        write!(f, "{name}(")?;
+                        if let Some(a) = arg {
+                            write!(f, "{a}")?;
+                        }
+                        if *offset != 1 {
+                            write!(f, ", {offset}")?;
+                        }
+                        if let Some(def) = default_value {
+                            if *offset == 1 {
+                                write!(f, ", 1")?;
+                            }
+                            write!(f, ", {def}")?;
+                        }
+                        write!(f, ")")?;
+                    }
+                    WindowFunction::FirstValue | WindowFunction::LastValue => {
+                        let name = if matches!(func, WindowFunction::FirstValue) {
+                            "FIRST_VALUE"
+                        } else {
+                            "LAST_VALUE"
+                        };
+                        write!(f, "{name}(")?;
+                        if let Some(a) = arg {
+                            write!(f, "{a}")?;
+                        }
+                        write!(f, ")")?;
+                    }
+                    WindowFunction::NthValue { n } => {
+                        write!(f, "NTH_VALUE(")?;
+                        if let Some(a) = arg {
+                            write!(f, "{a}")?;
+                        }
+                        write!(f, ", {n})")?;
+                    }
+                }
+                write!(f, " OVER (")?;
                 if !partition_by.is_empty() {
                     write!(f, "PARTITION BY ")?;
                     for (i, expr) in partition_by.iter().enumerate() {

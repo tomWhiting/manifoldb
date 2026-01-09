@@ -513,7 +513,13 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<Vec<_>>>()?;
 
-        Ok(LogicalExpr::WindowFunction { func: window_func, partition_by, order_by })
+        Ok(LogicalExpr::WindowFunction {
+            func: window_func,
+            arg: None, // TODO: Handle value function arguments when parser supports them
+            default_value: None,
+            partition_by,
+            order_by,
+        })
     }
 
     /// Builds projection expressions.

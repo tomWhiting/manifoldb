@@ -756,8 +756,13 @@ impl LimitExecNode {
 /// A single window function expression with its output alias.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowFunctionExpr {
-    /// The window function type (ROW_NUMBER, RANK, DENSE_RANK).
+    /// The window function type (ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, etc.).
     pub func: WindowFunction,
+    /// The expression argument for value functions (e.g., the column to retrieve).
+    /// For ranking functions (ROW_NUMBER, RANK, DENSE_RANK), this is None.
+    pub arg: Option<Box<LogicalExpr>>,
+    /// Default value for LAG/LEAD when the offset row doesn't exist.
+    pub default_value: Option<Box<LogicalExpr>>,
     /// Partition by expressions.
     pub partition_by: Vec<LogicalExpr>,
     /// Order by expressions.
@@ -767,7 +772,7 @@ pub struct WindowFunctionExpr {
 }
 
 impl WindowFunctionExpr {
-    /// Creates a new window function expression.
+    /// Creates a new window function expression for ranking functions.
     #[must_use]
     pub fn new(
         func: WindowFunction,
@@ -775,7 +780,27 @@ impl WindowFunctionExpr {
         order_by: Vec<SortOrder>,
         alias: impl Into<String>,
     ) -> Self {
-        Self { func, partition_by, order_by, alias: alias.into() }
+        Self { func, arg: None, default_value: None, partition_by, order_by, alias: alias.into() }
+    }
+
+    /// Creates a new window function expression with argument (for value functions).
+    #[must_use]
+    pub fn with_arg(
+        func: WindowFunction,
+        arg: LogicalExpr,
+        default_value: Option<LogicalExpr>,
+        partition_by: Vec<LogicalExpr>,
+        order_by: Vec<SortOrder>,
+        alias: impl Into<String>,
+    ) -> Self {
+        Self {
+            func,
+            arg: Some(Box::new(arg)),
+            default_value: default_value.map(Box::new),
+            partition_by,
+            order_by,
+            alias: alias.into(),
+        }
     }
 }
 

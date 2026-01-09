@@ -305,8 +305,8 @@ impl From<QualifiedName> for FunctionCall {
     }
 }
 
-/// Window function types for ranking functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Window function types for ranking and value functions.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WindowFunction {
     /// ROW_NUMBER() - assigns sequential numbers starting from 1.
     RowNumber,
@@ -314,16 +314,43 @@ pub enum WindowFunction {
     Rank,
     /// DENSE_RANK() - assigns ranks without gaps.
     DenseRank,
+    /// LAG(expr, offset, default) - access value from previous row.
+    Lag {
+        /// Offset from current row (default 1).
+        offset: u64,
+        /// Whether a default value was specified.
+        has_default: bool,
+    },
+    /// LEAD(expr, offset, default) - access value from next row.
+    Lead {
+        /// Offset from current row (default 1).
+        offset: u64,
+        /// Whether a default value was specified.
+        has_default: bool,
+    },
+    /// FIRST_VALUE(expr) - first value in window frame.
+    FirstValue,
+    /// LAST_VALUE(expr) - last value in window frame.
+    LastValue,
+    /// NTH_VALUE(expr, n) - nth value in window frame (1-indexed).
+    NthValue {
+        /// The 1-indexed position (n) in the frame.
+        n: u64,
+    },
 }
 
 impl std::fmt::Display for WindowFunction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::RowNumber => "ROW_NUMBER",
-            Self::Rank => "RANK",
-            Self::DenseRank => "DENSE_RANK",
-        };
-        write!(f, "{name}")
+        match self {
+            Self::RowNumber => write!(f, "ROW_NUMBER"),
+            Self::Rank => write!(f, "RANK"),
+            Self::DenseRank => write!(f, "DENSE_RANK"),
+            Self::Lag { offset, .. } => write!(f, "LAG({offset})"),
+            Self::Lead { offset, .. } => write!(f, "LEAD({offset})"),
+            Self::FirstValue => write!(f, "FIRST_VALUE"),
+            Self::LastValue => write!(f, "LAST_VALUE"),
+            Self::NthValue { n } => write!(f, "NTH_VALUE({n})"),
+        }
     }
 }
 
