@@ -217,10 +217,12 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] make_timestamp, make_date, make_time ✅ Complete (Jan 2026)
   - [x] timezone ✅ Complete (Jan 2026)
 
-- [x] **Aggregate Functions** (Tier 1) - Core complete
+- [x] **Aggregate Functions** (Tier 1 & 2) - Complete ✅ Jan 2026
   - [x] count, sum, avg, min, max ✅ Complete
   - [x] array_agg, string_agg ✅ Complete (Jan 2026)
-  - [ ] json_agg, jsonb_agg, json_object_agg
+  - [x] json_agg, jsonb_agg, json_object_agg ✅ Complete (Jan 2026)
+  - [x] stddev, stddev_pop, variance, var_pop ✅ Complete (Jan 2026)
+  - [x] percentileCont, percentileDisc ✅ Complete (Jan 2026)
   - [ ] bool_and, bool_or, every
   - [ ] FILTER clause on aggregates
 
@@ -333,12 +335,12 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] type, labels, id, properties, keys ✅ Jan 2026
   - [ ] nodes, relationships
   - [ ] startNode, endNode
-  - [ ] toBoolean, toInteger, toFloat, toString
+  - [x] toBoolean, toInteger, toFloat, toString ✅ Jan 2026
 
-- [x] **Aggregating Functions** - Core complete
+- [x] **Aggregating Functions** - Complete ✅ Jan 2026
   - [x] collect, count, sum, avg, min, max ✅ Complete
-  - [ ] percentileCont, percentileDisc
-  - [ ] stDev, stDevP
+  - [x] percentileCont, percentileDisc ✅ Jan 2026
+  - [x] stDev, stDevP ✅ Jan 2026
 
 - [x] **List Functions** ✅ Jan 2026
   - [x] range, reverse ✅ Jan 2026
