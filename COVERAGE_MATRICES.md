@@ -817,11 +817,11 @@ These feature groups can be implemented independently:
 
 | Algorithm | Via CALL | Via Query | Tested | Notes |
 |-----------|----------|-----------|--------|-------|
-| Shortest Path (BFS) | | | | Needs CALL |
-| Weighted Shortest Path (Dijkstra) | | | ✓ | In graph crate |
-| A* Search | | | | In graph crate |
-| All Shortest Paths | | | | Needs impl |
-| Single-Source Shortest Paths | | | | Needs impl |
+| Shortest Path (BFS) | ✓ | | ✓ | `algo.shortestPath()` |
+| Weighted Shortest Path (Dijkstra) | ✓ | | ✓ | `algo.dijkstra()` |
+| A* Search | ✓ | | ✓ | `algo.astar()` |
+| All Shortest Paths | ✓ | | ✓ | `algo.allShortestPaths()` |
+| Single-Source Shortest Paths | ✓ | | ✓ | `algo.sssp()` |
 | All-Pairs Shortest Paths | | | | Needs impl |
 
 ## 3.2 Centrality Algorithms
