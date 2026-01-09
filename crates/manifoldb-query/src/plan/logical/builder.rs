@@ -408,6 +408,11 @@ impl PlanBuilder {
             // Cypher percentile functions
             "PERCENTILECONT" | "PERCENTILE_CONT" => Some(AggregateFunction::PercentileCont),
             "PERCENTILEDISC" | "PERCENTILE_DISC" => Some(AggregateFunction::PercentileDisc),
+            // JSON aggregates
+            "JSON_AGG" => Some(AggregateFunction::JsonAgg),
+            "JSONB_AGG" => Some(AggregateFunction::JsonbAgg),
+            "JSON_OBJECT_AGG" => Some(AggregateFunction::JsonObjectAgg),
+            "JSONB_OBJECT_AGG" => Some(AggregateFunction::JsonbObjectAgg),
             // Vector aggregates
             "VECTOR_AVG" => Some(AggregateFunction::VectorAvg),
             "VECTOR_CENTROID" => Some(AggregateFunction::VectorCentroid),
