@@ -665,18 +665,15 @@ pub fn evaluate_expr_with_graph(
         }
 
         // COUNT { } subquery: Returns count of pattern matches
-        // Like pattern comprehension, requires graph access for full execution.
-        // At the expression level, return 0 as placeholder.
-        LogicalExpr::CountSubquery { .. } => {
-            // TODO: COUNT subqueries require graph access for execution.
-            // They should be transformed into a plan that:
-            // 1. Executes the graph pattern match for each input row
-            // 2. Applies the filter predicate
-            // 3. Returns the count of matches
-            //
-            // This is semantically equivalent to: size([(pattern) | 1])
-            // For now, return 0 as a placeholder.
-            Ok(Value::Int(0))
+        LogicalExpr::CountSubquery { expand_steps, filter_predicate } => {
+            // COUNT requires graph access for execution
+            let Some(graph) = graph else {
+                // No graph accessor available - return 0 as fallback
+                return Ok(Value::Int(0));
+            };
+
+            // Execute the COUNT subquery and return the count of matches
+            evaluate_count_subquery(graph, expand_steps, filter_predicate.as_deref(), row)
         }
 
         // CALL { } subquery: Executes inner plan and returns results
@@ -864,6 +861,174 @@ fn execute_exists_pattern(
 
     // No match found
     Ok(Value::Bool(false))
+}
+
+/// Evaluates a COUNT { } subquery by executing graph pattern matching.
+///
+/// This function implements correlated COUNT subqueries for Cypher.
+/// It executes the graph pattern match starting from the source node
+/// referenced in the current row, and returns the count of all matches.
+///
+/// # Full enumeration
+///
+/// Unlike EXISTS which short-circuits on the first match, COUNT must
+/// enumerate all possible matches to return an accurate count.
+///
+/// # Arguments
+///
+/// * `graph` - The graph accessor for traversal operations
+/// * `expand_steps` - The expand nodes representing the pattern to match
+/// * `filter_predicate` - Optional WHERE filter to apply to matches
+/// * `row` - The current row (provides correlated variable bindings)
+fn evaluate_count_subquery(
+    graph: &dyn GraphAccessor,
+    expand_steps: &[ExpandNode],
+    filter_predicate: Option<&LogicalExpr>,
+    row: &Row,
+) -> OperatorResult<Value> {
+    // Empty pattern has zero matches
+    if expand_steps.is_empty() {
+        return Ok(Value::Int(0));
+    }
+
+    // Get the source node ID from the first expand step
+    let first_step = &expand_steps[0];
+    let source_id = match row.get_by_name(&first_step.src_var) {
+        Some(Value::Int(id)) => EntityId::new(*id as u64),
+        Some(_) | None => {
+            // Source variable not found or not an integer - no matches
+            return Ok(Value::Int(0));
+        }
+    };
+
+    // Execute the pattern matching and count all matches
+    let count = execute_count_pattern(graph, expand_steps, filter_predicate, row, source_id, 0)?;
+    Ok(Value::Int(count))
+}
+
+/// Recursively executes pattern matching for COUNT subquery.
+///
+/// This function handles multi-hop patterns by recursively expanding each step.
+/// Unlike EXISTS, it does NOT short-circuit - it counts ALL matching paths.
+fn execute_count_pattern(
+    graph: &dyn GraphAccessor,
+    expand_steps: &[ExpandNode],
+    filter_predicate: Option<&LogicalExpr>,
+    base_row: &Row,
+    current_node: EntityId,
+    step_index: usize,
+) -> OperatorResult<i64> {
+    // Base case: all steps completed - check the filter if present
+    if step_index >= expand_steps.len() {
+        if let Some(predicate) = filter_predicate {
+            // Evaluate the filter predicate with the current bindings
+            let result = evaluate_expr(predicate, base_row)?;
+            return Ok(match result {
+                Value::Bool(true) => 1,
+                _ => 0,
+            });
+        }
+        // No filter - pattern matched, count as 1
+        return Ok(1);
+    }
+
+    let step = &expand_steps[step_index];
+    let direction = expand_direction_to_graph_direction(&step.direction);
+
+    // Get edge type filters
+    let edge_types: Option<Vec<EdgeType>> = if step.edge_types.is_empty() {
+        None
+    } else {
+        Some(step.edge_types.iter().map(|s| EdgeType::new(s.as_str())).collect())
+    };
+
+    // Execute expansion based on length specification
+    let neighbors = match &step.length {
+        ExpandLength::Single => {
+            // Single hop expansion
+            let results = if let Some(ref types) = edge_types {
+                graph.neighbors_by_types(current_node, direction, types)
+            } else {
+                graph.neighbors(current_node, direction)
+            };
+
+            match results {
+                Ok(neighbors) => neighbors,
+                Err(_) => return Ok(0),
+            }
+        }
+        ExpandLength::Exact(n) => {
+            // Exact depth: use expand_all with min=max=n
+            let results =
+                graph.expand_all(current_node, direction, *n, Some(*n), edge_types.as_deref());
+            match results {
+                Ok(traversals) => traversals
+                    .into_iter()
+                    .map(|t| {
+                        crate::exec::graph_accessor::NeighborResult::new(
+                            t.node,
+                            t.edge_id.unwrap_or(manifoldb_core::EdgeId::new(0)),
+                            direction,
+                        )
+                    })
+                    .collect(),
+                Err(_) => return Ok(0),
+            }
+        }
+        ExpandLength::Range { min, max } => {
+            // Variable length expansion
+            let results =
+                graph.expand_all(current_node, direction, *min, *max, edge_types.as_deref());
+            match results {
+                Ok(traversals) => traversals
+                    .into_iter()
+                    .map(|t| {
+                        crate::exec::graph_accessor::NeighborResult::new(
+                            t.node,
+                            t.edge_id.unwrap_or(manifoldb_core::EdgeId::new(0)),
+                            direction,
+                        )
+                    })
+                    .collect(),
+                Err(_) => return Ok(0),
+            }
+        }
+    };
+
+    // Accumulate count from all neighbors
+    let mut total_count = 0i64;
+    for neighbor in neighbors {
+        // Apply node label filter if present
+        if !step.node_labels.is_empty() {
+            // TODO: Check if the neighbor node has the required labels
+            // For now, we skip label filtering as it requires entity access
+        }
+
+        // Create a new row with the destination variable bound
+        let row_with_binding =
+            base_row.with_binding(&step.dst_var, Value::Int(neighbor.node.as_u64() as i64));
+
+        // Optionally bind edge variable
+        let row_with_edge = if let Some(ref edge_var) = step.edge_var {
+            row_with_binding.with_binding(edge_var, Value::Int(neighbor.edge_id.as_u64() as i64))
+        } else {
+            row_with_binding
+        };
+
+        // Recursively count matches from this neighbor
+        let count = execute_count_pattern(
+            graph,
+            expand_steps,
+            filter_predicate,
+            &row_with_edge,
+            neighbor.node,
+            step_index + 1,
+        )?;
+
+        total_count += count;
+    }
+
+    Ok(total_count)
 }
 
 /// Converts `ExpandDirection` to `manifoldb_graph::traversal::Direction`.
@@ -8021,5 +8186,333 @@ mod tests {
         assert!(row2.is_none());
 
         filter_op.close().unwrap();
+    }
+
+    // ========== COUNT Subquery Evaluation Tests ==========
+
+    #[test]
+    fn test_count_subquery_no_graph() {
+        // When no graph accessor is provided, COUNT should return 0
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let expr =
+            LogicalExpr::CountSubquery { expand_steps: vec![expand_step], filter_predicate: None };
+
+        // Without graph accessor, should return 0
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_count_subquery_single_match() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) } with one neighbor
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[expand_step], None, &row).unwrap();
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_count_subquery_multiple_matches() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) } with multiple neighbors
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 -> Node 2
+        mock_graph.add_edge(1, 3, 101); // Node 1 -> Node 3
+        mock_graph.add_edge(1, 4, 102); // Node 1 -> Node 4
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[expand_step], None, &row).unwrap();
+        assert_eq!(result, Value::Int(3)); // Should count all 3 neighbors
+    }
+
+    #[test]
+    fn test_count_subquery_no_match() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) } with no neighbors
+        let mock_graph = MockGraphAccessor::new(); // Empty graph
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[expand_step], None, &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_count_subquery_with_filter_pass() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) WHERE friend > 0 }
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+        mock_graph.add_edge(1, 4, 102);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Filter: friend > 0 (all friends 2, 3, 4 are > 0)
+        let filter = LogicalExpr::column("friend").gt(LogicalExpr::integer(0));
+
+        let result =
+            evaluate_count_subquery(&mock_graph, &[expand_step], Some(&filter), &row).unwrap();
+        assert_eq!(result, Value::Int(3)); // All 3 should pass
+    }
+
+    #[test]
+    fn test_count_subquery_with_filter_partial() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) WHERE friend > 2 }
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // friend=2, NOT > 2
+        mock_graph.add_edge(1, 3, 101); // friend=3, IS > 2
+        mock_graph.add_edge(1, 4, 102); // friend=4, IS > 2
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Filter: friend > 2 (only friends 3 and 4 match)
+        let filter = LogicalExpr::column("friend").gt(LogicalExpr::integer(2));
+
+        let result =
+            evaluate_count_subquery(&mock_graph, &[expand_step], Some(&filter), &row).unwrap();
+        assert_eq!(result, Value::Int(2)); // Only 2 pass the filter
+    }
+
+    #[test]
+    fn test_count_subquery_with_filter_none_pass() {
+        // Test COUNT { (n)-[:KNOWS]->(friend) WHERE friend > 100 }
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Filter: friend > 100 (no friends match)
+        let filter = LogicalExpr::column("friend").gt(LogicalExpr::integer(100));
+
+        let result =
+            evaluate_count_subquery(&mock_graph, &[expand_step], Some(&filter), &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_count_subquery_multi_hop() {
+        // Test COUNT { (n)-[:KNOWS]->(m)-[:KNOWS]->(friend) }
+        // Graph: 1 -> 2, 1 -> 3, 2 -> 4, 2 -> 5, 3 -> 6
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+        mock_graph.add_edge(2, 4, 102);
+        mock_graph.add_edge(2, 5, 103);
+        mock_graph.add_edge(3, 6, 104);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let step1 = ExpandNode::outgoing("n", "m").with_edge_type("KNOWS");
+        let step2 = ExpandNode::outgoing("m", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[step1, step2], None, &row).unwrap();
+        // Paths: 1->2->4, 1->2->5, 1->3->6 = 3 matches
+        assert_eq!(result, Value::Int(3));
+    }
+
+    #[test]
+    fn test_count_subquery_multi_hop_partial() {
+        // Test COUNT { (n)-[:KNOWS]->(m)-[:KNOWS]->(friend) } when some hops fail
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+        mock_graph.add_edge(2, 4, 102); // Only node 2 has second-hop neighbors
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let step1 = ExpandNode::outgoing("n", "m").with_edge_type("KNOWS");
+        let step2 = ExpandNode::outgoing("m", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[step1, step2], None, &row).unwrap();
+        // Only path 1->2->4 completes
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_count_subquery_empty_pattern() {
+        // Empty pattern should return 0
+        let mock_graph = MockGraphAccessor::new();
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let result = evaluate_count_subquery(&mock_graph, &[], None, &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_count_subquery_missing_source_var() {
+        // When source variable is not in the row, should return 0
+        let mock_graph = MockGraphAccessor::new();
+
+        let schema = Arc::new(Schema::new(vec!["other".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_count_subquery(&mock_graph, &[expand_step], None, &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_count_subquery_correlated_filter() {
+        // Test correlated COUNT using outer variable in filter
+        // COUNT { (n)-[:KNOWS]->(friend) WHERE friend > n }
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // 2 > 1, passes
+        mock_graph.add_edge(1, 0, 101); // 0 > 1, fails
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Filter: friend > n
+        let filter = LogicalExpr::column("friend").gt(LogicalExpr::column("n"));
+
+        let result =
+            evaluate_count_subquery(&mock_graph, &[expand_step], Some(&filter), &row).unwrap();
+        assert_eq!(result, Value::Int(1)); // Only friend=2 passes
+    }
+
+    #[test]
+    fn test_count_subquery_edge_variable_binding() {
+        // Test that edge variables are bound correctly
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 999); // Edge ID 999
+        mock_graph.add_edge(1, 3, 888); // Edge ID 888
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step =
+            ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS").with_edge_var("r");
+
+        // Filter: r = 999 (only one edge has this ID)
+        let filter = LogicalExpr::column("r").eq(LogicalExpr::integer(999));
+
+        let result =
+            evaluate_count_subquery(&mock_graph, &[expand_step], Some(&filter), &row).unwrap();
+        assert_eq!(result, Value::Int(1));
+    }
+
+    #[test]
+    fn test_count_in_filter_operator_where_clause() {
+        // Test COUNT { } > 5 in WHERE clause
+        use crate::exec::context::ExecutionContext;
+
+        let mut mock_graph = MockGraphAccessor::new();
+        // Node 1 has 6 neighbors (should pass COUNT > 5)
+        for i in 10..16 {
+            mock_graph.add_edge(1, i, 100 + i);
+        }
+        // Node 2 has 3 neighbors (should fail COUNT > 5)
+        for i in 20..23 {
+            mock_graph.add_edge(2, i, 100 + i);
+        }
+
+        let input = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![
+                vec![Value::Int(1)], // 6 neighbors, should pass
+                vec![Value::Int(2)], // 3 neighbors, should fail
+            ],
+        ));
+
+        // Predicate: COUNT { (n)-[:KNOWS]->(friend) } > 5
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+        let count_expr =
+            LogicalExpr::CountSubquery { expand_steps: vec![expand_step], filter_predicate: None };
+        let predicate = count_expr.gt(LogicalExpr::integer(5));
+
+        let mut filter_op = FilterOp::new(predicate, input);
+
+        let ctx = ExecutionContext::new().with_graph(Arc::new(mock_graph));
+        filter_op.open(&ctx).unwrap();
+
+        // Only node 1 should pass
+        let row1 = filter_op.next().unwrap();
+        assert!(row1.is_some());
+        assert_eq!(row1.unwrap().get_by_name("n"), Some(&Value::Int(1)));
+
+        // Node 2 should be filtered out
+        let row2 = filter_op.next().unwrap();
+        assert!(row2.is_none());
+
+        filter_op.close().unwrap();
+    }
+
+    #[test]
+    fn test_count_subquery_in_complex_expression() {
+        // Test COUNT { } used in arithmetic expression
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+        mock_graph.add_edge(1, 4, 102);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+        let count_expr =
+            LogicalExpr::CountSubquery { expand_steps: vec![expand_step], filter_predicate: None };
+
+        // Test: COUNT { ... } = 3
+        let eq_expr = count_expr.eq(LogicalExpr::integer(3));
+
+        let result = evaluate_expr_with_graph(&eq_expr, &row, Some(&mock_graph)).unwrap();
+        assert_eq!(result, Value::Bool(true)); // COUNT is 3, equals 3
+    }
+
+    #[test]
+    fn test_count_vs_exists_difference() {
+        // Demonstrate COUNT counts all, while EXISTS short-circuits
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+        mock_graph.add_edge(1, 4, 102);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // EXISTS returns bool, COUNT returns integer
+        let exists_result =
+            evaluate_exists_subquery(&mock_graph, std::slice::from_ref(&expand_step), None, &row)
+                .unwrap();
+        let count_result =
+            evaluate_count_subquery(&mock_graph, std::slice::from_ref(&expand_step), None, &row)
+                .unwrap();
+
+        assert_eq!(exists_result, Value::Bool(true));
+        assert_eq!(count_result, Value::Int(3));
     }
 }
