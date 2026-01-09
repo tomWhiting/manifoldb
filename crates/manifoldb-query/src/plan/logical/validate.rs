@@ -162,6 +162,13 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::Unwind { node, input } => {
+            validate_plan(input)?;
+            if node.alias.is_empty() {
+                return Err(PlanError::UnknownColumn("UNWIND alias cannot be empty".to_string()));
+            }
+        }
+
         LogicalPlan::Join { node, left, right } => {
             validate_plan(left)?;
             validate_plan(right)?;

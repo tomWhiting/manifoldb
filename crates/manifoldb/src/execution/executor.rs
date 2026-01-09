@@ -1448,6 +1448,15 @@ fn execute_logical_plan<T: Transaction>(
             execute_logical_plan(tx, input, ctx)
         }
 
+        LogicalPlan::Unwind { .. } => {
+            // UNWIND produces multiple rows per entity, which doesn't fit the entity model.
+            // This should be executed through execute_physical_plan.
+            Err(Error::Execution(
+                "UNWIND queries should be executed through execute_physical_plan, not execute_logical_plan"
+                    .to_string(),
+            ))
+        }
+
         LogicalPlan::Join { .. } => {
             // JOIN produces rows, not entities. Handle through execute_physical_plan.
             Err(Error::Execution(

@@ -97,6 +97,7 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Distinct { input, .. }
         | LogicalPlan::Alias { input, .. }
+        | LogicalPlan::Unwind { input, .. }
         | LogicalPlan::Aggregate { input, .. }
         | LogicalPlan::Expand { input, .. }
         | LogicalPlan::PathScan { input, .. }

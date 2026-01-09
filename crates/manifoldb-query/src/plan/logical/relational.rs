@@ -385,6 +385,26 @@ impl ValuesNode {
     }
 }
 
+/// An unwind node.
+///
+/// Represents unwinding a list into individual rows.
+/// This is the Cypher UNWIND clause equivalent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwindNode {
+    /// The expression that produces a list to unwind.
+    pub list_expr: LogicalExpr,
+    /// The variable name to bind each unwound element to.
+    pub alias: String,
+}
+
+impl UnwindNode {
+    /// Creates a new unwind node.
+    #[must_use]
+    pub fn new(list_expr: LogicalExpr, alias: impl Into<String>) -> Self {
+        Self { list_expr, alias: alias.into() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

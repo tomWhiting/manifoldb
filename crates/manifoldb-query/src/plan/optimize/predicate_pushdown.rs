@@ -94,6 +94,14 @@ impl PredicatePushdown {
                 LogicalPlan::Alias { alias, input: Box::new(optimized_input) }
             }
 
+            // For Unwind, predicates that don't reference the unwound variable can be pushed
+            // For simplicity, we don't push through Unwind (conservative approach)
+            LogicalPlan::Unwind { node, input } => {
+                let optimized_input = self.push_down(*input, Vec::new());
+                let result = LogicalPlan::Unwind { node, input: Box::new(optimized_input) };
+                self.apply_predicates(result, predicates)
+            }
+
             // For Join, push predicates to appropriate sides
             LogicalPlan::Join { node, left, right } => {
                 self.push_through_join(*node, *left, *right, predicates)
