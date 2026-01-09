@@ -16,6 +16,16 @@ This document tracks implementation status for all SQL and Cypher language featu
 
 **Full Implementation:** `PALOE T` (all stages complete with tests)
 
+### Verification Notes
+
+Items marked with **†** were implemented by automated agents and have unit tests, but have not yet been manually verified with end-to-end integration testing. The agent's automated review confirmed:
+- All workspace tests pass
+- No clippy warnings
+- Proper NULL handling
+- No `unwrap()`/`expect()` in library code
+
+See `docs/reviews/` for detailed review documents.
+
 ---
 
 ## Implementation Dependencies
@@ -443,18 +453,18 @@ These feature groups can be implemented independently:
 | length | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | upper | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | lower | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| substring | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| position | ✓ | ✓ | | | | | |
+| substring | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| position | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | concat | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| concat_ws | ✓ | ✓ | | | | | |
-| trim | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| ltrim | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| rtrim | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| replace | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| split_part | ✓ | ✓ | | | | | |
-| regexp_match | | | | | | | Not impl |
-| regexp_replace | | | | | | | Not impl |
-| format | | | | | | | Not impl |
+| concat_ws | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| trim | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| ltrim | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| rtrim | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| replace | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| split_part | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| regexp_match | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| regexp_replace | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| format | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 
 ### Numeric Functions
 
@@ -463,14 +473,21 @@ These feature groups can be implemented independently:
 | abs | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | ceil | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | floor | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| round | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| trunc | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| round | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Precision arg added † |
+| trunc | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Precision arg added † |
 | sqrt | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | power | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| exp | ✓ | ✓ | | | | | |
-| ln | ✓ | ✓ | | | | | |
-| log | ✓ | ✓ | | | | | |
-| sin/cos/tan | ✓ | ✓ | | | | | |
+| exp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| ln | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| log | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| log10 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| sin/cos/tan | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| asin/acos/atan | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| atan2 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| degrees | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| radians | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| sign | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| pi | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | random | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 
 ### Date/Time Functions
@@ -480,11 +497,11 @@ These feature groups can be implemented independently:
 | now | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | current_timestamp | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | current_date | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| date_part/extract | ✓ | ✓ | | | | | |
-| date_trunc | ✓ | ✓ | | | | | |
-| to_timestamp | ✓ | ✓ | | | | | |
-| to_date | ✓ | ✓ | | | | | |
-| to_char | ✓ | ✓ | | | | | |
+| date_part/extract | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| date_trunc | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| to_timestamp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| to_date | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| to_char | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | age | | | | | | | Not impl |
 
 ### JSON Functions
