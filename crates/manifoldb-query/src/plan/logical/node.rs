@@ -28,8 +28,8 @@ use super::graph::{
 };
 use super::procedure::ProcedureCallNode;
 use super::relational::{
-    AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, RecursiveCTENode,
-    ScanNode, SetOpNode, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode,
+    RecursiveCTENode, ScanNode, SetOpNode, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
 use super::transaction::{
     BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
@@ -161,6 +161,21 @@ pub enum LogicalPlan {
         node: UnionNode,
         /// The input plans.
         inputs: Vec<LogicalPlan>,
+    },
+
+    // ========== CALL { } Subquery Nodes ==========
+    /// Cypher CALL { } inline subquery.
+    ///
+    /// For each input row, executes the inner subquery with imported variables
+    /// bound to the outer row's values. Returns the cross product of input rows
+    /// with their corresponding subquery results (like LATERAL join in SQL).
+    CallSubquery {
+        /// The CALL subquery node metadata.
+        node: CallSubqueryNode,
+        /// The inner subquery plan.
+        subquery: Box<LogicalPlan>,
+        /// The input plan (outer query rows).
+        input: Box<LogicalPlan>,
     },
 
     // ========== Recursive Nodes ==========
@@ -555,7 +570,8 @@ impl LogicalPlan {
             // Binary nodes
             Self::Join { left, right, .. }
             | Self::SetOp { left, right, .. }
-            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
+            | Self::RecursiveCTE { initial: left, recursive: right, .. }
+            | Self::CallSubquery { input: left, subquery: right, .. } => {
                 vec![left.as_ref(), right.as_ref()]
             }
 
@@ -632,7 +648,8 @@ impl LogicalPlan {
             // Binary nodes
             Self::Join { left, right, .. }
             | Self::SetOp { left, right, .. }
-            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
+            | Self::RecursiveCTE { initial: left, recursive: right, .. }
+            | Self::CallSubquery { input: left, subquery: right, .. } => {
                 vec![left.as_mut(), right.as_mut()]
             }
 
@@ -698,6 +715,7 @@ impl LogicalPlan {
             Self::Join { .. } => "Join",
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
+            Self::CallSubquery { .. } => "CallSubquery",
             Self::RecursiveCTE { .. } => "RecursiveCTE",
             Self::Expand { .. } => "Expand",
             Self::PathScan { .. } => "PathScan",
@@ -882,6 +900,12 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::Union { node, inputs, .. } => {
                 write!(f, "Union{}: {} inputs", if node.all { " All" } else { "" }, inputs.len())?;
+            }
+            LogicalPlan::CallSubquery { node, .. } => {
+                write!(f, "CallSubquery")?;
+                if !node.imported_variables.is_empty() {
+                    write!(f, " WITH {}", node.imported_variables.join(", "))?;
+                }
             }
             LogicalPlan::RecursiveCTE { node, .. } => {
                 write!(f, "RecursiveCTE: {}", node.name)?;

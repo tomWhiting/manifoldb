@@ -617,7 +617,7 @@ These feature groups can be implemented independently:
 | Pattern predicates | ✓ | ✓ | | | | | |
 | EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
+| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | **Path Functions** |
 | shortestPath() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |
 | allShortestPaths() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |

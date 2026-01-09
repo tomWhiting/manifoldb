@@ -430,6 +430,22 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         | LogicalPlan::SetTransaction(_) => {
             // Transaction statements have no structural validation requirements
         }
+
+        // CALL { } subquery validation
+        LogicalPlan::CallSubquery { node, subquery, input } => {
+            // Validate input plan
+            validate_plan(input)?;
+            // Validate subquery plan
+            validate_plan(subquery)?;
+            // Imported variables should be valid identifiers (basic check)
+            for var in &node.imported_variables {
+                if var.is_empty() {
+                    return Err(PlanError::Unsupported(
+                        "CALL WITH requires non-empty variable names".to_string(),
+                    ));
+                }
+            }
+        }
     }
 
     Ok(())
