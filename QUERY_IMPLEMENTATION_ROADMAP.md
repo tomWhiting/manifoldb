@@ -112,8 +112,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] `Window` - Window function evaluation ✅ Jan 2026
   - [x] `RecursiveCTE` - Recursive CTE evaluation ✅ Jan 2026
   - [x] `Procedure` - CALL ... YIELD procedure invocation ✅ Jan 2026
-  - [ ] `ShortestPath` - Graph shortest path computation
-  - [ ] `AllShortestPaths` - All shortest paths computation
+  - [x] `ShortestPath` - Graph shortest path computation ✅ Jan 2026
+  - [x] `AllShortestPaths` - All shortest paths computation ✅ Jan 2026
   - [x] `GraphCreate` - CREATE for nodes/edges ✅ Jan 2026
   - [x] `GraphMerge` - MERGE with ON CREATE/ON MATCH ✅ Jan 2026
   - [x] `GraphSet` - SET property updates ✅ Jan 2026
@@ -300,9 +300,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] MANDATORY MATCH (optional, Neo4j extension)
   - [ ] Full label expressions (:Label1|Label2, :Label1&Label2)
 
-- [x] **Path Functions** - Variable-length paths complete ✅ Jan 2026
-  - [ ] shortestPath() pattern function
-  - [ ] allShortestPaths() pattern function
+- [x] **Path Functions** - Complete ✅ Jan 2026
+  - [x] shortestPath() pattern function ✅ Jan 2026
+  - [x] allShortestPaths() pattern function ✅ Jan 2026
   - [x] Variable-length path execution ✅ Jan 2026
 
 - [x] **Subqueries** (parsing + planning complete) ✅ Jan 2026
@@ -386,8 +386,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **GraphSetOp** - Set properties/labels ✅ Jan 2026 (planning only)
 - [x] **GraphRemoveOp** - Remove properties/labels ✅ Jan 2026 (planning only)
 - [x] **GraphDeleteOp** - Delete with referential checks ✅ Jan 2026 (planning only)
-- [ ] **ShortestPathOp** - BFS-based shortest path
-- [ ] **AllShortestPathsOp** - All shortest paths
+- [x] **ShortestPathOp** - BFS-based shortest path ✅ Jan 2026 (planning only)
+- [x] **AllShortestPathsOp** - All shortest paths ✅ Jan 2026 (planning only)
 - [x] **VariableLengthExpandOp** - Multi-hop expansion ✅ Jan 2026
 
 ---
