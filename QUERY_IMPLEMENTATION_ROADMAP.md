@@ -219,7 +219,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 
 - [x] **Aggregate Functions** (Tier 1) - Core complete
   - [x] count, sum, avg, min, max ✅ Complete
-  - [ ] array_agg, string_agg
+  - [x] array_agg, string_agg ✅ Complete (Jan 2026)
   - [ ] json_agg, jsonb_agg, json_object_agg
   - [ ] bool_and, bool_or, every
   - [ ] FILTER clause on aggregates

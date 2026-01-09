@@ -216,8 +216,10 @@ impl ProjectionPushdown {
                     self.collect_expr_columns(arg, columns);
                 }
             }
-            LogicalExpr::AggregateFunction { arg, .. } => {
-                self.collect_expr_columns(arg, columns);
+            LogicalExpr::AggregateFunction { args, .. } => {
+                for arg in args {
+                    self.collect_expr_columns(arg, columns);
+                }
             }
             LogicalExpr::Case { operand, when_clauses, else_result } => {
                 if let Some(op) = operand {
