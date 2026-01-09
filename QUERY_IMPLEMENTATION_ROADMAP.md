@@ -42,8 +42,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **JSON Functions†** - json_extract_path, jsonb_set, json_build_object, json_build_array, jsonb_strip_nulls (11 functions)
 - ✅ **Cypher Map Projections†** - `node{.property, key: expr, .*}` syntax for property extraction and transformation
 - ✅ **Aggregate Window Functions†** - SUM/AVG/COUNT/MIN/MAX OVER with frame awareness
+- ✅ **JSON Functions Completion†** - #>, #>>, ?, ?|, ?&, json_each, json_array_elements, jsonb_path_query (19 new functions)
+- ✅ **Transaction Execution†** - Session API with BEGIN/COMMIT/ROLLBACK, SAVEPOINT support (24 tests)
 
-### Remaining Work (15 Meta-Tasks)
+### Remaining Work (13 Meta-Tasks)
 
 The following meta-tasks cover the remaining items needed for full SQL/Cypher completion:
 
@@ -58,14 +60,12 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 | 7 | DDL: Schema Objects | 3 | Low | SCHEMA, FUNCTION, TRIGGER |
 | 8 | DDL: Table Operations | 3 | Low | ALTER INDEX, TRUNCATE, partitions |
 | 9 | Utility Statements | 4 | Low | EXPLAIN ANALYZE, VACUUM, COPY, SET/SHOW |
-| 10 | JSON Functions Completion | 4 | Low | Path operators, json_each, jsonb_path_query |
-| 11 | Physical Join Operators | 3 | Medium | Index nested loop, sort-merge, hash aggregate |
-| 12 | Cypher Spatial Functions | 4 | Low | point(), distance, withinBBox |
-| 13 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
-| 14 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
-| 15 | Transaction Execution | 1 | Medium | Session state, BEGIN/COMMIT/ROLLBACK execution |
+| 10 | Physical Join Operators | 3 | Medium | Index nested loop, sort-merge, hash aggregate |
+| 11 | Cypher Spatial Functions | 4 | Low | point(), distance, withinBBox |
+| 12 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
+| 13 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
 
-**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. Task #15 addresses transaction execution.
+**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries.
 
 ---
 
