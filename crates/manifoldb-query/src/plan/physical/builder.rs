@@ -12,12 +12,12 @@
 
 use super::cost::{Cost, CostModel};
 use super::node::{
-    BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, GraphPathScanExecNode,
-    HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
-    HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
-    LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, RecursiveCTEExecNode, ShortestPathExecNode, SortExecNode, UnwindExecNode,
-    WindowExecNode, WindowFunctionExpr,
+    BruteForceSearchNode, CallSubqueryExecNode, FilterExecNode, FullScanNode, GraphExpandExecNode,
+    GraphPathScanExecNode, HashAggregateNode, HashJoinNode, HnswSearchNode,
+    HybridSearchComponentNode, HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode,
+    IndexScanNode, JoinOrder, LimitExecNode, NestedLoopJoinNode, PhysicalPlan,
+    PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ShortestPathExecNode,
+    SortExecNode, UnwindExecNode, WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
@@ -434,6 +434,19 @@ impl PhysicalPlanner {
                 PhysicalPlan::GraphForeach { node: node.clone(), input: input_plan }
             }
             LogicalPlan::ProcedureCall(node) => PhysicalPlan::ProcedureCall(node.clone()),
+
+            // CALL { } subquery
+            LogicalPlan::CallSubquery { node, subquery, input } => {
+                let input_plan = Box::new(self.plan(input));
+                let subquery_plan = Box::new(self.plan(subquery));
+                let exec_node =
+                    Box::new(CallSubqueryExecNode::new(node.imported_variables.clone()));
+                PhysicalPlan::CallSubquery {
+                    node: exec_node,
+                    subquery: subquery_plan,
+                    input: input_plan,
+                }
+            }
 
             // Transaction control nodes - pass through directly
             LogicalPlan::BeginTransaction(node) => PhysicalPlan::BeginTransaction(node.clone()),

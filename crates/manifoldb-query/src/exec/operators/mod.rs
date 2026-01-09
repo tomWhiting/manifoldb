@@ -19,6 +19,7 @@
 
 pub mod aggregate;
 pub mod analytics;
+pub mod call_subquery;
 pub mod filter;
 pub mod graph;
 pub mod graph_create;
@@ -46,6 +47,7 @@ pub use analytics::{
     CommunityDetectionOpConfig, LocalClusteringCoefficientOp, LocalClusteringCoefficientOpConfig,
     PageRankOp, PageRankOpConfig, TriangleCountOp, TriangleCountOpConfig,
 };
+pub use call_subquery::CallSubqueryOp;
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};
 pub use graph_create::GraphCreateOp;

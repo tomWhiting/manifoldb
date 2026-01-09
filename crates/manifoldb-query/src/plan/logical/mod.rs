@@ -57,9 +57,9 @@ pub use graph::{
 pub use node::LogicalPlan;
 pub use procedure::{ProcedureCallNode, YieldColumn};
 pub use relational::{
-    AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
-    RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode,
-    WindowNode,
+    AggregateNode, CallSubqueryNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode,
+    ProjectNode, RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode,
+    ValuesNode, WindowNode,
 };
 pub use transaction::{
     BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,

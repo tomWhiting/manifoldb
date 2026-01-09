@@ -11,6 +11,7 @@ use super::context::ExecutionContext;
 use super::operator::{BoxedOperator, OperatorResult, OperatorState};
 use super::operators::{
     aggregate::{HashAggregateOp, SortMergeAggregateOp},
+    call_subquery::CallSubqueryOp,
     filter::FilterOp,
     graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
     graph_create::GraphCreateOp,
@@ -455,6 +456,17 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         PhysicalPlan::GraphForeach { node, input } => {
             let input_op = build_operator_tree(input)?;
             Ok(Box::new(GraphForeachOp::new((**node).clone(), input_op)))
+        }
+
+        // CALL { } subquery operations
+        PhysicalPlan::CallSubquery { node, subquery, input } => {
+            let input_op = build_operator_tree(input)?;
+            let subquery_op = build_operator_tree(subquery)?;
+            Ok(Box::new(CallSubqueryOp::new(
+                node.imported_variables.clone(),
+                input_op,
+                subquery_op,
+            )))
         }
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level

@@ -487,6 +487,62 @@ impl RecursiveCTENode {
     }
 }
 
+/// A CALL { } inline subquery node.
+///
+/// Represents a Cypher CALL { } subquery that executes for each input row,
+/// with variables imported from the outer query scope. This is similar to
+/// SQL's LATERAL join semantics.
+///
+/// # Semantics
+///
+/// For each row from the input:
+/// 1. Bind imported variables from the input row
+/// 2. Execute the inner subquery
+/// 3. Combine the input row with each subquery result row
+///
+/// If the subquery returns no rows for an input row, that input row
+/// is not included in the output (INNER semantics).
+///
+/// # Example Cypher
+///
+/// ```cypher
+/// MATCH (p:Person)
+/// CALL {
+///   WITH p
+///   MATCH (p)-[:KNOWS]->(friend)
+///   RETURN friend
+///   ORDER BY friend.name
+///   LIMIT 5
+/// }
+/// RETURN p.name, friend.name
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSubqueryNode {
+    /// Variables imported from the outer query via WITH clause.
+    /// These are bound to values from the outer row before subquery execution.
+    pub imported_variables: Vec<String>,
+}
+
+impl CallSubqueryNode {
+    /// Creates a new CALL subquery node.
+    #[must_use]
+    pub fn new(imported_variables: Vec<String>) -> Self {
+        Self { imported_variables }
+    }
+
+    /// Creates an uncorrelated (independent) subquery node.
+    #[must_use]
+    pub fn uncorrelated() -> Self {
+        Self { imported_variables: Vec::new() }
+    }
+
+    /// Returns true if this is an uncorrelated subquery (no imported variables).
+    #[must_use]
+    pub fn is_uncorrelated(&self) -> bool {
+        self.imported_variables.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

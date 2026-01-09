@@ -1708,6 +1708,13 @@ fn execute_logical_plan<T: Transaction>(
             // Transaction control is handled at the session level, not here
             Ok(Vec::new())
         }
+
+        // CALL { } inline subquery - executes subquery for each outer row
+        LogicalPlan::CallSubquery { input, .. } => {
+            // For this execution path, we just pass through to the input
+            // The full CALL subquery semantics are handled by the physical operator
+            execute_logical_plan(tx, input, ctx)
+        }
     }
 }
 

@@ -194,6 +194,21 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
 
+    // ========== CALL { } Subquery Operation ==========
+    /// Cypher CALL { } inline subquery execution.
+    ///
+    /// For each input row, executes the inner subquery with the imported
+    /// variables bound to the outer row's values. Returns the cross product
+    /// of input rows with their corresponding subquery results (like LATERAL join).
+    CallSubquery {
+        /// CALL subquery configuration.
+        node: Box<CallSubqueryExecNode>,
+        /// The inner subquery plan to execute.
+        subquery: Box<PhysicalPlan>,
+        /// Input plan (outer query rows).
+        input: Box<PhysicalPlan>,
+    },
+
     // ========== Recursive Operation ==========
     /// Recursive CTE operator (WITH RECURSIVE).
     ///
@@ -1922,6 +1937,40 @@ impl RecursiveCTEExecNode {
     }
 }
 
+/// CALL { } inline subquery execution node.
+///
+/// Represents a Cypher CALL { } subquery that executes for each input row,
+/// with variables imported from the outer query scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallSubqueryExecNode {
+    /// Variables imported from the outer query via WITH clause.
+    /// These are bound to values from the outer row before subquery execution.
+    pub imported_variables: Vec<String>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl CallSubqueryExecNode {
+    /// Creates a new CALL subquery execution node.
+    #[must_use]
+    pub fn new(imported_variables: Vec<String>) -> Self {
+        Self { imported_variables, cost: Cost::default() }
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+
+    /// Returns true if this is an uncorrelated subquery (no imported variables).
+    #[must_use]
+    pub fn is_uncorrelated(&self) -> bool {
+        self.imported_variables.is_empty()
+    }
+}
+
 // ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
@@ -1989,6 +2038,11 @@ impl PhysicalPlan {
             Self::HashJoin { build, probe, .. } => vec![build.as_ref(), probe.as_ref()],
 
             Self::MergeJoin { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+
+            // CALL subquery (has input and subquery)
+            Self::CallSubquery { input, subquery, .. } => {
+                vec![input.as_ref(), subquery.as_ref()]
+            }
 
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter().collect(),
@@ -2063,6 +2117,11 @@ impl PhysicalPlan {
 
             Self::MergeJoin { left, right, .. } => vec![left.as_mut(), right.as_mut()],
 
+            // CALL subquery (has input and subquery)
+            Self::CallSubquery { input, subquery, .. } => {
+                vec![input.as_mut(), subquery.as_mut()]
+            }
+
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter_mut().collect(),
 
@@ -2125,6 +2184,7 @@ impl PhysicalPlan {
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
             Self::Unwind { .. } => "Unwind",
+            Self::CallSubquery { .. } => "CallSubquery",
             Self::RecursiveCTE { .. } => "RecursiveCTE",
             Self::HnswSearch { .. } => "HnswSearch",
             Self::BruteForceSearch { .. } => "BruteForceSearch",
@@ -2183,6 +2243,7 @@ impl PhysicalPlan {
             Self::SetOp { cost, .. } => *cost,
             Self::Union { cost, .. } => *cost,
             Self::Unwind { node, .. } => node.cost,
+            Self::CallSubquery { node, .. } => node.cost,
             Self::RecursiveCTE { node, .. } => node.cost,
             Self::HnswSearch { node, .. } => node.cost,
             Self::BruteForceSearch { node, .. } => node.cost,
@@ -2475,6 +2536,13 @@ impl DisplayTree<'_> {
                     node.alias,
                     node.cost.value()
                 )?;
+            }
+            PhysicalPlan::CallSubquery { node, .. } => {
+                write!(f, "CallSubquery")?;
+                if !node.imported_variables.is_empty() {
+                    write!(f, " WITH {}", node.imported_variables.join(", "))?;
+                }
+                write!(f, " (cost: {:.2})", node.cost.value())?;
             }
             PhysicalPlan::RecursiveCTE { node, .. } => {
                 write!(f, "RecursiveCTE: {}", node.name)?;

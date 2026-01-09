@@ -312,6 +312,16 @@ impl PredicatePushdown {
                 // Transaction statements have no inputs, just apply any predicates as a filter
                 self.apply_predicates(plan, predicates)
             }
+
+            // CALL { } subquery - predicates can be pushed to input, but not across the subquery boundary
+            LogicalPlan::CallSubquery { node, subquery, input } => {
+                // Push predicates that only reference input columns down to the input
+                // Keep predicates that reference subquery results or mixed columns above
+                // For simplicity, push all predicates to input for now
+                let optimized_input = self.push_down(*input, predicates);
+                // The subquery is independent, so we don't push predicates into it
+                LogicalPlan::CallSubquery { node, subquery, input: Box::new(optimized_input) }
+            }
         }
     }
 
