@@ -1157,6 +1157,45 @@ fn evaluate_scalar_function(
                 Err(_) => Ok(Value::Null),
             }
         }
+        ScalarFunction::Left => {
+            // LEFT(string, length) - returns the leftmost n characters
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let len = match args.get(1) {
+                Some(Value::Int(l)) => {
+                    if *l < 0 {
+                        return Ok(Value::String(String::new()));
+                    }
+                    *l as usize
+                }
+                _ => return Ok(Value::Null),
+            };
+            let chars: Vec<char> = s.chars().collect();
+            let result: String = chars.iter().take(len).collect();
+            Ok(Value::String(result))
+        }
+        ScalarFunction::Right => {
+            // RIGHT(string, length) - returns the rightmost n characters
+            let s = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let len = match args.get(1) {
+                Some(Value::Int(l)) => {
+                    if *l < 0 {
+                        return Ok(Value::String(String::new()));
+                    }
+                    *l as usize
+                }
+                _ => return Ok(Value::Null),
+            };
+            let chars: Vec<char> = s.chars().collect();
+            let skip_count = chars.len().saturating_sub(len);
+            let result: String = chars.iter().skip(skip_count).collect();
+            Ok(Value::String(result))
+        }
         ScalarFunction::Coalesce => {
             for arg in args {
                 if !matches!(arg, Value::Null) {
@@ -4907,6 +4946,73 @@ mod tests {
         // SUBSTRING('hello', 2) = 'ello' (to end)
         let result = eval_fn(ScalarFunction::Substring, vec![Value::from("hello"), Value::Int(2)]);
         assert_eq!(result, Value::String("ello".to_string()));
+    }
+
+    #[test]
+    fn test_left() {
+        use crate::plan::logical::ScalarFunction;
+
+        // LEFT('Hello World', 5) = 'Hello'
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("Hello World"), Value::Int(5)]);
+        assert_eq!(result, Value::String("Hello".to_string()));
+
+        // LEFT('abc', 5) = 'abc' (length > string length returns entire string)
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("abc"), Value::Int(5)]);
+        assert_eq!(result, Value::String("abc".to_string()));
+
+        // LEFT('hello', 0) = '' (zero length returns empty string)
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("hello"), Value::Int(0)]);
+        assert_eq!(result, Value::String(String::new()));
+
+        // LEFT('hello', -1) = '' (negative length returns empty string)
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("hello"), Value::Int(-1)]);
+        assert_eq!(result, Value::String(String::new()));
+
+        // LEFT with unicode characters
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("日本語"), Value::Int(2)]);
+        assert_eq!(result, Value::String("日本".to_string()));
+
+        // LEFT with null input returns null
+        let result = eval_fn(ScalarFunction::Left, vec![Value::Null, Value::Int(5)]);
+        assert_eq!(result, Value::Null);
+
+        // LEFT with null length returns null
+        let result = eval_fn(ScalarFunction::Left, vec![Value::from("hello"), Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_right() {
+        use crate::plan::logical::ScalarFunction;
+
+        // RIGHT('Hello World', 5) = 'World'
+        let result =
+            eval_fn(ScalarFunction::Right, vec![Value::from("Hello World"), Value::Int(5)]);
+        assert_eq!(result, Value::String("World".to_string()));
+
+        // RIGHT('abc', 5) = 'abc' (length > string length returns entire string)
+        let result = eval_fn(ScalarFunction::Right, vec![Value::from("abc"), Value::Int(5)]);
+        assert_eq!(result, Value::String("abc".to_string()));
+
+        // RIGHT('hello', 0) = '' (zero length returns empty string)
+        let result = eval_fn(ScalarFunction::Right, vec![Value::from("hello"), Value::Int(0)]);
+        assert_eq!(result, Value::String(String::new()));
+
+        // RIGHT('hello', -1) = '' (negative length returns empty string)
+        let result = eval_fn(ScalarFunction::Right, vec![Value::from("hello"), Value::Int(-1)]);
+        assert_eq!(result, Value::String(String::new()));
+
+        // RIGHT with unicode characters
+        let result = eval_fn(ScalarFunction::Right, vec![Value::from("日本語"), Value::Int(2)]);
+        assert_eq!(result, Value::String("本語".to_string()));
+
+        // RIGHT with null input returns null
+        let result = eval_fn(ScalarFunction::Right, vec![Value::Null, Value::Int(5)]);
+        assert_eq!(result, Value::Null);
+
+        // RIGHT with null length returns null
+        let result = eval_fn(ScalarFunction::Right, vec![Value::from("hello"), Value::Null]);
+        assert_eq!(result, Value::Null);
     }
 
     #[test]

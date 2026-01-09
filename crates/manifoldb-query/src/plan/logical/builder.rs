@@ -2005,6 +2005,8 @@ impl PlanBuilder {
                     "REGEXP_REPLACE" => Some(ScalarFunction::RegexpReplace),
                     "LPAD" => Some(ScalarFunction::Lpad),
                     "RPAD" => Some(ScalarFunction::Rpad),
+                    "LEFT" => Some(ScalarFunction::Left),
+                    "RIGHT" => Some(ScalarFunction::Right),
                     "COALESCE" => Some(ScalarFunction::Coalesce),
                     "NULLIF" => Some(ScalarFunction::NullIf),
                     // Numeric functions

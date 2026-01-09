@@ -1543,6 +1543,12 @@ pub enum ScalarFunction {
     Lpad,
     /// RPAD(string, length, fill) - Right-pad string to length with fill characters.
     Rpad,
+    /// LEFT(string, length).
+    /// Returns the leftmost n characters from a string.
+    Left,
+    /// RIGHT(string, length).
+    /// Returns the rightmost n characters from a string.
+    Right,
     /// COALESCE(expr, ...).
     Coalesce,
     /// NULLIF(expr1, expr2).
@@ -1848,6 +1854,8 @@ impl fmt::Display for ScalarFunction {
             Self::RegexpReplace => "REGEXP_REPLACE",
             Self::Lpad => "LPAD",
             Self::Rpad => "RPAD",
+            Self::Left => "LEFT",
+            Self::Right => "RIGHT",
             Self::Coalesce => "COALESCE",
             Self::NullIf => "NULLIF",
             // Numeric functions
