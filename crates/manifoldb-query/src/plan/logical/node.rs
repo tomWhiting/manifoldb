@@ -24,7 +24,7 @@ use super::ddl::{
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
     ExpandNode, GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode,
-    GraphRemoveNode, GraphSetNode, PathScanNode,
+    GraphRemoveNode, GraphSetNode, PathScanNode, ShortestPathNode,
 };
 use super::procedure::ProcedureCallNode;
 use super::relational::{
@@ -188,6 +188,17 @@ pub enum LogicalPlan {
         /// The path scan node.
         node: Box<PathScanNode>,
         /// The input plan (provides starting nodes).
+        input: Box<LogicalPlan>,
+    },
+
+    /// Shortest path pattern function (shortestPath/allShortestPaths).
+    ///
+    /// Finds the shortest path(s) between two nodes using BFS (unweighted)
+    /// or Dijkstra's algorithm (weighted).
+    ShortestPath {
+        /// The shortest path node configuration.
+        node: Box<ShortestPathNode>,
+        /// The input plan (provides source/target nodes to match against).
         input: Box<LogicalPlan>,
     },
 
@@ -512,6 +523,7 @@ impl LogicalPlan {
             | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
             | Self::PathScan { input, .. }
+            | Self::ShortestPath { input, .. }
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
             | Self::HybridSearch { input, .. }
@@ -576,6 +588,7 @@ impl LogicalPlan {
             | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
             | Self::PathScan { input, .. }
+            | Self::ShortestPath { input, .. }
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
             | Self::HybridSearch { input, .. }
@@ -649,6 +662,7 @@ impl LogicalPlan {
             Self::RecursiveCTE { .. } => "RecursiveCTE",
             Self::Expand { .. } => "Expand",
             Self::PathScan { .. } => "PathScan",
+            Self::ShortestPath { .. } => "ShortestPath",
             Self::AnnSearch { .. } => "AnnSearch",
             Self::VectorDistance { .. } => "VectorDistance",
             Self::HybridSearch { .. } => "HybridSearch",
@@ -842,6 +856,16 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::PathScan { node, .. } => {
                 write!(f, "PathScan: {} steps", node.steps.len())?;
+            }
+            LogicalPlan::ShortestPath { node, .. } => {
+                let func = if node.find_all { "allShortestPaths" } else { "shortestPath" };
+                write!(f, "{}: ({}){}({})", func, node.src_var, node.direction, node.dst_var)?;
+                if !node.edge_types.is_empty() {
+                    write!(f, " [types: {}]", node.edge_types.join("|"))?;
+                }
+                if let Some(max) = node.max_length {
+                    write!(f, " [max: {max}]")?;
+                }
             }
             LogicalPlan::AnnSearch { node, .. } => {
                 write!(

@@ -699,6 +699,249 @@ impl GraphForeachNode {
     }
 }
 
+// ============================================================================
+// Shortest Path Nodes
+// ============================================================================
+
+/// Weight specification for weighted shortest path algorithms.
+///
+/// Specifies how edge weights should be calculated for Dijkstra's algorithm.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShortestPathWeight {
+    /// Unweighted (use BFS, all edges have weight 1).
+    Unweighted,
+    /// Use a single edge property as the weight.
+    Property {
+        /// The name of the edge property containing the weight.
+        name: String,
+        /// Default weight to use if the property is missing.
+        default: Option<f64>,
+    },
+    /// Use a constant weight for all edges.
+    Constant(f64),
+    /// Use an expression to calculate the weight.
+    Expression(LogicalExpr),
+}
+
+impl Default for ShortestPathWeight {
+    fn default() -> Self {
+        Self::Unweighted
+    }
+}
+
+/// A shortest path node for Cypher shortestPath()/allShortestPaths() pattern functions.
+///
+/// Finds the shortest path(s) between two nodes in the graph.
+///
+/// # Examples
+///
+/// ```text
+/// MATCH p = shortestPath((a:Person {name: 'Alice'})-[*..10]-(b:Person {name: 'Bob'}))
+/// RETURN p
+///
+/// MATCH p = allShortestPaths((a)-[*..5]->(b))
+/// WHERE a.id = 1 AND b.id = 10
+/// RETURN p
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShortestPathNode {
+    /// Variable name for the path result (e.g., "p" in `p = shortestPath(...)`).
+    pub path_variable: Option<String>,
+
+    /// The source node variable.
+    pub src_var: String,
+
+    /// The target node variable.
+    pub dst_var: String,
+
+    /// Direction of the path (outgoing, incoming, or both).
+    pub direction: ExpandDirection,
+
+    /// Optional edge type filter (e.g., `:KNOWS`).
+    pub edge_types: Vec<String>,
+
+    /// Maximum path length (number of hops). None means unbounded.
+    pub max_length: Option<usize>,
+
+    /// Minimum path length (number of hops). Default is 1.
+    pub min_length: usize,
+
+    /// Whether to find all shortest paths (allShortestPaths) or just one (shortestPath).
+    pub find_all: bool,
+
+    /// Weight specification for weighted shortest path (Dijkstra).
+    pub weight: ShortestPathWeight,
+
+    /// Optional edge variable for binding intermediate edges.
+    pub edge_var: Option<String>,
+
+    /// Optional filter on the source node.
+    pub src_filter: Option<LogicalExpr>,
+
+    /// Optional filter on the target node.
+    pub dst_filter: Option<LogicalExpr>,
+
+    /// Labels required on the source node.
+    pub src_labels: Vec<String>,
+
+    /// Labels required on the target node.
+    pub dst_labels: Vec<String>,
+}
+
+impl ShortestPathNode {
+    /// Creates a new shortest path node.
+    #[must_use]
+    pub fn new(src_var: impl Into<String>, dst_var: impl Into<String>) -> Self {
+        Self {
+            path_variable: None,
+            src_var: src_var.into(),
+            dst_var: dst_var.into(),
+            direction: ExpandDirection::Both,
+            edge_types: vec![],
+            max_length: None,
+            min_length: 1,
+            find_all: false,
+            weight: ShortestPathWeight::Unweighted,
+            edge_var: None,
+            src_filter: None,
+            dst_filter: None,
+            src_labels: vec![],
+            dst_labels: vec![],
+        }
+    }
+
+    /// Creates a shortest path node that finds all shortest paths.
+    #[must_use]
+    pub fn all(src_var: impl Into<String>, dst_var: impl Into<String>) -> Self {
+        Self::new(src_var, dst_var).with_find_all(true)
+    }
+
+    /// Sets the path variable name.
+    #[must_use]
+    pub fn with_path_variable(mut self, var: impl Into<String>) -> Self {
+        self.path_variable = Some(var.into());
+        self
+    }
+
+    /// Sets the direction.
+    #[must_use]
+    pub const fn with_direction(mut self, direction: ExpandDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    /// Sets outgoing direction.
+    #[must_use]
+    pub const fn outgoing(mut self) -> Self {
+        self.direction = ExpandDirection::Outgoing;
+        self
+    }
+
+    /// Sets incoming direction.
+    #[must_use]
+    pub const fn incoming(mut self) -> Self {
+        self.direction = ExpandDirection::Incoming;
+        self
+    }
+
+    /// Sets bidirectional (undirected) direction.
+    #[must_use]
+    pub const fn both(mut self) -> Self {
+        self.direction = ExpandDirection::Both;
+        self
+    }
+
+    /// Sets the maximum path length.
+    #[must_use]
+    pub fn with_max_length(mut self, max: usize) -> Self {
+        self.max_length = Some(max);
+        self
+    }
+
+    /// Sets the minimum path length.
+    #[must_use]
+    pub const fn with_min_length(mut self, min: usize) -> Self {
+        self.min_length = min;
+        self
+    }
+
+    /// Sets edge type filters.
+    #[must_use]
+    pub fn with_edge_types(mut self, types: Vec<String>) -> Self {
+        self.edge_types = types;
+        self
+    }
+
+    /// Adds a single edge type filter.
+    #[must_use]
+    pub fn with_edge_type(mut self, edge_type: impl Into<String>) -> Self {
+        self.edge_types.push(edge_type.into());
+        self
+    }
+
+    /// Sets whether to find all shortest paths.
+    #[must_use]
+    pub const fn with_find_all(mut self, find_all: bool) -> Self {
+        self.find_all = find_all;
+        self
+    }
+
+    /// Sets the weight specification.
+    #[must_use]
+    pub fn with_weight(mut self, weight: ShortestPathWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    /// Sets a property-based weight.
+    #[must_use]
+    pub fn weighted_by_property(mut self, property: impl Into<String>) -> Self {
+        self.weight = ShortestPathWeight::Property { name: property.into(), default: None };
+        self
+    }
+
+    /// Sets the edge variable.
+    #[must_use]
+    pub fn with_edge_var(mut self, var: impl Into<String>) -> Self {
+        self.edge_var = Some(var.into());
+        self
+    }
+
+    /// Sets the source node filter.
+    #[must_use]
+    pub fn with_src_filter(mut self, filter: LogicalExpr) -> Self {
+        self.src_filter = Some(filter);
+        self
+    }
+
+    /// Sets the target node filter.
+    #[must_use]
+    pub fn with_dst_filter(mut self, filter: LogicalExpr) -> Self {
+        self.dst_filter = Some(filter);
+        self
+    }
+
+    /// Sets the source node labels.
+    #[must_use]
+    pub fn with_src_labels(mut self, labels: Vec<String>) -> Self {
+        self.src_labels = labels;
+        self
+    }
+
+    /// Sets the target node labels.
+    #[must_use]
+    pub fn with_dst_labels(mut self, labels: Vec<String>) -> Self {
+        self.dst_labels = labels;
+        self
+    }
+
+    /// Returns true if this is a weighted shortest path query.
+    #[must_use]
+    pub fn is_weighted(&self) -> bool {
+        !matches!(self.weight, ShortestPathWeight::Unweighted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

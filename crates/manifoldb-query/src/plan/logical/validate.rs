@@ -247,6 +247,20 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::ShortestPath { node, input } => {
+            validate_plan(input)?;
+            if node.src_var.is_empty() {
+                return Err(PlanError::InvalidGraphPattern(
+                    "shortest path source variable is empty".to_string(),
+                ));
+            }
+            if node.dst_var.is_empty() {
+                return Err(PlanError::InvalidGraphPattern(
+                    "shortest path destination variable is empty".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::AnnSearch { node, input } => {
             validate_plan(input)?;
             if node.k == 0 {

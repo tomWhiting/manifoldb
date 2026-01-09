@@ -40,6 +40,6 @@ pub use node::{
     BruteForceSearchNode, FilterExecNode, FullScanNode, GraphExpandExecNode, HashAggregateNode,
     HashJoinNode, HnswSearchNode, HybridSearchComponentNode, HybridSearchNode, IndexRangeScanNode,
     IndexScanNode, JoinOrder, LimitExecNode, MergeJoinNode, NestedLoopJoinNode, PhysicalPlan,
-    PhysicalScoreCombinationMethod, ProjectExecNode, SortExecNode, SortMergeAggregateNode,
-    WindowExecNode, WindowFunctionExpr,
+    PhysicalScoreCombinationMethod, ProjectExecNode, ShortestPathExecNode, SortExecNode,
+    SortMergeAggregateNode, WindowExecNode, WindowFunctionExpr,
 };

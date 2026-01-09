@@ -4502,6 +4502,12 @@ impl ExtendedParser {
     }
 
     /// Parses a graph pattern string.
+    ///
+    /// Supports:
+    /// - Simple patterns: `(a)-[r]->(b)`
+    /// - Named paths: `p = (a)-[r]->(b)`
+    /// - Shortest path functions: `p = shortestPath((a)-[*..10]->(b))`
+    /// - All shortest paths: `p = allShortestPaths((a)-[*..5]->(b))`
     fn parse_graph_pattern(input: &str) -> ParseResult<GraphPattern> {
         let input = input.trim();
         if input.is_empty() {
@@ -4510,23 +4516,151 @@ impl ExtendedParser {
 
         // Most patterns have 1-2 paths
         let mut paths = Vec::with_capacity(2);
+        let mut shortest_paths = Vec::new();
         let mut current = input;
 
         while !current.is_empty() {
-            let (path, remaining) = Self::parse_path_pattern(current)?;
-            paths.push(path);
+            // Check for path variable assignment: `p = ...`
+            if let Some((var_name, rest)) = Self::try_parse_path_variable_assignment(current)? {
+                let rest = rest.trim();
+                // Check if it's a shortestPath or allShortestPaths function
+                if let Some(sp) = Self::try_parse_shortest_path_function(rest, var_name)? {
+                    shortest_paths.push(sp);
+                    // Find end of the function call
+                    let remaining = Self::skip_shortest_path_function(rest)?;
+                    current = remaining.trim();
+                } else {
+                    // Regular named path
+                    let (mut path, remaining) = Self::parse_path_pattern(rest)?;
+                    path.variable = Some(Identifier::new(var_name));
+                    paths.push(path);
+                    current = remaining.trim();
+                }
+            } else {
+                // Check for standalone shortestPath/allShortestPaths without assignment
+                if let Some(sp) = Self::try_parse_shortest_path_function(current, "")? {
+                    shortest_paths.push(sp);
+                    let remaining = Self::skip_shortest_path_function(current)?;
+                    current = remaining.trim();
+                } else {
+                    let (path, remaining) = Self::parse_path_pattern(current)?;
+                    paths.push(path);
+                    current = remaining.trim();
+                }
+            }
 
-            current = remaining.trim();
             if current.starts_with(',') {
                 current = current[1..].trim();
             }
         }
 
-        if paths.is_empty() {
+        if paths.is_empty() && shortest_paths.is_empty() {
             return Err(ParseError::InvalidPattern("no paths in pattern".to_string()));
         }
 
-        Ok(GraphPattern::new(paths))
+        // Create the graph pattern with shortest paths
+        let mut pattern = GraphPattern::new(paths);
+        pattern.shortest_paths = shortest_paths;
+        Ok(pattern)
+    }
+
+    /// Tries to parse a path variable assignment: `var = ...`
+    /// Returns Some((variable_name, remaining_string)) if found, None otherwise.
+    fn try_parse_path_variable_assignment(input: &str) -> ParseResult<Option<(&str, &str)>> {
+        let input = input.trim();
+
+        // Look for identifier followed by '='
+        // Must not start with '(' (that would be a node pattern)
+        if input.starts_with('(') {
+            return Ok(None);
+        }
+
+        // Find the '=' sign
+        if let Some(eq_pos) = input.find('=') {
+            // Make sure what's before '=' is a valid identifier
+            let before_eq = input[..eq_pos].trim();
+            // Identifier should be alphanumeric + underscores, starting with letter
+            if before_eq.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+                && before_eq.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                let after_eq = input[eq_pos + 1..].trim();
+                return Ok(Some((before_eq, after_eq)));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Tries to parse shortestPath() or allShortestPaths() function.
+    /// Returns Some(ShortestPathPattern) if the input starts with such a function, None otherwise.
+    fn try_parse_shortest_path_function(
+        input: &str,
+        path_variable: &str,
+    ) -> ParseResult<Option<ShortestPathPattern>> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        let (find_all, func_len) = if upper.starts_with("SHORTESTPATH(") {
+            (false, 12) // "shortestPath" is 12 chars
+        } else if upper.starts_with("ALLSHORTESTPATHS(") {
+            (true, 16) // "allShortestPaths" is 16 chars
+        } else {
+            return Ok(None);
+        };
+
+        // Find the matching closing paren
+        let open_paren_pos = func_len;
+        let close_paren_pos =
+            Self::find_matching_paren(&input[open_paren_pos..], 0).ok_or_else(|| {
+                ParseError::InvalidPattern("unclosed shortestPath function".to_string())
+            })? + open_paren_pos;
+
+        // Extract the inner pattern
+        let inner = &input[open_paren_pos + 1..close_paren_pos];
+        let (path, remaining) = Self::parse_path_pattern(inner.trim())?;
+
+        if !remaining.trim().is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "unexpected content after path pattern in shortestPath: {}",
+                remaining
+            )));
+        }
+
+        // Build the ShortestPathPattern
+        let mut sp =
+            if find_all { ShortestPathPattern::all(path) } else { ShortestPathPattern::new(path) };
+
+        // Set the path variable if provided
+        if !path_variable.is_empty() {
+            sp.path_variable = Some(path_variable.to_string());
+        }
+
+        Ok(Some(sp))
+    }
+
+    /// Skips past a shortestPath() or allShortestPaths() function call.
+    /// Returns the remaining input after the function.
+    fn skip_shortest_path_function(input: &str) -> ParseResult<&str> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        let func_len = if upper.starts_with("SHORTESTPATH(") {
+            12
+        } else if upper.starts_with("ALLSHORTESTPATHS(") {
+            16
+        } else {
+            return Err(ParseError::InvalidPattern(
+                "expected shortestPath or allShortestPaths".to_string(),
+            ));
+        };
+
+        let open_paren_pos = func_len;
+        let close_paren_pos =
+            Self::find_matching_paren(&input[open_paren_pos..], 0).ok_or_else(|| {
+                ParseError::InvalidPattern("unclosed shortestPath function".to_string())
+            })? + open_paren_pos;
+
+        Ok(&input[close_paren_pos + 1..])
     }
 
     /// Parses a path pattern.
@@ -4986,7 +5120,7 @@ pub fn parse_shortest_path(input: &str) -> ParseResult<(ShortestPathPattern, &st
         (None, remaining)
     };
 
-    let pattern = ShortestPathPattern { path, find_all, weight };
+    let pattern = ShortestPathPattern { path, find_all, weight, path_variable: None };
 
     Ok((pattern, remaining))
 }

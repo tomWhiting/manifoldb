@@ -43,7 +43,7 @@ use super::expr::{
 use super::graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
     GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
-    GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec,
+    GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, ShortestPathNode,
 };
 use super::node::LogicalPlan;
 use super::procedure::{ProcedureCallNode, YieldColumn};
@@ -852,7 +852,92 @@ impl PlanBuilder {
             plan = self.build_path_pattern(plan, path)?;
         }
 
+        // Handle shortest path patterns
+        for sp in &pattern.shortest_paths {
+            plan = self.build_shortest_path_pattern(plan, sp)?;
+        }
+
         Ok(plan)
+    }
+
+    /// Builds a shortest path pattern from shortestPath()/allShortestPaths() functions.
+    fn build_shortest_path_pattern(
+        &mut self,
+        input: LogicalPlan,
+        sp: &ast::ShortestPathPattern,
+    ) -> PlanResult<LogicalPlan> {
+        // Extract source and target variables from the path pattern
+        let src_var = sp
+            .path
+            .start
+            .variable
+            .as_ref()
+            .map(|v| v.name.clone())
+            .unwrap_or_else(|| self.next_alias("src"));
+
+        // Get the target node (last node in the path)
+        let dst_var = if let Some((_, last_node)) = sp.path.steps.last() {
+            last_node
+                .variable
+                .as_ref()
+                .map(|v| v.name.clone())
+                .unwrap_or_else(|| self.next_alias("dst"))
+        } else {
+            // Single node pattern - no shortest path possible, just return input
+            return Ok(input);
+        };
+
+        // Extract edge info from the path
+        let (direction, edge_types, max_length) = if let Some((edge, _)) = sp.path.steps.first() {
+            let dir = match edge.direction {
+                ast::EdgeDirection::Right => ExpandDirection::Outgoing,
+                ast::EdgeDirection::Left => ExpandDirection::Incoming,
+                ast::EdgeDirection::Undirected => ExpandDirection::Both,
+            };
+            let types: Vec<String> = edge.edge_types.iter().map(|t| t.name.clone()).collect();
+            let max = match &edge.length {
+                ast::EdgeLength::Range { max, .. } => *max,
+                ast::EdgeLength::Exact(n) => Some(*n),
+                ast::EdgeLength::Any => None,
+                ast::EdgeLength::Single => Some(1),
+            };
+            (dir, types, max.map(|m| m as usize))
+        } else {
+            (ExpandDirection::Both, vec![], None)
+        };
+
+        // Build the ShortestPathNode
+        let mut sp_node = ShortestPathNode::new(&src_var, &dst_var)
+            .with_direction(direction)
+            .with_find_all(sp.find_all);
+
+        if !edge_types.is_empty() {
+            sp_node = sp_node.with_edge_types(edge_types);
+        }
+
+        if let Some(max) = max_length {
+            sp_node = sp_node.with_max_length(max);
+        }
+
+        // Add path variable if specified
+        if let Some(var) = &sp.path_variable {
+            sp_node = sp_node.with_path_variable(var);
+        }
+
+        // Add source/target node labels
+        if !sp.path.start.labels.is_empty() {
+            sp_node = sp_node
+                .with_src_labels(sp.path.start.labels.iter().map(|l| l.name.clone()).collect());
+        }
+
+        if let Some((_, last_node)) = sp.path.steps.last() {
+            if !last_node.labels.is_empty() {
+                sp_node = sp_node
+                    .with_dst_labels(last_node.labels.iter().map(|l| l.name.clone()).collect());
+            }
+        }
+
+        Ok(LogicalPlan::ShortestPath { node: Box::new(sp_node), input: Box::new(input) })
     }
 
     /// Builds a path pattern.
