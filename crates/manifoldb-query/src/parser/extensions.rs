@@ -2104,6 +2104,11 @@ impl ExtendedParser {
             return Err(ParseError::InvalidPattern("empty expression".to_string()));
         }
 
+        // Check for list comprehension or list literal: [...]
+        if input.starts_with('[') {
+            return Self::parse_list_or_comprehension(input);
+        }
+
         // Check for AND/OR at the top level
         if let Some(and_pos) = Self::find_top_level_keyword(input, " AND ") {
             let left = Self::parse_simple_expression(&input[..and_pos])?;
@@ -2150,6 +2155,172 @@ impl ExtendedParser {
 
         // Parse as a simple value or column reference
         Ok(Self::parse_property_value(input))
+    }
+
+    /// Parses a list literal or list comprehension.
+    ///
+    /// List literal: `[expr1, expr2, ...]`
+    /// List comprehension: `[x IN list WHERE predicate | expression]`
+    fn parse_list_or_comprehension(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+
+        // Must start with [ and end with ]
+        if !input.starts_with('[') || !input.ends_with(']') {
+            return Err(ParseError::InvalidPattern(
+                "list expression must be enclosed in brackets".to_string(),
+            ));
+        }
+
+        // Get the content inside brackets
+        let inner = &input[1..input.len() - 1].trim();
+
+        if inner.is_empty() {
+            // Empty list literal
+            return Ok(Expr::ListLiteral(vec![]));
+        }
+
+        // Check if this is a list comprehension: look for " IN " at top level
+        if let Some(in_pos) = Self::find_top_level_keyword(inner, " IN ") {
+            // This is a list comprehension: [variable IN list_expr WHERE pred | transform]
+            let variable_str = inner[..in_pos].trim();
+
+            // Variable must be a simple identifier
+            if variable_str.is_empty()
+                || !variable_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                // Not a valid variable name, might be a list literal with IN operator
+                // Fall through to list literal parsing
+            } else {
+                // Parse the rest after " IN "
+                let after_in = inner[in_pos + 4..].trim();
+
+                // Find WHERE and | positions at top level
+                let where_pos = Self::find_top_level_keyword(after_in, " WHERE ");
+                let pipe_pos = Self::find_top_level_operator(after_in, "|");
+
+                // Determine the boundaries of list_expr, filter, and transform
+                let (list_expr_str, filter_str, transform_str) = match (where_pos, pipe_pos) {
+                    (Some(w), Some(p)) if w < p => {
+                        // [x IN list WHERE pred | transform]
+                        let list_part = after_in[..w].trim();
+                        let filter_part = after_in[w + 7..p].trim();
+                        let transform_part = after_in[p + 1..].trim();
+                        (list_part, Some(filter_part), Some(transform_part))
+                    }
+                    (Some(_), Some(_)) => {
+                        // Invalid: pipe before or at WHERE position - treat as list literal
+                        return Self::parse_list_literal(inner);
+                    }
+                    (Some(w), None) => {
+                        // [x IN list WHERE pred] - filter only
+                        let list_part = after_in[..w].trim();
+                        let filter_part = after_in[w + 7..].trim();
+                        (list_part, Some(filter_part), None)
+                    }
+                    (None, Some(p)) => {
+                        // [x IN list | transform] - transform only
+                        let list_part = after_in[..p].trim();
+                        let transform_part = after_in[p + 1..].trim();
+                        (list_part, None, Some(transform_part))
+                    }
+                    (None, None) => {
+                        // [x IN list] - just iteration, returns elements unchanged
+                        (after_in, None, None)
+                    }
+                };
+
+                // Parse the components
+                let list_expr = Self::parse_simple_expression(list_expr_str)?;
+
+                let filter_predicate = if let Some(f) = filter_str {
+                    if f.is_empty() {
+                        None
+                    } else {
+                        Some(Box::new(Self::parse_simple_expression(f)?))
+                    }
+                } else {
+                    None
+                };
+
+                let transform_expr = if let Some(t) = transform_str {
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(Box::new(Self::parse_simple_expression(t)?))
+                    }
+                } else {
+                    None
+                };
+
+                return Ok(Expr::ListComprehension {
+                    variable: Identifier::new(variable_str),
+                    list_expr: Box::new(list_expr),
+                    filter_predicate,
+                    transform_expr,
+                });
+            }
+        }
+
+        // Not a comprehension, parse as list literal
+        Self::parse_list_literal(inner)
+    }
+
+    /// Parses a list literal content (without brackets).
+    fn parse_list_literal(content: &str) -> ParseResult<Expr> {
+        let content = content.trim();
+
+        if content.is_empty() {
+            return Ok(Expr::ListLiteral(vec![]));
+        }
+
+        // Split by comma at top level
+        let mut elements = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut string_char = '"';
+
+        for c in content.chars() {
+            if in_string {
+                if c == string_char {
+                    in_string = false;
+                }
+                current.push(c);
+                continue;
+            }
+
+            match c {
+                '\'' | '"' => {
+                    in_string = true;
+                    string_char = c;
+                    current.push(c);
+                }
+                '(' | '[' => {
+                    depth += 1;
+                    current.push(c);
+                }
+                ')' | ']' => {
+                    depth -= 1;
+                    current.push(c);
+                }
+                ',' if depth == 0 => {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        elements.push(Self::parse_simple_expression(trimmed)?);
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        // Don't forget the last element
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            elements.push(Self::parse_simple_expression(trimmed)?);
+        }
+
+        Ok(Expr::ListLiteral(elements))
     }
 
     /// Finds a keyword at the top level (not inside parentheses).
@@ -5032,6 +5203,130 @@ mod tests {
                 assert_eq!(stmt.return_clause.len(), 1);
             }
             _ => panic!("Expected Remove statement"),
+        }
+    }
+
+    // ========== List Comprehension Parser Tests ==========
+
+    #[test]
+    fn parse_list_literal_empty() {
+        let result = ExtendedParser::parse_list_or_comprehension("[]").unwrap();
+        match result {
+            Expr::ListLiteral(items) => {
+                assert!(items.is_empty());
+            }
+            _ => panic!("Expected ListLiteral"),
+        }
+    }
+
+    #[test]
+    fn parse_list_literal_simple() {
+        let result = ExtendedParser::parse_list_or_comprehension("[1, 2, 3]").unwrap();
+        match result {
+            Expr::ListLiteral(items) => {
+                assert_eq!(items.len(), 3);
+            }
+            _ => panic!("Expected ListLiteral"),
+        }
+    }
+
+    #[test]
+    fn parse_list_literal_strings() {
+        let result = ExtendedParser::parse_list_or_comprehension("['a', 'b', 'c']").unwrap();
+        match result {
+            Expr::ListLiteral(items) => {
+                assert_eq!(items.len(), 3);
+            }
+            _ => panic!("Expected ListLiteral"),
+        }
+    }
+
+    #[test]
+    fn parse_list_comprehension_filter_only() {
+        // [x IN list WHERE x > 2]
+        let result =
+            ExtendedParser::parse_list_or_comprehension("[x IN numbers WHERE x > 2]").unwrap();
+        match result {
+            Expr::ListComprehension { variable, filter_predicate, transform_expr, .. } => {
+                assert_eq!(variable.name, "x");
+                assert!(filter_predicate.is_some());
+                assert!(transform_expr.is_none());
+            }
+            _ => panic!("Expected ListComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_comprehension_transform_only() {
+        // [x IN list | x * 2]
+        let result = ExtendedParser::parse_list_or_comprehension("[x IN numbers | x * 2]").unwrap();
+        match result {
+            Expr::ListComprehension { variable, filter_predicate, transform_expr, .. } => {
+                assert_eq!(variable.name, "x");
+                assert!(filter_predicate.is_none());
+                assert!(transform_expr.is_some());
+            }
+            _ => panic!("Expected ListComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_comprehension_filter_and_transform() {
+        // [x IN list WHERE x > 2 | x * x]
+        let result =
+            ExtendedParser::parse_list_or_comprehension("[x IN numbers WHERE x > 2 | x * x]")
+                .unwrap();
+        match result {
+            Expr::ListComprehension { variable, filter_predicate, transform_expr, .. } => {
+                assert_eq!(variable.name, "x");
+                assert!(filter_predicate.is_some());
+                assert!(transform_expr.is_some());
+            }
+            _ => panic!("Expected ListComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_comprehension_no_filter_no_transform() {
+        // [x IN list] - just iteration
+        let result = ExtendedParser::parse_list_or_comprehension("[x IN numbers]").unwrap();
+        match result {
+            Expr::ListComprehension { variable, filter_predicate, transform_expr, .. } => {
+                assert_eq!(variable.name, "x");
+                assert!(filter_predicate.is_none());
+                assert!(transform_expr.is_none());
+            }
+            _ => panic!("Expected ListComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_comprehension_with_function_call() {
+        // [x IN range(1, 10) WHERE x > 5]
+        let result =
+            ExtendedParser::parse_list_or_comprehension("[x IN range(1, 10) WHERE x > 5]").unwrap();
+        match result {
+            Expr::ListComprehension { variable, filter_predicate, .. } => {
+                assert_eq!(variable.name, "x");
+                assert!(filter_predicate.is_some());
+            }
+            _ => panic!("Expected ListComprehension, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_nested_list_literal() {
+        // [[1, 2], [3, 4]]
+        let result = ExtendedParser::parse_list_or_comprehension("[[1, 2], [3, 4]]").unwrap();
+        match result {
+            Expr::ListLiteral(items) => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    Expr::ListLiteral(inner) => assert_eq!(inner.len(), 2),
+                    _ => panic!("Expected nested ListLiteral"),
+                }
+            }
+            _ => panic!("Expected ListLiteral"),
         }
     }
 }

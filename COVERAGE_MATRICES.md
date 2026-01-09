@@ -80,6 +80,14 @@ Variable-Length Paths (Execution)
 ├── Physical Operator: ✅ GraphExpandOp with ExpandLength
 ├── Execution: ✅ BFS traversal with cycle detection
 └── Status: ✅ Complete with integration tests
+
+List Comprehensions
+├── Parser: ✅ Complete (parse_list_or_comprehension)
+├── AST: ✅ ListComprehension, ListLiteral variants
+├── Logical Plan: ✅ LogicalExpr::ListComprehension/ListLiteral
+├── Execution: ✅ evaluate_expr handles comprehensions
+├── List Functions: ✅ range, size, head, tail, last, reverse
+└── Status: ✅ Complete with tests (Jan 2026)
 ```
 
 ### Parallel Work Streams
@@ -678,7 +686,8 @@ These feature groups can be implemented independently:
 |---------|---|---|---|---|---|---|-------|
 | CASE (searched) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | CASE (simple) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| List comprehension | | | | | | | Not implemented |
+| List comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| List literal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | Map projection | | | | | | | Not implemented |
 | Pattern comprehension | | | | | | | Not implemented |
 | Parameters ($param) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
@@ -693,6 +702,13 @@ These feature groups can be implemented independently:
 | id(n) | ✓ | ✓ | | | | | |
 | properties(n) | ✓ | ✓ | | | | | |
 | keys(map) | ✓ | ✓ | | | | | |
+| **List Functions** |
+| range() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| size() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| head() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| tail() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| last() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| reverse() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | **Null Handling** |
 | coalesce() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | **Type Conversion** |
