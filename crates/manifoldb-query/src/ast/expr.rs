@@ -576,6 +576,37 @@ pub enum Expr {
 
     /// A list literal expression: `[expr1, expr2, ...]`.
     ListLiteral(Vec<Expr>),
+
+    /// Cypher map projection expression.
+    ///
+    /// Syntax: `node{.property1, .property2, key: expression, .*}`
+    ///
+    /// Examples:
+    /// - Extract specific properties: `p{.name, .age}`
+    /// - Add computed property: `p{.name, fullName: p.firstName + ' ' + p.lastName}`
+    /// - All properties with override: `p{.*, age: p.birthYear - 2024}`
+    MapProjection {
+        /// Source expression (typically a node or relationship variable).
+        source: Box<Expr>,
+        /// List of projection items.
+        items: Vec<MapProjectionItem>,
+    },
+}
+
+/// An item in a map projection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapProjectionItem {
+    /// Property selector: `.propertyName` - copies property from source.
+    Property(Identifier),
+    /// Computed value: `key: expression` - adds a new key with computed value.
+    Computed {
+        /// The key name.
+        key: Identifier,
+        /// The value expression.
+        value: Box<Expr>,
+    },
+    /// All properties: `.*` - includes all properties from the source.
+    AllProperties,
 }
 
 /// A component of a hybrid vector search.

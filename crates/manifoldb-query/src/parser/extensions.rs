@@ -2109,6 +2109,18 @@ impl ExtendedParser {
             return Self::parse_list_or_comprehension(input);
         }
 
+        // Check for map projection: identifier{...}
+        if let Some(brace_pos) = Self::find_top_level_operator(input, "{") {
+            // Make sure it ends with a matching brace
+            if input.ends_with('}') {
+                let source_str = input[..brace_pos].trim();
+                // Ensure source is a valid identifier (not a complex expression)
+                if !source_str.is_empty() && Self::is_simple_identifier(source_str) {
+                    return Self::parse_map_projection(input);
+                }
+            }
+        }
+
         // Check for AND/OR at the top level
         if let Some(and_pos) = Self::find_top_level_keyword(input, " AND ") {
             let left = Self::parse_simple_expression(&input[..and_pos])?;
@@ -2321,6 +2333,166 @@ impl ExtendedParser {
         }
 
         Ok(Expr::ListLiteral(elements))
+    }
+
+    /// Checks if a string is a simple identifier (no dots, operators, or special characters).
+    fn is_simple_identifier(s: &str) -> bool {
+        let s = s.trim();
+        if s.is_empty() {
+            return false;
+        }
+        // Must start with letter or underscore
+        let Some(first) = s.chars().next() else {
+            return false;
+        };
+        if !first.is_alphabetic() && first != '_' {
+            return false;
+        }
+        // Rest must be alphanumeric, underscore, or dot (for qualified names)
+        s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    }
+
+    /// Parses a map projection expression.
+    ///
+    /// Syntax: `identifier{.property1, .property2, key: expression, .*}`
+    ///
+    /// Examples:
+    /// - `p{.name, .age}`
+    /// - `p{.*, age: p.birthYear - 2024}`
+    /// - `node{.id, fullName: node.first + ' ' + node.last}`
+    fn parse_map_projection(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+
+        // Find the opening brace
+        let brace_pos = input.find('{').ok_or_else(|| {
+            ParseError::InvalidPattern("map projection must contain '{'".to_string())
+        })?;
+
+        // Source is everything before the brace
+        let source_str = input[..brace_pos].trim();
+        let source = Self::parse_property_value(source_str);
+
+        // Items are inside the braces
+        if !input.ends_with('}') {
+            return Err(ParseError::InvalidPattern("map projection must end with '}'".to_string()));
+        }
+
+        let items_str = input[brace_pos + 1..input.len() - 1].trim();
+
+        // Parse the projection items
+        let items = Self::parse_map_projection_items(items_str)?;
+
+        Ok(Expr::MapProjection { source: Box::new(source), items })
+    }
+
+    /// Parses map projection items separated by commas.
+    ///
+    /// Item types:
+    /// - `.property` - property selector
+    /// - `key: expression` - computed value
+    /// - `.*` - all properties
+    fn parse_map_projection_items(input: &str) -> ParseResult<Vec<crate::ast::MapProjectionItem>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut items = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut string_char = '"';
+
+        for c in input.chars() {
+            if in_string {
+                if c == string_char {
+                    in_string = false;
+                }
+                current.push(c);
+                continue;
+            }
+
+            match c {
+                '\'' | '"' => {
+                    in_string = true;
+                    string_char = c;
+                    current.push(c);
+                }
+                '(' | '[' | '{' => {
+                    depth += 1;
+                    current.push(c);
+                }
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    current.push(c);
+                }
+                ',' if depth == 0 => {
+                    if !current.trim().is_empty() {
+                        items.push(Self::parse_single_map_projection_item(current.trim())?);
+                    }
+                    current.clear();
+                }
+                _ => current.push(c),
+            }
+        }
+
+        // Don't forget the last item
+        if !current.trim().is_empty() {
+            items.push(Self::parse_single_map_projection_item(current.trim())?);
+        }
+
+        Ok(items)
+    }
+
+    /// Parses a single map projection item.
+    fn parse_single_map_projection_item(input: &str) -> ParseResult<crate::ast::MapProjectionItem> {
+        use crate::ast::MapProjectionItem;
+
+        let input = input.trim();
+
+        // Check for .* (all properties)
+        if input == ".*" {
+            return Ok(MapProjectionItem::AllProperties);
+        }
+
+        // Check for .property (property selector)
+        if let Some(prop_name) = input.strip_prefix('.') {
+            let prop_name = prop_name.trim();
+            if prop_name.is_empty() {
+                return Err(ParseError::InvalidPattern(
+                    "property name cannot be empty in map projection".to_string(),
+                ));
+            }
+            return Ok(MapProjectionItem::Property(Identifier::new(prop_name)));
+        }
+
+        // Check for key: expression (computed value)
+        // Find the colon at the top level (not inside nested expressions)
+        if let Some(colon_pos) = Self::find_top_level_operator(input, ":") {
+            let key_str = input[..colon_pos].trim();
+            let value_str = input[colon_pos + 1..].trim();
+
+            if key_str.is_empty() {
+                return Err(ParseError::InvalidPattern(
+                    "key cannot be empty in computed map projection item".to_string(),
+                ));
+            }
+            if value_str.is_empty() {
+                return Err(ParseError::InvalidPattern(
+                    "value expression cannot be empty in computed map projection item".to_string(),
+                ));
+            }
+
+            let key = Identifier::new(key_str);
+            let value = Self::parse_simple_expression(value_str)?;
+
+            return Ok(MapProjectionItem::Computed { key, value: Box::new(value) });
+        }
+
+        Err(ParseError::InvalidPattern(format!(
+            "invalid map projection item: '{}'. Expected .property, key: expression, or .*",
+            input
+        )))
     }
 
     /// Finds a keyword at the top level (not inside parentheses).
@@ -3765,7 +3937,7 @@ pub fn parse_vector_distance(left: Expr, metric: DistanceMetric, right: Expr) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::HybridCombinationMethod;
+    use crate::ast::{HybridCombinationMethod, MapProjectionItem};
 
     #[test]
     fn parse_simple_node_pattern() {
@@ -5328,5 +5500,180 @@ mod tests {
             }
             _ => panic!("Expected ListLiteral"),
         }
+    }
+
+    // ========== Map Projection Tests ==========
+
+    #[test]
+    fn parse_map_projection_single_property() {
+        // p{.name}
+        let result = ExtendedParser::parse_map_projection("p{.name}").unwrap();
+        match result {
+            Expr::MapProjection { source, items } => {
+                // Verify source is a column reference to "p"
+                match source.as_ref() {
+                    Expr::Column(qn) => assert_eq!(qn.to_string(), "p"),
+                    _ => panic!("Expected Column, got {:?}", source),
+                }
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    MapProjectionItem::Property(ident) => assert_eq!(ident.name, "name"),
+                    _ => panic!("Expected Property item"),
+                }
+            }
+            _ => panic!("Expected MapProjection, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_multiple_properties() {
+        // p{.name, .age}
+        let result = ExtendedParser::parse_map_projection("p{.name, .age}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    MapProjectionItem::Property(ident) => assert_eq!(ident.name, "name"),
+                    _ => panic!("Expected Property item"),
+                }
+                match &items[1] {
+                    MapProjectionItem::Property(ident) => assert_eq!(ident.name, "age"),
+                    _ => panic!("Expected Property item"),
+                }
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_computed_value() {
+        // p{.name, fullName: p.firstName}
+        let result =
+            ExtendedParser::parse_map_projection("p{.name, fullName: p.firstName}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    MapProjectionItem::Property(ident) => assert_eq!(ident.name, "name"),
+                    _ => panic!("Expected Property item"),
+                }
+                match &items[1] {
+                    MapProjectionItem::Computed { key, value: _ } => {
+                        assert_eq!(key.name, "fullName");
+                    }
+                    _ => panic!("Expected Computed item"),
+                }
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_all_properties() {
+        // p{.*}
+        let result = ExtendedParser::parse_map_projection("p{.*}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    MapProjectionItem::AllProperties => {}
+                    _ => panic!("Expected AllProperties item"),
+                }
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_all_properties_with_override() {
+        // p{.*, age: 30}
+        let result = ExtendedParser::parse_map_projection("p{.*, age: 30}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    MapProjectionItem::AllProperties => {}
+                    _ => panic!("Expected AllProperties item"),
+                }
+                match &items[1] {
+                    MapProjectionItem::Computed { key, value: _ } => {
+                        assert_eq!(key.name, "age");
+                    }
+                    _ => panic!("Expected Computed item"),
+                }
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_empty() {
+        // p{} - empty projection
+        let result = ExtendedParser::parse_map_projection("p{}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert!(items.is_empty());
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_with_qualified_source() {
+        // node.sub{.prop}
+        let result = ExtendedParser::parse_map_projection("node.sub{.prop}").unwrap();
+        match result {
+            Expr::MapProjection { source, items } => {
+                match source.as_ref() {
+                    Expr::Column(qn) => assert_eq!(qn.to_string(), "node.sub"),
+                    _ => panic!("Expected Column"),
+                }
+                assert_eq!(items.len(), 1);
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_in_simple_expression() {
+        // Map projection should be detected in parse_simple_expression
+        let result = ExtendedParser::parse_simple_expression("p{.name, .age}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 2);
+            }
+            _ => panic!("Expected MapProjection from simple expression"),
+        }
+    }
+
+    #[test]
+    fn parse_map_projection_complex_computed() {
+        // p{.name, computed: 1 + 2}
+        let result = ExtendedParser::parse_map_projection("p{.name, computed: 1 + 2}").unwrap();
+        match result {
+            Expr::MapProjection { source: _, items } => {
+                assert_eq!(items.len(), 2);
+                match &items[1] {
+                    MapProjectionItem::Computed { key, value: _ } => {
+                        assert_eq!(key.name, "computed");
+                        // The value would be an expression like BinaryOp
+                    }
+                    _ => panic!("Expected Computed item"),
+                }
+            }
+            _ => panic!("Expected MapProjection"),
+        }
+    }
+
+    #[test]
+    fn is_simple_identifier_tests() {
+        assert!(ExtendedParser::is_simple_identifier("p"));
+        assert!(ExtendedParser::is_simple_identifier("person"));
+        assert!(ExtendedParser::is_simple_identifier("_var"));
+        assert!(ExtendedParser::is_simple_identifier("node1"));
+        assert!(ExtendedParser::is_simple_identifier("qualified.name"));
+        assert!(!ExtendedParser::is_simple_identifier(""));
+        assert!(!ExtendedParser::is_simple_identifier("123abc"));
+        assert!(!ExtendedParser::is_simple_identifier("a + b"));
     }
 }

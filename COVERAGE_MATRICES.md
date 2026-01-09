@@ -700,7 +700,7 @@ These feature groups can be implemented independently:
 | CASE (simple) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | List comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | List literal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| Map projection | | | | | | | Not implemented |
+| Map projection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | Pattern comprehension | | | | | | | Not implemented |
 | Parameters ($param) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 
