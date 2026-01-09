@@ -932,6 +932,98 @@ fn evaluate_scalar_function(
                 Ok(Value::Null)
             }
         }
+        ScalarFunction::Lpad => {
+            // LPAD(string, length, fill) - Left-pad string to length with fill characters
+            // If string is longer than length, truncates from the right
+            // Default fill is ' ' (single space) if not provided
+            let s = match args.first() {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Null) | None => return Ok(Value::Null),
+                Some(other) => value_to_string(other),
+            };
+            let length = match args.get(1) {
+                Some(Value::Int(n)) => *n,
+                Some(Value::Float(n)) => *n as i64,
+                _ => return Ok(Value::Null),
+            };
+            // Handle negative length - return empty string (PostgreSQL behavior)
+            if length <= 0 {
+                return Ok(Value::String(String::new()));
+            }
+            let length = length as usize;
+            let fill = match args.get(2) {
+                Some(Value::String(f)) => f.clone(),
+                Some(Value::Null) => return Ok(Value::Null),
+                None => " ".to_string(), // Default fill is space
+                Some(other) => value_to_string(other),
+            };
+            // Handle empty fill string - return original string up to length
+            if fill.is_empty() {
+                return Ok(Value::String(s.chars().take(length).collect()));
+            }
+            let s_chars: Vec<char> = s.chars().collect();
+            // If string is already longer or equal to target length, truncate from right
+            if s_chars.len() >= length {
+                return Ok(Value::String(s_chars[..length].iter().collect()));
+            }
+            // Calculate padding needed
+            let pad_len = length - s_chars.len();
+            let fill_chars: Vec<char> = fill.chars().collect();
+            // Build padding by cycling through fill characters
+            let mut padding = String::with_capacity(pad_len);
+            let mut fill_idx = 0;
+            for _ in 0..pad_len {
+                padding.push(fill_chars[fill_idx]);
+                fill_idx = (fill_idx + 1) % fill_chars.len();
+            }
+            Ok(Value::String(format!("{}{}", padding, s)))
+        }
+        ScalarFunction::Rpad => {
+            // RPAD(string, length, fill) - Right-pad string to length with fill characters
+            // If string is longer than length, truncates from the right
+            // Default fill is ' ' (single space) if not provided
+            let s = match args.first() {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Null) | None => return Ok(Value::Null),
+                Some(other) => value_to_string(other),
+            };
+            let length = match args.get(1) {
+                Some(Value::Int(n)) => *n,
+                Some(Value::Float(n)) => *n as i64,
+                _ => return Ok(Value::Null),
+            };
+            // Handle negative length - return empty string (PostgreSQL behavior)
+            if length <= 0 {
+                return Ok(Value::String(String::new()));
+            }
+            let length = length as usize;
+            let fill = match args.get(2) {
+                Some(Value::String(f)) => f.clone(),
+                Some(Value::Null) => return Ok(Value::Null),
+                None => " ".to_string(), // Default fill is space
+                Some(other) => value_to_string(other),
+            };
+            // Handle empty fill string - return original string up to length
+            if fill.is_empty() {
+                return Ok(Value::String(s.chars().take(length).collect()));
+            }
+            let s_chars: Vec<char> = s.chars().collect();
+            // If string is already longer or equal to target length, truncate from right
+            if s_chars.len() >= length {
+                return Ok(Value::String(s_chars[..length].iter().collect()));
+            }
+            // Calculate padding needed
+            let pad_len = length - s_chars.len();
+            let fill_chars: Vec<char> = fill.chars().collect();
+            // Build padding by cycling through fill characters
+            let mut padding = String::with_capacity(pad_len);
+            let mut fill_idx = 0;
+            for _ in 0..pad_len {
+                padding.push(fill_chars[fill_idx]);
+                fill_idx = (fill_idx + 1) % fill_chars.len();
+            }
+            Ok(Value::String(format!("{}{}", s, padding)))
+        }
         ScalarFunction::Replace => {
             // REPLACE(string, from, to)
             let s = match args.first() {
@@ -4016,6 +4108,210 @@ mod tests {
 
         let result = eval_fn(ScalarFunction::Rtrim, vec![Value::from("  hello  ")]);
         assert_eq!(result, Value::String("  hello".to_string()));
+    }
+
+    #[test]
+    fn test_lpad_basic() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Basic padding: LPAD('hi', 5, 'x') = 'xxxhi'
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::from("hi"), Value::Int(5), Value::from("x")]);
+        assert_eq!(result, Value::String("xxxhi".to_string()));
+
+        // Multi-character fill string: LPAD('hi', 5, 'xy') = 'xyxhi'
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("hi"), Value::Int(5), Value::from("xy")],
+        );
+        assert_eq!(result, Value::String("xyxhi".to_string()));
+
+        // Default fill (space) when not provided: LPAD('hi', 5) = '   hi'
+        let result = eval_fn(ScalarFunction::Lpad, vec![Value::from("hi"), Value::Int(5)]);
+        assert_eq!(result, Value::String("   hi".to_string()));
+    }
+
+    #[test]
+    fn test_lpad_truncation() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Truncation when string is longer than length: LPAD('hello', 3, 'x') = 'hel'
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("hello"), Value::Int(3), Value::from("x")],
+        );
+        assert_eq!(result, Value::String("hel".to_string()));
+
+        // String exactly matches length: LPAD('hi', 2, 'x') = 'hi'
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::from("hi"), Value::Int(2), Value::from("x")]);
+        assert_eq!(result, Value::String("hi".to_string()));
+    }
+
+    #[test]
+    fn test_lpad_edge_cases() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Negative length returns empty string
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("hello"), Value::Int(-1), Value::from("x")],
+        );
+        assert_eq!(result, Value::String(String::new()));
+
+        // Zero length returns empty string
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("hello"), Value::Int(0), Value::from("x")],
+        );
+        assert_eq!(result, Value::String(String::new()));
+
+        // Empty fill string returns original truncated to length
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("hello"), Value::Int(3), Value::from("")],
+        );
+        assert_eq!(result, Value::String("hel".to_string()));
+
+        // Empty input string with padding
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::from(""), Value::Int(3), Value::from("x")]);
+        assert_eq!(result, Value::String("xxx".to_string()));
+    }
+
+    #[test]
+    fn test_lpad_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // NULL string returns NULL
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::Null, Value::Int(5), Value::from("x")]);
+        assert_eq!(result, Value::Null);
+
+        // NULL length returns NULL
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::from("hi"), Value::Null, Value::from("x")]);
+        assert_eq!(result, Value::Null);
+
+        // NULL fill returns NULL
+        let result =
+            eval_fn(ScalarFunction::Lpad, vec![Value::from("hi"), Value::Int(5), Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_rpad_basic() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Basic padding: RPAD('hi', 5, 'x') = 'hixxx'
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::from("hi"), Value::Int(5), Value::from("x")]);
+        assert_eq!(result, Value::String("hixxx".to_string()));
+
+        // Multi-character fill string: RPAD('hi', 5, 'xy') = 'hixyx'
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("hi"), Value::Int(5), Value::from("xy")],
+        );
+        assert_eq!(result, Value::String("hixyx".to_string()));
+
+        // Default fill (space) when not provided: RPAD('hi', 5) = 'hi   '
+        let result = eval_fn(ScalarFunction::Rpad, vec![Value::from("hi"), Value::Int(5)]);
+        assert_eq!(result, Value::String("hi   ".to_string()));
+    }
+
+    #[test]
+    fn test_rpad_truncation() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Truncation when string is longer than length: RPAD('hello', 3, 'x') = 'hel'
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("hello"), Value::Int(3), Value::from("x")],
+        );
+        assert_eq!(result, Value::String("hel".to_string()));
+
+        // String exactly matches length: RPAD('hi', 2, 'x') = 'hi'
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::from("hi"), Value::Int(2), Value::from("x")]);
+        assert_eq!(result, Value::String("hi".to_string()));
+    }
+
+    #[test]
+    fn test_rpad_edge_cases() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Negative length returns empty string
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("hello"), Value::Int(-1), Value::from("x")],
+        );
+        assert_eq!(result, Value::String(String::new()));
+
+        // Zero length returns empty string
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("hello"), Value::Int(0), Value::from("x")],
+        );
+        assert_eq!(result, Value::String(String::new()));
+
+        // Empty fill string returns original truncated to length
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("hello"), Value::Int(3), Value::from("")],
+        );
+        assert_eq!(result, Value::String("hel".to_string()));
+
+        // Empty input string with padding
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::from(""), Value::Int(3), Value::from("x")]);
+        assert_eq!(result, Value::String("xxx".to_string()));
+    }
+
+    #[test]
+    fn test_rpad_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // NULL string returns NULL
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::Null, Value::Int(5), Value::from("x")]);
+        assert_eq!(result, Value::Null);
+
+        // NULL length returns NULL
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::from("hi"), Value::Null, Value::from("x")]);
+        assert_eq!(result, Value::Null);
+
+        // NULL fill returns NULL
+        let result =
+            eval_fn(ScalarFunction::Rpad, vec![Value::from("hi"), Value::Int(5), Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_lpad_rpad_unicode() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Unicode characters (multi-byte): LPAD('日本', 5, '語') = '語語語日本'
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("日本"), Value::Int(5), Value::from("語")],
+        );
+        assert_eq!(result, Value::String("語語語日本".to_string()));
+
+        // Unicode RPAD: RPAD('日本', 5, '語') = '日本語語語'
+        let result = eval_fn(
+            ScalarFunction::Rpad,
+            vec![Value::from("日本"), Value::Int(5), Value::from("語")],
+        );
+        assert_eq!(result, Value::String("日本語語語".to_string()));
+
+        // Unicode truncation: LPAD('日本語', 2, 'x') = '日本'
+        let result = eval_fn(
+            ScalarFunction::Lpad,
+            vec![Value::from("日本語"), Value::Int(2), Value::from("x")],
+        );
+        assert_eq!(result, Value::String("日本".to_string()));
     }
 
     #[test]

@@ -502,6 +502,8 @@ These feature groups can be implemented independently:
 | regexp_match | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | regexp_replace | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | format | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| lpad | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| rpad | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 
 ### Numeric Functions
 

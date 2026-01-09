@@ -2003,6 +2003,8 @@ impl PlanBuilder {
                     "FORMAT" => Some(ScalarFunction::Format),
                     "REGEXP_MATCH" => Some(ScalarFunction::RegexpMatch),
                     "REGEXP_REPLACE" => Some(ScalarFunction::RegexpReplace),
+                    "LPAD" => Some(ScalarFunction::Lpad),
+                    "RPAD" => Some(ScalarFunction::Rpad),
                     "COALESCE" => Some(ScalarFunction::Coalesce),
                     "NULLIF" => Some(ScalarFunction::NullIf),
                     // Numeric functions

@@ -1539,6 +1539,10 @@ pub enum ScalarFunction {
     RegexpMatch,
     /// REGEXP_REPLACE(string, pattern, replacement).
     RegexpReplace,
+    /// LPAD(string, length, fill) - Left-pad string to length with fill characters.
+    Lpad,
+    /// RPAD(string, length, fill) - Right-pad string to length with fill characters.
+    Rpad,
     /// COALESCE(expr, ...).
     Coalesce,
     /// NULLIF(expr1, expr2).
@@ -1842,6 +1846,8 @@ impl fmt::Display for ScalarFunction {
             Self::Format => "FORMAT",
             Self::RegexpMatch => "REGEXP_MATCH",
             Self::RegexpReplace => "REGEXP_REPLACE",
+            Self::Lpad => "LPAD",
+            Self::Rpad => "RPAD",
             Self::Coalesce => "COALESCE",
             Self::NullIf => "NULLIF",
             // Numeric functions
