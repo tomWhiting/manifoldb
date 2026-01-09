@@ -15,7 +15,10 @@
 
 use std::fmt;
 
-use crate::ast::{BinaryOp, DataType, Literal, QualifiedName, UnaryOp, WindowFunction};
+use crate::ast::{
+    BinaryOp, DataType, Literal, QualifiedName, UnaryOp, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunction,
+};
 
 /// An expression in a logical plan.
 ///
@@ -163,8 +166,10 @@ pub enum LogicalExpr {
     ///
     /// Used for ranking functions like ROW_NUMBER(), RANK(), DENSE_RANK()
     /// and value functions like LAG(), LEAD(), FIRST_VALUE(), LAST_VALUE(), NTH_VALUE().
+    /// Also supports aggregate functions as window functions with frame clauses.
     /// Example: `ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)`
     /// Example: `LAG(salary, 1, 0) OVER (PARTITION BY dept ORDER BY hire_date)`
+    /// Example: `SUM(salary) OVER (ORDER BY hire_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`
     WindowFunction {
         /// The window function type.
         func: WindowFunction,
@@ -177,6 +182,10 @@ pub enum LogicalExpr {
         partition_by: Vec<LogicalExpr>,
         /// Order by expressions (determines ranking order).
         order_by: Vec<SortOrder>,
+        /// Window frame specification for controlling which rows are included in calculations.
+        /// If None, uses the default frame (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        /// when ORDER BY is present, or the entire partition otherwise).
+        frame: Option<WindowFrame>,
     },
 
     /// Cypher list comprehension expression.
@@ -522,6 +531,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -534,6 +544,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -546,6 +557,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -569,6 +581,7 @@ impl LogicalExpr {
             default_value: default_value.map(Box::new),
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -592,6 +605,7 @@ impl LogicalExpr {
             default_value: default_value.map(Box::new),
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -606,6 +620,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -620,6 +635,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -639,6 +655,7 @@ impl LogicalExpr {
             default_value: None,
             partition_by,
             order_by,
+            frame: None,
         }
     }
 
@@ -751,6 +768,17 @@ impl LogicalExpr {
     }
 }
 
+/// Helper function to format a window frame bound.
+fn format_frame_bound(f: &mut fmt::Formatter<'_>, bound: &WindowFrameBound) -> fmt::Result {
+    match bound {
+        WindowFrameBound::CurrentRow => write!(f, "CURRENT ROW"),
+        WindowFrameBound::UnboundedPreceding => write!(f, "UNBOUNDED PRECEDING"),
+        WindowFrameBound::UnboundedFollowing => write!(f, "UNBOUNDED FOLLOWING"),
+        WindowFrameBound::Preceding(expr) => write!(f, "{expr:?} PRECEDING"),
+        WindowFrameBound::Following(expr) => write!(f, "{expr:?} FOLLOWING"),
+    }
+}
+
 impl fmt::Display for LogicalExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -854,7 +882,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::WindowFunction { func, arg, default_value, partition_by, order_by } => {
+            Self::WindowFunction { func, arg, default_value, partition_by, order_by, frame } => {
                 // Print function name and arguments
                 match func {
                     WindowFunction::RowNumber
@@ -909,7 +937,7 @@ impl fmt::Display for LogicalExpr {
                         }
                         write!(f, "{expr}")?;
                     }
-                    if !order_by.is_empty() {
+                    if !order_by.is_empty() || frame.is_some() {
                         write!(f, " ")?;
                     }
                 }
@@ -920,6 +948,26 @@ impl fmt::Display for LogicalExpr {
                             write!(f, ", ")?;
                         }
                         write!(f, "{sort}")?;
+                    }
+                    if frame.is_some() {
+                        write!(f, " ")?;
+                    }
+                }
+                // Display frame clause if present
+                if let Some(window_frame) = frame {
+                    let units = match window_frame.units {
+                        WindowFrameUnits::Rows => "ROWS",
+                        WindowFrameUnits::Range => "RANGE",
+                        WindowFrameUnits::Groups => "GROUPS",
+                    };
+                    write!(f, "{units} ")?;
+                    if let Some(ref end) = window_frame.end {
+                        write!(f, "BETWEEN ")?;
+                        format_frame_bound(f, &window_frame.start)?;
+                        write!(f, " AND ")?;
+                        format_frame_bound(f, end)?;
+                    } else {
+                        format_frame_bound(f, &window_frame.start)?;
                     }
                 }
                 write!(f, ")")

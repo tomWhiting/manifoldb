@@ -519,6 +519,7 @@ impl PlanBuilder {
             default_value: None,
             partition_by,
             order_by,
+            frame: over.frame.clone(),
         })
     }
 
