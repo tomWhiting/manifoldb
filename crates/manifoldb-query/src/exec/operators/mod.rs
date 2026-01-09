@@ -56,7 +56,7 @@ pub use graph_foreach::GraphForeachOp;
 pub use graph_merge::GraphMergeOp;
 pub use graph_remove::GraphRemoveOp;
 pub use graph_set::GraphSetOp;
-pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
+pub use join::{HashJoinOp, IndexNestedLoopJoinOp, MergeJoinOp, NestedLoopJoinOp, SortMergeJoinOp};
 pub use limit::LimitOp;
 pub use project::ProjectOp;
 pub use recursive_cte::RecursiveCTEOp;

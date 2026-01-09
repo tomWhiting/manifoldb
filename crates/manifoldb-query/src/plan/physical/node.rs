@@ -162,6 +162,26 @@ pub enum PhysicalPlan {
         right: Box<PhysicalPlan>,
     },
 
+    /// Index nested loop join (boxed node - uses index for inner table lookups).
+    IndexNestedLoopJoin {
+        /// Join configuration.
+        node: Box<IndexNestedLoopJoinNode>,
+        /// Outer input (scanned sequentially).
+        outer: Box<PhysicalPlan>,
+        /// Inner input (indexed table).
+        inner: Box<PhysicalPlan>,
+    },
+
+    /// Sort-merge join with full outer join support (boxed node).
+    SortMergeJoin {
+        /// Join configuration.
+        node: Box<SortMergeJoinNode>,
+        /// Left input (must be sorted).
+        left: Box<PhysicalPlan>,
+        /// Right input (must be sorted).
+        right: Box<PhysicalPlan>,
+    },
+
     // ========== Set Operations ==========
     /// Set operation (UNION, INTERSECT, EXCEPT).
     SetOp {
@@ -1171,6 +1191,138 @@ impl MergeJoinNode {
         right_keys: Vec<LogicalExpr>,
     ) -> Self {
         Self { join_type, left_keys, right_keys, filter: None, cost: Cost::default() }
+    }
+
+    /// Sets additional filter.
+    #[must_use]
+    pub fn with_filter(mut self, filter: LogicalExpr) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+}
+
+/// Index nested loop join node.
+///
+/// Uses an index on the inner table to accelerate nested loop joins.
+/// Instead of scanning all rows for each outer row, performs index lookups.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexNestedLoopJoinNode {
+    /// Join type.
+    pub join_type: JoinType,
+    /// Outer table key expression.
+    pub outer_key: LogicalExpr,
+    /// Inner table key expression.
+    pub inner_key: LogicalExpr,
+    /// Name of the index on the inner table.
+    pub index_name: String,
+    /// Additional non-key join conditions.
+    pub filter: Option<LogicalExpr>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl IndexNestedLoopJoinNode {
+    /// Creates a new index nested loop join.
+    #[must_use]
+    pub fn new(
+        join_type: JoinType,
+        outer_key: LogicalExpr,
+        inner_key: LogicalExpr,
+        index_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            join_type,
+            outer_key,
+            inner_key,
+            index_name: index_name.into(),
+            filter: None,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Creates an inner join using an index.
+    #[must_use]
+    pub fn inner_on(
+        outer_key: LogicalExpr,
+        inner_key: LogicalExpr,
+        index_name: impl Into<String>,
+    ) -> Self {
+        Self::new(JoinType::Inner, outer_key, inner_key, index_name)
+    }
+
+    /// Sets additional filter.
+    #[must_use]
+    pub fn with_filter(mut self, filter: LogicalExpr) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+}
+
+/// Sort-merge join node with full outer join support.
+///
+/// Efficiently merges two sorted inputs. Supports all join types
+/// including LEFT, RIGHT, and FULL outer joins.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortMergeJoinNode {
+    /// Join type.
+    pub join_type: JoinType,
+    /// Join keys from left side.
+    pub left_keys: Vec<LogicalExpr>,
+    /// Join keys from right side.
+    pub right_keys: Vec<LogicalExpr>,
+    /// Additional non-equijoin conditions.
+    pub filter: Option<LogicalExpr>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl SortMergeJoinNode {
+    /// Creates a new sort-merge join.
+    #[must_use]
+    pub fn new(
+        join_type: JoinType,
+        left_keys: Vec<LogicalExpr>,
+        right_keys: Vec<LogicalExpr>,
+    ) -> Self {
+        Self { join_type, left_keys, right_keys, filter: None, cost: Cost::default() }
+    }
+
+    /// Creates an inner sort-merge join on single keys.
+    #[must_use]
+    pub fn inner_on(left_key: LogicalExpr, right_key: LogicalExpr) -> Self {
+        Self::new(JoinType::Inner, vec![left_key], vec![right_key])
+    }
+
+    /// Creates a left outer sort-merge join.
+    #[must_use]
+    pub fn left_on(left_keys: Vec<LogicalExpr>, right_keys: Vec<LogicalExpr>) -> Self {
+        Self::new(JoinType::Left, left_keys, right_keys)
+    }
+
+    /// Creates a right outer sort-merge join.
+    #[must_use]
+    pub fn right_on(left_keys: Vec<LogicalExpr>, right_keys: Vec<LogicalExpr>) -> Self {
+        Self::new(JoinType::Right, left_keys, right_keys)
+    }
+
+    /// Creates a full outer sort-merge join.
+    #[must_use]
+    pub fn full_on(left_keys: Vec<LogicalExpr>, right_keys: Vec<LogicalExpr>) -> Self {
+        Self::new(JoinType::Full, left_keys, right_keys)
     }
 
     /// Sets additional filter.
@@ -2281,7 +2433,10 @@ impl PhysicalPlan {
 
             Self::HashJoin { build, probe, .. } => vec![build.as_ref(), probe.as_ref()],
 
-            Self::MergeJoin { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+            Self::MergeJoin { left, right, .. }
+            | Self::SortMergeJoin { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+
+            Self::IndexNestedLoopJoin { outer, inner, .. } => vec![outer.as_ref(), inner.as_ref()],
 
             // CALL subquery (has input and subquery)
             Self::CallSubquery { input, subquery, .. } => {
@@ -2368,7 +2523,10 @@ impl PhysicalPlan {
 
             Self::HashJoin { build, probe, .. } => vec![build.as_mut(), probe.as_mut()],
 
-            Self::MergeJoin { left, right, .. } => vec![left.as_mut(), right.as_mut()],
+            Self::MergeJoin { left, right, .. }
+            | Self::SortMergeJoin { left, right, .. } => vec![left.as_mut(), right.as_mut()],
+
+            Self::IndexNestedLoopJoin { outer, inner, .. } => vec![outer.as_mut(), inner.as_mut()],
 
             // CALL subquery (has input and subquery)
             Self::CallSubquery { input, subquery, .. } => {
@@ -2449,6 +2607,8 @@ impl PhysicalPlan {
             Self::NestedLoopJoin { .. } => "NestedLoopJoin",
             Self::HashJoin { .. } => "HashJoin",
             Self::MergeJoin { .. } => "MergeJoin",
+            Self::IndexNestedLoopJoin { .. } => "IndexNestedLoopJoin",
+            Self::SortMergeJoin { .. } => "SortMergeJoin",
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
             Self::Unwind { .. } => "Unwind",
@@ -2515,6 +2675,8 @@ impl PhysicalPlan {
             Self::NestedLoopJoin { node, .. } => node.cost,
             Self::HashJoin { node, .. } => node.cost,
             Self::MergeJoin { node, .. } => node.cost,
+            Self::IndexNestedLoopJoin { node, .. } => node.cost,
+            Self::SortMergeJoin { node, .. } => node.cost,
             Self::SetOp { cost, .. } => *cost,
             Self::Union { cost, .. } => *cost,
             Self::Unwind { node, .. } => node.cost,
@@ -2798,6 +2960,27 @@ impl DisplayTree<'_> {
             }
             PhysicalPlan::MergeJoin { node, .. } => {
                 write!(f, "MergeJoin: {} JOIN (cost: {:.2})", node.join_type, node.cost.value())?;
+            }
+            PhysicalPlan::IndexNestedLoopJoin { node, .. } => {
+                write!(
+                    f,
+                    "IndexNestedLoopJoin: {} JOIN on index '{}' [{} = {}] (cost: {:.2})",
+                    node.join_type,
+                    node.index_name,
+                    node.outer_key,
+                    node.inner_key,
+                    node.cost.value()
+                )?;
+            }
+            PhysicalPlan::SortMergeJoin { node, .. } => {
+                write!(f, "SortMergeJoin: {} JOIN [", node.join_type)?;
+                for (i, (left, right)) in node.left_keys.iter().zip(&node.right_keys).enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{left} = {right}")?;
+                }
+                write!(f, "] (cost: {:.2})", node.cost.value())?;
             }
             PhysicalPlan::SetOp { op_type, cost, .. } => {
                 write!(f, "SetOp: {} (cost: {:.2})", op_type, cost.value())?;

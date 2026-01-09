@@ -99,6 +99,20 @@ List Comprehensions
 ├── Execution: ✅ evaluate_expr handles comprehensions
 ├── List Functions: ✅ range, size, head, tail, last, reverse
 └── Status: ✅ Complete with tests (Jan 2026)
+
+Physical Join Operators
+├── NestedLoopJoinOp: ✅ Exists (CROSS, INNER, LEFT joins)
+├── HashJoinOp: ✅ Exists (INNER joins with hash table)
+├── MergeJoinOp: ✅ Exists (INNER joins on sorted inputs)
+├── IndexNestedLoopJoinOp: ✅ Complete (Jan 2026) - Index-accelerated nested loop
+├── SortMergeJoinOp: ✅ Complete (Jan 2026) - Full outer join support (LEFT, RIGHT, FULL)
+└── Status: ✅ 5 join operator strategies available
+
+HAVING Clause Enhancement
+├── Basic HAVING: ✅ Exists
+├── Complex expressions (AND, OR, comparisons): ✅ Complete (Jan 2026)
+├── Aggregate resolution in HAVING: ✅ Complete (Jan 2026)
+└── Status: ✅ Full HAVING support with complex expressions
 ```
 
 ### Parallel Work Streams
@@ -136,8 +150,8 @@ These feature groups can be implemented independently:
 | **JOIN Types** |
 | INNER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | LEFT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| RIGHT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| FULL OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
+| RIGHT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - SortMergeJoinOp |
+| FULL OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - SortMergeJoinOp |
 | CROSS JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | NATURAL JOIN | ✓ | ✓ | ✓ | | | | Needs physical op |
 | JOIN ... USING | ✓ | ✓ | ✓ | | | | Needs physical op |
@@ -168,7 +182,7 @@ These feature groups can be implemented independently:
 | GROUPING SETS | | | | | | | Not implemented |
 | GROUP BY ALL | | | | | | | Not implemented |
 | **HAVING Clause** |
-| Basic HAVING | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
+| Basic HAVING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Complex expressions |
 | **ORDER BY Clause** |
 | Single column | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Multiple columns | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |

@@ -1,10 +1,24 @@
 //! Aggregate operators for GROUP BY and aggregation functions.
+//!
+//! This module provides aggregate operators that support:
+//! - Hash-based aggregation for efficient grouping
+//! - Sort-merge aggregation for pre-sorted data
+//! - Full HAVING clause support including complex expressions with multiple aggregates
+//!
+//! # HAVING Clause Support
+//!
+//! The HAVING clause can reference:
+//! - Simple aggregate comparisons: `HAVING COUNT(*) > 10`
+//! - Multiple aggregates with AND/OR: `HAVING COUNT(*) > 10 AND AVG(salary) > 50000`
+//! - Group columns: `HAVING department = 'Engineering' AND COUNT(*) > 5`
+//! - Complex expressions: `HAVING SUM(amount) / COUNT(*) > 100`
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use manifoldb_core::Value;
 
+use crate::ast::{BinaryOp, UnaryOp};
 use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
@@ -143,9 +157,10 @@ impl HashAggregateOp {
 
             let row = Row::new(Arc::clone(&schema), values);
 
-            // Apply HAVING filter
+            // Apply HAVING filter with full aggregate expression support
             if let Some(having) = &self.having {
-                let result = evaluate_expr(having, &row)?;
+                let result =
+                    evaluate_having_expr(having, &row, &self.aggregates, self.group_by.len())?;
                 if !matches!(result, Value::Bool(true)) {
                     continue;
                 }
@@ -401,9 +416,14 @@ impl SortMergeAggregateOp {
                         self.init_accumulators();
                         self.update_accumulators(&row)?;
 
-                        // Check HAVING
+                        // Check HAVING with full aggregate expression support
                         if let Some(having) = &self.having {
-                            let check = evaluate_expr(having, &result)?;
+                            let check = evaluate_having_expr(
+                                having,
+                                &result,
+                                &self.aggregates,
+                                self.group_by.len(),
+                            )?;
                             if !matches!(check, Value::Bool(true)) {
                                 continue;
                             }
@@ -426,7 +446,12 @@ impl SortMergeAggregateOp {
                         let result = self.build_result();
 
                         if let Some(having) = &self.having {
-                            let check = evaluate_expr(having, &result)?;
+                            let check = evaluate_having_expr(
+                                having,
+                                &result,
+                                &self.aggregates,
+                                self.group_by.len(),
+                            )?;
                             if !matches!(check, Value::Bool(true)) {
                                 self.base.set_finished();
                                 return Ok(None);
@@ -970,6 +995,201 @@ fn expr_to_name(expr: &LogicalExpr, index: usize) -> String {
         LogicalExpr::Alias { alias, .. } => alias.clone(),
         LogicalExpr::AggregateFunction { func, .. } => format!("{func}"),
         _ => format!("col_{index}"),
+    }
+}
+
+/// Evaluates a HAVING expression against an aggregate result row.
+///
+/// This function handles aggregate function expressions by:
+/// 1. Looking up the aggregate value from the computed column in the row
+/// 2. Recursively evaluating complex expressions (AND, OR, comparisons)
+/// 3. Falling back to standard expression evaluation for non-aggregate expressions
+///
+/// # Arguments
+///
+/// * `expr` - The HAVING expression to evaluate
+/// * `row` - The aggregate result row containing group columns and computed aggregates
+/// * `aggregates` - The list of aggregate expressions used in the query
+/// * `group_by_len` - Number of GROUP BY columns (aggregates start after this)
+///
+/// # Complex Expression Support
+///
+/// Supports expressions like:
+/// - `COUNT(*) > 10 AND AVG(salary) > 50000`
+/// - `SUM(amount) / COUNT(*) > 100`
+/// - `department = 'Engineering' AND COUNT(*) > 5`
+fn evaluate_having_expr(
+    expr: &LogicalExpr,
+    row: &Row,
+    aggregates: &[LogicalExpr],
+    group_by_len: usize,
+) -> OperatorResult<Value> {
+    match expr {
+        // Handle aggregate function references by looking up the computed value
+        LogicalExpr::AggregateFunction { func, args, distinct } => {
+            // Find matching aggregate in the aggregates list
+            for (i, agg) in aggregates.iter().enumerate() {
+                if let LogicalExpr::AggregateFunction {
+                    func: agg_func,
+                    args: agg_args,
+                    distinct: agg_distinct,
+                } = agg
+                {
+                    if func == agg_func && distinct == agg_distinct && args_match(args, agg_args) {
+                        // Found the matching aggregate - get its value from the row
+                        let col_idx = group_by_len + i;
+                        return Ok(row.get(col_idx).cloned().unwrap_or(Value::Null));
+                    }
+                }
+            }
+            // Aggregate not found - return NULL
+            Ok(Value::Null)
+        }
+
+        // Handle binary operations (AND, OR, comparisons)
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let left_val = evaluate_having_expr(left, row, aggregates, group_by_len)?;
+            let right_val = evaluate_having_expr(right, row, aggregates, group_by_len)?;
+            evaluate_binary_op(&left_val, op, &right_val)
+        }
+
+        // Handle unary operations (NOT, etc.)
+        LogicalExpr::UnaryOp { op, operand } => {
+            let val = evaluate_having_expr(operand, row, aggregates, group_by_len)?;
+            match op {
+                UnaryOp::Not => match val {
+                    Value::Bool(b) => Ok(Value::Bool(!b)),
+                    Value::Null => Ok(Value::Null),
+                    _ => Ok(Value::Null),
+                },
+                UnaryOp::Neg => match val {
+                    Value::Int(i) => Ok(Value::Int(-i)),
+                    Value::Float(f) => Ok(Value::Float(-f)),
+                    _ => Ok(Value::Null),
+                },
+                UnaryOp::IsNull => Ok(Value::Bool(matches!(val, Value::Null))),
+                UnaryOp::IsNotNull => Ok(Value::Bool(!matches!(val, Value::Null))),
+            }
+        }
+
+        // For column references and other expressions, use standard evaluation
+        _ => evaluate_expr(expr, row),
+    }
+}
+
+/// Checks if two sets of aggregate arguments match.
+fn args_match(args1: &[LogicalExpr], args2: &[LogicalExpr]) -> bool {
+    if args1.len() != args2.len() {
+        return false;
+    }
+    for (a, b) in args1.iter().zip(args2.iter()) {
+        if !expr_matches(a, b) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Checks if two expressions are structurally equivalent for aggregate matching.
+fn expr_matches(a: &LogicalExpr, b: &LogicalExpr) -> bool {
+    match (a, b) {
+        (LogicalExpr::Wildcard, LogicalExpr::Wildcard) => true,
+        (
+            LogicalExpr::Column { name: n1, qualifier: q1 },
+            LogicalExpr::Column { name: n2, qualifier: q2 },
+        ) => n1 == n2 && q1 == q2,
+        (LogicalExpr::Literal(l1), LogicalExpr::Literal(l2)) => l1 == l2,
+        _ => false,
+    }
+}
+
+/// Evaluates a binary operation for HAVING expressions.
+fn evaluate_binary_op(left: &Value, op: &BinaryOp, right: &Value) -> OperatorResult<Value> {
+    match op {
+        BinaryOp::And => match (left, right) {
+            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+            (Value::Bool(false), _) | (_, Value::Bool(false)) => Ok(Value::Bool(false)),
+            _ => Ok(Value::Null),
+        },
+        BinaryOp::Or => match (left, right) {
+            (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+            (Value::Bool(true), _) | (_, Value::Bool(true)) => Ok(Value::Bool(true)),
+            _ => Ok(Value::Null),
+        },
+        BinaryOp::Eq => Ok(Value::Bool(values_equal(left, right))),
+        BinaryOp::NotEq => Ok(Value::Bool(!values_equal(left, right))),
+        BinaryOp::Lt => compare_values_op(left, right, |ord| ord == std::cmp::Ordering::Less),
+        BinaryOp::LtEq => compare_values_op(left, right, |ord| {
+            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
+        }),
+        BinaryOp::Gt => compare_values_op(left, right, |ord| ord == std::cmp::Ordering::Greater),
+        BinaryOp::GtEq => compare_values_op(left, right, |ord| {
+            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
+        }),
+        BinaryOp::Add => numeric_op(left, right, |a, b| a + b, |a, b| a + b),
+        BinaryOp::Sub => numeric_op(left, right, |a, b| a - b, |a, b| a - b),
+        BinaryOp::Mul => numeric_op(left, right, |a, b| a * b, |a, b| a * b),
+        BinaryOp::Div => {
+            // Handle division by zero
+            let is_zero =
+                matches!(right, Value::Int(0)) || matches!(right, Value::Float(f) if *f == 0.0);
+            if is_zero {
+                Ok(Value::Null)
+            } else {
+                numeric_op(left, right, |a, b| a / b, |a, b| a / b)
+            }
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// Checks if two values are equal.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => false, // NULL != NULL in SQL
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
+        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
+            ((*a as f64) - b).abs() < f64::EPSILON
+        }
+        (Value::String(a), Value::String(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Compares two values and applies a predicate to the ordering.
+fn compare_values_op<F>(left: &Value, right: &Value, pred: F) -> OperatorResult<Value>
+where
+    F: Fn(std::cmp::Ordering) -> bool,
+{
+    let ord = match (left, right) {
+        (Value::Int(a), Value::Int(b)) => a.cmp(b),
+        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Int(a), Value::Float(b)) => {
+            (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Value::Float(a), Value::Int(b)) => {
+            a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Value::String(a), Value::String(b)) => a.cmp(b),
+        _ => return Ok(Value::Null),
+    };
+    Ok(Value::Bool(pred(ord)))
+}
+
+/// Performs a numeric operation on two values.
+fn numeric_op<F, G>(left: &Value, right: &Value, int_op: F, float_op: G) -> OperatorResult<Value>
+where
+    F: Fn(i64, i64) -> i64,
+    G: Fn(f64, f64) -> f64,
+{
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
+        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
+        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
+        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
+        _ => Ok(Value::Null),
     }
 }
 
@@ -2499,6 +2719,190 @@ mod tests {
         let row = op.next().unwrap().unwrap();
         // All zeros are falsy, so result is false
         assert_eq!(row.get(0).unwrap(), &Value::Bool(false));
+
+        op.close().unwrap();
+    }
+
+    // ========== Complex HAVING Expression Tests ==========
+
+    #[test]
+    fn hash_aggregate_complex_having_and() {
+        // Test: HAVING COUNT(*) > 1 AND AVG(salary) > 100
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "salary".to_string()],
+            vec![
+                // Dept A: count=3, avg=125 -> passes (3 > 1 AND 125 > 100)
+                vec![Value::from("A"), Value::Int(100)],
+                vec![Value::from("A"), Value::Int(125)],
+                vec![Value::from("A"), Value::Int(150)],
+                // Dept B: count=2, avg=75 -> fails (75 < 100)
+                vec![Value::from("B"), Value::Int(50)],
+                vec![Value::from("B"), Value::Int(100)],
+                // Dept C: count=1, avg=200 -> fails (1 <= 1)
+                vec![Value::from("C"), Value::Int(200)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![
+            LogicalExpr::count(LogicalExpr::wildcard(), false),
+            LogicalExpr::avg(LogicalExpr::column("salary"), false),
+        ];
+
+        // HAVING COUNT(*) > 1 AND AVG(salary) > 100
+        let having =
+            LogicalExpr::count(LogicalExpr::wildcard(), false).gt(LogicalExpr::integer(1)).and(
+                LogicalExpr::avg(LogicalExpr::column("salary"), false)
+                    .gt(LogicalExpr::integer(100)),
+            );
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, Some(having), input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Only dept A should pass
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get(0), Some(&Value::from("A")));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_complex_having_or() {
+        // Test: HAVING COUNT(*) >= 3 OR SUM(amount) > 1000
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["category".to_string(), "amount".to_string()],
+            vec![
+                // Category X: count=3, sum=300 -> passes (count >= 3)
+                vec![Value::from("X"), Value::Int(100)],
+                vec![Value::from("X"), Value::Int(100)],
+                vec![Value::from("X"), Value::Int(100)],
+                // Category Y: count=2, sum=1500 -> passes (sum > 1000)
+                vec![Value::from("Y"), Value::Int(500)],
+                vec![Value::from("Y"), Value::Int(1000)],
+                // Category Z: count=1, sum=200 -> fails (neither condition)
+                vec![Value::from("Z"), Value::Int(200)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("category")];
+        let aggregates = vec![
+            LogicalExpr::count(LogicalExpr::wildcard(), false),
+            LogicalExpr::sum(LogicalExpr::column("amount"), false),
+        ];
+
+        // HAVING COUNT(*) >= 3 OR SUM(amount) > 1000
+        let having = LogicalExpr::count(LogicalExpr::wildcard(), false)
+            .gt_eq(LogicalExpr::integer(3))
+            .or(LogicalExpr::sum(LogicalExpr::column("amount"), false)
+                .gt(LogicalExpr::integer(1000)));
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, Some(having), input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Categories X and Y should pass
+        assert_eq!(results.len(), 2);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_having_with_group_column() {
+        // Test: HAVING department = 'Engineering' AND COUNT(*) > 2
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "name".to_string()],
+            vec![
+                vec![Value::from("Engineering"), Value::from("Alice")],
+                vec![Value::from("Engineering"), Value::from("Bob")],
+                vec![Value::from("Engineering"), Value::from("Carol")],
+                vec![Value::from("Sales"), Value::from("Dave")],
+                vec![Value::from("Sales"), Value::from("Eve")],
+                vec![Value::from("Sales"), Value::from("Frank")],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::count(LogicalExpr::wildcard(), false)];
+
+        // HAVING dept = 'Engineering' AND COUNT(*) > 2
+        let having = LogicalExpr::column("dept")
+            .eq(LogicalExpr::Literal(crate::ast::Literal::String("Engineering".to_string())))
+            .and(LogicalExpr::count(LogicalExpr::wildcard(), false).gt(LogicalExpr::integer(2)));
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, Some(having), input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Only Engineering should pass (Sales count=3 but dept != Engineering)
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get(0), Some(&Value::from("Engineering")));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_having_arithmetic() {
+        // Test: HAVING SUM(amount) / COUNT(*) > 100 (average via division)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["region".to_string(), "amount".to_string()],
+            vec![
+                // Region North: sum=600, count=3, avg=200 -> passes
+                vec![Value::from("North"), Value::Int(100)],
+                vec![Value::from("North"), Value::Int(200)],
+                vec![Value::from("North"), Value::Int(300)],
+                // Region South: sum=150, count=3, avg=50 -> fails
+                vec![Value::from("South"), Value::Int(50)],
+                vec![Value::from("South"), Value::Int(50)],
+                vec![Value::from("South"), Value::Int(50)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("region")];
+        let aggregates = vec![
+            LogicalExpr::sum(LogicalExpr::column("amount"), false),
+            LogicalExpr::count(LogicalExpr::wildcard(), false),
+        ];
+
+        // HAVING SUM(amount) / COUNT(*) > 100
+        let having = LogicalExpr::BinaryOp {
+            left: Box::new(LogicalExpr::sum(LogicalExpr::column("amount"), false)),
+            op: BinaryOp::Div,
+            right: Box::new(LogicalExpr::count(LogicalExpr::wildcard(), false)),
+        }
+        .gt(LogicalExpr::integer(100));
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, Some(having), input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Only North should pass (avg 200 > 100)
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get(0), Some(&Value::from("North")));
 
         op.close().unwrap();
     }

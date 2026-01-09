@@ -20,7 +20,7 @@ use super::operators::{
     graph_merge::GraphMergeOp,
     graph_remove::GraphRemoveOp,
     graph_set::GraphSetOp,
-    join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp},
+    join::{HashJoinOp, IndexNestedLoopJoinOp, MergeJoinOp, NestedLoopJoinOp, SortMergeJoinOp},
     limit::LimitOp,
     project::ProjectOp,
     recursive_cte::RecursiveCTEOp,
@@ -311,6 +311,39 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
                 left_op,
                 right_op,
             )))
+        }
+
+        PhysicalPlan::IndexNestedLoopJoin { node, outer, inner } => {
+            let outer_op = build_operator_tree(outer)?;
+            let inner_op = build_operator_tree(inner)?;
+            let mut op = IndexNestedLoopJoinOp::new(
+                node.join_type,
+                node.outer_key.clone(),
+                node.inner_key.clone(),
+                node.index_name.clone(),
+                outer_op,
+                inner_op,
+            );
+            if let Some(filter) = &node.filter {
+                op = op.with_filter(filter.clone());
+            }
+            Ok(Box::new(op))
+        }
+
+        PhysicalPlan::SortMergeJoin { node, left, right } => {
+            let left_op = build_operator_tree(left)?;
+            let right_op = build_operator_tree(right)?;
+            let mut op = SortMergeJoinOp::new(
+                node.join_type,
+                node.left_keys.clone(),
+                node.right_keys.clone(),
+                left_op,
+                right_op,
+            );
+            if let Some(filter) = &node.filter {
+                op = op.with_filter(filter.clone());
+            }
+            Ok(Box::new(op))
         }
 
         // Set operations

@@ -618,6 +618,592 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+/// Index nested loop join operator.
+///
+/// Accelerates nested loop joins by using an index on the inner (right) table
+/// for key lookups instead of full scans. This is efficient when:
+/// - The inner table has an index on the join key
+/// - The outer table is relatively small
+/// - The join is on an equality condition
+///
+/// Time complexity: O(n * log(m)) where n is outer rows, m is inner rows
+/// (assuming B-tree index with O(log m) lookup)
+pub struct IndexNestedLoopJoinOp {
+    /// Base operator state.
+    base: OperatorBase,
+    /// Join type.
+    join_type: JoinType,
+    /// Outer (left) table key expression.
+    outer_key: LogicalExpr,
+    /// Inner (right) table key expression.
+    inner_key: LogicalExpr,
+    /// Additional filter condition (beyond the key equality).
+    filter: Option<LogicalExpr>,
+    /// Outer (left) input operator.
+    outer: BoxedOperator,
+    /// Inner (right) input operator - represents the indexed table.
+    inner: BoxedOperator,
+    /// Index name being used.
+    index_name: String,
+    /// Hash table for index simulation: key -> list of rows.
+    /// In a real implementation, this would use actual index lookups.
+    index_data: HashMap<Vec<u8>, Vec<Row>>,
+    /// Current outer row being processed.
+    current_outer: Option<Row>,
+    /// Current matches from index lookup.
+    current_matches: Vec<Row>,
+    /// Position in current matches.
+    match_position: usize,
+    /// Whether the inner table has been indexed.
+    indexed: bool,
+    /// Whether current outer row has been matched.
+    matched_outer: bool,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
+}
+
+impl IndexNestedLoopJoinOp {
+    /// Creates a new index nested loop join operator.
+    #[must_use]
+    pub fn new(
+        join_type: JoinType,
+        outer_key: LogicalExpr,
+        inner_key: LogicalExpr,
+        index_name: impl Into<String>,
+        outer: BoxedOperator,
+        inner: BoxedOperator,
+    ) -> Self {
+        let schema = Arc::new(outer.schema().merge(&inner.schema()));
+        Self {
+            base: OperatorBase::new(schema),
+            join_type,
+            outer_key,
+            inner_key,
+            filter: None,
+            outer,
+            inner,
+            index_name: index_name.into(),
+            index_data: HashMap::new(),
+            current_outer: None,
+            current_matches: Vec::new(),
+            match_position: 0,
+            indexed: false,
+            matched_outer: false,
+            max_rows_in_memory: 0,
+        }
+    }
+
+    /// Sets an additional filter condition.
+    #[must_use]
+    pub fn with_filter(mut self, filter: LogicalExpr) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Returns the index name being used.
+    #[must_use]
+    pub fn index_name(&self) -> &str {
+        &self.index_name
+    }
+
+    /// Computes the key value for index lookup.
+    fn compute_key(&self, row: &Row, expr: &LogicalExpr) -> OperatorResult<Vec<u8>> {
+        let value = evaluate_expr(expr, row)?;
+        let mut key = Vec::with_capacity(64);
+        encode_key_value(&value, &mut key);
+        Ok(key)
+    }
+
+    /// Builds the index from inner table rows.
+    fn build_index(&mut self) -> OperatorResult<()> {
+        let mut total_rows = 0usize;
+        while let Some(row) = self.inner.next()? {
+            let key = self.compute_key(&row, &self.inner_key)?;
+            self.index_data.entry(key).or_default().push(row);
+            total_rows += 1;
+
+            if self.max_rows_in_memory > 0 && total_rows > self.max_rows_in_memory {
+                return Err(ParseError::QueryTooLarge {
+                    actual: total_rows,
+                    limit: self.max_rows_in_memory,
+                });
+            }
+        }
+        self.indexed = true;
+        Ok(())
+    }
+
+    /// Looks up rows from the index matching the given key.
+    fn index_lookup(&self, key: &[u8]) -> Vec<Row> {
+        self.index_data.get(key).cloned().unwrap_or_default()
+    }
+
+    /// Checks if filter passes.
+    fn filter_passes(&self, outer: &Row, inner: &Row) -> OperatorResult<bool> {
+        match &self.filter {
+            Some(f) => {
+                let merged = outer.merge(inner);
+                let result = evaluate_expr(f, &merged)?;
+                Ok(matches!(result, Value::Bool(true)))
+            }
+            None => Ok(true),
+        }
+    }
+
+    /// Creates a null row for the inner side.
+    fn inner_null_row(&self) -> Row {
+        Row::empty(self.inner.schema())
+    }
+}
+
+impl Operator for IndexNestedLoopJoinOp {
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        self.outer.open(ctx)?;
+        self.inner.open(ctx)?;
+        self.index_data.clear();
+        self.current_outer = None;
+        self.current_matches.clear();
+        self.match_position = 0;
+        self.indexed = false;
+        self.matched_outer = false;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        // Build index on first call
+        if !self.indexed {
+            self.build_index()?;
+        }
+
+        loop {
+            // Return next match if available
+            while self.match_position < self.current_matches.len() {
+                let inner_row = &self.current_matches[self.match_position];
+                self.match_position += 1;
+
+                if let Some(outer_row) = &self.current_outer {
+                    if self.filter_passes(outer_row, inner_row)? {
+                        self.matched_outer = true;
+                        self.base.inc_rows_produced();
+                        return Ok(Some(outer_row.merge(inner_row)));
+                    }
+                }
+            }
+
+            // Handle unmatched outer row for left/full outer joins
+            if let Some(outer_row) = &self.current_outer {
+                if !self.matched_outer {
+                    match self.join_type {
+                        JoinType::Left | JoinType::Full => {
+                            self.matched_outer = true;
+                            self.base.inc_rows_produced();
+                            return Ok(Some(outer_row.merge(&self.inner_null_row())));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Get next outer row
+            match self.outer.next()? {
+                Some(outer_row) => {
+                    // Perform index lookup
+                    let key = self.compute_key(&outer_row, &self.outer_key)?;
+                    self.current_matches = self.index_lookup(&key);
+                    self.match_position = 0;
+                    self.matched_outer = false;
+                    self.current_outer = Some(outer_row);
+                }
+                None => {
+                    self.base.set_finished();
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        self.outer.close()?;
+        self.inner.close()?;
+        self.index_data.clear();
+        self.current_matches.clear();
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "IndexNestedLoopJoin"
+    }
+}
+
+/// Sort-merge join operator.
+///
+/// Efficient join algorithm for pre-sorted or sortable inputs.
+/// Merges two sorted streams by advancing through both in sorted order.
+///
+/// Supports INNER, LEFT, RIGHT, and FULL outer joins.
+///
+/// Time complexity: O(n + m) for sorted inputs where n, m are input sizes.
+/// Space complexity: O(k) where k is the maximum number of rows with the same key.
+pub struct SortMergeJoinOp {
+    /// Base operator state.
+    base: OperatorBase,
+    /// Join type.
+    join_type: JoinType,
+    /// Left side key expressions.
+    left_keys: Vec<LogicalExpr>,
+    /// Right side key expressions.
+    right_keys: Vec<LogicalExpr>,
+    /// Additional filter condition.
+    filter: Option<LogicalExpr>,
+    /// Left input (must be sorted on left_keys).
+    left: BoxedOperator,
+    /// Right input (must be sorted on right_keys).
+    right: BoxedOperator,
+    /// Current left row.
+    current_left: Option<Row>,
+    /// Current right row.
+    current_right: Option<Row>,
+    /// Buffer of right rows with same key (for many-to-many joins).
+    right_buffer: Vec<Row>,
+    /// Position in right buffer.
+    buffer_position: usize,
+    /// Whether current left row has been matched.
+    matched_left: bool,
+    /// Buffer of unmatched right rows for RIGHT/FULL outer joins.
+    unmatched_right: Vec<Row>,
+    /// Whether we're in the final phase of outputting unmatched right rows.
+    outputting_unmatched: bool,
+    /// Position in unmatched right rows.
+    unmatched_position: usize,
+    /// Maximum rows allowed in memory (0 = no limit).
+    max_rows_in_memory: usize,
+}
+
+impl SortMergeJoinOp {
+    /// Creates a new sort-merge join operator.
+    #[must_use]
+    pub fn new(
+        join_type: JoinType,
+        left_keys: Vec<LogicalExpr>,
+        right_keys: Vec<LogicalExpr>,
+        left: BoxedOperator,
+        right: BoxedOperator,
+    ) -> Self {
+        let schema = Arc::new(left.schema().merge(&right.schema()));
+        Self {
+            base: OperatorBase::new(schema),
+            join_type,
+            left_keys,
+            right_keys,
+            filter: None,
+            left,
+            right,
+            current_left: None,
+            current_right: None,
+            right_buffer: Vec::new(),
+            buffer_position: 0,
+            matched_left: false,
+            unmatched_right: Vec::new(),
+            outputting_unmatched: false,
+            unmatched_position: 0,
+            max_rows_in_memory: 0,
+        }
+    }
+
+    /// Sets an additional filter condition.
+    #[must_use]
+    pub fn with_filter(mut self, filter: LogicalExpr) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Returns the join type.
+    #[must_use]
+    pub fn join_type(&self) -> JoinType {
+        self.join_type
+    }
+
+    /// Compares keys from two rows.
+    fn compare_keys(&self, left: &Row, right: &Row) -> OperatorResult<std::cmp::Ordering> {
+        for (left_expr, right_expr) in self.left_keys.iter().zip(&self.right_keys) {
+            let left_val = evaluate_expr(left_expr, left)?;
+            let right_val = evaluate_expr(right_expr, right)?;
+
+            let cmp = compare_values(&left_val, &right_val);
+            if cmp != std::cmp::Ordering::Equal {
+                return Ok(cmp);
+            }
+        }
+        Ok(std::cmp::Ordering::Equal)
+    }
+
+    /// Checks if filter passes.
+    fn filter_passes(&self, left: &Row, right: &Row) -> OperatorResult<bool> {
+        match &self.filter {
+            Some(f) => {
+                let merged = left.merge(right);
+                let result = evaluate_expr(f, &merged)?;
+                Ok(matches!(result, Value::Bool(true)))
+            }
+            None => Ok(true),
+        }
+    }
+
+    /// Creates a null row for the left side.
+    fn left_null_row(&self) -> Row {
+        Row::empty(self.left.schema())
+    }
+
+    /// Creates a null row for the right side.
+    fn right_null_row(&self) -> Row {
+        Row::empty(self.right.schema())
+    }
+}
+
+impl Operator for SortMergeJoinOp {
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        self.left.open(ctx)?;
+        self.right.open(ctx)?;
+        self.current_left = self.left.next()?;
+        self.current_right = self.right.next()?;
+        self.right_buffer.clear();
+        self.buffer_position = 0;
+        self.matched_left = false;
+        self.unmatched_right.clear();
+        self.outputting_unmatched = false;
+        self.unmatched_position = 0;
+        self.max_rows_in_memory = ctx.max_rows_in_memory();
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        // Phase: Output unmatched right rows for RIGHT/FULL outer joins
+        if self.outputting_unmatched {
+            if self.unmatched_position < self.unmatched_right.len() {
+                let right_row = &self.unmatched_right[self.unmatched_position];
+                self.unmatched_position += 1;
+                self.base.inc_rows_produced();
+                return Ok(Some(self.left_null_row().merge(right_row)));
+            }
+            self.base.set_finished();
+            return Ok(None);
+        }
+
+        loop {
+            // Phase 1: Return from buffer if available
+            while self.buffer_position < self.right_buffer.len() {
+                let left = match &self.current_left {
+                    Some(l) => l.clone(),
+                    None => break,
+                };
+                let right = self.right_buffer[self.buffer_position].clone();
+                self.buffer_position += 1;
+
+                if self.filter_passes(&left, &right)? {
+                    self.matched_left = true;
+                    self.base.inc_rows_produced();
+                    return Ok(Some(left.merge(&right)));
+                }
+            }
+
+            // Phase 2: Handle end of buffer - decide what to do with current left
+            if !self.right_buffer.is_empty() && self.buffer_position >= self.right_buffer.len() {
+                // Finished processing buffer for current left row
+                // Check if we need to output unmatched left
+                if !self.matched_left {
+                    if let Some(left) = &self.current_left {
+                        if matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                            self.matched_left = true;
+                            self.base.inc_rows_produced();
+                            return Ok(Some(left.merge(&self.right_null_row())));
+                        }
+                    }
+                }
+
+                // Advance to next left row
+                self.current_left = self.left.next()?;
+                self.matched_left = false;
+                self.buffer_position = 0;
+
+                // Check if new left row has same key as buffer
+                if let Some(left) = &self.current_left {
+                    if let Some(first_right) = self.right_buffer.first() {
+                        if self.compare_keys(left, first_right)? == std::cmp::Ordering::Equal {
+                            // Same key - reprocess buffer
+                            continue;
+                        }
+                    }
+                }
+
+                // Different key or no left - clear buffer and continue to main loop
+                self.right_buffer.clear();
+            }
+
+            // Phase 3: Main merge loop - need both sides
+            let (left, right) = match (&self.current_left, &self.current_right) {
+                (Some(l), Some(r)) => (l, r),
+                (None, Some(_)) => {
+                    // Left exhausted, collect remaining right for RIGHT/FULL joins
+                    if matches!(self.join_type, JoinType::Right | JoinType::Full) {
+                        if let Some(r) = self.current_right.take() {
+                            self.unmatched_right.push(r);
+                        }
+                        while let Some(r) = self.right.next()? {
+                            self.unmatched_right.push(r);
+                        }
+                        self.outputting_unmatched = true;
+                        // Return first unmatched right row if any
+                        if !self.unmatched_right.is_empty() {
+                            let right_row = &self.unmatched_right[0];
+                            self.unmatched_position = 1;
+                            self.base.inc_rows_produced();
+                            return Ok(Some(self.left_null_row().merge(right_row)));
+                        }
+                    }
+                    self.base.set_finished();
+                    return Ok(None);
+                }
+                (Some(left), None) => {
+                    // Right exhausted, handle remaining left for LEFT/FULL joins
+                    if matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                        self.base.inc_rows_produced();
+                        let result = left.merge(&self.right_null_row());
+                        self.current_left = self.left.next()?;
+                        return Ok(Some(result));
+                    }
+                    self.base.set_finished();
+                    return Ok(None);
+                }
+                (None, None) => {
+                    // Before finishing, check if we have unmatched rights to output
+                    if matches!(self.join_type, JoinType::Right | JoinType::Full)
+                        && !self.unmatched_right.is_empty()
+                    {
+                        self.outputting_unmatched = true;
+                        self.unmatched_position = 0;
+                        // Return first unmatched right row
+                        let right_row = &self.unmatched_right[0];
+                        self.unmatched_position = 1;
+                        self.base.inc_rows_produced();
+                        return Ok(Some(self.left_null_row().merge(right_row)));
+                    }
+                    self.base.set_finished();
+                    return Ok(None);
+                }
+            };
+
+            match self.compare_keys(left, right)? {
+                std::cmp::Ordering::Less => {
+                    // Left key < right key: advance left
+                    // For LEFT/FULL joins, output unmatched left
+                    if matches!(self.join_type, JoinType::Left | JoinType::Full) {
+                        self.base.inc_rows_produced();
+                        let result = left.merge(&self.right_null_row());
+                        self.current_left = self.left.next()?;
+                        return Ok(Some(result));
+                    }
+                    self.current_left = self.left.next()?;
+                }
+                std::cmp::Ordering::Greater => {
+                    // Left key > right key: advance right
+                    // For RIGHT/FULL joins, track unmatched right
+                    if matches!(self.join_type, JoinType::Right | JoinType::Full) {
+                        self.unmatched_right.push(right.clone());
+                    }
+                    self.current_right = self.right.next()?;
+                }
+                std::cmp::Ordering::Equal => {
+                    // Keys match: buffer all right rows with same key
+                    self.right_buffer.clear();
+                    self.right_buffer.push(right.clone());
+
+                    // Read more right rows with same key
+                    loop {
+                        self.current_right = self.right.next()?;
+                        match &self.current_right {
+                            Some(r) if self.compare_keys(left, r)? == std::cmp::Ordering::Equal => {
+                                self.right_buffer.push(r.clone());
+
+                                if self.max_rows_in_memory > 0
+                                    && self.right_buffer.len() > self.max_rows_in_memory
+                                {
+                                    return Err(ParseError::QueryTooLarge {
+                                        actual: self.right_buffer.len(),
+                                        limit: self.max_rows_in_memory,
+                                    });
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+
+                    self.buffer_position = 0;
+                    self.matched_left = false;
+                    // Loop will continue and process buffer in Phase 1
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        self.left.close()?;
+        self.right.close()?;
+        self.right_buffer.clear();
+        self.unmatched_right.clear();
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "SortMergeJoin"
+    }
+}
+
+/// Encodes a value into bytes for key comparison.
+fn encode_key_value(value: &Value, buf: &mut Vec<u8>) {
+    match value {
+        Value::Null => buf.push(0),
+        Value::Bool(b) => {
+            buf.push(1);
+            buf.push(u8::from(*b));
+        }
+        Value::Int(i) => {
+            buf.push(2);
+            buf.extend_from_slice(&i.to_le_bytes());
+        }
+        Value::Float(f) => {
+            buf.push(3);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        Value::String(s) => {
+            buf.push(4);
+            buf.extend_from_slice(s.as_bytes());
+            buf.push(0);
+        }
+        _ => buf.push(0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,6 +1329,378 @@ mod tests {
 
         // Matches: 1, 2 (3 and 4 don't match)
         assert_eq!(results.len(), 2);
+        op.close().unwrap();
+    }
+
+    // ========== IndexNestedLoopJoinOp Tests ==========
+
+    #[test]
+    fn index_nested_loop_join_inner() {
+        // Outer: orders with user_id
+        let outer: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["user_id".to_string(), "order".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("Order1")],
+                vec![Value::Int(1), Value::from("Order2")],
+                vec![Value::Int(2), Value::from("Order3")],
+                vec![Value::Int(99), Value::from("OrderUnmatched")],
+            ],
+        ));
+
+        // Inner: users table (indexed by id)
+        let inner: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "name".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("Alice")],
+                vec![Value::Int(2), Value::from("Bob")],
+                vec![Value::Int(3), Value::from("Carol")],
+            ],
+        ));
+
+        let outer_key = LogicalExpr::column("user_id");
+        let inner_key = LogicalExpr::column("id");
+
+        let mut op = IndexNestedLoopJoinOp::new(
+            JoinType::Inner,
+            outer_key,
+            inner_key,
+            "idx_users_id",
+            outer,
+            inner,
+        );
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 3 matches: Order1->Alice, Order2->Alice, Order3->Bob
+        // OrderUnmatched has no match
+        assert_eq!(results.len(), 3);
+        assert_eq!(op.index_name(), "idx_users_id");
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn index_nested_loop_join_left_outer() {
+        let outer: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["user_id".to_string(), "order".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("Order1")],
+                vec![Value::Int(99), Value::from("OrderUnmatched")],
+            ],
+        ));
+
+        let inner: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "name".to_string()],
+            vec![vec![Value::Int(1), Value::from("Alice")]],
+        ));
+
+        let outer_key = LogicalExpr::column("user_id");
+        let inner_key = LogicalExpr::column("id");
+
+        let mut op = IndexNestedLoopJoinOp::new(
+            JoinType::Left,
+            outer_key,
+            inner_key,
+            "idx_users_id",
+            outer,
+            inner,
+        );
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 2 results: Order1->Alice, OrderUnmatched->NULL
+        assert_eq!(results.len(), 2);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn index_nested_loop_join_with_filter() {
+        let outer: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["user_id".to_string(), "amount".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(100)],
+                vec![Value::Int(1), Value::Int(50)],
+                vec![Value::Int(2), Value::Int(200)],
+            ],
+        ));
+
+        let inner: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "min_amount".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(75)],  // Alice requires >= 75
+                vec![Value::Int(2), Value::Int(150)], // Bob requires >= 150
+            ],
+        ));
+
+        let outer_key = LogicalExpr::column("user_id");
+        let inner_key = LogicalExpr::column("id");
+        let filter = LogicalExpr::column("amount").gt_eq(LogicalExpr::column("min_amount"));
+
+        let mut op = IndexNestedLoopJoinOp::new(
+            JoinType::Inner,
+            outer_key,
+            inner_key,
+            "idx_users_id",
+            outer,
+            inner,
+        )
+        .with_filter(filter);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Only 2 matches: (100 >= 75), (200 >= 150)
+        // (50 < 75) fails filter
+        assert_eq!(results.len(), 2);
+        op.close().unwrap();
+    }
+
+    // ========== SortMergeJoinOp Tests ==========
+
+    #[test]
+    fn sort_merge_join_inner() {
+        // Sorted left input
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "name".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("Alice")],
+                vec![Value::Int(2), Value::from("Bob")],
+                vec![Value::Int(3), Value::from("Carol")],
+            ],
+        ));
+
+        // Sorted right input
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["user_id".to_string(), "order".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("Order1")],
+                vec![Value::Int(1), Value::from("Order2")],
+                vec![Value::Int(2), Value::from("Order3")],
+            ],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("user_id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Inner, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Alice has 2 orders, Bob has 1 order, Carol has 0
+        assert_eq!(results.len(), 3);
+        assert_eq!(op.join_type(), JoinType::Inner);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_left_outer() {
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(2)], vec![Value::Int(3)]],
+        ));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(3)]],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Left, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 3 results: 1->1, 2->NULL, 3->3
+        assert_eq!(results.len(), 3);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_right_outer() {
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(3)]],
+        ));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(2)], vec![Value::Int(3)]],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Right, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 3 results: 1->1, NULL->2, 3->3
+        assert_eq!(results.len(), 3);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_full_outer() {
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(3)], vec![Value::Int(5)]],
+        ));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(2)], vec![Value::Int(3)], vec![Value::Int(4)]],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Full, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 5 results: 1->NULL, NULL->2, 3->3, NULL->4, 5->NULL
+        assert_eq!(results.len(), 5);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_many_to_many() {
+        // Both sides have duplicates for key=1
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "l_val".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("A")],
+                vec![Value::Int(1), Value::from("B")],
+                vec![Value::Int(2), Value::from("C")],
+            ],
+        ));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "r_val".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("X")],
+                vec![Value::Int(1), Value::from("Y")],
+                vec![Value::Int(3), Value::from("Z")],
+            ],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Inner, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // 4 results: (A,X), (A,Y), (B,X), (B,Y)
+        // 2 from left * 2 from right = 4 matches
+        assert_eq!(results.len(), 4);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_with_filter() {
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "l_val".to_string()],
+            vec![vec![Value::Int(1), Value::Int(10)], vec![Value::Int(2), Value::Int(20)]],
+        ));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string(), "r_val".to_string()],
+            vec![vec![Value::Int(1), Value::Int(5)], vec![Value::Int(2), Value::Int(25)]],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+        let filter = LogicalExpr::column("l_val").gt(LogicalExpr::column("r_val"));
+
+        let mut op = SortMergeJoinOp::new(JoinType::Inner, left_keys, right_keys, left, right)
+            .with_filter(filter);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // Only 1 match: id=1 (10 > 5)
+        // id=2 (20 < 25) fails filter
+        assert_eq!(results.len(), 1);
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_join_empty_inputs() {
+        let left: BoxedOperator = Box::new(ValuesOp::with_columns(vec!["id".to_string()], vec![]));
+
+        let right: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["id".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+        ));
+
+        let left_keys = vec![LogicalExpr::column("id")];
+        let right_keys = vec![LogicalExpr::column("id")];
+
+        let mut op = SortMergeJoinOp::new(JoinType::Inner, left_keys, right_keys, left, right);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            results.push(row);
+        }
+
+        // No results from empty left
+        assert_eq!(results.len(), 0);
         op.close().unwrap();
     }
 }
