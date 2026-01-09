@@ -127,13 +127,13 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 1.2 Expression System Completion
 **Goal:** Complete expression evaluation for both languages.
 
-- [ ] Extend `Expr` enum for missing expression types:
-  - Window function expressions with frame specs
-  - List comprehensions `[x IN list WHERE ... | expr]`
-  - Map projections `node{.prop1, .prop2}`
-  - Pattern expressions (for EXISTS subqueries)
-  - Temporal literals and operations
-  - Spatial point literals
+- [x] Extend `Expr` enum for missing expression types:
+  - [x] Window function expressions with frame specs ✅ Jan 2026
+  - [x] List comprehensions `[x IN list WHERE ... | expr]` ✅ Jan 2026
+  - [x] Map projections `node{.prop1, .prop2}` ✅ Jan 2026
+  - [ ] Pattern expressions (for EXISTS subqueries)
+  - [ ] Temporal literals and operations
+  - [ ] Spatial point literals
 - [ ] Implement expression type inference
 - [ ] Add expression simplification/optimization
 
@@ -224,21 +224,21 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] bool_and, bool_or, every
   - [ ] FILTER clause on aggregates
 
-- [x] **Window Functions** (Tier 2) - Basic ranking complete ✅ Jan 2026
+- [x] **Window Functions** (Tier 2) - Complete ✅ Jan 2026
   - [x] row_number, rank, dense_rank ✅ Jan 2026
   - [ ] ntile
   - [x] lag, lead ✅ Jan 2026
   - [x] first_value, last_value, nth_value ✅ Jan 2026
   - [ ] percent_rank, cume_dist
-  - [ ] Any aggregate as window function
+  - [x] Any aggregate as window function ✅ Jan 2026
 
-- [ ] **JSON Functions** (Tier 2)
+- [x] **JSON Functions** (Tier 2) - Core functions complete ✅ Jan 2026
   - [ ] Operators: ->, ->>, #>, #>>, @>, <@, ?, ?|, ?&
-  - [ ] json_extract_path, jsonb_extract_path
-  - [ ] json_build_object, json_build_array
+  - [x] json_extract_path, jsonb_extract_path ✅ Jan 2026
+  - [x] json_build_object, json_build_array ✅ Jan 2026
   - [ ] json_each, json_each_text
   - [ ] json_array_elements
-  - [ ] jsonb_set, jsonb_insert
+  - [x] jsonb_set, jsonb_insert, jsonb_strip_nulls ✅ Jan 2026
   - [ ] jsonb_path_query, jsonb_path_exists
 
 - [ ] **Array Functions** (Tier 2)
@@ -317,7 +317,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Support all Cypher expression forms.
 
 - [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
-- [ ] Map projections: `node{.prop1, .prop2, key: expr}`
+- [x] Map projections: `node{.prop1, .prop2, key: expr}` ✅ Jan 2026
 - [ ] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]`
 - [ ] CASE expressions (simple and searched)
 - [ ] Parameter syntax ($param)
