@@ -22,6 +22,7 @@ pub mod match_filter;
 pub mod prepared;
 pub mod recovery;
 pub mod scale;
+pub mod set_property;
 pub mod sql;
 pub mod transactions;
 pub mod vector;

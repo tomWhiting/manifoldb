@@ -706,6 +706,88 @@ impl CreateEdgeRequest {
     }
 }
 
+/// Request for updating a node.
+#[derive(Debug, Clone)]
+pub struct UpdateNodeRequest {
+    /// The entity ID to update.
+    pub id: EntityId,
+    /// Properties to set (key -> value). Existing properties not in this map are unchanged.
+    pub set_properties: HashMap<String, Value>,
+    /// Properties to remove (by key).
+    pub remove_properties: Vec<String>,
+    /// Labels to add.
+    pub add_labels: Vec<Label>,
+    /// Labels to remove.
+    pub remove_labels: Vec<Label>,
+}
+
+impl UpdateNodeRequest {
+    /// Create a new update request for the given entity ID.
+    pub fn new(id: EntityId) -> Self {
+        Self {
+            id,
+            set_properties: HashMap::new(),
+            remove_properties: Vec::new(),
+            add_labels: Vec::new(),
+            remove_labels: Vec::new(),
+        }
+    }
+
+    /// Set a property value.
+    pub fn with_property(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.set_properties.insert(key.into(), value);
+        self
+    }
+
+    /// Remove a property.
+    pub fn without_property(mut self, key: impl Into<String>) -> Self {
+        self.remove_properties.push(key.into());
+        self
+    }
+
+    /// Add a label.
+    pub fn with_label(mut self, label: impl Into<Label>) -> Self {
+        self.add_labels.push(label.into());
+        self
+    }
+
+    /// Remove a label.
+    pub fn without_label(mut self, label: impl Into<Label>) -> Self {
+        self.remove_labels.push(label.into());
+        self
+    }
+}
+
+/// Request for updating an edge.
+#[derive(Debug, Clone)]
+pub struct UpdateEdgeRequest {
+    /// The edge ID to update.
+    pub id: manifoldb_core::EdgeId,
+    /// Properties to set (key -> value). Existing properties not in this map are unchanged.
+    pub set_properties: HashMap<String, Value>,
+    /// Properties to remove (by key).
+    pub remove_properties: Vec<String>,
+}
+
+impl UpdateEdgeRequest {
+    /// Create a new update request for the given edge ID.
+    pub fn new(id: manifoldb_core::EdgeId) -> Self {
+        Self { id, set_properties: HashMap::new(), remove_properties: Vec::new() }
+    }
+
+    /// Set a property value.
+    pub fn with_property(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.set_properties.insert(key.into(), value);
+        self
+    }
+
+    /// Remove a property.
+    pub fn without_property(mut self, key: impl Into<String>) -> Self {
+        self.remove_properties.push(key.into());
+        self
+    }
+}
+
 /// A trait for mutating the graph during query execution.
 ///
 /// This trait provides write operations for Cypher CREATE, MERGE, SET, DELETE, etc.
@@ -720,6 +802,26 @@ pub trait GraphMutator: Send + Sync {
     ///
     /// Returns the created edge with its generated ID.
     fn create_edge(&self, request: &CreateEdgeRequest) -> GraphAccessResult<Edge>;
+
+    /// Update an existing node in the graph.
+    ///
+    /// Returns the updated entity.
+    fn update_node(&self, request: &UpdateNodeRequest) -> GraphAccessResult<Entity>;
+
+    /// Update an existing edge in the graph.
+    ///
+    /// Returns the updated edge.
+    fn update_edge(&self, request: &UpdateEdgeRequest) -> GraphAccessResult<Edge>;
+
+    /// Get a node by its ID.
+    ///
+    /// This is needed for SET operations to fetch the current state before modifying.
+    fn get_node(&self, id: EntityId) -> GraphAccessResult<Option<Entity>>;
+
+    /// Get an edge by its ID.
+    ///
+    /// This is needed for SET operations to fetch the current state before modifying.
+    fn get_edge(&self, id: manifoldb_core::EdgeId) -> GraphAccessResult<Option<Edge>>;
 }
 
 /// A null implementation of `GraphMutator` that always returns an error.
@@ -734,6 +836,22 @@ impl GraphMutator for NullGraphMutator {
     }
 
     fn create_edge(&self, _request: &CreateEdgeRequest) -> GraphAccessResult<Edge> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn update_node(&self, _request: &UpdateNodeRequest) -> GraphAccessResult<Entity> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn update_edge(&self, _request: &UpdateEdgeRequest) -> GraphAccessResult<Edge> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_node(&self, _id: EntityId) -> GraphAccessResult<Option<Entity>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_edge(&self, _id: manifoldb_core::EdgeId) -> GraphAccessResult<Option<Edge>> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -797,6 +915,96 @@ where
             },
         )
         .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+
+    fn update_node(&self, request: &UpdateNodeRequest) -> GraphAccessResult<Entity> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // Get the existing entity
+        let mut entity = manifoldb_graph::store::NodeStore::get(&*tx, request.id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                GraphAccessError::Internal(format!("entity {} not found", request.id.as_u64()))
+            })?;
+
+        // Set new properties
+        for (key, value) in &request.set_properties {
+            entity.properties.insert(key.clone(), value.clone());
+        }
+
+        // Remove properties
+        for key in &request.remove_properties {
+            entity.properties.remove(key);
+        }
+
+        // Add labels
+        for label in &request.add_labels {
+            if !entity.labels.contains(label) {
+                entity.labels.push(label.clone());
+            }
+        }
+
+        // Remove labels
+        for label in &request.remove_labels {
+            entity.labels.retain(|l| l != label);
+        }
+
+        // Update in storage
+        manifoldb_graph::store::NodeStore::update(&mut *tx, &entity)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        Ok(entity)
+    }
+
+    fn update_edge(&self, request: &UpdateEdgeRequest) -> GraphAccessResult<Edge> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // Get the existing edge
+        let mut edge = manifoldb_graph::store::EdgeStore::get(&*tx, request.id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                GraphAccessError::Internal(format!("edge {} not found", request.id.as_u64()))
+            })?;
+
+        // Set new properties
+        for (key, value) in &request.set_properties {
+            edge.properties.insert(key.clone(), value.clone());
+        }
+
+        // Remove properties
+        for key in &request.remove_properties {
+            edge.properties.remove(key);
+        }
+
+        // Update in storage
+        manifoldb_graph::store::EdgeStore::update(&mut *tx, &edge)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        Ok(edge)
+    }
+
+    fn get_node(&self, id: EntityId) -> GraphAccessResult<Option<Entity>> {
+        let tx = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        manifoldb_graph::store::NodeStore::get(&*tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+
+    fn get_edge(&self, id: manifoldb_core::EdgeId) -> GraphAccessResult<Option<Edge>> {
+        let tx = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        manifoldb_graph::store::EdgeStore::get(&*tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))
     }
 }
 

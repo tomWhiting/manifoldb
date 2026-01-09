@@ -362,7 +362,7 @@ use manifoldb_graph::traversal::Direction;
 use manifoldb_query::exec::graph_accessor::{
     CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphAccessor,
     GraphMutator, NeighborResult, NodeScanResult, PathFindConfig, PathMatchResult,
-    ShortestPathConfig, ShortestPathResult, TraversalResult,
+    ShortestPathConfig, ShortestPathResult, TraversalResult, UpdateEdgeRequest, UpdateNodeRequest,
 };
 
 /// A `GraphMutator` implementation that wraps a `DatabaseTransaction`.
@@ -469,6 +469,113 @@ where
             .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
 
         Ok(edge)
+    }
+
+    fn update_node(&self, request: &UpdateNodeRequest) -> GraphAccessResult<Entity> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Get the existing entity
+        let mut entity = tx
+            .get_entity(request.id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get entity: {e}")))?
+            .ok_or_else(|| {
+                GraphAccessError::Internal(format!("entity {} not found", request.id.as_u64()))
+            })?;
+
+        // Set new properties
+        for (key, value) in &request.set_properties {
+            entity.properties.insert(key.clone(), value.clone());
+        }
+
+        // Remove properties
+        for key in &request.remove_properties {
+            entity.properties.remove(key);
+        }
+
+        // Add labels
+        for label in &request.add_labels {
+            if !entity.labels.contains(label) {
+                entity.labels.push(label.clone());
+            }
+        }
+
+        // Remove labels
+        for label in &request.remove_labels {
+            entity.labels.retain(|l| l != label);
+        }
+
+        // Save the updated entity
+        tx.put_entity(&entity)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to save entity: {e}")))?;
+
+        Ok(entity)
+    }
+
+    fn update_edge(&self, request: &UpdateEdgeRequest) -> GraphAccessResult<Edge> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Get the existing edge
+        let mut edge = tx
+            .get_edge(request.id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get edge: {e}")))?
+            .ok_or_else(|| {
+                GraphAccessError::Internal(format!("edge {} not found", request.id.as_u64()))
+            })?;
+
+        // Set new properties
+        for (key, value) in &request.set_properties {
+            edge.properties.insert(key.clone(), value.clone());
+        }
+
+        // Remove properties
+        for key in &request.remove_properties {
+            edge.properties.remove(key);
+        }
+
+        // Save the updated edge
+        tx.put_edge(&edge)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
+
+        Ok(edge)
+    }
+
+    fn get_node(&self, id: EntityId) -> GraphAccessResult<Option<Entity>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        tx.get_entity(id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get entity: {e}")))
+    }
+
+    fn get_edge(&self, id: manifoldb_core::EdgeId) -> GraphAccessResult<Option<Edge>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        tx.get_edge(id).map_err(|e| GraphAccessError::Internal(format!("failed to get edge: {e}")))
     }
 }
 

@@ -22,6 +22,7 @@ pub mod analytics;
 pub mod filter;
 pub mod graph;
 pub mod graph_create;
+pub mod graph_set;
 pub mod join;
 pub mod limit;
 pub mod project;
@@ -43,6 +44,7 @@ pub use analytics::{
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};
 pub use graph_create::GraphCreateOp;
+pub use graph_set::GraphSetOp;
 pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
 pub use limit::LimitOp;
 pub use project::ProjectOp;

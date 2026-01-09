@@ -46,8 +46,10 @@ pub use context::{
 };
 pub use executor::{build_operator_tree, execute_plan, Executor};
 pub use graph_accessor::{
-    GraphAccessError, GraphAccessResult, GraphAccessor, NeighborResult, NullGraphAccessor,
-    PathFindConfig, PathMatchResult, PathStepConfig, TransactionGraphAccessor, TraversalResult,
+    CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphAccessor,
+    GraphMutator, NeighborResult, NullGraphAccessor, NullGraphMutator, PathFindConfig,
+    PathMatchResult, PathStepConfig, TransactionGraphAccessor, TransactionGraphMutator,
+    TraversalResult, UpdateEdgeRequest, UpdateNodeRequest,
 };
 pub use operator::{Operator, OperatorBase, OperatorState};
 pub use result::{QueryResult, ResultSet, ResultSetBuilder};
