@@ -432,13 +432,13 @@ These feature groups can be implemented independently:
 | **JSON Operators** |
 | -> | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | ->> | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| #> | ✓ | ✓ | | | | | |
-| #>> | ✓ | ✓ | | | | | |
+| #> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - JSON path extraction |
+| #>> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - JSON path extraction as text |
 | @> | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | <@ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| ? | ✓ | ✓ | | | | | |
-| ?\| | ✓ | ✓ | | | | | |
-| ?& | ✓ | ✓ | | | | | |
+| ? | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Key existence check |
+| ?\| | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Any key exists |
+| ?& | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - All keys exist |
 | **Array Operators** |
 | [n] subscript | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | [n:m] slice | ✓ | ✓ | | | | | |
@@ -567,8 +567,20 @@ These feature groups can be implemented independently:
 | jsonb_set | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | jsonb_insert | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | jsonb_strip_nulls | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
-| json_each | | | | | | | Not impl |
-| jsonb_each | | | | | | | Not impl |
+| json_each | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand object to key/value pairs |
+| jsonb_each | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand object to key/value pairs |
+| json_each_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand object, values as text |
+| jsonb_each_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand object, values as text |
+| json_array_elements | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand array to elements |
+| jsonb_array_elements | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand array to elements |
+| json_array_elements_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand array, elements as text |
+| jsonb_array_elements_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Expand array, elements as text |
+| json_object_keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Return keys of JSON object |
+| jsonb_object_keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Return keys of JSONB object |
+| jsonb_path_exists | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Check if JSON path returns items |
+| jsonb_path_query | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Get all items matching path |
+| jsonb_path_query_array | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Get matching items as array |
+| jsonb_path_query_first | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - Get first item matching path |
 
 ### Array Functions
 
