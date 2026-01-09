@@ -2586,19 +2586,9 @@ impl ExtendedParser {
             return Self::parse_list_or_comprehension(input);
         }
 
-        // Check for map projection: identifier{...}
-        if let Some(brace_pos) = Self::find_top_level_operator(input, "{") {
-            // Make sure it ends with a matching brace
-            if input.ends_with('}') {
-                let source_str = input[..brace_pos].trim();
-                // Ensure source is a valid identifier (not a complex expression)
-                if !source_str.is_empty() && Self::is_simple_identifier(source_str) {
-                    return Self::parse_map_projection(input);
-                }
-            }
-        }
+        let upper = input.to_uppercase();
 
-        // Check for AND/OR at the top level
+        // Check for AND/OR at the top level (highest precedence for boolean operators)
         if let Some(and_pos) = Self::find_top_level_keyword(input, " AND ") {
             let left = Self::parse_simple_expression(&input[..and_pos])?;
             let right = Self::parse_simple_expression(&input[and_pos + 5..])?;
@@ -2639,6 +2629,42 @@ impl ExtendedParser {
                     op: *op,
                     right: Box::new(right),
                 });
+            }
+        }
+
+        // Check for EXISTS { } subquery (only if no operators found at top level)
+        if upper.starts_with("EXISTS") {
+            let after_exists = input[6..].trim_start();
+            if after_exists.starts_with('{') {
+                return Self::parse_exists_subquery(input);
+            }
+        }
+
+        // Check for COUNT { } subquery
+        if upper.starts_with("COUNT") {
+            let after_count = input[5..].trim_start();
+            if after_count.starts_with('{') {
+                return Self::parse_count_subquery(input);
+            }
+        }
+
+        // Check for CALL { } subquery
+        if upper.starts_with("CALL") {
+            let after_call = input[4..].trim_start();
+            if after_call.starts_with('{') {
+                return Self::parse_call_subquery(input);
+            }
+        }
+
+        // Check for map projection: identifier{...}
+        if let Some(brace_pos) = Self::find_top_level_operator(input, "{") {
+            // Make sure it ends with a matching brace
+            if input.ends_with('}') {
+                let source_str = input[..brace_pos].trim();
+                // Ensure source is a valid identifier (not a complex expression)
+                if !source_str.is_empty() && Self::is_simple_identifier(source_str) {
+                    return Self::parse_map_projection(input);
+                }
             }
         }
 
@@ -2891,6 +2917,267 @@ impl ExtendedParser {
         })
     }
 
+    /// Parses an EXISTS { } subquery expression.
+    ///
+    /// Syntax: `EXISTS { pattern [WHERE predicate] }`
+    /// Alternative: `EXISTS { MATCH pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `EXISTS { (p)-[:FRIEND]->(:Person {name: 'Alice'}) }`
+    /// - `EXISTS { (p)-[:KNOWS]->(other) WHERE other.age > 30 }`
+    /// - `EXISTS { MATCH (p)-[:FRIEND]->(f) WHERE f.name = 'Bob' }`
+    fn parse_exists_subquery(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Must start with EXISTS
+        if !upper.starts_with("EXISTS") {
+            return Err(ParseError::InvalidPattern("expected EXISTS keyword".to_string()));
+        }
+
+        let after_exists = input[6..].trim_start();
+
+        // Must have opening brace
+        if !after_exists.starts_with('{') {
+            return Err(ParseError::InvalidPattern(
+                "EXISTS subquery must be enclosed in braces".to_string(),
+            ));
+        }
+
+        // Find the matching closing brace (handle nested braces)
+        let closing_pos = Self::find_matching_brace(after_exists).ok_or_else(|| {
+            ParseError::InvalidPattern("EXISTS subquery must end with '}'".to_string())
+        })?;
+
+        // Get content inside braces
+        let inner = after_exists[1..closing_pos].trim();
+        let inner_upper = inner.to_uppercase();
+
+        // Check if it starts with MATCH keyword (optional)
+        let pattern_start =
+            if inner_upper.starts_with("MATCH") { inner[5..].trim_start() } else { inner };
+
+        // Parse WHERE clause if present
+        let (pattern_str, filter_str) =
+            if let Some(where_pos) = Self::find_top_level_keyword(pattern_start, " WHERE ") {
+                let p = pattern_start[..where_pos].trim();
+                let f = pattern_start[where_pos + 7..].trim();
+                (p, Some(f))
+            } else {
+                (pattern_start, None)
+            };
+
+        // Pattern must start with '('
+        if !pattern_str.starts_with('(') {
+            return Err(ParseError::InvalidPattern(
+                "EXISTS pattern must start with a node pattern '('".to_string(),
+            ));
+        }
+
+        // Parse the path pattern
+        let (path_pattern, remaining) = Self::parse_path_pattern(pattern_str)?;
+
+        // Make sure we consumed the entire pattern
+        if !remaining.trim().is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "unexpected content after pattern in EXISTS: {}",
+                remaining
+            )));
+        }
+
+        // Parse the filter predicate if present
+        let filter_predicate = if let Some(filter) = filter_str {
+            if filter.is_empty() {
+                None
+            } else {
+                Some(Box::new(Self::parse_simple_expression(filter)?))
+            }
+        } else {
+            None
+        };
+
+        Ok(Expr::ExistsSubquery { pattern: Box::new(path_pattern), filter_predicate })
+    }
+
+    /// Parses a COUNT { } subquery expression.
+    ///
+    /// Syntax: `COUNT { pattern [WHERE predicate] }`
+    /// Alternative: `COUNT { MATCH pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `COUNT { (p)-[:FRIEND]->() }`
+    /// - `COUNT { (p)-[:KNOWS]->(other) WHERE other.age > 30 }`
+    fn parse_count_subquery(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Must start with COUNT
+        if !upper.starts_with("COUNT") {
+            return Err(ParseError::InvalidPattern("expected COUNT keyword".to_string()));
+        }
+
+        let after_count = input[5..].trim_start();
+
+        // Must have opening brace
+        if !after_count.starts_with('{') {
+            return Err(ParseError::InvalidPattern(
+                "COUNT subquery must be enclosed in braces".to_string(),
+            ));
+        }
+
+        // Find the matching closing brace (handle nested braces)
+        let closing_pos = Self::find_matching_brace(after_count).ok_or_else(|| {
+            ParseError::InvalidPattern("COUNT subquery must end with '}'".to_string())
+        })?;
+
+        // Get content inside braces
+        let inner = after_count[1..closing_pos].trim();
+        let inner_upper = inner.to_uppercase();
+
+        // Check if it starts with MATCH keyword (optional)
+        let pattern_start =
+            if inner_upper.starts_with("MATCH") { inner[5..].trim_start() } else { inner };
+
+        // Parse WHERE clause if present
+        let (pattern_str, filter_str) =
+            if let Some(where_pos) = Self::find_top_level_keyword(pattern_start, " WHERE ") {
+                let p = pattern_start[..where_pos].trim();
+                let f = pattern_start[where_pos + 7..].trim();
+                (p, Some(f))
+            } else {
+                (pattern_start, None)
+            };
+
+        // Pattern must start with '('
+        if !pattern_str.starts_with('(') {
+            return Err(ParseError::InvalidPattern(
+                "COUNT pattern must start with a node pattern '('".to_string(),
+            ));
+        }
+
+        // Parse the path pattern
+        let (path_pattern, remaining) = Self::parse_path_pattern(pattern_str)?;
+
+        // Make sure we consumed the entire pattern
+        if !remaining.trim().is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "unexpected content after pattern in COUNT: {}",
+                remaining
+            )));
+        }
+
+        // Parse the filter predicate if present
+        let filter_predicate = if let Some(filter) = filter_str {
+            if filter.is_empty() {
+                None
+            } else {
+                Some(Box::new(Self::parse_simple_expression(filter)?))
+            }
+        } else {
+            None
+        };
+
+        Ok(Expr::CountSubquery { pattern: Box::new(path_pattern), filter_predicate })
+    }
+
+    /// Parses a CALL { } inline subquery expression.
+    ///
+    /// Syntax:
+    /// ```cypher
+    /// CALL {
+    ///   WITH outer_var
+    ///   MATCH (outer_var)-[:REL]->(other)
+    ///   RETURN count(other) AS cnt
+    /// }
+    /// ```
+    ///
+    /// Note: This is a simplified implementation that extracts WITH variables
+    /// and parses inner statements. Full CALL { } subquery semantics require
+    /// additional work at the execution level.
+    fn parse_call_subquery(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Must start with CALL
+        if !upper.starts_with("CALL") {
+            return Err(ParseError::InvalidPattern("expected CALL keyword".to_string()));
+        }
+
+        let after_call = input[4..].trim_start();
+
+        // Must have opening brace
+        if !after_call.starts_with('{') {
+            return Err(ParseError::InvalidPattern(
+                "CALL subquery must be enclosed in braces".to_string(),
+            ));
+        }
+
+        // Find the matching closing brace (handle nested braces)
+        let closing_pos = Self::find_matching_brace(after_call).ok_or_else(|| {
+            ParseError::InvalidPattern("CALL subquery must end with '}'".to_string())
+        })?;
+
+        // Get content inside braces
+        let inner = after_call[1..closing_pos].trim();
+        let inner_upper = inner.to_uppercase();
+
+        // Look for WITH clause to extract imported variables
+        let (imported_variables, rest) = if inner_upper.starts_with("WITH") {
+            // Find the next clause (MATCH, RETURN, etc.)
+            let mut next_clause_pos = None;
+            for keyword in &["MATCH", "RETURN", "WHERE", "OPTIONAL", "CALL", "UNWIND"] {
+                if let Some(pos) = Self::find_keyword_pos(&inner_upper[4..], keyword) {
+                    let abs_pos = 4 + pos;
+                    if next_clause_pos.map_or(true, |p| abs_pos < p) {
+                        next_clause_pos = Some(abs_pos);
+                    }
+                }
+            }
+
+            let with_content = if let Some(pos) = next_clause_pos {
+                inner[4..pos].trim()
+            } else {
+                // Only WITH clause in subquery (unusual but valid)
+                inner[4..].trim()
+            };
+
+            // Parse variable names from WITH clause
+            let vars: Vec<Identifier> = with_content
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    // Handle aliased imports: var AS alias -> use original var
+                    let var_name = if let Some(as_pos) = s.to_uppercase().find(" AS ") {
+                        s[..as_pos].trim()
+                    } else {
+                        s
+                    };
+                    Identifier::new(var_name)
+                })
+                .collect();
+
+            let rest_content =
+                if let Some(pos) = next_clause_pos { inner[pos..].trim() } else { "" };
+
+            (vars, rest_content)
+        } else {
+            // No WITH clause - uncorrelated subquery
+            (vec![], inner)
+        };
+
+        // Parse the inner statements
+        // For now, we'll try to parse the rest as a single statement
+        let inner_statements = if rest.is_empty() {
+            vec![]
+        } else {
+            // Try to parse as a Cypher statement (returns empty on failure)
+            ExtendedParser::parse(rest).unwrap_or_default()
+        };
+
+        Ok(Expr::CallSubquery { imported_variables, inner_statements })
+    }
+
     /// Checks if a string is a simple identifier (no dots, operators, or special characters).
     fn is_simple_identifier(s: &str) -> bool {
         let s = s.trim();
@@ -3072,9 +3359,11 @@ impl ExtendedParser {
         None
     }
 
-    /// Finds an operator at the top level (not inside parentheses or strings).
+    /// Finds an operator at the top level (not inside parentheses, braces, brackets, or strings).
     fn find_top_level_operator(input: &str, op: &str) -> Option<usize> {
-        let mut depth: i32 = 0;
+        let mut paren_depth: i32 = 0;
+        let mut brace_depth: i32 = 0;
+        let mut bracket_depth: i32 = 0;
         let mut in_string = false;
         let mut string_char = '"';
         let bytes = input.as_bytes();
@@ -3096,18 +3385,29 @@ impl ExtendedParser {
                 continue;
             }
 
+            // Check for operator match BEFORE updating depth counters
+            // This allows finding opening brackets/braces at top level
+            if paren_depth == 0
+                && brace_depth == 0
+                && bracket_depth == 0
+                && i + op.len() <= bytes.len()
+                && &bytes[i..i + op.len()] == op_bytes
+            {
+                return Some(i);
+            }
+
+            // Update depth counters
             match c {
                 b'\'' | b'"' => {
                     in_string = true;
                     string_char = c as char;
                 }
-                b'(' => depth += 1,
-                b')' => depth = depth.saturating_sub(1),
-                _ if depth == 0 && i + op.len() <= bytes.len() => {
-                    if &bytes[i..i + op.len()] == op_bytes {
-                        return Some(i);
-                    }
-                }
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'{' => brace_depth += 1,
+                b'}' => brace_depth = brace_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
                 _ => {}
             }
             i += 1;
@@ -4348,6 +4648,53 @@ impl ExtendedParser {
                         return Some(i);
                     }
                 }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    /// Finds the matching closing brace for a string starting with `{`.
+    ///
+    /// Returns the position of the matching `}` or None if not found.
+    /// Handles nested braces, strings, and parentheses properly.
+    fn find_matching_brace(input: &str) -> Option<usize> {
+        let bytes = input.as_bytes();
+        if bytes.is_empty() || bytes[0] != b'{' {
+            return None;
+        }
+
+        let mut brace_depth = 0;
+        let mut paren_depth = 0;
+        let mut bracket_depth = 0;
+        let mut in_string = false;
+        let mut string_char = b'"';
+
+        for (i, &byte) in bytes.iter().enumerate() {
+            if in_string {
+                if byte == string_char && (i == 0 || bytes[i - 1] != b'\\') {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match byte {
+                b'\'' | b'"' => {
+                    in_string = true;
+                    string_char = byte;
+                }
+                b'{' => brace_depth += 1,
+                b'}' => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 && paren_depth == 0 && bracket_depth == 0 {
+                        return Some(i);
+                    }
+                }
+                b'(' => paren_depth += 1,
+                b')' => paren_depth -= 1,
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth -= 1,
                 _ => {}
             }
         }
@@ -6198,7 +6545,7 @@ mod tests {
             Expr::MapProjection { source: _, items } => {
                 assert_eq!(items.len(), 2);
             }
-            _ => panic!("Expected MapProjection from simple expression"),
+            _ => panic!("Expected MapProjection from simple expression, got {:?}", result),
         }
     }
 
@@ -6613,5 +6960,309 @@ mod tests {
         // Should not detect without proper format
         assert!(!ExtendedParser::is_cypher_foreach("FOREACH_something"));
         assert!(!ExtendedParser::is_cypher_foreach("SELECT * FROM foreach_table"));
+    }
+
+    // ========== EXISTS Subquery Tests ==========
+
+    #[test]
+    fn parse_exists_subquery_simple() {
+        // EXISTS { (p)-[:FRIEND]->(f) }
+        let result =
+            ExtendedParser::parse_simple_expression("EXISTS { (p)-[:FRIEND]->(f) }").unwrap();
+        match result {
+            Expr::ExistsSubquery { pattern, filter_predicate } => {
+                // Pattern should have start node and one step
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+                assert_eq!(pattern.steps.len(), 1);
+
+                // Step should have FRIEND edge type
+                let (edge, node) = &pattern.steps[0];
+                assert!(!edge.edge_types.is_empty());
+                assert_eq!(edge.edge_types[0].name, "FRIEND");
+                assert!(node.variable.is_some());
+                assert_eq!(node.variable.as_ref().unwrap().name, "f");
+
+                // No filter predicate
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected ExistsSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_exists_subquery_with_filter() {
+        // EXISTS { (p)-[:KNOWS]->(other) WHERE other.age > 30 }
+        let result = ExtendedParser::parse_simple_expression(
+            "EXISTS { (p)-[:KNOWS]->(other) WHERE other.age > 30 }",
+        )
+        .unwrap();
+        match result {
+            Expr::ExistsSubquery { pattern, filter_predicate } => {
+                // Pattern start
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+
+                // Edge type
+                let (edge, node) = &pattern.steps[0];
+                assert_eq!(edge.edge_types[0].name, "KNOWS");
+                assert_eq!(node.variable.as_ref().unwrap().name, "other");
+
+                // Filter predicate should be present
+                assert!(filter_predicate.is_some());
+            }
+            _ => panic!("Expected ExistsSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_exists_subquery_with_match_keyword() {
+        // EXISTS { MATCH (p)-[:FRIEND]->(f) }
+        let result =
+            ExtendedParser::parse_simple_expression("EXISTS { MATCH (p)-[:FRIEND]->(f) }").unwrap();
+        match result {
+            Expr::ExistsSubquery { pattern, filter_predicate } => {
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected ExistsSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_exists_subquery_with_node_label() {
+        // EXISTS { (p)-[:FRIEND]->(:Person) }
+        let result =
+            ExtendedParser::parse_simple_expression("EXISTS { (p)-[:FRIEND]->(:Person) }").unwrap();
+        match result {
+            Expr::ExistsSubquery { pattern, .. } => {
+                let (_, node) = &pattern.steps[0];
+                assert!(!node.labels.is_empty());
+                assert_eq!(node.labels[0].name, "Person");
+            }
+            _ => panic!("Expected ExistsSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_exists_subquery_multi_hop() {
+        // EXISTS { (a)-[:KNOWS]->(b)-[:FRIEND]->(c) }
+        let result =
+            ExtendedParser::parse_simple_expression("EXISTS { (a)-[:KNOWS]->(b)-[:FRIEND]->(c) }")
+                .unwrap();
+        match result {
+            Expr::ExistsSubquery { pattern, filter_predicate } => {
+                assert_eq!(pattern.steps.len(), 2);
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected ExistsSubquery, got {:?}", result),
+        }
+    }
+
+    // ========== COUNT Subquery Tests ==========
+
+    #[test]
+    fn parse_count_subquery_simple() {
+        // COUNT { (p)-[:FRIEND]->() }
+        let result =
+            ExtendedParser::parse_simple_expression("COUNT { (p)-[:FRIEND]->() }").unwrap();
+        match result {
+            Expr::CountSubquery { pattern, filter_predicate } => {
+                // Pattern should have start node and one step
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+                assert_eq!(pattern.steps.len(), 1);
+
+                // Step should have FRIEND edge type
+                let (edge, node) = &pattern.steps[0];
+                assert!(!edge.edge_types.is_empty());
+                assert_eq!(edge.edge_types[0].name, "FRIEND");
+                // Anonymous end node
+                assert!(node.variable.is_none());
+
+                // No filter predicate
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected CountSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_count_subquery_with_filter() {
+        // COUNT { (p)-[:KNOWS]->(other) WHERE other.age > 30 }
+        let result = ExtendedParser::parse_simple_expression(
+            "COUNT { (p)-[:KNOWS]->(other) WHERE other.age > 30 }",
+        )
+        .unwrap();
+        match result {
+            Expr::CountSubquery { pattern, filter_predicate } => {
+                // Pattern start
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+
+                // Edge type
+                let (edge, node) = &pattern.steps[0];
+                assert_eq!(edge.edge_types[0].name, "KNOWS");
+                assert_eq!(node.variable.as_ref().unwrap().name, "other");
+
+                // Filter predicate should be present
+                assert!(filter_predicate.is_some());
+            }
+            _ => panic!("Expected CountSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_count_subquery_with_match_keyword() {
+        // COUNT { MATCH (p)-[:FRIEND]->(f) }
+        let result =
+            ExtendedParser::parse_simple_expression("COUNT { MATCH (p)-[:FRIEND]->(f) }").unwrap();
+        match result {
+            Expr::CountSubquery { pattern, filter_predicate } => {
+                assert!(pattern.start.variable.is_some());
+                assert_eq!(pattern.start.variable.as_ref().unwrap().name, "p");
+                assert!(filter_predicate.is_none());
+            }
+            _ => panic!("Expected CountSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_count_subquery_incoming_edge() {
+        // COUNT { (p)<-[:FOLLOWS]-() }
+        let result =
+            ExtendedParser::parse_simple_expression("COUNT { (p)<-[:FOLLOWS]-() }").unwrap();
+        match result {
+            Expr::CountSubquery { pattern, .. } => {
+                let (edge, _) = &pattern.steps[0];
+                assert_eq!(edge.edge_types[0].name, "FOLLOWS");
+                // Edge direction should be left (incoming)
+                assert_eq!(edge.direction, EdgeDirection::Left);
+            }
+            _ => panic!("Expected CountSubquery, got {:?}", result),
+        }
+    }
+
+    // ========== CALL Subquery Tests ==========
+
+    #[test]
+    fn parse_call_subquery_with_import() {
+        // CALL { WITH p MATCH (p)-[:FRIEND]->(f) RETURN count(f) AS cnt }
+        let result = ExtendedParser::parse_simple_expression(
+            "CALL { WITH p MATCH (p)-[:FRIEND]->(f) RETURN count(f) AS cnt }",
+        )
+        .unwrap();
+        match result {
+            Expr::CallSubquery { imported_variables, inner_statements } => {
+                // Should have imported variable 'p'
+                assert_eq!(imported_variables.len(), 1);
+                assert_eq!(imported_variables[0].name, "p");
+
+                // Should have parsed inner statements
+                assert!(!inner_statements.is_empty());
+            }
+            _ => panic!("Expected CallSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_call_subquery_multiple_imports() {
+        // CALL { WITH a, b RETURN a + b AS sum }
+        let result =
+            ExtendedParser::parse_simple_expression("CALL { WITH a, b RETURN a + b AS sum }");
+        // This might fail to parse inner RETURN without full SQL support, but should not error
+        assert!(result.is_ok());
+        if let Ok(Expr::CallSubquery { imported_variables, .. }) = result {
+            assert_eq!(imported_variables.len(), 2);
+            assert_eq!(imported_variables[0].name, "a");
+            assert_eq!(imported_variables[1].name, "b");
+        }
+    }
+
+    #[test]
+    fn parse_call_subquery_uncorrelated() {
+        // CALL { MATCH (n:Person) RETURN count(n) AS total }
+        let result = ExtendedParser::parse_simple_expression(
+            "CALL { MATCH (n:Person) RETURN count(n) AS total }",
+        )
+        .unwrap();
+        match result {
+            Expr::CallSubquery { imported_variables, inner_statements } => {
+                // No imported variables - uncorrelated
+                assert!(imported_variables.is_empty());
+                // Should have parsed inner statements
+                assert!(!inner_statements.is_empty());
+            }
+            _ => panic!("Expected CallSubquery, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_call_subquery_error_no_braces() {
+        // CALL without braces should not be treated as subquery
+        let result = ExtendedParser::parse_simple_expression("CALL procedure()");
+        // Should either error or parse as something else
+        assert!(result.is_err() || !matches!(result.unwrap(), Expr::CallSubquery { .. }));
+    }
+
+    // ========== Subquery in WHERE clause tests ==========
+
+    #[test]
+    fn parse_match_with_exists_in_where() {
+        // Full query: MATCH (p:Person) WHERE EXISTS { (p)-[:FRIEND]->(:Person {name: 'Alice'}) } RETURN p.name
+        let stmts = ExtendedParser::parse(
+            "MATCH (p:Person) WHERE EXISTS { (p)-[:FRIEND]->(:Person) } RETURN p.name",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert!(match_stmt.where_clause.is_some());
+            // The WHERE clause should contain an EXISTS subquery
+            let where_expr = match_stmt.where_clause.as_ref().unwrap();
+            assert!(matches!(where_expr, Expr::ExistsSubquery { .. }));
+        } else {
+            panic!("Expected Match statement");
+        }
+    }
+
+    #[test]
+    fn parse_match_with_count_comparison() {
+        // MATCH (p:Person) WHERE COUNT { (p)-[:FRIEND]->() } > 5 RETURN p.name
+        let stmts = ExtendedParser::parse(
+            "MATCH (p:Person) WHERE COUNT { (p)-[:FRIEND]->() } > 5 RETURN p.name",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert!(match_stmt.where_clause.is_some());
+            // The WHERE clause should be a comparison with COUNT subquery
+            let where_expr = match_stmt.where_clause.as_ref().unwrap();
+            match where_expr {
+                Expr::BinaryOp { left, op, right: _ } => {
+                    assert!(
+                        matches!(left.as_ref(), Expr::CountSubquery { .. }),
+                        "Expected CountSubquery in BinaryOp left, got {:?}",
+                        left
+                    );
+                    assert_eq!(op, &crate::ast::BinaryOp::Gt);
+                }
+                _ => panic!("Expected BinaryOp with CountSubquery, got {:?}", where_expr),
+            }
+        } else {
+            panic!("Expected Match statement");
+        }
+    }
+
+    #[test]
+    fn parse_exists_error_no_closing_brace() {
+        let result = ExtendedParser::parse_simple_expression("EXISTS { (p)-[:FRIEND]->(f)");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_count_error_no_pattern() {
+        let result = ExtendedParser::parse_simple_expression("COUNT { }");
+        assert!(result.is_err());
     }
 }

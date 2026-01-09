@@ -245,6 +245,60 @@ pub enum LogicalExpr {
         /// The projection expression evaluated for each pattern match.
         projection_expr: Box<LogicalExpr>,
     },
+
+    /// Cypher EXISTS { } subquery expression.
+    ///
+    /// Returns a boolean indicating whether the pattern matches any results.
+    /// Semantically similar to `size([(pattern) | 1]) > 0`.
+    ///
+    /// Syntax: `EXISTS { pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `EXISTS { (p)-[:FRIEND]->(:Person {name: 'Alice'}) }`
+    /// - `EXISTS { (p)-[:KNOWS]->(other) WHERE other.age > 30 }`
+    ExistsSubquery {
+        /// The expand nodes representing the graph pattern steps.
+        expand_steps: Vec<super::graph::ExpandNode>,
+        /// Optional WHERE filter predicate applied after pattern matching.
+        filter_predicate: Option<Box<LogicalExpr>>,
+    },
+
+    /// Cypher COUNT { } subquery expression.
+    ///
+    /// Returns the count of pattern matches.
+    /// Semantically similar to `size([(pattern) | 1])`.
+    ///
+    /// Syntax: `COUNT { pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `COUNT { (p)-[:FRIEND]->() }` - count number of friends
+    /// - `COUNT { (p)-[:KNOWS]->(other) WHERE other.age > 30 }` - count with filter
+    CountSubquery {
+        /// The expand nodes representing the graph pattern steps.
+        expand_steps: Vec<super::graph::ExpandNode>,
+        /// Optional WHERE filter predicate applied after pattern matching.
+        filter_predicate: Option<Box<LogicalExpr>>,
+    },
+
+    /// Cypher CALL { } inline subquery expression.
+    ///
+    /// Executes a subquery for each row with explicit variable import via WITH.
+    /// Returns the values produced by the subquery's RETURN clause.
+    ///
+    /// Syntax:
+    /// ```cypher
+    /// CALL {
+    ///   WITH outer_var
+    ///   MATCH (outer_var)-[:REL]->(other)
+    ///   RETURN count(other) AS cnt
+    /// }
+    /// ```
+    CallSubquery {
+        /// Variables imported from outer query (in WITH clause).
+        imported_variables: Vec<String>,
+        /// The logical plan for the inner subquery.
+        inner_plan: Box<super::LogicalPlan>,
+    },
 }
 
 /// An item in a logical map projection.
@@ -1172,34 +1226,71 @@ impl fmt::Display for LogicalExpr {
             }
             Self::PatternComprehension { expand_steps, filter_predicate, projection_expr } => {
                 write!(f, "[(")?;
-                for (i, step) in expand_steps.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ")")?;
-                    }
-                    write!(f, "{}", step.src_var)?;
-                    write!(f, "-[")?;
-                    if let Some(ref edge_var) = step.edge_var {
-                        write!(f, "{edge_var}")?;
-                    }
-                    for (j, et) in step.edge_types.iter().enumerate() {
-                        if j == 0 {
-                            write!(f, ":")?;
-                        } else {
-                            write!(f, "|")?;
-                        }
-                        write!(f, "{et}")?;
-                    }
-                    write!(f, "]{}", step.direction)?;
-                    write!(f, "({}", step.dst_var)?;
-                }
+                format_expand_steps(f, expand_steps)?;
                 write!(f, ")")?;
                 if let Some(filter) = filter_predicate {
                     write!(f, " WHERE {filter}")?;
                 }
                 write!(f, " | {projection_expr}]")
             }
+            Self::ExistsSubquery { expand_steps, filter_predicate } => {
+                write!(f, "EXISTS {{ (")?;
+                format_expand_steps(f, expand_steps)?;
+                write!(f, ")")?;
+                if let Some(filter) = filter_predicate {
+                    write!(f, " WHERE {filter}")?;
+                }
+                write!(f, " }}")
+            }
+            Self::CountSubquery { expand_steps, filter_predicate } => {
+                write!(f, "COUNT {{ (")?;
+                format_expand_steps(f, expand_steps)?;
+                write!(f, ")")?;
+                if let Some(filter) = filter_predicate {
+                    write!(f, " WHERE {filter}")?;
+                }
+                write!(f, " }}")
+            }
+            Self::CallSubquery { imported_variables, inner_plan: _ } => {
+                write!(f, "CALL {{ WITH ")?;
+                for (i, var) in imported_variables.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{var}")?;
+                }
+                write!(f, " ... }}")
+            }
         }
     }
+}
+
+/// Helper function to format expand steps for pattern display.
+fn format_expand_steps(
+    f: &mut fmt::Formatter<'_>,
+    expand_steps: &[super::graph::ExpandNode],
+) -> fmt::Result {
+    for (i, step) in expand_steps.iter().enumerate() {
+        if i > 0 {
+            write!(f, ")")?;
+        }
+        write!(f, "{}", step.src_var)?;
+        write!(f, "-[")?;
+        if let Some(ref edge_var) = &step.edge_var {
+            write!(f, "{edge_var}")?;
+        }
+        for (j, et) in step.edge_types.iter().enumerate() {
+            if j == 0 {
+                write!(f, ":")?;
+            } else {
+                write!(f, "|")?;
+            }
+            write!(f, "{et}")?;
+        }
+        write!(f, "]{}", step.direction)?;
+        write!(f, "({}", step.dst_var)?;
+    }
+    Ok(())
 }
 
 /// Scalar function types.

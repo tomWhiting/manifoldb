@@ -591,8 +591,9 @@ These feature groups can be implemented independently:
 | **WHERE** |
 | Basic predicates | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Pattern predicates | ✓ | ✓ | | | | | |
-| EXISTS { } subquery | | | | | | | Not impl |
-| COUNT { } subquery | | | | | | | Not impl |
+| EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
+| COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
+| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
 | **Path Functions** |
 | shortestPath() | ✓ | ✓ | | | | | Parsed only |
 | allShortestPaths() | ✓ | ✓ | | | | | Parsed only |

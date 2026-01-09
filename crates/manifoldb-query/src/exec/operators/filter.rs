@@ -433,6 +433,50 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
             // For now, return an empty list as a placeholder.
             Ok(Value::Array(vec![]))
         }
+
+        // EXISTS { } subquery: Returns boolean based on pattern existence
+        // Like pattern comprehension, requires graph access for full execution.
+        // At the expression level, return false as placeholder.
+        LogicalExpr::ExistsSubquery { .. } => {
+            // TODO: EXISTS subqueries require graph access for execution.
+            // They should be transformed into a plan that:
+            // 1. Executes the graph pattern match for each input row
+            // 2. Applies the filter predicate
+            // 3. Returns true if any match exists, false otherwise
+            //
+            // This is semantically equivalent to: size([(pattern) | 1]) > 0
+            // For now, return false as a placeholder.
+            Ok(Value::Bool(false))
+        }
+
+        // COUNT { } subquery: Returns count of pattern matches
+        // Like pattern comprehension, requires graph access for full execution.
+        // At the expression level, return 0 as placeholder.
+        LogicalExpr::CountSubquery { .. } => {
+            // TODO: COUNT subqueries require graph access for execution.
+            // They should be transformed into a plan that:
+            // 1. Executes the graph pattern match for each input row
+            // 2. Applies the filter predicate
+            // 3. Returns the count of matches
+            //
+            // This is semantically equivalent to: size([(pattern) | 1])
+            // For now, return 0 as a placeholder.
+            Ok(Value::Int(0))
+        }
+
+        // CALL { } subquery: Executes inner plan and returns results
+        // This requires full subquery execution with variable binding.
+        // At the expression level, return null as placeholder.
+        LogicalExpr::CallSubquery { .. } => {
+            // TODO: CALL subqueries require building and executing a sub-plan.
+            // They should:
+            // 1. Import specified variables from the outer context
+            // 2. Execute the inner plan
+            // 3. Return the results (typically from the inner RETURN clause)
+            //
+            // For now, return NULL as a placeholder.
+            Ok(Value::Null)
+        }
     }
 }
 

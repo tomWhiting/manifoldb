@@ -2158,6 +2158,52 @@ impl PlanBuilder {
                     projection_expr: Box::new(projection),
                 })
             }
+
+            Expr::ExistsSubquery { pattern, filter_predicate } => {
+                // Convert PathPattern to ExpandNode steps
+                let expand_steps = self.path_pattern_to_expand_nodes(pattern)?;
+                let filter = if let Some(f) = filter_predicate {
+                    Some(Box::new(self.build_expr(f)?))
+                } else {
+                    None
+                };
+                Ok(LogicalExpr::ExistsSubquery { expand_steps, filter_predicate: filter })
+            }
+
+            Expr::CountSubquery { pattern, filter_predicate } => {
+                // Convert PathPattern to ExpandNode steps
+                let expand_steps = self.path_pattern_to_expand_nodes(pattern)?;
+                let filter = if let Some(f) = filter_predicate {
+                    Some(Box::new(self.build_expr(f)?))
+                } else {
+                    None
+                };
+                Ok(LogicalExpr::CountSubquery { expand_steps, filter_predicate: filter })
+            }
+
+            Expr::CallSubquery { imported_variables, inner_statements } => {
+                // Build the inner plan from the inner statements
+                // For now, we only support a single MATCH...RETURN pattern
+                // More complex subquery patterns would require additional handling
+                let imported: Vec<String> =
+                    imported_variables.iter().map(|id| id.name.clone()).collect();
+
+                // Build the inner plan - we need to handle the statements
+                // For simplicity, if there's exactly one statement that produces a plan, use it
+                // Otherwise, create a placeholder plan
+                let inner_plan = if inner_statements.len() == 1 {
+                    self.build_statement(&inner_statements[0])?
+                } else {
+                    // For multiple statements, we'd need to chain them
+                    // For now, return an empty plan - full implementation would chain statements
+                    LogicalPlan::Empty { columns: vec![] }
+                };
+
+                Ok(LogicalExpr::CallSubquery {
+                    imported_variables: imported,
+                    inner_plan: Box::new(inner_plan),
+                })
+            }
         }
     }
 
