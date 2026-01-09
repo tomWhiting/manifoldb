@@ -470,8 +470,10 @@ These feature groups can be implemented independently:
 | FILTER clause | ✓ | ✓ | ✓ | | | | Needs exec |
 | array_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | string_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| json_agg | ✓ | ✓ | | | | | Needs impl |
-| jsonb_agg | ✓ | ✓ | | | | | Needs impl |
+| json_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| jsonb_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| json_object_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| jsonb_object_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | bool_and | | | | | | | Not impl |
 | bool_or | | | | | | | Not impl |
 | stddev | | | | | | | Not impl |

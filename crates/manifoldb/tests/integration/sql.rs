@@ -1271,3 +1271,283 @@ fn test_explain_with_join() {
     });
     assert!(has_join, "EXPLAIN of JOIN query should mention Join in plan");
 }
+
+// ============================================================================
+// JSON Aggregate Function Tests
+// ============================================================================
+
+#[test]
+fn test_json_agg_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Bob', 25)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Charlie', 35)").expect("insert failed");
+
+    // Aggregate names into JSON array
+    let result = db.query("SELECT JSON_AGG(name) FROM users").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        // Parse the JSON to verify structure
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        assert!(parsed.is_array());
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        // Check that all names are present (order may vary)
+        let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"Alice"));
+        assert!(names.contains(&"Bob"));
+        assert!(names.contains(&"Charlie"));
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_jsonb_agg_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO products (name, price) VALUES ('Widget', 10)").expect("insert failed");
+    db.execute("INSERT INTO products (name, price) VALUES ('Gadget', 25)").expect("insert failed");
+
+    // Aggregate prices into JSONB array
+    let result = db.query("SELECT JSONB_AGG(price) FROM products").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        assert!(parsed.is_array());
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // Prices should be numbers
+        let prices: Vec<i64> = arr.iter().filter_map(|v| v.as_i64()).collect();
+        assert!(prices.contains(&10));
+        assert!(prices.contains(&25));
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_json_agg_with_group_by() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Alice', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Bob', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (name, dept) VALUES ('Charlie', 'Sales')")
+        .expect("insert failed");
+
+    // Aggregate names by department
+    let result =
+        db.query("SELECT dept, JSON_AGG(name) FROM employees GROUP BY dept").expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    for row in result.rows() {
+        if let Some(Value::String(dept)) = row.get(0) {
+            if let Some(Value::String(json_str)) = row.get(1) {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(json_str).expect("invalid JSON");
+                let arr = parsed.as_array().unwrap();
+                if dept == "Engineering" {
+                    assert_eq!(arr.len(), 2);
+                } else if dept == "Sales" {
+                    assert_eq!(arr.len(), 1);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_json_object_agg_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO config (key, value) VALUES ('host', 'localhost')")
+        .expect("insert failed");
+    db.execute("INSERT INTO config (key, value) VALUES ('port', '8080')").expect("insert failed");
+    db.execute("INSERT INTO config (key, value) VALUES ('debug', 'true')").expect("insert failed");
+
+    // Aggregate into JSON object
+    let result = db.query("SELECT JSON_OBJECT_AGG(key, value) FROM config").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        assert!(parsed.is_object());
+        let obj = parsed.as_object().unwrap();
+        assert_eq!(obj.get("host"), Some(&serde_json::Value::String("localhost".to_string())));
+        assert_eq!(obj.get("port"), Some(&serde_json::Value::String("8080".to_string())));
+        assert_eq!(obj.get("debug"), Some(&serde_json::Value::String("true".to_string())));
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_jsonb_object_agg_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data with numeric values
+    db.execute("INSERT INTO stats (metric, value) VALUES ('users', 100)").expect("insert failed");
+    db.execute("INSERT INTO stats (metric, value) VALUES ('orders', 50)").expect("insert failed");
+
+    // Aggregate into JSONB object
+    let result =
+        db.query("SELECT JSONB_OBJECT_AGG(metric, value) FROM stats").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        assert!(parsed.is_object());
+        let obj = parsed.as_object().unwrap();
+        assert_eq!(obj.get("users"), Some(&serde_json::Value::Number(100.into())));
+        assert_eq!(obj.get("orders"), Some(&serde_json::Value::Number(50.into())));
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_json_object_agg_with_group_by() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data
+    db.execute("INSERT INTO settings (category, key, value) VALUES ('app', 'name', 'MyApp')")
+        .expect("insert failed");
+    db.execute("INSERT INTO settings (category, key, value) VALUES ('app', 'version', '1.0')")
+        .expect("insert failed");
+    db.execute("INSERT INTO settings (category, key, value) VALUES ('db', 'host', 'localhost')")
+        .expect("insert failed");
+    db.execute("INSERT INTO settings (category, key, value) VALUES ('db', 'port', '5432')")
+        .expect("insert failed");
+
+    // Aggregate by category
+    let result = db
+        .query("SELECT category, JSON_OBJECT_AGG(key, value) FROM settings GROUP BY category")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 2);
+
+    for row in result.rows() {
+        if let Some(Value::String(category)) = row.get(0) {
+            if let Some(Value::String(json_str)) = row.get(1) {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(json_str).expect("invalid JSON");
+                let obj = parsed.as_object().unwrap();
+
+                if category == "app" {
+                    assert_eq!(
+                        obj.get("name"),
+                        Some(&serde_json::Value::String("MyApp".to_string()))
+                    );
+                    assert_eq!(
+                        obj.get("version"),
+                        Some(&serde_json::Value::String("1.0".to_string()))
+                    );
+                } else if category == "db" {
+                    assert_eq!(
+                        obj.get("host"),
+                        Some(&serde_json::Value::String("localhost".to_string()))
+                    );
+                    assert_eq!(
+                        obj.get("port"),
+                        Some(&serde_json::Value::String("5432".to_string()))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_json_agg_empty_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // JSON_AGG on empty table should return NULL
+    let result = db.query("SELECT JSON_AGG(name) FROM empty_table").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    // Should be NULL for empty aggregation
+    let val = result.rows()[0].get(0);
+    assert!(
+        val == Some(&Value::Null) || val.is_none(),
+        "Expected NULL for empty JSON_AGG, got {:?}",
+        val
+    );
+}
+
+#[test]
+fn test_json_object_agg_empty_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // JSON_OBJECT_AGG on empty table should return NULL
+    let result =
+        db.query("SELECT JSON_OBJECT_AGG(key, value) FROM empty_table").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    let val = result.rows()[0].get(0);
+    assert!(
+        val == Some(&Value::Null) || val.is_none(),
+        "Expected NULL for empty JSON_OBJECT_AGG, got {:?}",
+        val
+    );
+}
+
+#[test]
+fn test_json_agg_with_nulls() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert test data with NULL values
+    db.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES (NULL, 25)").expect("insert failed");
+    db.execute("INSERT INTO users (name, age) VALUES ('Charlie', 35)").expect("insert failed");
+
+    // JSON_AGG should skip NULL values
+    let result = db.query("SELECT JSON_AGG(name) FROM users").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        let arr = parsed.as_array().unwrap();
+        // Should only have 2 elements (NULL was skipped)
+        assert_eq!(arr.len(), 2);
+        let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+        assert!(names.contains(&"Alice"));
+        assert!(names.contains(&"Charlie"));
+        assert!(!names.iter().any(|&n| n == "null" || n.is_empty()));
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}
+
+#[test]
+fn test_json_agg_mixed_types() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert various value types
+    db.execute("INSERT INTO mixed (val) VALUES ('hello')").expect("insert failed");
+    db.execute("INSERT INTO mixed (val) VALUES (42)").expect("insert failed");
+    db.execute("INSERT INTO mixed (val) VALUES (3.14)").expect("insert failed");
+    db.execute("INSERT INTO mixed (val) VALUES (true)").expect("insert failed");
+
+    // JSON_AGG should handle mixed types
+    let result = db.query("SELECT JSON_AGG(val) FROM mixed").expect("query failed");
+
+    assert_eq!(result.len(), 1);
+    if let Some(Value::String(json_str)) = result.rows()[0].get(0) {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("invalid JSON");
+        assert!(parsed.is_array());
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+    } else {
+        panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
+    }
+}

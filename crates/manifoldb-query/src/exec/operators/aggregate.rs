@@ -471,12 +471,14 @@ struct Accumulator {
     sum: f64,
     min: Option<Value>,
     max: Option<Value>,
-    /// Collected values for array_agg.
+    /// Collected values for array_agg and json_agg/jsonb_agg.
     array_values: Vec<Value>,
     /// Collected strings for string_agg.
     string_values: Vec<String>,
     /// Delimiter for string_agg (captured from first row).
     string_delimiter: Option<String>,
+    /// Collected key-value pairs for json_object_agg/jsonb_object_agg.
+    object_entries: Vec<(String, Value)>,
 }
 
 impl Accumulator {
@@ -566,6 +568,25 @@ impl Accumulator {
                     self.string_values.push(s);
                 }
             }
+            AggregateFunction::JsonAgg | AggregateFunction::JsonbAgg => {
+                // Collect values into array for JSON conversion (skip NULLs already handled above)
+                self.array_values.push(value.clone());
+            }
+            AggregateFunction::JsonObjectAgg | AggregateFunction::JsonbObjectAgg => {
+                // json_object_agg(key, value) - collect key-value pairs
+                // Skip if key is NULL (already handled above for first argument)
+                // Convert key to string
+                let key_str = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Int(i) => i.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => return, // Skip non-stringifiable keys
+                };
+                // Get value from second argument
+                let val = values.get(1).cloned().unwrap_or(Value::Null);
+                self.object_entries.push((key_str, val));
+            }
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => {
                 // Vector aggregates - not implemented yet
             }
@@ -606,6 +627,30 @@ impl Accumulator {
                     Value::String(self.string_values.join(delimiter))
                 }
             }
+            Some(AggregateFunction::JsonAgg | AggregateFunction::JsonbAgg) => {
+                if self.array_values.is_empty() {
+                    Value::Null
+                } else {
+                    // Convert collected values to JSON array string
+                    let json_arr: Vec<serde_json::Value> =
+                        self.array_values.iter().map(value_to_json).collect();
+                    serde_json::to_string(&json_arr).map(Value::String).unwrap_or(Value::Null)
+                }
+            }
+            Some(AggregateFunction::JsonObjectAgg | AggregateFunction::JsonbObjectAgg) => {
+                if self.object_entries.is_empty() {
+                    Value::Null
+                } else {
+                    // Convert collected key-value pairs to JSON object string
+                    let mut obj = serde_json::Map::new();
+                    for (key, val) in &self.object_entries {
+                        obj.insert(key.clone(), value_to_json(val));
+                    }
+                    serde_json::to_string(&serde_json::Value::Object(obj))
+                        .map(Value::String)
+                        .unwrap_or(Value::Null)
+                }
+            }
             Some(AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid) => Value::Null,
             None => {
                 // Fallback for unknown or unset function type
@@ -629,7 +674,84 @@ impl Accumulator {
             | AggregateFunction::Max => Value::Null,
             AggregateFunction::ArrayAgg => Value::Null,
             AggregateFunction::StringAgg => Value::Null,
+            AggregateFunction::JsonAgg | AggregateFunction::JsonbAgg => Value::Null,
+            AggregateFunction::JsonObjectAgg | AggregateFunction::JsonbObjectAgg => Value::Null,
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => Value::Null,
+        }
+    }
+}
+
+/// Encodes bytes as base64 string for JSON serialization.
+fn base64_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk.first().copied().unwrap_or(0);
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+
+        let _ = write!(result, "{}", BASE64_CHARS[(b0 >> 2) as usize] as char);
+        let _ =
+            write!(result, "{}", BASE64_CHARS[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            let _ = write!(
+                result,
+                "{}",
+                BASE64_CHARS[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+            );
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            let _ = write!(result, "{}", BASE64_CHARS[(b2 & 0x3f) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+/// Converts a `Value` to a `serde_json::Value` for JSON aggregate functions.
+fn value_to_json(val: &Value) -> serde_json::Value {
+    match val {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
+        Value::Vector(v) => serde_json::Value::Array(
+            v.iter()
+                .filter_map(|f| serde_json::Number::from_f64(f64::from(*f)))
+                .map(serde_json::Value::Number)
+                .collect(),
+        ),
+        Value::SparseVector(sv) => serde_json::Value::Object(
+            sv.iter()
+                .filter_map(|(idx, val)| {
+                    serde_json::Number::from_f64(f64::from(*val))
+                        .map(|n| (idx.to_string(), serde_json::Value::Number(n)))
+                })
+                .collect(),
+        ),
+        Value::MultiVector(mv) => serde_json::Value::Array(
+            mv.iter()
+                .map(|v| {
+                    serde_json::Value::Array(
+                        v.iter()
+                            .filter_map(|f| serde_json::Number::from_f64(f64::from(*f)))
+                            .map(serde_json::Value::Number)
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ),
+        Value::Bytes(b) => {
+            // Encode bytes as base64 string
+            serde_json::Value::String(base64_encode(b))
         }
     }
 }

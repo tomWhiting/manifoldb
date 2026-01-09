@@ -722,6 +722,48 @@ impl LogicalExpr {
         }
     }
 
+    /// Creates a JSON_AGG aggregate.
+    ///
+    /// Aggregates values into a JSON array.
+    /// Example: `SELECT json_agg(name) FROM users;` returns `["Alice", "Bob", "Charlie"]`
+    #[must_use]
+    pub fn json_agg(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::JsonAgg, args: vec![expr], distinct }
+    }
+
+    /// Creates a JSONB_AGG aggregate.
+    ///
+    /// Aggregates values into a JSONB array (same as JSON_AGG in our implementation).
+    #[must_use]
+    pub fn jsonb_agg(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::JsonbAgg, args: vec![expr], distinct }
+    }
+
+    /// Creates a JSON_OBJECT_AGG aggregate.
+    ///
+    /// Aggregates key-value pairs into a JSON object.
+    /// Example: `SELECT json_object_agg(key, value) FROM pairs;` returns `{"key1": "value1", "key2": "value2"}`
+    #[must_use]
+    pub fn json_object_agg(key: Self, value: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::JsonObjectAgg,
+            args: vec![key, value],
+            distinct,
+        }
+    }
+
+    /// Creates a JSONB_OBJECT_AGG aggregate.
+    ///
+    /// Aggregates key-value pairs into a JSONB object (same as JSON_OBJECT_AGG in our implementation).
+    #[must_use]
+    pub fn jsonb_object_agg(key: Self, value: Self, distinct: bool) -> Self {
+        Self::AggregateFunction {
+            func: AggregateFunction::JsonbObjectAgg,
+            args: vec![key, value],
+            distinct,
+        }
+    }
+
     // ========== Window Functions ==========
 
     /// Creates a ROW_NUMBER window function.
@@ -1759,6 +1801,18 @@ pub enum AggregateFunction {
     ArrayAgg,
     /// `STRING_AGG(expr, separator)`.
     StringAgg,
+    /// `JSON_AGG(expr)`.
+    /// Aggregates values into a JSON array.
+    JsonAgg,
+    /// `JSONB_AGG(expr)`.
+    /// Aggregates values into a JSONB array (same as JSON_AGG in our implementation).
+    JsonbAgg,
+    /// `JSON_OBJECT_AGG(key, value)`.
+    /// Aggregates key-value pairs into a JSON object.
+    JsonObjectAgg,
+    /// `JSONB_OBJECT_AGG(key, value)`.
+    /// Aggregates key-value pairs into a JSONB object (same as JSON_OBJECT_AGG in our implementation).
+    JsonbObjectAgg,
     /// Vector average.
     VectorAvg,
     /// Vector centroid.
@@ -1775,6 +1829,10 @@ impl fmt::Display for AggregateFunction {
             Self::Max => "MAX",
             Self::ArrayAgg => "ARRAY_AGG",
             Self::StringAgg => "STRING_AGG",
+            Self::JsonAgg => "JSON_AGG",
+            Self::JsonbAgg => "JSONB_AGG",
+            Self::JsonObjectAgg => "JSON_OBJECT_AGG",
+            Self::JsonbObjectAgg => "JSONB_OBJECT_AGG",
             Self::VectorAvg => "VECTOR_AVG",
             Self::VectorCentroid => "VECTOR_CENTROID",
         };
