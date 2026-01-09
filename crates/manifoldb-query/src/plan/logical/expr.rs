@@ -1539,6 +1539,12 @@ pub enum ScalarFunction {
     RegexpMatch,
     /// REGEXP_REPLACE(string, pattern, replacement).
     RegexpReplace,
+    /// LEFT(string, length).
+    /// Returns the leftmost n characters from a string.
+    Left,
+    /// RIGHT(string, length).
+    /// Returns the rightmost n characters from a string.
+    Right,
     /// COALESCE(expr, ...).
     Coalesce,
     /// NULLIF(expr1, expr2).
@@ -1842,6 +1848,8 @@ impl fmt::Display for ScalarFunction {
             Self::Format => "FORMAT",
             Self::RegexpMatch => "REGEXP_MATCH",
             Self::RegexpReplace => "REGEXP_REPLACE",
+            Self::Left => "left",
+            Self::Right => "right",
             Self::Coalesce => "COALESCE",
             Self::NullIf => "NULLIF",
             // Numeric functions

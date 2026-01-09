@@ -804,8 +804,8 @@ These feature groups can be implemented independently:
 | substring() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | replace() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | split() | ✓ | ✓ | | | | | |
-| left() | | | | | | | Not impl |
-| right() | | | | | | | Not impl |
+| left() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| right() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
 
 ## 2.12 Mathematical Functions
 
@@ -963,7 +963,7 @@ These feature groups can be implemented independently:
 | Scalar Functions | 20 | 10 | 5 | 5 |
 | Aggregating Functions | 12 | 6 | 2 | 4 |
 | List Functions | 12 | 8 | 0 | 4 |
-| String Functions | 10 | 6 | 2 | 2 |
+| String Functions | 10 | 8 | 2 | 0 |
 | Math Functions | 15 | 13 | 0 | 2 |
 | Temporal Functions | 10 | 0 | 0 | 10 |
 | Spatial Functions | 5 | 0 | 0 | 5 |
