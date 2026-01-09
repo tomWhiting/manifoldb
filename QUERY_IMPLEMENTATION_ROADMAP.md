@@ -43,9 +43,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Cypher Map Projections†** - `node{.property, key: expr, .*}` syntax for property extraction and transformation
 - ✅ **Aggregate Window Functions†** - SUM/AVG/COUNT/MIN/MAX OVER with frame awareness
 
-### Remaining Work (14 Meta-Tasks)
+### Remaining Work (15 Meta-Tasks)
 
-The following meta-tasks cover the remaining 50 items needed for full SQL/Cypher completion:
+The following meta-tasks cover the remaining items needed for full SQL/Cypher completion:
 
 | # | Meta-Task | Items | Priority | Focus Area |
 |---|-----------|-------|----------|------------|
@@ -63,11 +63,9 @@ The following meta-tasks cover the remaining 50 items needed for full SQL/Cypher
 | 12 | Cypher Spatial Functions | 4 | Low | point(), distance, withinBBox |
 | 13 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
 | 14 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
+| 15 | Transaction Execution | 1 | Medium | Session state, BEGIN/COMMIT/ROLLBACK execution |
 
-**Known Limitations (to be addressed):**
-- **Views**: CREATE/DROP works but SELECT FROM view doesn't expand the definition
-- **CALL { } Subquery**: Uncorrelated works; correlated WITH variable binding pending
-- **Transactions**: Parsing/planning complete; execution needs session state management
+**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. Task #15 addresses transaction execution.
 
 ---
 
