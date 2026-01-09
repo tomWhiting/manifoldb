@@ -174,7 +174,10 @@ impl ExtendedParser {
         }
 
         // Must NOT contain Cypher DML keywords (those are handled separately)
-        // Check for SET, DELETE, REMOVE which indicate mutation operations
+        // Check for CREATE, SET, DELETE, REMOVE which indicate mutation operations
+        if upper.contains(" CREATE ") {
+            return false; // This is a CREATE statement (MATCH ... CREATE)
+        }
         if upper.contains(" SET ") && !upper.contains("MERGE") {
             return false; // This is a SET statement
         }
@@ -6236,6 +6239,28 @@ mod tests {
             Statement::Create(stmt) => {
                 assert!(stmt.match_clause.is_some());
                 assert_eq!(stmt.patterns.len(), 1);
+            }
+            _ => panic!("Expected CreateGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_create_with_comma_separated_match() {
+        // Test MATCH with two comma-separated patterns followed by CREATE
+        let result = ExtendedParser::parse_cypher_create(
+            "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[r:KNOWS]->(b) RETURN r",
+        );
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0] {
+            Statement::Create(stmt) => {
+                assert!(stmt.match_clause.is_some(), "Expected match clause");
+                let match_clause = stmt.match_clause.as_ref().unwrap();
+                // Should have two paths (one for each comma-separated pattern)
+                assert_eq!(match_clause.paths.len(), 2, "Expected 2 paths in MATCH clause");
+                assert_eq!(stmt.patterns.len(), 1, "Expected 1 CREATE pattern");
+                assert_eq!(stmt.return_clause.len(), 1, "Expected 1 RETURN item");
             }
             _ => panic!("Expected CreateGraph statement"),
         }

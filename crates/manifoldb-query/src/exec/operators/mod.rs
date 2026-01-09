@@ -13,6 +13,7 @@
 //! - **Limit operators**: [`limit`] - Limit/offset
 //! - **Set operators**: [`set_ops`] - UNION, INTERSECT, EXCEPT
 //! - **Graph operators**: [`graph`] - Graph traversal
+//! - **Graph mutation operators**: [`graph_create`] - CREATE, MERGE, etc.
 //! - **Vector operators**: [`vector`] - Vector search
 //! - **Analytics operators**: [`analytics`] - Graph analytics (PageRank, centrality, community)
 
@@ -20,6 +21,7 @@ pub mod aggregate;
 pub mod analytics;
 pub mod filter;
 pub mod graph;
+pub mod graph_create;
 pub mod join;
 pub mod limit;
 pub mod project;
@@ -40,6 +42,7 @@ pub use analytics::{
 };
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};
+pub use graph_create::GraphCreateOp;
 pub use join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp};
 pub use limit::LimitOp;
 pub use project::ProjectOp;

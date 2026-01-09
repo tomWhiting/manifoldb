@@ -66,13 +66,13 @@ Recursive CTEs
 └── Status: ✅ Complete with tests (Jan 2026)
 
 Cypher Writing Clauses
-├── CREATE: ✅ GraphCreate logical node + operator complete
+├── CREATE: ✅ GraphCreate logical node + operator + EXECUTION complete (Jan 2026)
 ├── MERGE: ✅ GraphMerge node + operator complete
 ├── SET: ✅ GraphSet logical node + physical plan complete (Jan 2026)
 ├── DELETE: ✅ GraphDelete logical node + physical plan complete (Jan 2026)
 ├── REMOVE: ✅ GraphRemove logical node + physical plan complete (Jan 2026)
 ├── FOREACH: ✅ GraphForeach logical + physical plan complete (Jan 2026)
-└── Status: ✅ Parsing + planning complete, execution TBD
+└── Status: ✅ CREATE fully executable, others parsing + planning complete
 
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
@@ -629,9 +629,9 @@ These feature groups can be implemented independently:
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
 | **CREATE** |
-| CREATE node | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
-| CREATE relationship | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
-| CREATE with properties | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| CREATE node | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| CREATE relationship | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| CREATE with properties | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | **MERGE** |
 | MERGE node | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | MERGE relationship | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
@@ -959,7 +959,7 @@ These feature groups can be implemented independently:
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | Reading Clauses | 25 | 17 | 3 | 5 |
-| Writing Clauses | 15 | 6 | 0 | 9 |
+| Writing Clauses | 15 | 9 | 0 | 6 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
 | Expressions | 10 | 5 | 0 | 5 |

@@ -13,6 +13,7 @@ use super::operators::{
     aggregate::{HashAggregateOp, SortMergeAggregateOp},
     filter::FilterOp,
     graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
+    graph_create::GraphCreateOp,
     join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp},
     limit::LimitOp,
     project::ProjectOp,
@@ -157,7 +158,11 @@ impl Executor {
 }
 
 /// Builds an operator tree from a physical plan.
-fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
+///
+/// This function recursively converts a physical plan tree into an operator tree
+/// that can be executed. Each physical plan node is converted to the corresponding
+/// operator implementation.
+pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
     match plan {
         // Scan operations
         PhysicalPlan::FullScan(node) => Ok(Box::new(FullScanOp::new((**node).clone()))),
@@ -386,10 +391,19 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         | PhysicalPlan::CreateView(_)
         | PhysicalPlan::DropView(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
-        // Graph DML operations - placeholder implementations
-        // Actual execution requires storage layer integration
-        PhysicalPlan::GraphCreate { .. }
-        | PhysicalPlan::GraphMerge { .. }
+        // Graph DML operations
+        PhysicalPlan::GraphCreate { node, input } => {
+            let input_op = if let Some(input_plan) = input {
+                Some(build_operator_tree(input_plan)?)
+            } else {
+                None
+            };
+            Ok(Box::new(GraphCreateOp::new((**node).clone(), input_op)))
+        }
+
+        // Placeholder implementations for other graph mutations
+        // TODO: Implement GraphMergeOp, GraphSetOp, etc.
+        PhysicalPlan::GraphMerge { .. }
         | PhysicalPlan::GraphSet { .. }
         | PhysicalPlan::GraphDelete { .. }
         | PhysicalPlan::GraphRemove { .. }

@@ -11,6 +11,7 @@ pub mod combined;
 pub mod concurrency;
 pub mod correctness;
 pub mod crud;
+pub mod cypher_create;
 pub mod ddl;
 pub mod e2e;
 pub mod graph;

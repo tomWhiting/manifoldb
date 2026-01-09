@@ -188,6 +188,136 @@ pub fn execute_statement<T: Transaction>(
     }
 }
 
+/// Execute a Cypher graph DML statement (CREATE, MERGE, DELETE, etc.) and return results.
+///
+/// This function handles graph mutations that can return results (e.g., CREATE with RETURN).
+/// It uses a write transaction and the physical plan execution infrastructure.
+///
+/// # Arguments
+///
+/// * `tx` - The mutable transaction to execute against
+/// * `sql` - The Cypher statement to execute
+/// * `params` - The parameter values
+/// * `max_rows_in_memory` - Maximum rows operators can materialize (0 = no limit)
+pub fn execute_graph_dml<T: Transaction + Send + Sync + 'static>(
+    tx: DatabaseTransaction<T>,
+    sql: &str,
+    params: &[Value],
+    max_rows_in_memory: usize,
+) -> Result<(ResultSet, DatabaseTransaction<T>)> {
+    use super::DatabaseGraphMutator;
+    use manifoldb_query::exec::graph_accessor::GraphMutator;
+
+    // Parse SQL using ExtendedParser to support Cypher syntax
+    let stmt = ExtendedParser::parse_single(sql)?;
+
+    // Build logical plan
+    let mut builder = PlanBuilder::new();
+    let logical_plan = builder.build_statement(&stmt).map_err(|e| Error::Parse(e.to_string()))?;
+
+    // Verify this is a graph DML operation
+    if !is_graph_dml(&logical_plan) {
+        return Err(Error::Execution(
+            "execute_graph_dml requires a graph DML statement (CREATE, MERGE, etc.)".to_string(),
+        ));
+    }
+
+    // Build physical plan
+    let catalog = build_planner_catalog(&tx)?;
+    let planner = PhysicalPlanner::new().with_catalog(catalog);
+    let physical_plan = planner.plan(&logical_plan);
+
+    // Create a graph mutator wrapping the transaction
+    let mutator = DatabaseGraphMutator::new(tx);
+
+    // Create execution context with parameters, row limit, and graph mutator
+    let mut ctx = create_context_with_limit(params, max_rows_in_memory);
+    ctx = ctx.with_graph_mutator(Arc::new(mutator.clone()) as Arc<dyn GraphMutator>);
+
+    // Execute the physical plan using the query executor
+    let result = execute_graph_physical_plan(&physical_plan, &ctx)?;
+
+    // Take the transaction back from the mutator
+    let tx = mutator.take_transaction().ok_or_else(|| {
+        Error::Execution("Transaction was already taken from mutator".to_string())
+    })?;
+
+    Ok((result, tx))
+}
+
+/// Execute a graph DML physical plan.
+fn execute_graph_physical_plan(
+    physical: &PhysicalPlan,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    use manifoldb_query::exec::build_operator_tree;
+
+    // Build the operator tree from the physical plan
+    let mut operator =
+        build_operator_tree(physical).map_err(|e| Error::Execution(e.to_string()))?;
+
+    // Open the operator
+    operator.open(ctx).map_err(|e| Error::Execution(e.to_string()))?;
+
+    // Collect all rows
+    let mut rows = Vec::new();
+    while let Some(row) = operator.next().map_err(|e| Error::Execution(e.to_string()))? {
+        rows.push(row);
+    }
+
+    // Close the operator
+    operator.close().map_err(|e| Error::Execution(e.to_string()))?;
+
+    Ok(ResultSet::with_rows(operator.schema(), rows))
+}
+
+/// Check if a logical plan is a graph DML operation.
+fn is_graph_dml(plan: &LogicalPlan) -> bool {
+    matches!(
+        plan,
+        LogicalPlan::GraphCreate { .. }
+            | LogicalPlan::GraphMerge { .. }
+            | LogicalPlan::GraphSet { .. }
+            | LogicalPlan::GraphDelete { .. }
+            | LogicalPlan::GraphRemove { .. }
+            | LogicalPlan::GraphForeach { .. }
+    )
+}
+
+/// Check if a SQL string appears to be a Cypher graph DML statement.
+///
+/// This is a quick heuristic check that can be used before parsing.
+pub fn is_cypher_dml(sql: &str) -> bool {
+    let sql_upper = sql.trim().to_uppercase();
+    // Cypher CREATE starts with CREATE followed by a pattern (parenthesis)
+    // SQL CREATE TABLE/INDEX starts with CREATE TABLE/INDEX
+    if sql_upper.starts_with("CREATE") {
+        // Check if it's a SQL CREATE statement
+        if sql_upper.starts_with("CREATE TABLE")
+            || sql_upper.starts_with("CREATE INDEX")
+            || sql_upper.starts_with("CREATE COLLECTION")
+        {
+            return false;
+        }
+        // If CREATE is followed by ( or :, it's likely Cypher
+        let after_create = sql_upper.strip_prefix("CREATE").unwrap_or("").trim();
+        if after_create.starts_with('(') {
+            return true;
+        }
+    }
+    // MATCH ... CREATE is Cypher
+    if sql_upper.starts_with("MATCH") && sql_upper.contains("CREATE") {
+        return true;
+    }
+    // Other Cypher DML keywords
+    sql_upper.starts_with("MERGE")
+        || sql_upper.starts_with("DELETE")
+        || sql_upper.starts_with("DETACH DELETE")
+        || sql_upper.starts_with("REMOVE")
+        || sql_upper.starts_with("SET")
+        || sql_upper.starts_with("FOREACH")
+}
+
 /// Execute a prepared SELECT query and return the result set.
 ///
 /// This uses the cached logical and physical plans from the prepared statement,
