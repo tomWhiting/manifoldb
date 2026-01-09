@@ -18,8 +18,8 @@
 use std::fmt;
 
 use super::ddl::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode,
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
+    DropIndexNode, DropTableNode, DropViewNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
@@ -269,6 +269,12 @@ pub enum LogicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    /// CREATE VIEW operation.
+    CreateView(CreateViewNode),
+
+    /// DROP VIEW operation.
+    DropView(DropViewNode),
 
     // ========== Graph DML Nodes ==========
     /// Cypher CREATE operation (nodes and/or relationships).
@@ -527,7 +533,9 @@ impl LogicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::CreateView(_)
+            | Self::DropView(_) => vec![],
 
             // Graph DML nodes (optional input)
             Self::GraphCreate { input: Some(input), .. }
@@ -592,7 +600,9 @@ impl LogicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::CreateView(_)
+            | Self::DropView(_) => vec![],
 
             // Graph DML nodes (optional input)
             Self::GraphCreate { input: Some(input), .. }
@@ -646,6 +656,8 @@ impl LogicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::CreateView(_) => "CreateView",
+            Self::DropView(_) => "DropView",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
             Self::GraphSet { .. } => "GraphSet",
@@ -918,6 +930,25 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::DropCollection(node) => {
                 write!(f, "DropCollection: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::CreateView(node) => {
+                write!(f, "CreateView: {}", node.name)?;
+                if node.or_replace {
+                    write!(f, " OR REPLACE")?;
+                }
+                if !node.columns.is_empty() {
+                    let cols: Vec<_> = node.columns.iter().map(|c| c.name.as_str()).collect();
+                    write!(f, " ({})", cols.join(", "))?;
+                }
+            }
+            LogicalPlan::DropView(node) => {
+                write!(f, "DropView: {}", node.names.join(", "))?;
                 if node.if_exists {
                     write!(f, " IF EXISTS")?;
                 }

@@ -133,6 +133,8 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::Empty { .. }
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)
+        | LogicalPlan::CreateView(_)
+        | LogicalPlan::DropView(_)
         | LogicalPlan::ProcedureCall(_) => {
             // These don't reference tables
         }

@@ -329,9 +329,11 @@ These feature groups can be implemented independently:
 | IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **VIEW** |
-| CREATE VIEW | | | | | | | Not implemented |
-| CREATE OR REPLACE VIEW | | | | | | | Not implemented |
-| DROP VIEW | | | | | | | Not implemented |
+| CREATE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
+| CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
+| DROP VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
+| DROP VIEW IF EXISTS | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
+| DROP VIEW CASCADE | ✓ | ✓ | ✓ | ✓ | | | Parsing, planning (cascade not exec) |
 | MATERIALIZED VIEW | | | | | | | Not implemented |
 | **SCHEMA** |
 | CREATE SCHEMA | | | | | | | Not implemented |

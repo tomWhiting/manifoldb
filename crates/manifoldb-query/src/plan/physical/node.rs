@@ -20,10 +20,10 @@ use std::fmt;
 use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode,
-    GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr,
-    ProcedureCallNode, SetOpType, SortOrder,
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
+    DropIndexNode, DropTableNode, DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode,
+    GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType,
+    LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -306,6 +306,12 @@ pub enum PhysicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    /// CREATE VIEW operation.
+    CreateView(CreateViewNode),
+
+    /// DROP VIEW operation.
+    DropView(DropViewNode),
 
     // ========== Graph DML Operations ==========
     /// Cypher CREATE operation.
@@ -1801,6 +1807,8 @@ impl PhysicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
+            | Self::CreateView(_)
+            | Self::DropView(_)
             | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
@@ -1863,6 +1871,8 @@ impl PhysicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
+            | Self::CreateView(_)
+            | Self::DropView(_)
             | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
@@ -1923,6 +1933,8 @@ impl PhysicalPlan {
                 | Self::DropIndex(_)
                 | Self::CreateCollection(_)
                 | Self::DropCollection(_)
+                | Self::CreateView(_)
+                | Self::DropView(_)
                 | Self::ProcedureCall(_)
         )
     }
@@ -1965,6 +1977,8 @@ impl PhysicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::CreateView(_) => "CreateView",
+            Self::DropView(_) => "DropView",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
             Self::GraphSet { .. } => "GraphSet",
@@ -2014,6 +2028,8 @@ impl PhysicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
+            | Self::CreateView(_)
+            | Self::DropView(_)
             | Self::ProcedureCall(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. }
@@ -2399,6 +2415,25 @@ impl DisplayTree<'_> {
             }
             PhysicalPlan::DropCollection(node) => {
                 write!(f, "DropCollection: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::CreateView(node) => {
+                write!(f, "CreateView: {}", node.name)?;
+                if node.or_replace {
+                    write!(f, " OR REPLACE")?;
+                }
+                if !node.columns.is_empty() {
+                    let cols: Vec<_> = node.columns.iter().map(|c| c.name.as_str()).collect();
+                    write!(f, " ({})", cols.join(", "))?;
+                }
+            }
+            PhysicalPlan::DropView(node) => {
+                write!(f, "DropView: {}", node.names.join(", "))?;
                 if node.if_exists {
                     write!(f, " IF EXISTS")?;
                 }

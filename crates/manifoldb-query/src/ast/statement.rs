@@ -32,6 +32,10 @@ pub enum Statement {
     DropIndex(DropIndexStatement),
     /// DROP COLLECTION statement.
     DropCollection(DropCollectionStatement),
+    /// CREATE VIEW statement.
+    CreateView(Box<CreateViewStatement>),
+    /// DROP VIEW statement.
+    DropView(DropViewStatement),
     /// MATCH statement (Cypher-style graph query).
     Match(Box<MatchStatement>),
     /// Cypher CREATE statement for creating nodes and relationships.
@@ -1159,6 +1163,108 @@ pub struct DropIndexStatement {
     pub names: Vec<QualifiedName>,
     /// Whether CASCADE is specified.
     pub cascade: bool,
+}
+
+// ============================================================================
+// VIEW Statements
+// ============================================================================
+
+/// A CREATE VIEW statement.
+///
+/// Views are stored query definitions that can be used like tables.
+/// They don't store data themselves, but expand to their defining query
+/// when referenced in other queries.
+///
+/// # Examples
+///
+/// Basic view:
+/// ```sql
+/// CREATE VIEW active_users AS
+/// SELECT * FROM users WHERE status = 'active';
+/// ```
+///
+/// Replace existing view:
+/// ```sql
+/// CREATE OR REPLACE VIEW user_stats AS
+/// SELECT department, COUNT(*) as count, AVG(salary) as avg_salary
+/// FROM employees
+/// GROUP BY department;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateViewStatement {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The view name.
+    pub name: QualifiedName,
+    /// Optional column aliases for the view.
+    pub columns: Vec<Identifier>,
+    /// The query defining the view.
+    pub query: Box<SelectStatement>,
+}
+
+impl CreateViewStatement {
+    /// Creates a new CREATE VIEW statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>, query: SelectStatement) -> Self {
+        Self { or_replace: false, name: name.into(), columns: vec![], query: Box::new(query) }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets the column aliases.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// A DROP VIEW statement.
+///
+/// Removes one or more views from the database.
+///
+/// # Examples
+///
+/// ```sql
+/// DROP VIEW active_users;
+/// DROP VIEW IF EXISTS maybe_exists;
+/// DROP VIEW cascade_view CASCADE;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropViewStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The view(s) to drop.
+    pub names: Vec<QualifiedName>,
+    /// Whether CASCADE is specified (drops dependent objects).
+    pub cascade: bool,
+}
+
+impl DropViewStatement {
+    /// Creates a new DROP VIEW statement.
+    #[must_use]
+    pub fn new(names: Vec<QualifiedName>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
 }
 
 /// A CREATE COLLECTION statement for vector collections.

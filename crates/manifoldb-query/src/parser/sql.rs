@@ -9,12 +9,12 @@ use sqlparser::parser::Parser;
 
 use crate::ast::{
     Assignment, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction,
-    ConflictTarget, CreateIndexStatement, CreateTableStatement, DataType, DeleteStatement,
-    DropIndexStatement, DropTableStatement, Expr, FunctionCall, Identifier, IndexColumn,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, Literal, OnConflict,
-    OrderByExpr, ParameterRef, QualifiedName, SelectItem, SelectStatement, SetOperation,
-    SetOperator, Statement, TableAlias, TableConstraint, TableRef, UnaryOp, UpdateStatement,
-    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    ConflictTarget, CreateIndexStatement, CreateTableStatement, CreateViewStatement, DataType,
+    DeleteStatement, DropIndexStatement, DropTableStatement, DropViewStatement, Expr, FunctionCall,
+    Identifier, IndexColumn, InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType,
+    Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName, SelectItem, SelectStatement,
+    SetOperation, SetOperator, Statement, TableAlias, TableConstraint, TableRef, UnaryOp,
+    UpdateStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -76,6 +76,15 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
             let create_stmt = convert_create_index(create)?;
             Ok(Statement::CreateIndex(Box::new(create_stmt)))
         }
+        sp::Statement::CreateView {
+            or_replace, name, columns, query, materialized: false, ..
+        } => {
+            let view_stmt = convert_create_view(or_replace, name, columns, *query)?;
+            Ok(Statement::CreateView(Box::new(view_stmt)))
+        }
+        sp::Statement::CreateView { materialized: true, .. } => {
+            Err(ParseError::Unsupported("MATERIALIZED VIEW".to_string()))
+        }
         sp::Statement::Drop { object_type, if_exists, names, cascade, .. } => match object_type {
             sp::ObjectType::Table => {
                 let drop_stmt = DropTableStatement {
@@ -92,6 +101,14 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
                     cascade,
                 };
                 Ok(Statement::DropIndex(drop_stmt))
+            }
+            sp::ObjectType::View => {
+                let drop_stmt = DropViewStatement {
+                    if_exists,
+                    names: names.into_iter().map(convert_object_name).collect(),
+                    cascade,
+                };
+                Ok(Statement::DropView(drop_stmt))
             }
             _ => Err(ParseError::Unsupported(format!("DROP {object_type:?}"))),
         },
@@ -1042,6 +1059,26 @@ fn convert_create_index(create: sp::CreateIndex) -> ParseResult<CreateIndexState
     })
 }
 
+/// Converts a CREATE VIEW statement.
+fn convert_create_view(
+    or_replace: bool,
+    name: sp::ObjectName,
+    columns: Vec<sp::ViewColumnDef>,
+    query: sp::Query,
+) -> ParseResult<CreateViewStatement> {
+    let view_name = convert_object_name(name);
+    let column_aliases: Vec<Identifier> =
+        columns.into_iter().map(|c| convert_ident(c.name)).collect();
+    let select = convert_query(query)?;
+
+    Ok(CreateViewStatement {
+        or_replace,
+        name: view_name,
+        columns: column_aliases,
+        query: Box::new(select),
+    })
+}
+
 /// Converts a data type.
 #[allow(clippy::cast_possible_truncation)]
 fn convert_data_type(dt: sp::DataType) -> ParseResult<DataType> {
@@ -1332,6 +1369,139 @@ mod tests {
                 }
             }
             _ => panic!("expected INSERT"),
+        }
+    }
+
+    // =====================
+    // VIEW Tests
+    // =====================
+
+    #[test]
+    fn parse_create_view_basic() {
+        let stmt = parse_single_statement(
+            "CREATE VIEW active_users AS SELECT * FROM users WHERE status = 'active'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateView(view) => {
+                assert_eq!(view.name.to_string(), "active_users");
+                assert!(!view.or_replace);
+                assert!(view.columns.is_empty());
+            }
+            _ => panic!("expected CREATE VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_or_replace_view() {
+        let stmt = parse_single_statement(
+            "CREATE OR REPLACE VIEW user_stats AS SELECT department, COUNT(*) as count FROM employees GROUP BY department",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateView(view) => {
+                assert_eq!(view.name.to_string(), "user_stats");
+                assert!(view.or_replace);
+                assert!(view.columns.is_empty());
+            }
+            _ => panic!("expected CREATE VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_view_with_columns() {
+        let stmt = parse_single_statement("CREATE VIEW my_view (col1, col2) AS SELECT a, b FROM t")
+            .unwrap();
+        match stmt {
+            Statement::CreateView(view) => {
+                assert_eq!(view.name.to_string(), "my_view");
+                assert_eq!(view.columns.len(), 2);
+                assert_eq!(view.columns[0].name, "col1");
+                assert_eq!(view.columns[1].name, "col2");
+            }
+            _ => panic!("expected CREATE VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_view_with_join() {
+        let stmt = parse_single_statement(
+            "CREATE VIEW order_summary AS SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateView(view) => {
+                assert_eq!(view.name.to_string(), "order_summary");
+                // The query should contain the join
+                assert!(view.query.from.len() == 1);
+            }
+            _ => panic!("expected CREATE VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_view_basic() {
+        let stmt = parse_single_statement("DROP VIEW active_users").unwrap();
+        match stmt {
+            Statement::DropView(drop) => {
+                assert!(!drop.if_exists);
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].to_string(), "active_users");
+                assert!(!drop.cascade);
+            }
+            _ => panic!("expected DROP VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_view_if_exists() {
+        let stmt = parse_single_statement("DROP VIEW IF EXISTS maybe_exists").unwrap();
+        match stmt {
+            Statement::DropView(drop) => {
+                assert!(drop.if_exists);
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].to_string(), "maybe_exists");
+            }
+            _ => panic!("expected DROP VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_view_cascade() {
+        let stmt = parse_single_statement("DROP VIEW cascade_view CASCADE").unwrap();
+        match stmt {
+            Statement::DropView(drop) => {
+                assert!(!drop.if_exists);
+                assert!(drop.cascade);
+                assert_eq!(drop.names.len(), 1);
+            }
+            _ => panic!("expected DROP VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_view_multiple() {
+        let stmt = parse_single_statement("DROP VIEW view1, view2, view3").unwrap();
+        match stmt {
+            Statement::DropView(drop) => {
+                assert_eq!(drop.names.len(), 3);
+                assert_eq!(drop.names[0].to_string(), "view1");
+                assert_eq!(drop.names[1].to_string(), "view2");
+                assert_eq!(drop.names[2].to_string(), "view3");
+            }
+            _ => panic!("expected DROP VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_view_if_exists_cascade() {
+        let stmt = parse_single_statement("DROP VIEW IF EXISTS my_view CASCADE").unwrap();
+        match stmt {
+            Statement::DropView(drop) => {
+                assert!(drop.if_exists);
+                assert!(drop.cascade);
+            }
+            _ => panic!("expected DROP VIEW"),
         }
     }
 }

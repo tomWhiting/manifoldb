@@ -1,6 +1,6 @@
 //! Schema metadata storage for DDL operations.
 //!
-//! This module provides persistence for table and index definitions
+//! This module provides persistence for table, index, and view definitions
 //! using the metadata table in the storage layer.
 
 // Allow missing docs for internal schema types
@@ -8,7 +8,7 @@
 
 use manifoldb_core::TransactionError;
 use manifoldb_query::ast::{ColumnConstraint, ColumnDef, DataType, IndexColumn, TableConstraint};
-use manifoldb_query::plan::logical::{CreateIndexNode, CreateTableNode};
+use manifoldb_query::plan::logical::{CreateIndexNode, CreateTableNode, CreateViewNode};
 use manifoldb_storage::Transaction;
 use serde::{Deserialize, Serialize};
 
@@ -18,10 +18,14 @@ use crate::transaction::DatabaseTransaction;
 const TABLE_PREFIX: &[u8] = b"schema:table:";
 /// Prefix for index metadata keys.
 const INDEX_PREFIX: &[u8] = b"schema:index:";
+/// Prefix for view metadata keys.
+const VIEW_PREFIX: &[u8] = b"schema:view:";
 /// Key for the list of all tables.
 const TABLES_LIST_KEY: &[u8] = b"schema:tables_list";
 /// Key for the list of all indexes.
 const INDEXES_LIST_KEY: &[u8] = b"schema:indexes_list";
+/// Key for the list of all views.
+const VIEWS_LIST_KEY: &[u8] = b"schema:views_list";
 /// Key for the schema version counter.
 const SCHEMA_VERSION_KEY: &[u8] = b"schema:version";
 
@@ -134,6 +138,49 @@ pub struct StoredIndexColumn {
     pub ascending: bool,
     /// Nulls first/last.
     pub nulls_first: Option<bool>,
+}
+
+/// Stored view definition.
+///
+/// Views are stored query definitions that can be used like tables.
+/// The query is stored as a string representation of the SQL that can be
+/// re-parsed when the view is accessed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ViewSchema {
+    /// View name.
+    pub name: String,
+    /// Optional column aliases for the view.
+    pub columns: Vec<String>,
+    /// The SQL query defining the view (stored as string for flexibility).
+    pub query_sql: String,
+}
+
+impl ViewSchema {
+    /// Create a new view schema from a CREATE VIEW node.
+    pub fn from_create_view(node: &CreateViewNode) -> Self {
+        // Store the query as its debug representation
+        // In production, we would want a proper SQL serializer
+        let query_sql = format!("{:?}", node.query);
+
+        Self {
+            name: node.name.clone(),
+            columns: node.columns.iter().map(|c| c.name.clone()).collect(),
+            query_sql,
+        }
+    }
+
+    /// Create a new view schema with raw query SQL.
+    pub fn new(name: String, columns: Vec<String>, query_sql: String) -> Self {
+        Self { name, columns, query_sql }
+    }
+
+    /// Get the stored SELECT statement if available.
+    ///
+    /// Note: This returns the raw query stored with the view.
+    /// The query needs to be re-parsed from the stored SQL representation.
+    pub fn query(&self) -> &str {
+        &self.query_sql
+    }
 }
 
 impl TableSchema {
@@ -522,6 +569,100 @@ impl SchemaManager {
         Ok(result)
     }
 
+    /// Create a view schema.
+    pub fn create_view<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+        node: &CreateViewNode,
+    ) -> Result<(), SchemaError> {
+        let view_name = &node.name;
+
+        // Check if view already exists
+        if Self::view_exists(tx, view_name)? {
+            if node.or_replace {
+                // OR REPLACE: drop and recreate
+                Self::drop_view(tx, view_name, true)?;
+            } else {
+                return Err(SchemaError::ViewExists(view_name.clone()));
+            }
+        }
+
+        // Create and store the schema
+        let schema = ViewSchema::from_create_view(node);
+        let key = Self::view_key(view_name);
+        let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+            .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+
+        tx.put_metadata(&key, &value)?;
+
+        // Add to views list
+        Self::add_to_list(tx, VIEWS_LIST_KEY, view_name)?;
+
+        // Increment schema version
+        Self::increment_version(tx)?;
+
+        Ok(())
+    }
+
+    /// Drop a view schema.
+    pub fn drop_view<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+        view_name: &str,
+        if_exists: bool,
+    ) -> Result<(), SchemaError> {
+        // Check if view exists
+        if !Self::view_exists(tx, view_name)? {
+            if if_exists {
+                return Ok(());
+            }
+            return Err(SchemaError::ViewNotFound(view_name.to_string()));
+        }
+
+        // Remove the schema
+        let key = Self::view_key(view_name);
+        tx.delete_metadata(&key)?;
+
+        // Remove from views list
+        Self::remove_from_list(tx, VIEWS_LIST_KEY, view_name)?;
+
+        // Increment schema version
+        Self::increment_version(tx)?;
+
+        Ok(())
+    }
+
+    /// Check if a view exists.
+    pub fn view_exists<T: Transaction>(
+        tx: &DatabaseTransaction<T>,
+        name: &str,
+    ) -> Result<bool, SchemaError> {
+        let key = Self::view_key(name);
+        Ok(tx.get_metadata(&key)?.is_some())
+    }
+
+    /// Get a view schema.
+    pub fn get_view<T: Transaction>(
+        tx: &DatabaseTransaction<T>,
+        name: &str,
+    ) -> Result<Option<ViewSchema>, SchemaError> {
+        let key = Self::view_key(name);
+        match tx.get_metadata(&key)? {
+            Some(bytes) => {
+                let (schema, _): (ViewSchema, _) =
+                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                        .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+                Ok(Some(schema))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all views.
+    pub fn list_views<T: Transaction>(
+        tx: &DatabaseTransaction<T>,
+    ) -> Result<Vec<String>, SchemaError> {
+        Self::get_list(tx, VIEWS_LIST_KEY)
+    }
+
     // Helper methods
 
     fn table_key(name: &str) -> Vec<u8> {
@@ -532,6 +673,12 @@ impl SchemaManager {
 
     fn index_key(name: &str) -> Vec<u8> {
         let mut key = INDEX_PREFIX.to_vec();
+        key.extend_from_slice(name.as_bytes());
+        key
+    }
+
+    fn view_key(name: &str) -> Vec<u8> {
+        let mut key = VIEW_PREFIX.to_vec();
         key.extend_from_slice(name.as_bytes());
         key
     }
@@ -594,6 +741,12 @@ pub enum SchemaError {
 
     #[error("Index not found: {0}")]
     IndexNotFound(String),
+
+    #[error("View already exists: {0}")]
+    ViewExists(String),
+
+    #[error("View not found: {0}")]
+    ViewNotFound(String),
 
     #[error("Transaction error: {0}")]
     Transaction(#[from] TransactionError),

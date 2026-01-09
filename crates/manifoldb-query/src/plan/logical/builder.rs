@@ -21,18 +21,19 @@ use std::collections::HashMap;
 
 use crate::ast::{
     self, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
-    CreateNodeRef, CreatePattern, CreateTableStatement, DeleteGraphStatement, DeleteStatement,
-    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr,
-    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
-    InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
-    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, RemoveGraphStatement,
-    RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction, SetGraphStatement,
-    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
+    CreateNodeRef, CreatePattern, CreateTableStatement, CreateViewStatement, DeleteGraphStatement,
+    DeleteStatement, DropCollectionStatement, DropIndexStatement, DropTableStatement,
+    DropViewStatement, Expr, ForeachAction as AstForeachAction, ForeachStatement, GraphPattern,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
+    MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern, PathPattern,
+    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
+    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
+    WindowFunction, YieldItem,
 };
 
 use super::ddl::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode,
+    CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode, DropCollectionNode,
+    DropIndexNode, DropTableNode, DropViewNode,
 };
 
 use super::expr::{
@@ -104,6 +105,8 @@ impl PlanBuilder {
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
+            Statement::CreateView(create) => self.build_create_view(create),
+            Statement::DropView(drop) => self.build_drop_view(drop),
             Statement::Create(create) => self.build_graph_create(create),
             Statement::Merge(merge) => self.build_graph_merge(merge),
             Statement::Call(call) => self.build_call(call),
@@ -1224,6 +1227,31 @@ impl PlanBuilder {
             .with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropCollection(node))
+    }
+
+    /// Builds a logical plan from a CREATE VIEW statement.
+    fn build_create_view(&self, create: &CreateViewStatement) -> PlanResult<LogicalPlan> {
+        let name = create.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = CreateViewNode::new(name, (*create.query).clone())
+            .with_or_replace(create.or_replace)
+            .with_columns(create.columns.clone());
+
+        Ok(LogicalPlan::CreateView(node))
+    }
+
+    /// Builds a logical plan from a DROP VIEW statement.
+    fn build_drop_view(&self, drop: &DropViewStatement) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let node =
+            DropViewNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropView(node))
     }
 
     /// Builds a logical plan from a Cypher CREATE statement.

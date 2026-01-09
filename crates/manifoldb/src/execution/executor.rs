@@ -1513,7 +1513,9 @@ fn execute_logical_plan<T: Transaction>(
         | LogicalPlan::CreateIndex(_)
         | LogicalPlan::DropIndex(_)
         | LogicalPlan::CreateCollection(_)
-        | LogicalPlan::DropCollection(_) => Err(Error::Execution(
+        | LogicalPlan::DropCollection(_)
+        | LogicalPlan::CreateView(_)
+        | LogicalPlan::DropView(_) => Err(Error::Execution(
             "DDL statements should be executed via execute_statement, not execute_logical_plan"
                 .to_string(),
         )),

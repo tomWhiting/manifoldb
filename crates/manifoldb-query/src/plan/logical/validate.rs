@@ -342,6 +342,18 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::CreateView(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("CREATE VIEW requires a name".to_string()));
+            }
+        }
+
+        LogicalPlan::DropView(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::Unsupported("DROP VIEW requires view name".to_string()));
+            }
+        }
+
         LogicalPlan::HybridSearch { node, input } => {
             validate_plan(input)?;
             if node.components.is_empty() {

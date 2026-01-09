@@ -402,6 +402,8 @@ impl PhysicalPlanner {
             LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
             LogicalPlan::CreateCollection(node) => PhysicalPlan::CreateCollection(node.clone()),
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
+            LogicalPlan::CreateView(node) => PhysicalPlan::CreateView(node.clone()),
+            LogicalPlan::DropView(node) => PhysicalPlan::DropView(node.clone()),
 
             // Graph DML nodes - build physical plans for these
             LogicalPlan::GraphCreate { node, input } => {

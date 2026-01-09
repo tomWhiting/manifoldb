@@ -7,8 +7,12 @@
 //! - DROP INDEX
 //! - CREATE COLLECTION
 //! - DROP COLLECTION
+//! - CREATE VIEW
+//! - DROP VIEW
 
-use crate::ast::{ColumnDef, Expr, IndexColumn, TableConstraint, VectorDef};
+use crate::ast::{
+    ColumnDef, Expr, Identifier, IndexColumn, SelectStatement, TableConstraint, VectorDef,
+};
 
 /// A CREATE TABLE operation.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,6 +231,77 @@ pub struct DropCollectionNode {
 
 impl DropCollectionNode {
     /// Creates a new DROP COLLECTION node.
+    #[must_use]
+    pub fn new(names: Vec<String>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+/// A CREATE VIEW operation.
+///
+/// Views are stored query definitions that can be used like tables.
+/// They expand to their defining query when referenced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateViewNode {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The view name.
+    pub name: String,
+    /// Optional column aliases for the view.
+    pub columns: Vec<Identifier>,
+    /// The query defining the view.
+    pub query: Box<SelectStatement>,
+}
+
+impl CreateViewNode {
+    /// Creates a new CREATE VIEW node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, query: SelectStatement) -> Self {
+        Self { or_replace: false, name: name.into(), columns: vec![], query: Box::new(query) }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets the column aliases.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// A DROP VIEW operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropViewNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The view names to drop.
+    pub names: Vec<String>,
+    /// Whether CASCADE is specified (drops dependent objects).
+    pub cascade: bool,
+}
+
+impl DropViewNode {
+    /// Creates a new DROP VIEW node.
     #[must_use]
     pub fn new(names: Vec<String>) -> Self {
         Self { if_exists: false, names, cascade: false }

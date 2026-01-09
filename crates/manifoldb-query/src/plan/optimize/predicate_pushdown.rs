@@ -228,7 +228,9 @@ impl PredicatePushdown {
             | LogicalPlan::CreateIndex(_)
             | LogicalPlan::DropIndex(_)
             | LogicalPlan::CreateCollection(_)
-            | LogicalPlan::DropCollection(_) => {
+            | LogicalPlan::DropCollection(_)
+            | LogicalPlan::CreateView(_)
+            | LogicalPlan::DropView(_) => {
                 // DDL statements don't have predicates to push
                 plan
             }
