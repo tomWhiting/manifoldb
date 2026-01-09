@@ -174,11 +174,11 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] TRUNCATE TABLE
   - [ ] Partitioned tables (PARTITION BY RANGE/LIST/HASH)
 
-- [ ] **Transactions**
-  - [ ] BEGIN/START TRANSACTION
-  - [ ] COMMIT/ROLLBACK
-  - [ ] SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO
-  - [ ] SET TRANSACTION ISOLATION LEVEL
+- [x] **Transactions** ✅ Jan 2026 (parsing + planning, execution TBD)
+  - [x] BEGIN/START TRANSACTION ✅ Jan 2026
+  - [x] COMMIT/ROLLBACK ✅ Jan 2026
+  - [x] SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO ✅ Jan 2026
+  - [x] SET TRANSACTION ISOLATION LEVEL ✅ Jan 2026
 
 - [ ] **Utility Statements**
   - [ ] EXPLAIN ANALYZE with options
@@ -194,7 +194,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] substring, substr, position, strpos
   - [x] upper, lower, initcap
   - [x] ltrim, rtrim, btrim, trim
-  - [ ] lpad, rpad
+  - [x] lpad, rpad ✅ Jan 2026
   - [x] concat, concat_ws
   - [x] replace, translate
   - [x] split_part, string_to_array
@@ -223,15 +223,15 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] json_agg, jsonb_agg, json_object_agg ✅ Complete (Jan 2026)
   - [x] stddev, stddev_pop, variance, var_pop ✅ Complete (Jan 2026)
   - [x] percentileCont, percentileDisc ✅ Complete (Jan 2026)
-  - [ ] bool_and, bool_or, every
+  - [x] bool_and, bool_or, every ✅ Jan 2026
   - [ ] FILTER clause on aggregates
 
 - [x] **Window Functions** (Tier 2) - Complete ✅ Jan 2026
   - [x] row_number, rank, dense_rank ✅ Jan 2026
-  - [ ] ntile
+  - [x] ntile ✅ Jan 2026
   - [x] lag, lead ✅ Jan 2026
   - [x] first_value, last_value, nth_value ✅ Jan 2026
-  - [ ] percent_rank, cume_dist
+  - [x] percent_rank, cume_dist ✅ Jan 2026
   - [x] Any aggregate as window function ✅ Jan 2026
 
 - [x] **JSON Functions** (Tier 2) - Core functions complete ✅ Jan 2026
@@ -347,9 +347,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] reduce (fold operation) ✅ Jan 2026
   - [x] all, any, none, single (predicate tests) ✅ Jan 2026
 
-- [ ] **String Functions**
-  - [ ] Same as SQL tier + specific Cypher names
-  - [ ] left, right
+- [x] **String Functions** ✅ Jan 2026
+  - [x] Same as SQL tier + specific Cypher names
+  - [x] left, right ✅ Jan 2026
 
 - [x] **Mathematical Functions** - Shares SQL implementation
   - [x] Same as SQL tier ✅ Jan 2026
