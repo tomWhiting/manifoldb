@@ -1330,6 +1330,15 @@ impl fmt::Display for LogicalExpr {
                         }
                         write!(f, ", {n})")?;
                     }
+                    WindowFunction::Ntile { n } => {
+                        write!(f, "NTILE({n})")?;
+                    }
+                    WindowFunction::PercentRank => {
+                        write!(f, "PERCENT_RANK()")?;
+                    }
+                    WindowFunction::CumeDist => {
+                        write!(f, "CUME_DIST()")?;
+                    }
                     WindowFunction::Aggregate(agg_func) => {
                         write!(f, "{agg_func}(")?;
                         if let Some(a) = arg {
