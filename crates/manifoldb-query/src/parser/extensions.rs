@@ -356,9 +356,8 @@ impl ExtendedParser {
         // Check if we have a preceding MATCH clause
         let (match_clause, where_clause, create_start) = if upper.starts_with("MATCH") {
             // Find CREATE keyword position
-            let create_pos = Self::find_keyword_pos(&upper, "CREATE").ok_or_else(|| {
-                ParseError::InvalidPattern("expected CREATE keyword".to_string())
-            })?;
+            let create_pos = Self::find_keyword_pos(&upper, "CREATE")
+                .ok_or_else(|| ParseError::InvalidPattern("expected CREATE keyword".to_string()))?;
 
             // Find WHERE position (if any, must be before CREATE)
             let where_pos = Self::find_keyword_pos(&upper[..create_pos], "WHERE");
@@ -380,9 +379,7 @@ impl ExtendedParser {
         } else if upper.starts_with("CREATE") {
             (None, None, 0)
         } else {
-            return Err(ParseError::InvalidPattern(
-                "expected CREATE or MATCH keyword".to_string(),
-            ));
+            return Err(ParseError::InvalidPattern("expected CREATE or MATCH keyword".to_string()));
         };
 
         // Parse after CREATE
@@ -405,12 +402,7 @@ impl ExtendedParser {
             vec![]
         };
 
-        let stmt = CreateGraphStatement {
-            match_clause,
-            where_clause,
-            patterns,
-            return_clause,
-        };
+        let stmt = CreateGraphStatement { match_clause, where_clause, patterns, return_clause };
 
         Ok(vec![Statement::Create(Box::new(stmt))])
     }
@@ -574,9 +566,8 @@ impl ExtendedParser {
         // Check if we have a preceding MATCH clause
         let (match_clause, where_clause, merge_start) = if upper.starts_with("MATCH") {
             // Find MERGE keyword position
-            let merge_pos = Self::find_keyword_pos(&upper, "MERGE").ok_or_else(|| {
-                ParseError::InvalidPattern("expected MERGE keyword".to_string())
-            })?;
+            let merge_pos = Self::find_keyword_pos(&upper, "MERGE")
+                .ok_or_else(|| ParseError::InvalidPattern("expected MERGE keyword".to_string()))?;
 
             // Find WHERE position (if any, must be before MERGE)
             let where_pos = Self::find_keyword_pos(&upper[..merge_pos], "WHERE");
@@ -598,9 +589,7 @@ impl ExtendedParser {
         } else if upper.starts_with("MERGE") {
             (None, None, 0)
         } else {
-            return Err(ParseError::InvalidPattern(
-                "expected MERGE or MATCH keyword".to_string(),
-            ));
+            return Err(ParseError::InvalidPattern("expected MERGE or MATCH keyword".to_string()));
         };
 
         // Parse after MERGE
@@ -613,10 +602,8 @@ impl ExtendedParser {
         let return_pos = Self::find_keyword_pos(&upper_after_merge, "RETURN");
 
         // Pattern ends at first clause
-        let pattern_end = on_create_pos
-            .or(on_match_pos)
-            .or(return_pos)
-            .unwrap_or(after_merge.len());
+        let pattern_end =
+            on_create_pos.or(on_match_pos).or(return_pos).unwrap_or(after_merge.len());
 
         // Parse the MERGE pattern
         let pattern_str = &after_merge[..pattern_end].trim();
@@ -625,10 +612,7 @@ impl ExtendedParser {
         // Parse ON CREATE SET clause
         let on_create = if let Some(pos) = on_create_pos {
             let start = pos + 9; // "ON CREATE".len()
-            let end = on_match_pos
-                .filter(|&p| p > pos)
-                .or(return_pos)
-                .unwrap_or(after_merge.len());
+            let end = on_match_pos.filter(|&p| p > pos).or(return_pos).unwrap_or(after_merge.len());
             Self::parse_set_actions(&after_merge[start..end])?
         } else {
             vec![]
@@ -637,10 +621,8 @@ impl ExtendedParser {
         // Parse ON MATCH SET clause
         let on_match = if let Some(pos) = on_match_pos {
             let start = pos + 8; // "ON MATCH".len()
-            let end = on_create_pos
-                .filter(|&p| p > pos)
-                .or(return_pos)
-                .unwrap_or(after_merge.len());
+            let end =
+                on_create_pos.filter(|&p| p > pos).or(return_pos).unwrap_or(after_merge.len());
             Self::parse_set_actions(&after_merge[start..end])?
         } else {
             vec![]
@@ -755,16 +737,17 @@ impl ExtendedParser {
         let input = input.trim();
 
         // Parse variable name
-        let dot_pos =
-            input.find('.').ok_or_else(|| ParseError::InvalidPattern("expected '.'".to_string()))?;
+        let dot_pos = input
+            .find('.')
+            .ok_or_else(|| ParseError::InvalidPattern("expected '.'".to_string()))?;
 
         let variable = Identifier::new(&input[..dot_pos]);
         let after_dot = &input[dot_pos + 1..];
 
         // Parse property name
-        let eq_pos = after_dot.find('=').ok_or_else(|| {
-            ParseError::InvalidPattern("expected '=' in SET clause".to_string())
-        })?;
+        let eq_pos = after_dot
+            .find('=')
+            .ok_or_else(|| ParseError::InvalidPattern("expected '=' in SET clause".to_string()))?;
 
         let property = Identifier::new(after_dot[..eq_pos].trim());
         let after_eq = &after_dot[eq_pos + 1..];
@@ -3952,10 +3935,7 @@ mod tests {
                     CreatePattern::Path { start, steps } => {
                         match start {
                             CreateNodeRef::New { variable, .. } => {
-                                assert_eq!(
-                                    variable.as_ref().map(|i| i.name.as_str()),
-                                    Some("a")
-                                );
+                                assert_eq!(variable.as_ref().map(|i| i.name.as_str()), Some("a"));
                             }
                             CreateNodeRef::Variable(ident) => {
                                 assert_eq!(ident.name.as_str(), "a");

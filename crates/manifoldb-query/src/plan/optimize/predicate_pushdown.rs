@@ -227,7 +227,8 @@ impl PredicatePushdown {
 
             // Graph DML - push predicates to input if present
             LogicalPlan::GraphCreate { node, input } => {
-                let optimized_input = input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
+                let optimized_input =
+                    input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
                 // Apply remaining predicates as filter if no input
                 if optimized_input.is_none() && !predicates.is_empty() {
                     let combined = Self::combine_predicates(predicates);
@@ -240,7 +241,8 @@ impl PredicatePushdown {
                 }
             }
             LogicalPlan::GraphMerge { node, input } => {
-                let optimized_input = input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
+                let optimized_input =
+                    input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
                 if optimized_input.is_none() && !predicates.is_empty() {
                     let combined = Self::combine_predicates(predicates);
                     LogicalPlan::Filter {

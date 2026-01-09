@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
-    CreateNodeRef, CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
+    self, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement, CreateNodeRef,
+    CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
     DropIndexStatement, DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement,
     JoinClause, JoinCondition, JoinType as AstJoinType, MatchStatement, MergeGraphStatement,
     MergePattern, PathPattern, SelectItem, SelectStatement, SetAction as AstSetAction,
@@ -1044,7 +1044,8 @@ impl PlanBuilder {
                             CreateNodeRef::Variable(v) => v.name.clone(),
                             CreateNodeRef::New { variable, labels, properties } => {
                                 let var = variable.as_ref().map(|v| v.name.clone());
-                                let var_name = var.clone().unwrap_or_else(|| self.next_alias("node"));
+                                let var_name =
+                                    var.clone().unwrap_or_else(|| self.next_alias("node"));
                                 let label_strs: Vec<String> =
                                     labels.iter().map(|l| l.name.clone()).collect();
                                 let mut props = Vec::new();
@@ -1072,12 +1073,9 @@ impl PlanBuilder {
                             props.push((name.name.clone(), logical_expr));
                         }
 
-                        let mut rel_spec = CreateRelSpec::new(
-                            start_var,
-                            step.rel_type.name.clone(),
-                            end_var,
-                        )
-                        .with_properties(props);
+                        let mut rel_spec =
+                            CreateRelSpec::new(start_var, step.rel_type.name.clone(), end_var)
+                                .with_properties(props);
                         if let Some(rv) = &step.rel_variable {
                             rel_spec = rel_spec.with_variable(rv.name.clone());
                         }
@@ -1126,7 +1124,11 @@ impl PlanBuilder {
                     let logical_expr = self.build_expr(expr)?;
                     props.push((name.name.clone(), logical_expr));
                 }
-                MergePatternSpec::Node { variable: var, labels: label_strs, match_properties: props }
+                MergePatternSpec::Node {
+                    variable: var,
+                    labels: label_strs,
+                    match_properties: props,
+                }
             }
             MergePattern::Relationship { start, rel_variable, rel_type, match_properties, end } => {
                 let start_var = start.name.clone();

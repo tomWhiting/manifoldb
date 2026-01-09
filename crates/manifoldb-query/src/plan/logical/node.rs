@@ -827,15 +827,29 @@ impl DisplayTree<'_> {
                 }
             }
             LogicalPlan::GraphCreate { node, .. } => {
-                write!(f, "GraphCreate: {} nodes, {} relationships", node.nodes.len(), node.relationships.len())?;
+                write!(
+                    f,
+                    "GraphCreate: {} nodes, {} relationships",
+                    node.nodes.len(),
+                    node.relationships.len()
+                )?;
             }
             LogicalPlan::GraphMerge { node, .. } => {
                 let pattern_desc = match &node.pattern {
                     super::graph::MergePatternSpec::Node { variable, labels, .. } => {
-                        let labels_str = if labels.is_empty() { String::new() } else { format!(":{}", labels.join(":")) };
+                        let labels_str = if labels.is_empty() {
+                            String::new()
+                        } else {
+                            format!(":{}", labels.join(":"))
+                        };
                         format!("({}{})", variable, labels_str)
                     }
-                    super::graph::MergePatternSpec::Relationship { start_var, rel_type, end_var, .. } => {
+                    super::graph::MergePatternSpec::Relationship {
+                        start_var,
+                        rel_type,
+                        end_var,
+                        ..
+                    } => {
                         format!("({start_var})-[:{rel_type}]->({end_var})")
                     }
                 };
