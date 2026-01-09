@@ -30,7 +30,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **UNWIND Clause** - List expansion to rows
 - ✅ **Cypher CREATE** - Full execution with MATCH + CREATE patterns (Jan 2026)
 - ✅ **Cypher SET/DELETE/REMOVE** - Full execution complete (Jan 2026)
-- ✅ **Cypher MERGE/FOREACH** - Parsing and logical/physical planning (execution TBD)
+- ✅ **Cypher MERGE** - Full execution complete (Jan 2026)
+- ✅ **Cypher FOREACH** - Parsing and logical/physical planning (execution TBD)
 - ✅ **CALL/YIELD Infrastructure** - Procedure registry, ProcedureCall plan node, algo.pageRank, algo.shortestPath
 - ✅ **Window Value Functions** - LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
 - ✅ **Cypher List Comprehensions** - `[x IN list WHERE pred | expr]` with list functions (range, size, head, tail, last, reverse)
@@ -289,9 +290,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.1 Parser Extensions
 **Goal:** Parse complete openCypher queries.
 
-- [x] **Writing Clauses** - CREATE, SET, DELETE, REMOVE fully executable ✅ Jan 2026
+- [x] **Writing Clauses** - CREATE, MERGE, SET, DELETE, REMOVE fully executable ✅ Jan 2026
   - [x] CREATE (nodes and relationships) ✅ Jan 2026 - Full execution
-  - [x] MERGE with ON CREATE SET and ON MATCH SET ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] MERGE with ON CREATE SET and ON MATCH SET ✅ Jan 2026 - Full execution
   - [x] SET (properties and labels) ✅ Jan 2026 - Full execution
   - [x] REMOVE (properties and labels) ✅ Jan 2026 - Full execution
   - [x] DELETE and DETACH DELETE ✅ Jan 2026 - Full execution
@@ -306,9 +307,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] allShortestPaths() pattern function ✅ Jan 2026
   - [x] Variable-length path execution ✅ Jan 2026
 
-- [x] **Subqueries** - EXISTS fully executable, COUNT/CALL planning complete ✅ Jan 2026
+- [x] **Subqueries** - EXISTS and COUNT fully executable, CALL planning complete ✅ Jan 2026
   - [x] EXISTS { } subquery ✅ Jan 2026 - Full execution
-  - [x] COUNT { } subquery ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] COUNT { } subquery ✅ Jan 2026 - Full execution
   - [x] CALL { } subquery (inline) ✅ Jan 2026 - Parsing + planning (execution TBD)
 
 - [ ] **Advanced Patterns**
@@ -383,12 +384,12 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Implement Cypher-specific operators.
 
 - [x] **GraphCreateOp** - Create nodes and edges ✅ Jan 2026 (full execution)
-- [x] **GraphMergeOp** - Merge with create/match logic ✅ Jan 2026 (planning only, execution TBD)
+- [x] **GraphMergeOp** - Merge with create/match logic ✅ Jan 2026 (full execution)
 - [x] **GraphSetOp** - Set properties/labels ✅ Jan 2026 (full execution)
 - [x] **GraphRemoveOp** - Remove properties/labels ✅ Jan 2026 (full execution)
 - [x] **GraphDeleteOp** - Delete with referential checks ✅ Jan 2026 (full execution)
 - [x] **ShortestPathOp** - BFS-based shortest path ✅ Jan 2026 (full execution)
-- [x] **AllShortestPathsOp** - All shortest paths ✅ Jan 2026 (planning only, execution TBD)
+- [x] **AllShortestPathsOp** - All shortest paths ✅ Jan 2026 (full execution)
 - [x] **VariableLengthExpandOp** - Multi-hop expansion ✅ Jan 2026
 
 ---
@@ -412,8 +413,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] `algo.dijkstra(start, end, weightProperty) YIELD path, cost` ✅ Jan 2026
 - [x] `algo.astar(start, end, heuristic, weightProperty) YIELD path, cost` ✅ Jan 2026
 - [x] `algo.sssp(start, weightProperty) YIELD nodeId, distance` ✅ Jan 2026
-- [ ] `algo.bfs(start, config) YIELD node, depth`
-- [ ] `algo.dfs(start, config) YIELD node, depth`
+- [x] `algo.bfs(start, config) YIELD node, depth` ✅ Jan 2026
+- [x] `algo.dfs(start, config) YIELD node, depth` ✅ Jan 2026
 
 #### 4.3 Centrality Algorithms
 **Goal:** Expose centrality algorithms as procedures.

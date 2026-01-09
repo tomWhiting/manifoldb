@@ -968,7 +968,7 @@ These feature groups can be implemented independently:
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | Reading Clauses | 25 | 19 | 3 | 3 |
-| Writing Clauses | 16 | 10 | 5 | 1 |
+| Writing Clauses | 16 | 14 | 1 | 1 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
 | Expressions | 10 | 7 | 0 | 3 |
