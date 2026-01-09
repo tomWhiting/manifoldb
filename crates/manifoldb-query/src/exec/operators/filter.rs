@@ -412,6 +412,27 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
                 .collect();
             Ok(Value::Array(pairs))
         }
+
+        // Pattern comprehension: [(pattern) WHERE predicate | expression]
+        // This expression type requires graph access to execute the pattern matching.
+        // At the expression evaluation level, we cannot execute graph traversals directly.
+        // Pattern comprehensions should be planned as subquery-like operations that
+        // execute the pattern match and collect results.
+        //
+        // For now, we return NULL and pattern comprehensions should be handled
+        // at the operator level where graph access is available.
+        LogicalExpr::PatternComprehension { .. } => {
+            // TODO: Pattern comprehensions require graph access for execution.
+            // They should be transformed into a plan that:
+            // 1. Executes the graph pattern match for each input row
+            // 2. Filters matches based on the WHERE predicate
+            // 3. Projects the result expression for each match
+            // 4. Collects all projections into a list
+            //
+            // This is similar to a correlated subquery over graph data.
+            // For now, return an empty list as a placeholder.
+            Ok(Value::Array(vec![]))
+        }
     }
 }
 
