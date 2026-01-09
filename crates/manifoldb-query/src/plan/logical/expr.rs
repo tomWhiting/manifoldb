@@ -16,8 +16,8 @@
 use std::fmt;
 
 use crate::ast::{
-    BinaryOp, DataType, Literal, QualifiedName, UnaryOp, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowFunction,
+    AggregateWindowFunction, BinaryOp, DataType, Literal, QualifiedName, UnaryOp, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowFunction,
 };
 
 /// An expression in a logical plan.
@@ -690,6 +690,109 @@ impl LogicalExpr {
         }
     }
 
+    /// Creates a SUM window function.
+    ///
+    /// SUM(expr) OVER (...) computes the running total over the window frame.
+    /// Example: `SUM(amount) OVER (ORDER BY date)` for running totals.
+    #[must_use]
+    pub fn sum_window(
+        expr: Self,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Aggregate(AggregateWindowFunction::Sum),
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
+    /// Creates an AVG window function.
+    ///
+    /// AVG(expr) OVER (...) computes the moving average over the window frame.
+    /// Example: `AVG(value) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` for 7-day moving average.
+    #[must_use]
+    pub fn avg_window(
+        expr: Self,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Aggregate(AggregateWindowFunction::Avg),
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
+    /// Creates a COUNT window function.
+    ///
+    /// COUNT(expr) OVER (...) computes the cumulative count over the window frame.
+    /// Use None for expr to count all rows (COUNT(*)).
+    #[must_use]
+    pub fn count_window(
+        expr: Option<Self>,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Aggregate(AggregateWindowFunction::Count),
+            arg: expr.map(Box::new),
+            default_value: None,
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
+    /// Creates a MIN window function.
+    ///
+    /// MIN(expr) OVER (...) computes the cumulative minimum over the window frame.
+    #[must_use]
+    pub fn min_window(
+        expr: Self,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Aggregate(AggregateWindowFunction::Min),
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
+    /// Creates a MAX window function.
+    ///
+    /// MAX(expr) OVER (...) computes the cumulative maximum over the window frame.
+    #[must_use]
+    pub fn max_window(
+        expr: Self,
+        partition_by: Vec<Self>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+    ) -> Self {
+        Self::WindowFunction {
+            func: WindowFunction::Aggregate(AggregateWindowFunction::Max),
+            arg: Some(Box::new(expr)),
+            default_value: None,
+            partition_by,
+            order_by,
+            frame,
+        }
+    }
+
     // ========== Utility Methods ==========
 
     /// Returns the alias if this is an aliased expression.
@@ -957,6 +1060,13 @@ impl fmt::Display for LogicalExpr {
                             write!(f, "{a}")?;
                         }
                         write!(f, ", {n})")?;
+                    }
+                    WindowFunction::Aggregate(agg_func) => {
+                        write!(f, "{agg_func}(")?;
+                        if let Some(a) = arg {
+                            write!(f, "{a}")?;
+                        }
+                        write!(f, ")")?;
                     }
                 }
                 write!(f, " OVER (")?;

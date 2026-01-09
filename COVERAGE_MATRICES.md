@@ -56,7 +56,8 @@ Window Functions
 ├── Ranking functions (ROW_NUMBER, RANK, DENSE_RANK): ✅ Complete
 ├── Value functions (LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE): ✅ Complete
 ├── Frame clause (ROWS/RANGE BETWEEN): ✅ Complete
-└── Status: ✅ Core window functions complete (Jan 2026)
+├── Aggregate as window (SUM, AVG, COUNT, MIN, MAX OVER): ✅ Complete (Jan 2026)
+└── Status: ✅ All core window functions complete (Jan 2026)
 
 Recursive CTEs
 ├── Depends on: Non-recursive CTEs (exists)
@@ -103,7 +104,7 @@ These feature groups can be implemented independently:
 
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
-3. **Window Functions** - ✅ Core complete (Jan 2026) - NTILE, aggregates as windows remaining
+3. **Window Functions** - ✅ Complete (Jan 2026) - only NTILE remaining
 4. **Graph Algorithms** - ✅ 13 procedures via CALL/YIELD (Jan 2026)
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
@@ -235,11 +236,11 @@ These feature groups can be implemented independently:
 | last_value() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | nth_value() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | **Aggregate as Window** |
-| count() OVER | ✓ | ✓ | | | | | Needs impl |
-| sum() OVER | ✓ | ✓ | | | | | Needs impl |
-| avg() OVER | ✓ | ✓ | | | | | Needs impl |
-| min() OVER | ✓ | ✓ | | | | | Needs impl |
-| max() OVER | ✓ | ✓ | | | | | Needs impl |
+| count() OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| sum() OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| avg() OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| min() OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| max() OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 
 ## 1.4 INSERT Statement
 
@@ -917,7 +918,7 @@ These feature groups can be implemented independently:
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
 | CTEs | 10 | 5 | 0 | 5 |
-| Window Functions | 25 | 15 | 3 | 7 |
+| Window Functions | 25 | 20 | 3 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 30 | 12 | 3 | 15 |
 | Transactions | 8 | 0 | 0 | 8 |

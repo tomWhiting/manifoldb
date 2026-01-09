@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use manifoldb_core::Value;
 
-use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunction};
+use crate::ast::{
+    AggregateWindowFunction, Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunction,
+};
 use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
@@ -148,6 +151,9 @@ impl WindowOp {
             | WindowFunction::LastValue
             | WindowFunction::NthValue { .. } => {
                 self.compute_frame_value(&rows, &indices, expr, &mut window_values);
+            }
+            WindowFunction::Aggregate(agg_func) => {
+                self.compute_aggregate_window(&rows, &indices, expr, *agg_func, &mut window_values);
             }
         }
 
@@ -346,6 +352,223 @@ impl WindowOp {
             };
 
             window_values[idx] = value;
+        }
+    }
+
+    /// Computes aggregate window functions (SUM, AVG, COUNT, MIN, MAX) over frame.
+    ///
+    /// These functions compute aggregates over the window frame, enabling
+    /// running totals, moving averages, and cumulative computations.
+    fn compute_aggregate_window(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        agg_func: AggregateWindowFunction,
+        window_values: &mut [Value],
+    ) {
+        // Build partition boundaries
+        let partition_ranges = self.build_partition_ranges(rows, indices, expr);
+
+        for (sorted_pos, &idx) in indices.iter().enumerate() {
+            let (partition_start, partition_end) = partition_ranges[sorted_pos];
+
+            // Compute frame boundaries for the current row
+            let (frame_start, frame_end) = self.compute_frame_bounds(
+                rows,
+                indices,
+                expr,
+                sorted_pos,
+                partition_start,
+                partition_end,
+            );
+
+            // Collect values in the frame
+            let frame_values: Vec<Value> = (frame_start..frame_end)
+                .map(|pos| {
+                    let row_idx = indices[pos];
+                    if let Some(arg) = &expr.arg {
+                        evaluate_expr(arg, &rows[row_idx]).unwrap_or(Value::Null)
+                    } else {
+                        // For COUNT(*), we count all rows
+                        Value::Int(1)
+                    }
+                })
+                .collect();
+
+            // Compute the aggregate based on function type
+            let result = match agg_func {
+                AggregateWindowFunction::Count => {
+                    self.compute_count(&frame_values, expr.arg.is_some())
+                }
+                AggregateWindowFunction::Sum => self.compute_sum(&frame_values),
+                AggregateWindowFunction::Avg => self.compute_avg(&frame_values),
+                AggregateWindowFunction::Min => self.compute_min(&frame_values),
+                AggregateWindowFunction::Max => self.compute_max(&frame_values),
+            };
+
+            window_values[idx] = result;
+        }
+    }
+
+    /// Computes COUNT over a set of values.
+    /// If count_non_null is true, only counts non-NULL values (COUNT(expr)).
+    /// If count_non_null is false, counts all rows (COUNT(*)).
+    fn compute_count(&self, values: &[Value], count_non_null: bool) -> Value {
+        let count = if count_non_null {
+            values.iter().filter(|v| !matches!(v, Value::Null)).count()
+        } else {
+            values.len()
+        };
+        Value::Int(count as i64)
+    }
+
+    /// Computes SUM over a set of values.
+    fn compute_sum(&self, values: &[Value]) -> Value {
+        let mut int_sum: i64 = 0;
+        let mut float_sum: f64 = 0.0;
+        let mut has_float = false;
+        let mut has_value = false;
+
+        for v in values {
+            match v {
+                Value::Int(n) => {
+                    int_sum += n;
+                    has_value = true;
+                }
+                Value::Float(n) => {
+                    float_sum += n;
+                    has_float = true;
+                    has_value = true;
+                }
+                Value::Null => {}
+                _ => {}
+            }
+        }
+
+        if !has_value {
+            return Value::Null;
+        }
+
+        if has_float {
+            Value::Float(float_sum + int_sum as f64)
+        } else {
+            Value::Int(int_sum)
+        }
+    }
+
+    /// Computes AVG over a set of values.
+    fn compute_avg(&self, values: &[Value]) -> Value {
+        let mut sum: f64 = 0.0;
+        let mut count: usize = 0;
+
+        for v in values {
+            match v {
+                Value::Int(n) => {
+                    sum += *n as f64;
+                    count += 1;
+                }
+                Value::Float(n) => {
+                    sum += n;
+                    count += 1;
+                }
+                Value::Null => {}
+                _ => {}
+            }
+        }
+
+        if count == 0 {
+            Value::Null
+        } else {
+            Value::Float(sum / count as f64)
+        }
+    }
+
+    /// Computes MIN over a set of values.
+    fn compute_min(&self, values: &[Value]) -> Value {
+        let mut min_int: Option<i64> = None;
+        let mut min_float: Option<f64> = None;
+        let mut min_string: Option<&str> = None;
+
+        for v in values {
+            match v {
+                Value::Int(n) => {
+                    min_int = Some(min_int.map_or(*n, |m| m.min(*n)));
+                }
+                Value::Float(n) => {
+                    min_float = Some(min_float.map_or(*n, |m| m.min(*n)));
+                }
+                Value::String(s) => {
+                    min_string = Some(min_string.map_or(s.as_str(), |m| {
+                        if s.as_str() < m {
+                            s.as_str()
+                        } else {
+                            m
+                        }
+                    }));
+                }
+                Value::Null => {}
+                _ => {}
+            }
+        }
+
+        // Return the appropriate type
+        if let Some(s) = min_string {
+            Value::String(s.to_string())
+        } else if let Some(f) = min_float {
+            if let Some(i) = min_int {
+                Value::Float(f.min(i as f64))
+            } else {
+                Value::Float(f)
+            }
+        } else if let Some(i) = min_int {
+            Value::Int(i)
+        } else {
+            Value::Null
+        }
+    }
+
+    /// Computes MAX over a set of values.
+    fn compute_max(&self, values: &[Value]) -> Value {
+        let mut max_int: Option<i64> = None;
+        let mut max_float: Option<f64> = None;
+        let mut max_string: Option<&str> = None;
+
+        for v in values {
+            match v {
+                Value::Int(n) => {
+                    max_int = Some(max_int.map_or(*n, |m| m.max(*n)));
+                }
+                Value::Float(n) => {
+                    max_float = Some(max_float.map_or(*n, |m| m.max(*n)));
+                }
+                Value::String(s) => {
+                    max_string = Some(max_string.map_or(s.as_str(), |m| {
+                        if s.as_str() > m {
+                            s.as_str()
+                        } else {
+                            m
+                        }
+                    }));
+                }
+                Value::Null => {}
+                _ => {}
+            }
+        }
+
+        // Return the appropriate type
+        if let Some(s) = max_string {
+            Value::String(s.to_string())
+        } else if let Some(f) = max_float {
+            if let Some(i) = max_int {
+                Value::Float(f.max(i as f64))
+            } else {
+                Value::Float(f)
+            }
+        } else if let Some(i) = max_int {
+            Value::Int(i)
+        } else {
+            Value::Null
         }
     }
 
@@ -1965,6 +2188,436 @@ mod tests {
         assert_eq!(results.get("Carol"), Some(&"Bob".to_string()));
         assert_eq!(results.get("Dave"), Some(&"Dave".to_string()));
         assert_eq!(results.get("Eve"), Some(&"Dave".to_string()));
+
+        op.close().unwrap();
+    }
+
+    // ========== Aggregate Window Function Tests ==========
+
+    #[test]
+    fn sum_running_total() {
+        // SUM(amount) OVER (ORDER BY date) - running total
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "amount".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(100)],
+                vec![Value::Int(2), Value::Int(50)],
+                vec![Value::Int(3), Value::Int(75)],
+                vec![Value::Int(4), Value::Int(25)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_arg(
+            WindowFunction::Aggregate(AggregateWindowFunction::Sum),
+            LogicalExpr::column("amount"),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "running_total",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(total))) =
+                (row.get_by_name("date"), row.get_by_name("running_total"))
+            {
+                results.push((*date, *total));
+            }
+        }
+
+        // Sort by date to get consistent ordering
+        results.sort_by_key(|(d, _)| *d);
+
+        // Running totals: 100, 150, 225, 250
+        assert_eq!(results, vec![(1, 100), (2, 150), (3, 225), (4, 250)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn avg_moving_average() {
+        // AVG(value) OVER (ORDER BY date ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+        // 2-row moving average
+        use crate::ast::{
+            AggregateWindowFunction, Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits,
+        };
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "value".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(100)],
+                vec![Value::Int(2), Value::Int(80)],
+                vec![Value::Int(3), Value::Int(120)],
+                vec![Value::Int(4), Value::Int(60)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
+            end: Some(WindowFrameBound::CurrentRow),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::Aggregate(AggregateWindowFunction::Avg),
+            Some(LogicalExpr::column("value")),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            frame,
+            "moving_avg",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, f64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Float(avg))) =
+                (row.get_by_name("date"), row.get_by_name("moving_avg"))
+            {
+                results.push((*date, *avg));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Moving averages (2-row window):
+        // date 1: avg(100) = 100.0
+        // date 2: avg(100, 80) = 90.0
+        // date 3: avg(80, 120) = 100.0
+        // date 4: avg(120, 60) = 90.0
+        assert_eq!(results.len(), 4);
+        assert!((results[0].1 - 100.0).abs() < 0.001);
+        assert!((results[1].1 - 90.0).abs() < 0.001);
+        assert!((results[2].1 - 100.0).abs() < 0.001);
+        assert!((results[3].1 - 90.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn count_cumulative() {
+        // COUNT(*) OVER (ORDER BY date) - cumulative count
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "event".to_string()],
+            vec![
+                vec![Value::Int(1), Value::from("A")],
+                vec![Value::Int(2), Value::from("B")],
+                vec![Value::Int(3), Value::from("C")],
+                vec![Value::Int(4), Value::from("D")],
+            ],
+        ));
+
+        // COUNT(*) - no argument means count all rows
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::Aggregate(AggregateWindowFunction::Count),
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "cumulative_count",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(count))) =
+                (row.get_by_name("date"), row.get_by_name("cumulative_count"))
+            {
+                results.push((*date, *count));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Cumulative counts: 1, 2, 3, 4
+        assert_eq!(results, vec![(1, 1), (2, 2), (3, 3), (4, 4)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn min_cumulative() {
+        // MIN(value) OVER (ORDER BY date) - cumulative minimum
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "value".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(50)],
+                vec![Value::Int(2), Value::Int(30)],
+                vec![Value::Int(3), Value::Int(70)],
+                vec![Value::Int(4), Value::Int(20)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_arg(
+            WindowFunction::Aggregate(AggregateWindowFunction::Min),
+            LogicalExpr::column("value"),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "cumulative_min",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(min))) =
+                (row.get_by_name("date"), row.get_by_name("cumulative_min"))
+            {
+                results.push((*date, *min));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Cumulative minimums: 50, 30, 30, 20
+        assert_eq!(results, vec![(1, 50), (2, 30), (3, 30), (4, 20)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn max_cumulative() {
+        // MAX(value) OVER (ORDER BY date) - cumulative maximum
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "value".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(50)],
+                vec![Value::Int(2), Value::Int(80)],
+                vec![Value::Int(3), Value::Int(40)],
+                vec![Value::Int(4), Value::Int(100)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_arg(
+            WindowFunction::Aggregate(AggregateWindowFunction::Max),
+            LogicalExpr::column("value"),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "cumulative_max",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(max))) =
+                (row.get_by_name("date"), row.get_by_name("cumulative_max"))
+            {
+                results.push((*date, *max));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Cumulative maximums: 50, 80, 80, 100
+        assert_eq!(results, vec![(1, 50), (2, 80), (3, 80), (4, 100)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sum_with_partition() {
+        // SUM(amount) OVER (PARTITION BY dept ORDER BY date) - running total per department
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "date".to_string(), "amount".to_string()],
+            vec![
+                vec![Value::from("Sales"), Value::Int(1), Value::Int(100)],
+                vec![Value::from("Sales"), Value::Int(2), Value::Int(50)],
+                vec![Value::from("IT"), Value::Int(1), Value::Int(200)],
+                vec![Value::from("IT"), Value::Int(2), Value::Int(75)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::Aggregate(AggregateWindowFunction::Sum),
+            Some(LogicalExpr::column("amount")),
+            None,
+            vec![LogicalExpr::column("dept")],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            None,
+            "dept_running_total",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<(String, i64), i64> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(dept)), Some(Value::Int(date)), Some(Value::Int(total))) = (
+                row.get_by_name("dept"),
+                row.get_by_name("date"),
+                row.get_by_name("dept_running_total"),
+            ) {
+                results.insert((dept.clone(), *date), *total);
+            }
+        }
+
+        // Sales: date 1 -> 100, date 2 -> 150
+        // IT: date 1 -> 200, date 2 -> 275
+        assert_eq!(results.get(&("Sales".to_string(), 1)), Some(&100));
+        assert_eq!(results.get(&("Sales".to_string(), 2)), Some(&150));
+        assert_eq!(results.get(&("IT".to_string(), 1)), Some(&200));
+        assert_eq!(results.get(&("IT".to_string(), 2)), Some(&275));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sum_with_null_values() {
+        // SUM(amount) should ignore NULL values
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "amount".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(100)],
+                vec![Value::Int(2), Value::Null],
+                vec![Value::Int(3), Value::Int(50)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_arg(
+            WindowFunction::Aggregate(AggregateWindowFunction::Sum),
+            LogicalExpr::column("amount"),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "running_total",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(total))) =
+                (row.get_by_name("date"), row.get_by_name("running_total"))
+            {
+                results.push((*date, *total));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Running totals ignoring NULL: 100, 100, 150
+        assert_eq!(results, vec![(1, 100), (2, 100), (3, 150)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn count_with_expression() {
+        // COUNT(column) - counts non-NULL values
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["date".to_string(), "value".to_string()],
+            vec![
+                vec![Value::Int(1), Value::Int(100)],
+                vec![Value::Int(2), Value::Null],
+                vec![Value::Int(3), Value::Int(50)],
+                vec![Value::Int(4), Value::Null],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_arg(
+            WindowFunction::Aggregate(AggregateWindowFunction::Count),
+            LogicalExpr::column("value"),
+            None,
+            vec![],
+            vec![SortOrder::asc(LogicalExpr::column("date"))],
+            "non_null_count",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: Vec<(i64, i64)> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::Int(date)), Some(Value::Int(count))) =
+                (row.get_by_name("date"), row.get_by_name("non_null_count"))
+            {
+                results.push((*date, *count));
+            }
+        }
+
+        results.sort_by_key(|(d, _)| *d);
+
+        // Non-NULL counts: 1, 1, 2, 2 (skips NULL values)
+        assert_eq!(results, vec![(1, 1), (2, 1), (3, 2), (4, 2)]);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn avg_with_entire_partition_frame() {
+        // AVG(value) OVER () - average over entire partition (no ORDER BY, no frame)
+        use crate::ast::AggregateWindowFunction;
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "value".to_string()],
+            vec![
+                vec![Value::from("A"), Value::Int(10)],
+                vec![Value::from("B"), Value::Int(20)],
+                vec![Value::from("C"), Value::Int(30)],
+                vec![Value::from("D"), Value::Int(40)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::Aggregate(AggregateWindowFunction::Avg),
+            Some(LogicalExpr::column("value")),
+            None,
+            vec![],
+            vec![], // No ORDER BY = entire partition as frame
+            None,
+            "total_avg",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut avgs: Vec<f64> = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            if let Some(Value::Float(avg)) = row.get_by_name("total_avg") {
+                avgs.push(*avg);
+            }
+        }
+
+        // All rows should have avg = (10+20+30+40)/4 = 25.0
+        assert_eq!(avgs.len(), 4);
+        for avg in avgs {
+            assert!((avg - 25.0).abs() < 0.001);
+        }
 
         op.close().unwrap();
     }
