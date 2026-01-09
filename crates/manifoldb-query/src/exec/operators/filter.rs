@@ -2451,6 +2451,48 @@ fn evaluate_scalar_function(
             cypher_path_length(args)
         }
 
+        // ========== Cypher Temporal Functions ==========
+        ScalarFunction::CypherDatetime => {
+            // datetime() - returns current datetime
+            // datetime('2024-01-15T10:30:00') - parse ISO 8601 string
+            // datetime({year: 2024, month: 1, day: 15}) - construct from map
+            cypher_datetime(args)
+        }
+        ScalarFunction::CypherDate => {
+            // date() - returns current date
+            // date('2024-01-15') - parse ISO 8601 string
+            // date({year: 2024, month: 1, day: 15}) - construct from map
+            cypher_date(args)
+        }
+        ScalarFunction::CypherTime => {
+            // time() - returns current time
+            // time('10:30:00') - parse ISO 8601 string
+            // time({hour: 10, minute: 30}) - construct from map
+            cypher_time(args)
+        }
+        ScalarFunction::CypherLocalDatetime => {
+            // localdatetime() - returns current local datetime (without timezone)
+            // localdatetime('2024-01-15T10:30:00') - parse ISO 8601 string
+            // localdatetime({year: 2024, month: 1, day: 15}) - construct from map
+            cypher_localdatetime(args)
+        }
+        ScalarFunction::CypherLocalTime => {
+            // localtime() - returns current local time (without timezone)
+            // localtime('10:30:00') - parse ISO 8601 string
+            // localtime({hour: 10, minute: 30}) - construct from map
+            cypher_localtime(args)
+        }
+        ScalarFunction::CypherDuration => {
+            // duration('P1Y2M3D') - parse ISO 8601 duration
+            // duration({days: 14, hours: 16}) - construct from map
+            cypher_duration(args)
+        }
+        ScalarFunction::CypherDatetimeTruncate => {
+            // datetime.truncate('day', datetime()) - truncate to start of day
+            // datetime.truncate('month', datetime()) - truncate to start of month
+            cypher_datetime_truncate(args)
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -3470,11 +3512,777 @@ fn strip_nulls_recursive(val: serde_json::Value) -> serde_json::Value {
     }
 }
 
+// ========== Cypher Temporal Functions ==========
+
+/// datetime() - Returns current datetime or constructs from string/map.
+///
+/// Formats:
+/// - datetime() - current datetime with timezone
+/// - datetime('2024-01-15T10:30:00') - parse ISO 8601 string
+/// - datetime({year: 2024, month: 1, day: 15, ...}) - construct from map
+fn cypher_datetime(args: &[Value]) -> OperatorResult<Value> {
+    use chrono::Utc;
+
+    if args.is_empty() {
+        // No arguments: return current datetime with timezone
+        let now = Utc::now();
+        return Ok(Value::String(now.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()));
+    }
+
+    match args.first() {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 datetime or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return datetime_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 datetime string
+            parse_cypher_datetime_string(s)
+        }
+        // Map construction not directly supported via Value yet,
+        // but we handle JSON strings above
+        _ => Ok(Value::Null),
+    }
+}
+
+/// date() - Returns current date or constructs from string/map.
+///
+/// Formats:
+/// - date() - current date
+/// - date('2024-01-15') - parse ISO 8601 date string
+/// - date({year: 2024, month: 1, day: 15}) - construct from map
+fn cypher_date(args: &[Value]) -> OperatorResult<Value> {
+    use chrono::Utc;
+
+    if args.is_empty() {
+        // No arguments: return current date
+        let now = Utc::now();
+        return Ok(Value::String(now.format("%Y-%m-%d").to_string()));
+    }
+
+    match args.first() {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 date or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return date_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 date string
+            parse_cypher_date_string(s)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// time() - Returns current time or constructs from string/map.
+///
+/// Formats:
+/// - time() - current time with timezone
+/// - time('10:30:00') - parse ISO 8601 time string
+/// - time({hour: 10, minute: 30, second: 0}) - construct from map
+fn cypher_time(args: &[Value]) -> OperatorResult<Value> {
+    use chrono::Utc;
+
+    if args.is_empty() {
+        // No arguments: return current time with timezone
+        let now = Utc::now();
+        return Ok(Value::String(now.format("%H:%M:%S%.6f+00:00").to_string()));
+    }
+
+    match args.first() {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 time or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return time_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 time string
+            parse_cypher_time_string(s)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// localdatetime() - Returns current local datetime or constructs from string/map.
+///
+/// Similar to datetime() but without timezone.
+fn cypher_localdatetime(args: &[Value]) -> OperatorResult<Value> {
+    use chrono::Utc;
+
+    if args.is_empty() {
+        // No arguments: return current datetime without timezone
+        let now = Utc::now();
+        return Ok(Value::String(now.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()));
+    }
+
+    match args.first() {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 datetime or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return localdatetime_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 datetime string (stripping timezone if present)
+            parse_cypher_localdatetime_string(s)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// localtime() - Returns current local time or constructs from string/map.
+///
+/// Similar to time() but without timezone.
+fn cypher_localtime(args: &[Value]) -> OperatorResult<Value> {
+    use chrono::Utc;
+
+    if args.is_empty() {
+        // No arguments: return current time without timezone
+        let now = Utc::now();
+        return Ok(Value::String(now.format("%H:%M:%S%.6f").to_string()));
+    }
+
+    match args.first() {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 time or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return localtime_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 time string (stripping timezone if present)
+            parse_cypher_localtime_string(s)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// duration() - Creates a duration from ISO 8601 string or map.
+///
+/// Formats:
+/// - duration('P1Y2M3D') - ISO 8601 duration (years, months, days)
+/// - duration('PT4H5M6S') - ISO 8601 duration (hours, minutes, seconds)
+/// - duration('P1Y2M3DT4H5M6S') - combined
+/// - duration({years: 1, months: 2, days: 3, hours: 4, minutes: 5, seconds: 6}) - map
+fn cypher_duration(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Null) | None => Ok(Value::Null),
+        Some(Value::String(s)) => {
+            // Try to parse as ISO 8601 duration or as JSON map
+            if s.starts_with('{') {
+                // Try parsing as JSON map
+                if let Some(json) = parse_json(s) {
+                    return duration_from_json_map(&json);
+                }
+            }
+            // Parse ISO 8601 duration string
+            parse_iso8601_duration(s)
+        }
+        _ => Ok(Value::Null),
+    }
+}
+
+/// datetime.truncate(unit, datetime) - Truncates datetime to specified unit.
+///
+/// Units: millennium, century, decade, year, quarter, month, week, day, hour, minute, second, millisecond, microsecond
+fn cypher_datetime_truncate(args: &[Value]) -> OperatorResult<Value> {
+    match args {
+        [Value::String(unit), Value::String(datetime_str)] => {
+            truncate_cypher_datetime(unit, datetime_str)
+        }
+        [Value::String(unit), Value::String(datetime_str), Value::String(_timezone)] => {
+            // Optionally handle timezone parameter
+            truncate_cypher_datetime(unit, datetime_str)
+        }
+        [Value::Null, _] | [_, Value::Null] => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+// ========== Cypher Temporal Helper Functions ==========
+
+/// Parses an ISO 8601 datetime string and returns the Cypher datetime format.
+fn parse_cypher_datetime_string(s: &str) -> OperatorResult<Value> {
+    use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+
+    // Try parsing with timezone first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string()));
+    }
+
+    // Try parsing ISO 8601 formats
+    let formats = [
+        "%Y-%m-%dT%H:%M:%S%.f%:z",
+        "%Y-%m-%dT%H:%M:%S%:z",
+        "%Y-%m-%dT%H:%M:%S%.fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ];
+
+    for fmt in &formats {
+        // Try with timezone
+        if let Ok(dt) = DateTime::parse_from_str(s, fmt) {
+            return Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.6f%:z").to_string()));
+        }
+        // Try as naive datetime
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            // Assume UTC if no timezone
+            let with_tz = Utc.from_utc_datetime(&dt);
+            return Ok(Value::String(with_tz.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()));
+        }
+    }
+
+    // Try date-only
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt = date.and_hms_opt(0, 0, 0).unwrap_or_default();
+        let with_tz = Utc.from_utc_datetime(&dt);
+        return Ok(Value::String(with_tz.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()));
+    }
+
+    Ok(Value::Null)
+}
+
+/// Parses an ISO 8601 date string and returns the Cypher date format.
+fn parse_cypher_date_string(s: &str) -> OperatorResult<Value> {
+    use chrono::NaiveDate;
+
+    // Try parsing date
+    if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(Value::String(date.format("%Y-%m-%d").to_string()));
+    }
+
+    // Try parsing datetime and extract date
+    if let Ok(dt) = parse_naive_datetime(s) {
+        return Ok(Value::String(dt.format("%Y-%m-%d").to_string()));
+    }
+
+    Ok(Value::Null)
+}
+
+/// Parses an ISO 8601 time string with timezone.
+fn parse_cypher_time_string(s: &str) -> OperatorResult<Value> {
+    use chrono::NaiveTime;
+
+    // Parse time formats
+    let formats = [
+        "%H:%M:%S%.f%:z",
+        "%H:%M:%S%:z",
+        "%H:%M:%S%.fZ",
+        "%H:%M:%SZ",
+        "%H:%M:%S%.f",
+        "%H:%M:%S",
+        "%H:%M",
+    ];
+
+    for fmt in &formats {
+        if let Ok(time) = NaiveTime::parse_from_str(s, fmt) {
+            // Return with UTC timezone if none specified
+            return Ok(Value::String(format!("{}+00:00", time.format("%H:%M:%S%.6f"))));
+        }
+    }
+
+    Ok(Value::Null)
+}
+
+/// Parses an ISO 8601 datetime string without timezone.
+fn parse_cypher_localdatetime_string(s: &str) -> OperatorResult<Value> {
+    use chrono::NaiveDateTime;
+
+    let formats = [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    ];
+
+    // Strip timezone if present (e.g., "+00:00", "-05:00", "Z")
+    let s = strip_timezone_suffix(s);
+
+    for fmt in &formats {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()));
+        }
+    }
+
+    // Try date-only
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt = date.and_hms_opt(0, 0, 0).unwrap_or_default();
+        return Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()));
+    }
+
+    Ok(Value::Null)
+}
+
+/// Parses an ISO 8601 time string without timezone.
+fn parse_cypher_localtime_string(s: &str) -> OperatorResult<Value> {
+    use chrono::NaiveTime;
+
+    // Strip timezone if present (e.g., "+00:00", "-05:00", "Z")
+    let s = strip_timezone_suffix(s);
+
+    let formats = ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"];
+
+    for fmt in &formats {
+        if let Ok(time) = NaiveTime::parse_from_str(s, fmt) {
+            return Ok(Value::String(time.format("%H:%M:%S%.6f").to_string()));
+        }
+    }
+
+    Ok(Value::Null)
+}
+
+/// Strips timezone suffix from a datetime or time string.
+fn strip_timezone_suffix(s: &str) -> &str {
+    let s = s.trim();
+
+    // Handle Z suffix
+    if s.ends_with('Z') {
+        return &s[..s.len() - 1];
+    }
+
+    // Look for +HH:MM or -HH:MM pattern at the end
+    // Also handle +HHMM or +HH
+    if let Some(pos) = s.rfind(['+', '-']) {
+        // Check if the part after +/- looks like a timezone offset
+        let after = &s[pos + 1..];
+        // Timezone offsets are like: "00:00", "05:30", "0000", "05"
+        let is_timezone = after.len() >= 2
+            && after.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && after.chars().all(|c| c.is_ascii_digit() || c == ':');
+
+        if is_timezone {
+            return &s[..pos];
+        }
+    }
+
+    s
+}
+
+/// Constructs a datetime from a JSON map.
+fn datetime_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let year = obj.get("year").and_then(|v| v.as_i64()).unwrap_or(1970) as i32;
+    let month = obj.get("month").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let day = obj.get("day").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let hour = obj.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let minute = obj.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let second = obj.get("second").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let nanosecond = obj.get("nanosecond").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let date = match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(d) => d,
+        None => return Ok(Value::Null),
+    };
+
+    let time = match NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond) {
+        Some(t) => t,
+        None => return Ok(Value::Null),
+    };
+
+    let dt = NaiveDateTime::new(date, time);
+    let with_tz = Utc.from_utc_datetime(&dt);
+    Ok(Value::String(with_tz.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()))
+}
+
+/// Constructs a date from a JSON map.
+fn date_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use chrono::NaiveDate;
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let year = obj.get("year").and_then(|v| v.as_i64()).unwrap_or(1970) as i32;
+    let month = obj.get("month").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let day = obj.get("day").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+
+    match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(d) => Ok(Value::String(d.format("%Y-%m-%d").to_string())),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Constructs a time from a JSON map.
+fn time_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use chrono::NaiveTime;
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let hour = obj.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let minute = obj.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let second = obj.get("second").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let nanosecond = obj.get("nanosecond").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    match NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond) {
+        Some(t) => Ok(Value::String(format!("{}+00:00", t.format("%H:%M:%S%.6f")))),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Constructs a local datetime from a JSON map.
+fn localdatetime_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let year = obj.get("year").and_then(|v| v.as_i64()).unwrap_or(1970) as i32;
+    let month = obj.get("month").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let day = obj.get("day").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let hour = obj.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let minute = obj.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let second = obj.get("second").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let nanosecond = obj.get("nanosecond").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let date = match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(d) => d,
+        None => return Ok(Value::Null),
+    };
+
+    let time = match NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond) {
+        Some(t) => t,
+        None => return Ok(Value::Null),
+    };
+
+    let dt = NaiveDateTime::new(date, time);
+    Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.6f").to_string()))
+}
+
+/// Constructs a local time from a JSON map.
+fn localtime_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use chrono::NaiveTime;
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let hour = obj.get("hour").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let minute = obj.get("minute").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let second = obj.get("second").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let nanosecond = obj.get("nanosecond").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    match NaiveTime::from_hms_nano_opt(hour, minute, second, nanosecond) {
+        Some(t) => Ok(Value::String(t.format("%H:%M:%S%.6f").to_string())),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Constructs a duration from a JSON map.
+fn duration_from_json_map(json: &serde_json::Value) -> OperatorResult<Value> {
+    use std::fmt::Write;
+
+    let obj = match json {
+        serde_json::Value::Object(obj) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let years = obj.get("years").and_then(|v| v.as_i64()).unwrap_or(0);
+    let months = obj.get("months").and_then(|v| v.as_i64()).unwrap_or(0);
+    let weeks = obj.get("weeks").and_then(|v| v.as_i64()).unwrap_or(0);
+    let days = obj.get("days").and_then(|v| v.as_i64()).unwrap_or(0);
+    let hours = obj.get("hours").and_then(|v| v.as_i64()).unwrap_or(0);
+    let minutes = obj.get("minutes").and_then(|v| v.as_i64()).unwrap_or(0);
+    let seconds = obj.get("seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+    let nanoseconds = obj.get("nanoseconds").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Total days including weeks
+    let total_days = days + weeks * 7;
+
+    // Build ISO 8601 duration string
+    let mut result = String::from("P");
+
+    if years != 0 {
+        let _ = write!(result, "{years}Y");
+    }
+    if months != 0 {
+        let _ = write!(result, "{months}M");
+    }
+    if total_days != 0 {
+        let _ = write!(result, "{total_days}D");
+    }
+
+    let has_time = hours != 0 || minutes != 0 || seconds != 0 || nanoseconds != 0;
+    if has_time {
+        result.push('T');
+        if hours != 0 {
+            let _ = write!(result, "{hours}H");
+        }
+        if minutes != 0 {
+            let _ = write!(result, "{minutes}M");
+        }
+        if seconds != 0 || nanoseconds != 0 {
+            if nanoseconds != 0 {
+                let frac_seconds = seconds as f64 + nanoseconds as f64 / 1_000_000_000.0;
+                let _ = write!(result, "{frac_seconds}S");
+            } else {
+                let _ = write!(result, "{seconds}S");
+            }
+        }
+    }
+
+    // If no components, use P0D
+    if result == "P" {
+        result.push_str("0D");
+    }
+
+    Ok(Value::String(result))
+}
+
+/// Parses an ISO 8601 duration string.
+///
+/// Format: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+/// Examples:
+/// - P1Y - 1 year
+/// - P1M - 1 month
+/// - P1D - 1 day
+/// - PT1H - 1 hour
+/// - PT1M - 1 minute
+/// - PT1S - 1 second
+/// - P1Y2M3DT4H5M6S - combined
+fn parse_iso8601_duration(s: &str) -> OperatorResult<Value> {
+    use std::fmt::Write;
+
+    let s = s.trim();
+
+    // Check if it starts with P
+    if !s.starts_with('P') && !s.starts_with('p') {
+        return Ok(Value::Null);
+    }
+
+    let s = &s[1..]; // Skip 'P'
+
+    // Split into date and time parts
+    let (date_part, time_part) = if let Some(t_pos) = s.find(['T', 't']) {
+        (&s[..t_pos], Some(&s[t_pos + 1..]))
+    } else {
+        (s, None)
+    };
+
+    // Parse date components
+    let (years, months, weeks, days) = parse_duration_date_part(date_part);
+
+    // Parse time components
+    let (hours, minutes, seconds) = if let Some(time_str) = time_part {
+        parse_duration_time_part(time_str)
+    } else {
+        (0, 0, 0.0)
+    };
+
+    // Build ISO 8601 duration string (normalized)
+    let total_days = days + weeks * 7;
+    let mut result = String::from("P");
+
+    if years != 0 {
+        let _ = write!(result, "{years}Y");
+    }
+    if months != 0 {
+        let _ = write!(result, "{months}M");
+    }
+    if total_days != 0 {
+        let _ = write!(result, "{total_days}D");
+    }
+
+    let has_time = hours != 0 || minutes != 0 || seconds != 0.0;
+    if has_time {
+        result.push('T');
+        if hours != 0 {
+            let _ = write!(result, "{hours}H");
+        }
+        if minutes != 0 {
+            let _ = write!(result, "{minutes}M");
+        }
+        if seconds != 0.0 {
+            if seconds.fract() == 0.0 {
+                let secs_i64 = seconds as i64;
+                let _ = write!(result, "{secs_i64}S");
+            } else {
+                let _ = write!(result, "{seconds}S");
+            }
+        }
+    }
+
+    // If no components, use P0D
+    if result == "P" {
+        result.push_str("0D");
+    }
+
+    Ok(Value::String(result))
+}
+
+/// Parses the date part of an ISO 8601 duration (years, months, weeks, days).
+fn parse_duration_date_part(s: &str) -> (i64, i64, i64, i64) {
+    let mut years = 0i64;
+    let mut months = 0i64;
+    let mut weeks = 0i64;
+    let mut days = 0i64;
+
+    let mut current_num = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() || c == '.' || c == '-' {
+            current_num.push(c);
+        } else {
+            let num: i64 = current_num.parse().unwrap_or(0);
+            current_num.clear();
+            match c {
+                'Y' | 'y' => years = num,
+                'M' | 'm' => months = num, // In date part, M is months
+                'W' | 'w' => weeks = num,
+                'D' | 'd' => days = num,
+                _ => {}
+            }
+        }
+    }
+
+    (years, months, weeks, days)
+}
+
+/// Parses the time part of an ISO 8601 duration (hours, minutes, seconds).
+fn parse_duration_time_part(s: &str) -> (i64, i64, f64) {
+    let mut hours = 0i64;
+    let mut minutes = 0i64;
+    let mut seconds = 0.0f64;
+
+    let mut current_num = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() || c == '.' || c == '-' {
+            current_num.push(c);
+        } else {
+            match c {
+                'H' | 'h' => {
+                    hours = current_num.parse().unwrap_or(0);
+                    current_num.clear();
+                }
+                'M' | 'm' => {
+                    // In time part, M is minutes
+                    minutes = current_num.parse().unwrap_or(0);
+                    current_num.clear();
+                }
+                'S' | 's' => {
+                    seconds = current_num.parse().unwrap_or(0.0);
+                    current_num.clear();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (hours, minutes, seconds)
+}
+
+/// Truncates a datetime to the specified unit.
+fn truncate_cypher_datetime(unit: &str, datetime_str: &str) -> OperatorResult<Value> {
+    use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+
+    // Parse the datetime
+    let dt = parse_naive_datetime(datetime_str)?;
+
+    let truncated = match unit.to_lowercase().as_str() {
+        "millennium" => {
+            let year = (dt.year() / 1000) * 1000;
+            NaiveDate::from_ymd_opt(year, 1, 1).map(|d| NaiveDateTime::new(d, NaiveTime::default()))
+        }
+        "century" => {
+            let year = (dt.year() / 100) * 100;
+            NaiveDate::from_ymd_opt(year, 1, 1).map(|d| NaiveDateTime::new(d, NaiveTime::default()))
+        }
+        "decade" => {
+            let year = (dt.year() / 10) * 10;
+            NaiveDate::from_ymd_opt(year, 1, 1).map(|d| NaiveDateTime::new(d, NaiveTime::default()))
+        }
+        "year" => NaiveDate::from_ymd_opt(dt.year(), 1, 1)
+            .map(|d| NaiveDateTime::new(d, NaiveTime::default())),
+        "quarter" => {
+            let quarter_month = ((dt.month() - 1) / 3) * 3 + 1;
+            NaiveDate::from_ymd_opt(dt.year(), quarter_month, 1)
+                .map(|d| NaiveDateTime::new(d, NaiveTime::default()))
+        }
+        "month" => NaiveDate::from_ymd_opt(dt.year(), dt.month(), 1)
+            .map(|d| NaiveDateTime::new(d, NaiveTime::default())),
+        "week" => {
+            // Truncate to Monday of the current week
+            let weekday = dt.weekday().num_days_from_monday();
+            let monday = dt.date() - chrono::Duration::days(weekday as i64);
+            Some(NaiveDateTime::new(monday, NaiveTime::default()))
+        }
+        "day" => Some(NaiveDateTime::new(dt.date(), NaiveTime::default())),
+        "hour" => NaiveTime::from_hms_opt(dt.time().hour(), 0, 0)
+            .map(|t| NaiveDateTime::new(dt.date(), t)),
+        "minute" => NaiveTime::from_hms_opt(dt.time().hour(), dt.time().minute(), 0)
+            .map(|t| NaiveDateTime::new(dt.date(), t)),
+        "second" => {
+            NaiveTime::from_hms_opt(dt.time().hour(), dt.time().minute(), dt.time().second())
+                .map(|t| NaiveDateTime::new(dt.date(), t))
+        }
+        "millisecond" => {
+            let millis = dt.time().nanosecond() / 1_000_000;
+            NaiveTime::from_hms_nano_opt(
+                dt.time().hour(),
+                dt.time().minute(),
+                dt.time().second(),
+                millis * 1_000_000,
+            )
+            .map(|t| NaiveDateTime::new(dt.date(), t))
+        }
+        "microsecond" => {
+            let micros = dt.time().nanosecond() / 1_000;
+            NaiveTime::from_hms_nano_opt(
+                dt.time().hour(),
+                dt.time().minute(),
+                dt.time().second(),
+                micros * 1_000,
+            )
+            .map(|t| NaiveDateTime::new(dt.date(), t))
+        }
+        _ => return Ok(Value::Null),
+    };
+
+    match truncated {
+        Some(dt) => {
+            let with_tz = Utc.from_utc_datetime(&dt);
+            Ok(Value::String(with_tz.format("%Y-%m-%dT%H:%M:%S%.6f+00:00").to_string()))
+        }
+        None => Ok(Value::Null),
+    }
+}
+
 // ========== Cypher Entity Functions ==========
 
-/// TYPE(relationship) - Returns the type (string) of a relationship.
+/// TYPE(relationship) - Returns the type of a relationship.
 ///
-/// In Cypher, relationships have a type (e.g., "KNOWS", "FOLLOWS").
+/// In Cypher, relationships have a type (e.g., "KNOWS", "FRIENDS_WITH").
 /// This function extracts that type from the relationship entity.
 ///
 /// Currently supports:
@@ -4126,6 +4934,7 @@ fn maxsim_score(query: &[Vec<f32>], doc: &[Vec<f32>]) -> f32 {
 mod tests {
     use super::*;
     use crate::exec::operators::values::ValuesOp;
+    use crate::plan::logical::ScalarFunction;
 
     fn make_input() -> BoxedOperator {
         Box::new(ValuesOp::with_columns(
@@ -8514,5 +9323,430 @@ mod tests {
 
         assert_eq!(exists_result, Value::Bool(true));
         assert_eq!(count_result, Value::Int(3));
+    }
+
+    // ========== Cypher Temporal Function Tests ==========
+
+    #[test]
+    fn test_cypher_datetime_no_args() {
+        // datetime() without args returns current datetime
+        let result = eval_fn(ScalarFunction::CypherDatetime, vec![]);
+        if let Value::String(s) = result {
+            // Should be ISO 8601 format with timezone
+            assert!(s.contains('T'), "datetime should contain T separator");
+            assert!(s.contains('+') || s.contains('Z'), "datetime should have timezone");
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_from_string() {
+        // datetime('2024-01-15T10:30:00') - parse ISO 8601 string
+        let result = eval_fn(
+            ScalarFunction::CypherDatetime,
+            vec![Value::String("2024-01-15T10:30:00".to_string())],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T10:30:00"));
+        } else {
+            panic!("Expected string result, got: {:?}", result);
+        }
+
+        // With timezone
+        let result = eval_fn(
+            ScalarFunction::CypherDatetime,
+            vec![Value::String("2024-01-15T10:30:00Z".to_string())],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T10:30:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_from_map() {
+        // datetime({year: 2024, month: 1, day: 15}) - construct from JSON map
+        let result = eval_fn(
+            ScalarFunction::CypherDatetime,
+            vec![Value::String(
+                r#"{"year": 2024, "month": 1, "day": 15, "hour": 10, "minute": 30}"#.to_string(),
+            )],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T10:30:00"));
+        } else {
+            panic!("Expected string result, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_null() {
+        let result = eval_fn(ScalarFunction::CypherDatetime, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_date_no_args() {
+        // date() without args returns current date
+        let result = eval_fn(ScalarFunction::CypherDate, vec![]);
+        if let Value::String(s) = result {
+            // Should be YYYY-MM-DD format
+            assert!(s.len() == 10, "date should be 10 chars");
+            assert!(s.contains('-'), "date should contain dashes");
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_date_from_string() {
+        // date('2024-01-15') - parse ISO 8601 date string
+        let result =
+            eval_fn(ScalarFunction::CypherDate, vec![Value::String("2024-01-15".to_string())]);
+        assert_eq!(result, Value::String("2024-01-15".to_string()));
+
+        // Should also work with datetime string
+        let result = eval_fn(
+            ScalarFunction::CypherDate,
+            vec![Value::String("2024-06-20T14:30:00".to_string())],
+        );
+        assert_eq!(result, Value::String("2024-06-20".to_string()));
+    }
+
+    #[test]
+    fn test_cypher_date_from_map() {
+        let result = eval_fn(
+            ScalarFunction::CypherDate,
+            vec![Value::String(r#"{"year": 2024, "month": 6, "day": 20}"#.to_string())],
+        );
+        assert_eq!(result, Value::String("2024-06-20".to_string()));
+    }
+
+    #[test]
+    fn test_cypher_time_no_args() {
+        // time() without args returns current time with timezone
+        let result = eval_fn(ScalarFunction::CypherTime, vec![]);
+        if let Value::String(s) = result {
+            assert!(s.contains(':'), "time should contain colons");
+            assert!(s.contains('+'), "time should have timezone offset");
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_time_from_string() {
+        // time('10:30:00') - parse ISO 8601 time string
+        let result =
+            eval_fn(ScalarFunction::CypherTime, vec![Value::String("10:30:00".to_string())]);
+        if let Value::String(s) = result {
+            assert!(s.starts_with("10:30:00"));
+        } else {
+            panic!("Expected string result");
+        }
+
+        // With just hour:minute
+        let result = eval_fn(ScalarFunction::CypherTime, vec![Value::String("14:45".to_string())]);
+        if let Value::String(s) = result {
+            assert!(s.starts_with("14:45:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_time_from_map() {
+        let result = eval_fn(
+            ScalarFunction::CypherTime,
+            vec![Value::String(r#"{"hour": 14, "minute": 30, "second": 45}"#.to_string())],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("14:30:45"));
+        } else {
+            panic!("Expected string result, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_cypher_localdatetime_no_args() {
+        // localdatetime() without args returns current datetime without timezone
+        let result = eval_fn(ScalarFunction::CypherLocalDatetime, vec![]);
+        if let Value::String(s) = result {
+            assert!(s.contains('T'), "localdatetime should contain T separator");
+            // Should NOT have timezone
+            assert!(
+                !s.contains("+00:00") || s.ends_with(".000000"),
+                "localdatetime should not end with timezone"
+            );
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_localdatetime_from_string() {
+        let result = eval_fn(
+            ScalarFunction::CypherLocalDatetime,
+            vec![Value::String("2024-01-15T10:30:00".to_string())],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T10:30:00"));
+            // Should not have timezone
+            assert!(!s.ends_with("+00:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_localtime_no_args() {
+        let result = eval_fn(ScalarFunction::CypherLocalTime, vec![]);
+        if let Value::String(s) = result {
+            assert!(s.contains(':'), "localtime should contain colons");
+            // Should NOT have timezone
+            assert!(!s.ends_with("+00:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_localtime_from_string() {
+        let result =
+            eval_fn(ScalarFunction::CypherLocalTime, vec![Value::String("10:30:00".to_string())]);
+        if let Value::String(s) = result {
+            assert!(s.starts_with("10:30:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_duration_iso8601() {
+        // Test various ISO 8601 duration formats
+
+        // P1Y - 1 year
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("P1Y".to_string())]);
+        assert_eq!(result, Value::String("P1Y".to_string()));
+
+        // P2M - 2 months
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("P2M".to_string())]);
+        assert_eq!(result, Value::String("P2M".to_string()));
+
+        // P3D - 3 days
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("P3D".to_string())]);
+        assert_eq!(result, Value::String("P3D".to_string()));
+
+        // PT4H - 4 hours
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("PT4H".to_string())]);
+        assert_eq!(result, Value::String("PT4H".to_string()));
+
+        // PT5M - 5 minutes
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("PT5M".to_string())]);
+        assert_eq!(result, Value::String("PT5M".to_string()));
+
+        // PT6S - 6 seconds
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("PT6S".to_string())]);
+        assert_eq!(result, Value::String("PT6S".to_string()));
+
+        // Combined: P1Y2M3DT4H5M6S
+        let result = eval_fn(
+            ScalarFunction::CypherDuration,
+            vec![Value::String("P1Y2M3DT4H5M6S".to_string())],
+        );
+        assert_eq!(result, Value::String("P1Y2M3DT4H5M6S".to_string()));
+    }
+
+    #[test]
+    fn test_cypher_duration_with_weeks() {
+        // P2W - 2 weeks (should be converted to 14 days)
+        let result =
+            eval_fn(ScalarFunction::CypherDuration, vec![Value::String("P2W".to_string())]);
+        assert_eq!(result, Value::String("P14D".to_string()));
+    }
+
+    #[test]
+    fn test_cypher_duration_from_map() {
+        // duration({days: 14, hours: 16})
+        let result = eval_fn(
+            ScalarFunction::CypherDuration,
+            vec![Value::String(r#"{"days": 14, "hours": 16}"#.to_string())],
+        );
+        assert_eq!(result, Value::String("P14DT16H".to_string()));
+
+        // duration({years: 1, months: 2, days: 3})
+        let result = eval_fn(
+            ScalarFunction::CypherDuration,
+            vec![Value::String(r#"{"years": 1, "months": 2, "days": 3}"#.to_string())],
+        );
+        assert_eq!(result, Value::String("P1Y2M3D".to_string()));
+
+        // duration({weeks: 2, days: 3}) - weeks converted to days
+        let result = eval_fn(
+            ScalarFunction::CypherDuration,
+            vec![Value::String(r#"{"weeks": 2, "days": 3}"#.to_string())],
+        );
+        assert_eq!(result, Value::String("P17D".to_string())); // 2*7 + 3 = 17
+    }
+
+    #[test]
+    fn test_cypher_duration_null() {
+        let result = eval_fn(ScalarFunction::CypherDuration, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(ScalarFunction::CypherDuration, vec![]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_day() {
+        // datetime.truncate('day', datetime) - truncate to start of day
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("day".to_string()),
+                Value::String("2024-01-15T14:30:45".to_string()),
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T00:00:00"));
+        } else {
+            panic!("Expected string result, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_month() {
+        // datetime.truncate('month', datetime) - truncate to start of month
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("month".to_string()),
+                Value::String("2024-06-15T14:30:45".to_string()),
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-06-01T00:00:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_year() {
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("year".to_string()),
+                Value::String("2024-06-15T14:30:45".to_string()),
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-01T00:00:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_hour() {
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("hour".to_string()),
+                Value::String("2024-01-15T14:30:45".to_string()),
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T14:00:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_minute() {
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("minute".to_string()),
+                Value::String("2024-01-15T14:30:45".to_string()),
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T14:30:00"));
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_week() {
+        // Truncate to Monday of the week
+        // 2024-01-15 is a Monday
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("week".to_string()),
+                Value::String("2024-01-17T14:30:45".to_string()), // Wednesday
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-01-15T00:00:00")); // Should be Monday
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_quarter() {
+        // Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("quarter".to_string()),
+                Value::String("2024-05-15T14:30:45".to_string()), // May = Q2
+            ],
+        );
+        if let Value::String(s) = result {
+            assert!(s.starts_with("2024-04-01T00:00:00")); // Q2 starts April 1
+        } else {
+            panic!("Expected string result");
+        }
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_null() {
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![Value::Null, Value::String("2024-01-15T14:30:45".to_string())],
+        );
+        assert_eq!(result, Value::Null);
+
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![Value::String("day".to_string()), Value::Null],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_datetime_truncate_invalid_unit() {
+        let result = eval_fn(
+            ScalarFunction::CypherDatetimeTruncate,
+            vec![
+                Value::String("invalid".to_string()),
+                Value::String("2024-01-15T14:30:45".to_string()),
+            ],
+        );
+        assert_eq!(result, Value::Null);
     }
 }
