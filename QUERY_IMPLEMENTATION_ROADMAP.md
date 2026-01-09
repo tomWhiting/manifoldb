@@ -31,7 +31,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Cypher CREATE** - Full execution with MATCH + CREATE patterns (Jan 2026)
 - ✅ **Cypher SET/DELETE/REMOVE** - Full execution complete (Jan 2026)
 - ✅ **Cypher MERGE** - Full execution complete (Jan 2026)
-- ✅ **Cypher FOREACH** - Parsing and logical/physical planning (execution TBD)
+- ✅ **Cypher FOREACH** - Full execution complete (Jan 2026)
 - ✅ **CALL/YIELD Infrastructure** - Procedure registry, ProcedureCall plan node, algo.pageRank, algo.shortestPath
 - ✅ **Window Value Functions** - LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
 - ✅ **Cypher List Comprehensions** - `[x IN list WHERE pred | expr]` with list functions (range, size, head, tail, last, reverse)
@@ -296,7 +296,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] SET (properties and labels) ✅ Jan 2026 - Full execution
   - [x] REMOVE (properties and labels) ✅ Jan 2026 - Full execution
   - [x] DELETE and DETACH DELETE ✅ Jan 2026 - Full execution
-  - [x] FOREACH ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] FOREACH ✅ Jan 2026 - Full execution complete
 
 - [ ] **Reading Clauses**
   - [ ] MANDATORY MATCH (optional, Neo4j extension)
@@ -310,7 +310,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **Subqueries** - EXISTS and COUNT fully executable, CALL planning complete ✅ Jan 2026
   - [x] EXISTS { } subquery ✅ Jan 2026 - Full execution
   - [x] COUNT { } subquery ✅ Jan 2026 - Full execution
-  - [x] CALL { } subquery (inline) ✅ Jan 2026 - Parsing + planning (execution TBD)
+  - [x] CALL { } subquery (inline) ✅ Jan 2026 - Full execution complete
 
 - [ ] **Advanced Patterns**
   - [ ] Quantified path patterns (GQL)
@@ -356,10 +356,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **Mathematical Functions** - Shares SQL implementation
   - [x] Same as SQL tier ✅ Jan 2026
 
-- [ ] **Temporal Functions** (Tier 2)
-  - [ ] datetime, localdatetime, date, time, localtime
-  - [ ] duration
-  - [ ] datetime.truncate
+- [x] **Temporal Functions** (Tier 2) ✅ Jan 2026
+  - [x] datetime, localdatetime, date, time, localtime ✅ Jan 2026
+  - [x] duration ✅ Jan 2026
+  - [x] datetime.truncate ✅ Jan 2026
   - [ ] Temporal arithmetic
 
 - [ ] **Spatial Functions** (Tier 3)
@@ -428,20 +428,20 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 4.4 Community Detection
 **Goal:** Expose community algorithms as procedures.
 
-- [ ] `algo.louvain(config) YIELD node, community`
+- [x] `algo.louvain(config) YIELD node, community` ✅ Jan 2026
 - [x] `algo.labelPropagation(config) YIELD node, community` ✅ Jan 2026
 - [x] `algo.connectedComponents(config) YIELD node, component` ✅ Jan 2026
 - [x] `algo.stronglyConnectedComponents(config) YIELD node, component` ✅ Jan 2026
-- [ ] `algo.triangleCount(config) YIELD node, triangles`
-- [ ] `algo.localClusteringCoefficient(config) YIELD node, coefficient`
+- [x] `algo.triangleCount(config) YIELD node, triangles` ✅ Jan 2026
+- [x] `algo.localClusteringCoefficient(config) YIELD node, coefficient` ✅ Jan 2026
 
 #### 4.5 Similarity Algorithms
 **Goal:** Expose similarity algorithms as procedures.
 
-- [ ] `algo.nodeSimilarity(config) YIELD node1, node2, similarity`
-- [ ] `algo.jaccard(node1, node2, relationshipType) YIELD similarity`
-- [ ] `algo.overlap(node1, node2, relationshipType) YIELD similarity`
-- [ ] `algo.cosine(node1, node2, property) YIELD similarity`
+- [x] `algo.nodeSimilarity(config) YIELD node1, node2, similarity` ✅ Jan 2026
+- [x] `algo.jaccard(node1, node2, relationshipType) YIELD similarity` ✅ Jan 2026
+- [x] `algo.overlap(node1, node2, relationshipType) YIELD similarity` ✅ Jan 2026
+- [x] `algo.cosine(node1, node2, property) YIELD similarity` ✅ Jan 2026
 
 ---
 
