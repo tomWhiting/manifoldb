@@ -8,13 +8,14 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
-    Assignment, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction,
-    ConflictTarget, CreateIndexStatement, CreateTableStatement, DataType, DeleteStatement,
-    DropIndexStatement, DropTableStatement, Expr, FunctionCall, Identifier, IndexColumn,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, Literal, OnConflict,
-    OrderByExpr, ParameterRef, QualifiedName, SelectItem, SelectStatement, SetOperation,
-    SetOperator, Statement, TableAlias, TableConstraint, TableRef, UnaryOp, UpdateStatement,
-    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    AlterColumnAction, AlterTableAction, AlterTableStatement, Assignment, BinaryOp, CallStatement,
+    CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CreateIndexStatement,
+    CreateTableStatement, DataType, DeleteStatement, DropIndexStatement, DropTableStatement, Expr,
+    FunctionCall, Identifier, IndexColumn, InsertSource, InsertStatement, JoinClause,
+    JoinCondition, JoinType, Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName,
+    SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias, TableConstraint,
+    TableRef, UnaryOp, UpdateStatement, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -75,6 +76,10 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         sp::Statement::CreateIndex(create) => {
             let create_stmt = convert_create_index(create)?;
             Ok(Statement::CreateIndex(Box::new(create_stmt)))
+        }
+        sp::Statement::AlterTable { name, if_exists, operations, .. } => {
+            let alter_stmt = convert_alter_table(name, if_exists, operations)?;
+            Ok(Statement::AlterTable(alter_stmt))
         }
         sp::Statement::Drop { object_type, if_exists, names, cascade, .. } => match object_type {
             sp::ObjectType::Table => {
@@ -1042,6 +1047,82 @@ fn convert_create_index(create: sp::CreateIndex) -> ParseResult<CreateIndexState
     })
 }
 
+/// Converts an ALTER TABLE statement.
+fn convert_alter_table(
+    name: sp::ObjectName,
+    if_exists: bool,
+    operations: Vec<sp::AlterTableOperation>,
+) -> ParseResult<AlterTableStatement> {
+    let actions = operations
+        .into_iter()
+        .map(convert_alter_table_operation)
+        .collect::<ParseResult<Vec<_>>>()?;
+
+    Ok(AlterTableStatement { if_exists, name: convert_object_name(name), actions })
+}
+
+/// Converts an ALTER TABLE operation to our AlterTableAction.
+fn convert_alter_table_operation(op: sp::AlterTableOperation) -> ParseResult<AlterTableAction> {
+    match op {
+        sp::AlterTableOperation::AddColumn { column_def, if_not_exists, .. } => {
+            Ok(AlterTableAction::AddColumn {
+                if_not_exists,
+                column: convert_column_def(column_def)?,
+            })
+        }
+        sp::AlterTableOperation::DropColumn { column_name, if_exists, cascade, .. } => {
+            Ok(AlterTableAction::DropColumn {
+                if_exists,
+                column_name: convert_ident(column_name),
+                cascade,
+            })
+        }
+        sp::AlterTableOperation::AlterColumn { column_name, op } => {
+            let action = convert_alter_column_op(op)?;
+            Ok(AlterTableAction::AlterColumn { column_name: convert_ident(column_name), action })
+        }
+        sp::AlterTableOperation::RenameColumn { old_column_name, new_column_name } => {
+            Ok(AlterTableAction::RenameColumn {
+                old_name: convert_ident(old_column_name),
+                new_name: convert_ident(new_column_name),
+            })
+        }
+        sp::AlterTableOperation::RenameTable { table_name } => {
+            Ok(AlterTableAction::RenameTable { new_name: convert_object_name(table_name) })
+        }
+        sp::AlterTableOperation::AddConstraint(constraint) => {
+            Ok(AlterTableAction::AddConstraint(convert_table_constraint(constraint)?))
+        }
+        sp::AlterTableOperation::DropConstraint { name, if_exists, cascade, .. } => {
+            Ok(AlterTableAction::DropConstraint {
+                if_exists,
+                constraint_name: convert_ident(name),
+                cascade,
+            })
+        }
+        _ => Err(ParseError::Unsupported(format!("ALTER TABLE operation: {op:?}"))),
+    }
+}
+
+/// Converts an ALTER COLUMN operation to our AlterColumnAction.
+fn convert_alter_column_op(op: sp::AlterColumnOperation) -> ParseResult<AlterColumnAction> {
+    match op {
+        sp::AlterColumnOperation::SetNotNull => Ok(AlterColumnAction::SetNotNull),
+        sp::AlterColumnOperation::DropNotNull => Ok(AlterColumnAction::DropNotNull),
+        sp::AlterColumnOperation::SetDefault { value } => {
+            Ok(AlterColumnAction::SetDefault(convert_expr(value)?))
+        }
+        sp::AlterColumnOperation::DropDefault => Ok(AlterColumnAction::DropDefault),
+        sp::AlterColumnOperation::SetDataType { data_type, using } => {
+            Ok(AlterColumnAction::SetType {
+                data_type: convert_data_type(data_type)?,
+                using: using.map(convert_expr).transpose()?,
+            })
+        }
+        _ => Err(ParseError::Unsupported(format!("ALTER COLUMN operation: {op:?}"))),
+    }
+}
+
 /// Converts a data type.
 #[allow(clippy::cast_possible_truncation)]
 fn convert_data_type(dt: sp::DataType) -> ParseResult<DataType> {
@@ -1332,6 +1413,199 @@ mod tests {
                 }
             }
             _ => panic!("expected INSERT"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_add_column() {
+        let stmt =
+            parse_single_statement("ALTER TABLE users ADD COLUMN email VARCHAR(255)").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.name.to_string(), "users");
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::AddColumn { if_not_exists, column } => {
+                        assert!(!if_not_exists);
+                        assert_eq!(column.name.name, "email");
+                    }
+                    _ => panic!("expected ADD COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_drop_column() {
+        let stmt = parse_single_statement("ALTER TABLE users DROP COLUMN temp_field").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.name.to_string(), "users");
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::DropColumn { if_exists, column_name, cascade } => {
+                        assert!(!if_exists);
+                        assert!(!cascade);
+                        assert_eq!(column_name.name, "temp_field");
+                    }
+                    _ => panic!("expected DROP COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_drop_column_if_exists() {
+        let stmt =
+            parse_single_statement("ALTER TABLE users DROP COLUMN IF EXISTS maybe_exists").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::DropColumn { if_exists, column_name, .. } => {
+                        assert!(*if_exists);
+                        assert_eq!(column_name.name, "maybe_exists");
+                    }
+                    _ => panic!("expected DROP COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_alter_column_set_not_null() {
+        let stmt =
+            parse_single_statement("ALTER TABLE users ALTER COLUMN name SET NOT NULL").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::AlterColumn { column_name, action } => {
+                        assert_eq!(column_name.name, "name");
+                        assert!(matches!(action, AlterColumnAction::SetNotNull));
+                    }
+                    _ => panic!("expected ALTER COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_alter_column_set_default() {
+        let stmt =
+            parse_single_statement("ALTER TABLE users ALTER COLUMN age SET DEFAULT 0").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::AlterColumn { column_name, action } => {
+                        assert_eq!(column_name.name, "age");
+                        match action {
+                            AlterColumnAction::SetDefault(expr) => match expr {
+                                Expr::Literal(Literal::Integer(0)) => {}
+                                _ => panic!("expected integer literal 0"),
+                            },
+                            _ => panic!("expected SET DEFAULT"),
+                        }
+                    }
+                    _ => panic!("expected ALTER COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_alter_column_type() {
+        let stmt = parse_single_statement(
+            "ALTER TABLE users ALTER COLUMN score SET DATA TYPE DOUBLE PRECISION",
+        )
+        .unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::AlterColumn { column_name, action } => {
+                        assert_eq!(column_name.name, "score");
+                        match action {
+                            AlterColumnAction::SetType { data_type, using } => {
+                                assert!(matches!(data_type, DataType::DoublePrecision));
+                                assert!(using.is_none());
+                            }
+                            _ => panic!("expected SET TYPE"),
+                        }
+                    }
+                    _ => panic!("expected ALTER COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_rename_column() {
+        let stmt =
+            parse_single_statement("ALTER TABLE users RENAME COLUMN old_name TO new_name").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::RenameColumn { old_name, new_name } => {
+                        assert_eq!(old_name.name, "old_name");
+                        assert_eq!(new_name.name, "new_name");
+                    }
+                    _ => panic!("expected RENAME COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_rename_table() {
+        let stmt = parse_single_statement("ALTER TABLE old_table RENAME TO new_table").unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.name.to_string(), "old_table");
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::RenameTable { new_name } => {
+                        assert_eq!(new_name.to_string(), "new_table");
+                    }
+                    _ => panic!("expected RENAME TO"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
+        }
+    }
+
+    #[test]
+    fn parse_alter_table_add_column_with_default() {
+        let stmt = parse_single_statement(
+            "ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT now()",
+        )
+        .unwrap();
+        match stmt {
+            Statement::AlterTable(alter) => {
+                assert_eq!(alter.actions.len(), 1);
+                match &alter.actions[0] {
+                    AlterTableAction::AddColumn { column, .. } => {
+                        assert_eq!(column.name.name, "created_at");
+                        assert!(matches!(column.data_type, DataType::Timestamp));
+                        // Check for default constraint
+                        assert!(column
+                            .constraints
+                            .iter()
+                            .any(|c| matches!(c, ColumnConstraint::Default(_))));
+                    }
+                    _ => panic!("expected ADD COLUMN"),
+                }
+            }
+            _ => panic!("expected ALTER TABLE"),
         }
     }
 }

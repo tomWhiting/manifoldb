@@ -372,6 +372,7 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
 
         // DDL operations are handled at a higher level, not as operators
         PhysicalPlan::CreateTable(_)
+        | PhysicalPlan::AlterTable(_)
         | PhysicalPlan::DropTable(_)
         | PhysicalPlan::CreateIndex(_)
         | PhysicalPlan::DropIndex(_)

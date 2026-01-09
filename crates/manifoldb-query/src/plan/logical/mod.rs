@@ -40,8 +40,8 @@ mod vector;
 
 pub use builder::PlanBuilder;
 pub use ddl::{
-    CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode,
+    DropIndexNode, DropTableNode,
 };
 pub use expr::{
     AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr,

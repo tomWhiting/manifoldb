@@ -298,6 +298,17 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::AlterTable(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::UnknownTable("empty table name".to_string()));
+            }
+            if node.actions.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "ALTER TABLE must have at least one action".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::DropTable(node) => {
             if node.names.is_empty() {
                 return Err(PlanError::UnknownTable("DROP TABLE requires table name".to_string()));

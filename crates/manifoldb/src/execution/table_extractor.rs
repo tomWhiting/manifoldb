@@ -83,6 +83,10 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             }
         }
 
+        LogicalPlan::AlterTable(node) => {
+            tables.push(node.name.clone());
+        }
+
         LogicalPlan::CreateIndex(node) => {
             tables.push(node.table.clone());
         }

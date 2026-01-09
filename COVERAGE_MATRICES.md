@@ -302,12 +302,20 @@ These feature groups can be implemented independently:
 | PARTITION BY | | | | | | | Not implemented |
 | INHERITS | | | | | | | Not implemented |
 | **ALTER TABLE** |
-| ADD COLUMN | | | | | | | Not implemented |
-| DROP COLUMN | | | | | | | Not implemented |
-| ALTER COLUMN | | | | | | | Not implemented |
-| ADD CONSTRAINT | | | | | | | Not implemented |
-| DROP CONSTRAINT | | | | | | | Not implemented |
-| RENAME | | | | | | | Not implemented |
+| ADD COLUMN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ADD COLUMN IF NOT EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| DROP COLUMN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| DROP COLUMN IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ALTER COLUMN SET NOT NULL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ALTER COLUMN DROP NOT NULL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ALTER COLUMN SET DEFAULT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ALTER COLUMN DROP DEFAULT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ALTER COLUMN SET DATA TYPE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| RENAME COLUMN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| RENAME TABLE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| ADD CONSTRAINT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| DROP CONSTRAINT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | SET SCHEMA | | | | | | | Not implemented |
 | **DROP TABLE** |
 | Basic DROP TABLE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
@@ -923,7 +931,7 @@ These feature groups can be implemented independently:
 | CTEs | 10 | 5 | 0 | 5 |
 | Window Functions | 25 | 20 | 3 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
-| DDL | 30 | 12 | 3 | 15 |
+| DDL | 44 | 26 | 3 | 15 |
 | Transactions | 8 | 0 | 0 | 8 |
 | Utility | 10 | 1 | 0 | 9 |
 | Data Types | 25 | 22 | 0 | 3 |

@@ -22,6 +22,8 @@ pub enum Statement {
     Delete(Box<DeleteStatement>),
     /// CREATE TABLE statement.
     CreateTable(CreateTableStatement),
+    /// ALTER TABLE statement.
+    AlterTable(AlterTableStatement),
     /// CREATE INDEX statement (boxed - 288 bytes unboxed).
     CreateIndex(Box<CreateIndexStatement>),
     /// CREATE COLLECTION statement for vector collections.
@@ -1095,6 +1097,249 @@ pub enum TableConstraint {
         /// The check expression.
         expr: Expr,
     },
+}
+
+/// An ALTER TABLE statement.
+///
+/// Supports adding, dropping, and modifying columns, as well as renaming
+/// tables and columns.
+///
+/// # Examples
+///
+/// Add a column:
+/// ```sql
+/// ALTER TABLE users ADD COLUMN email VARCHAR(255);
+/// ```
+///
+/// Drop a column:
+/// ```sql
+/// ALTER TABLE users DROP COLUMN temporary_field;
+/// ```
+///
+/// Alter a column's nullability:
+/// ```sql
+/// ALTER TABLE users ALTER COLUMN name SET NOT NULL;
+/// ```
+///
+/// Change column type:
+/// ```sql
+/// ALTER TABLE users ALTER COLUMN score TYPE FLOAT;
+/// ```
+///
+/// Rename a column:
+/// ```sql
+/// ALTER TABLE users RENAME COLUMN old_name TO new_name;
+/// ```
+///
+/// Rename the table:
+/// ```sql
+/// ALTER TABLE old_table RENAME TO new_table;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterTableStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The table to alter.
+    pub name: QualifiedName,
+    /// The alterations to perform.
+    pub actions: Vec<AlterTableAction>,
+}
+
+impl AlterTableStatement {
+    /// Creates a new ALTER TABLE statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>, actions: Vec<AlterTableAction>) -> Self {
+        Self { if_exists: false, name: name.into(), actions }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn if_exists(mut self) -> Self {
+        self.if_exists = true;
+        self
+    }
+
+    /// Adds an action to the statement.
+    #[must_use]
+    pub fn add_action(mut self, action: AlterTableAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+}
+
+/// An action to perform in an ALTER TABLE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterTableAction {
+    /// ADD COLUMN: Add a new column to the table.
+    AddColumn {
+        /// Whether IF NOT EXISTS is specified.
+        if_not_exists: bool,
+        /// The column definition.
+        column: ColumnDef,
+    },
+    /// DROP COLUMN: Remove a column from the table.
+    DropColumn {
+        /// Whether IF EXISTS is specified.
+        if_exists: bool,
+        /// The column name to drop.
+        column_name: Identifier,
+        /// Whether CASCADE is specified (drops dependent objects).
+        cascade: bool,
+    },
+    /// ALTER COLUMN: Modify an existing column.
+    AlterColumn {
+        /// The column name to alter.
+        column_name: Identifier,
+        /// The alteration to perform.
+        action: AlterColumnAction,
+    },
+    /// RENAME COLUMN: Rename a column.
+    RenameColumn {
+        /// The current column name.
+        old_name: Identifier,
+        /// The new column name.
+        new_name: Identifier,
+    },
+    /// RENAME TO: Rename the table.
+    RenameTable {
+        /// The new table name.
+        new_name: QualifiedName,
+    },
+    /// ADD CONSTRAINT: Add a table constraint.
+    AddConstraint(TableConstraint),
+    /// DROP CONSTRAINT: Remove a constraint.
+    DropConstraint {
+        /// Whether IF EXISTS is specified.
+        if_exists: bool,
+        /// The constraint name to drop.
+        constraint_name: Identifier,
+        /// Whether CASCADE is specified.
+        cascade: bool,
+    },
+}
+
+impl AlterTableAction {
+    /// Creates an ADD COLUMN action.
+    #[must_use]
+    pub fn add_column(column: ColumnDef) -> Self {
+        Self::AddColumn { if_not_exists: false, column }
+    }
+
+    /// Creates an ADD COLUMN IF NOT EXISTS action.
+    #[must_use]
+    pub fn add_column_if_not_exists(column: ColumnDef) -> Self {
+        Self::AddColumn { if_not_exists: true, column }
+    }
+
+    /// Creates a DROP COLUMN action.
+    #[must_use]
+    pub fn drop_column(column_name: impl Into<Identifier>) -> Self {
+        Self::DropColumn { if_exists: false, column_name: column_name.into(), cascade: false }
+    }
+
+    /// Creates a DROP COLUMN IF EXISTS action.
+    #[must_use]
+    pub fn drop_column_if_exists(column_name: impl Into<Identifier>) -> Self {
+        Self::DropColumn { if_exists: true, column_name: column_name.into(), cascade: false }
+    }
+
+    /// Creates a DROP COLUMN CASCADE action.
+    #[must_use]
+    pub fn drop_column_cascade(column_name: impl Into<Identifier>) -> Self {
+        Self::DropColumn { if_exists: false, column_name: column_name.into(), cascade: true }
+    }
+
+    /// Creates an ALTER COLUMN action.
+    #[must_use]
+    pub fn alter_column(column_name: impl Into<Identifier>, action: AlterColumnAction) -> Self {
+        Self::AlterColumn { column_name: column_name.into(), action }
+    }
+
+    /// Creates a RENAME COLUMN action.
+    #[must_use]
+    pub fn rename_column(old_name: impl Into<Identifier>, new_name: impl Into<Identifier>) -> Self {
+        Self::RenameColumn { old_name: old_name.into(), new_name: new_name.into() }
+    }
+
+    /// Creates a RENAME TO action.
+    #[must_use]
+    pub fn rename_table(new_name: impl Into<QualifiedName>) -> Self {
+        Self::RenameTable { new_name: new_name.into() }
+    }
+
+    /// Creates an ADD CONSTRAINT action.
+    #[must_use]
+    pub const fn add_constraint(constraint: TableConstraint) -> Self {
+        Self::AddConstraint(constraint)
+    }
+
+    /// Creates a DROP CONSTRAINT action.
+    #[must_use]
+    pub fn drop_constraint(constraint_name: impl Into<Identifier>) -> Self {
+        Self::DropConstraint {
+            if_exists: false,
+            constraint_name: constraint_name.into(),
+            cascade: false,
+        }
+    }
+}
+
+/// An action to perform on a column in ALTER COLUMN.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterColumnAction {
+    /// SET NOT NULL: Make the column non-nullable.
+    SetNotNull,
+    /// DROP NOT NULL: Make the column nullable.
+    DropNotNull,
+    /// SET DEFAULT: Set a default value.
+    SetDefault(Expr),
+    /// DROP DEFAULT: Remove the default value.
+    DropDefault,
+    /// SET DATA TYPE / TYPE: Change the column's data type.
+    SetType {
+        /// The new data type.
+        data_type: DataType,
+        /// Optional USING expression for type conversion.
+        using: Option<Expr>,
+    },
+}
+
+impl AlterColumnAction {
+    /// Creates a SET NOT NULL action.
+    #[must_use]
+    pub const fn set_not_null() -> Self {
+        Self::SetNotNull
+    }
+
+    /// Creates a DROP NOT NULL action.
+    #[must_use]
+    pub const fn drop_not_null() -> Self {
+        Self::DropNotNull
+    }
+
+    /// Creates a SET DEFAULT action.
+    #[must_use]
+    pub const fn set_default(expr: Expr) -> Self {
+        Self::SetDefault(expr)
+    }
+
+    /// Creates a DROP DEFAULT action.
+    #[must_use]
+    pub const fn drop_default() -> Self {
+        Self::DropDefault
+    }
+
+    /// Creates a SET TYPE action.
+    #[must_use]
+    pub const fn set_type(data_type: DataType) -> Self {
+        Self::SetType { data_type, using: None }
+    }
+
+    /// Creates a SET TYPE action with a USING clause.
+    #[must_use]
+    pub const fn set_type_using(data_type: DataType, using: Expr) -> Self {
+        Self::SetType { data_type, using: Some(using) }
+    }
 }
 
 /// A CREATE INDEX statement.
