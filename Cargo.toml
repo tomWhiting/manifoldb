@@ -24,12 +24,12 @@ categories = ["database", "data-structures"]
 
 [workspace.dependencies]
 # Internal crates - path for local dev, version for crates.io
-manifoldb = { version = "0.1.3", path = "crates/manifoldb" }
-manifoldb-core = { version = "0.1.3", path = "crates/manifoldb-core" }
-manifoldb-storage = { version = "0.1.3", path = "crates/manifoldb-storage" }
-manifoldb-graph = { version = "0.1.3", path = "crates/manifoldb-graph" }
-manifoldb-vector = { version = "0.1.3", path = "crates/manifoldb-vector" }
-manifoldb-query = { version = "0.1.3", path = "crates/manifoldb-query" }
+manifoldb = { version = "0.1.4", path = "crates/manifoldb" }
+manifoldb-core = { version = "0.1.4", path = "crates/manifoldb-core" }
+manifoldb-storage = { version = "0.1.4", path = "crates/manifoldb-storage" }
+manifoldb-graph = { version = "0.1.4", path = "crates/manifoldb-graph" }
+manifoldb-vector = { version = "0.1.4", path = "crates/manifoldb-vector" }
+manifoldb-query = { version = "0.1.4", path = "crates/manifoldb-query" }
 
 # Storage
 redb = "3.1"
