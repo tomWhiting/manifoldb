@@ -88,6 +88,13 @@ impl PredicatePushdown {
                 LogicalPlan::Distinct { node, input: Box::new(optimized_input) }
             }
 
+            // For Window, predicates cannot be pushed through (window functions depend on full data)
+            LogicalPlan::Window { node, input } => {
+                let optimized_input = self.push_down(*input, Vec::new());
+                let result = LogicalPlan::Window { node, input: Box::new(optimized_input) };
+                self.apply_predicates(result, predicates)
+            }
+
             // For Alias, push through
             LogicalPlan::Alias { alias, input } => {
                 let optimized_input = self.push_down(*input, predicates);

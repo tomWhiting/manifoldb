@@ -305,6 +305,28 @@ impl From<QualifiedName> for FunctionCall {
     }
 }
 
+/// Window function types for ranking functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowFunction {
+    /// ROW_NUMBER() - assigns sequential numbers starting from 1.
+    RowNumber,
+    /// RANK() - assigns ranks with gaps for ties.
+    Rank,
+    /// DENSE_RANK() - assigns ranks without gaps.
+    DenseRank,
+}
+
+impl std::fmt::Display for WindowFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::RowNumber => "ROW_NUMBER",
+            Self::Rank => "RANK",
+            Self::DenseRank => "DENSE_RANK",
+        };
+        write!(f, "{name}")
+    }
+}
+
 /// Window specification for window functions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {

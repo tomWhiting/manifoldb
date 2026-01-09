@@ -1513,6 +1513,11 @@ fn execute_logical_plan<T: Transaction>(
             // Hybrid search in entity context: execute the input, scoring handled by physical plan
             execute_logical_plan(tx, input, ctx)
         }
+
+        LogicalPlan::Window { .. } => Err(Error::Execution(
+            "Window functions should be executed through execute_physical_plan, not execute_logical_plan"
+                .to_string(),
+        )),
     }
 }
 

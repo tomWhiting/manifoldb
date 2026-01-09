@@ -1552,3 +1552,205 @@ mod cte {
         }
     }
 }
+
+// ============================================================================
+// Window Function Parsing Tests
+// ============================================================================
+
+mod window_functions {
+    use super::*;
+
+    #[test]
+    fn parse_row_number() {
+        let stmt = parse_single_statement(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM employees",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.projection.len(), 2);
+                // The second item should be a function with OVER clause
+                if let SelectItem::Expr { expr, alias } = &select.projection[1] {
+                    assert!(alias.is_some());
+                    assert_eq!(alias.as_ref().unwrap().name, "rn");
+                    if let Expr::Function(func) = expr {
+                        assert!(func.over.is_some());
+                        let over = func.over.as_ref().unwrap();
+                        assert!(over.partition_by.is_empty());
+                        assert_eq!(over.order_by.len(), 1);
+                        assert!(!over.order_by[0].asc); // DESC
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                } else {
+                    panic!("expected Expr projection");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_row_number_with_partition() {
+        let stmt = parse_single_statement(
+            "SELECT name, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) FROM employees",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectItem::Expr { expr, .. } = &select.projection[1] {
+                    if let Expr::Function(func) = expr {
+                        let over = func.over.as_ref().unwrap();
+                        assert_eq!(over.partition_by.len(), 1); // PARTITION BY dept
+                        assert_eq!(over.order_by.len(), 1); // ORDER BY salary DESC
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                } else {
+                    panic!("expected Expr projection");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_rank() {
+        let stmt = parse_single_statement(
+            "SELECT name, RANK() OVER (ORDER BY score DESC) AS rank FROM scores",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectItem::Expr { expr, alias } = &select.projection[1] {
+                    assert_eq!(alias.as_ref().unwrap().name, "rank");
+                    if let Expr::Function(func) = expr {
+                        assert!(func.over.is_some());
+                        let func_name = func.name.parts.last().map(|p| p.name.to_uppercase());
+                        assert_eq!(func_name, Some("RANK".to_string()));
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_dense_rank() {
+        let stmt = parse_single_statement(
+            "SELECT name, DENSE_RANK() OVER (ORDER BY score DESC) AS drank FROM scores",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectItem::Expr { expr, alias } = &select.projection[1] {
+                    assert_eq!(alias.as_ref().unwrap().name, "drank");
+                    if let Expr::Function(func) = expr {
+                        assert!(func.over.is_some());
+                        let func_name = func.name.parts.last().map(|p| p.name.to_uppercase());
+                        assert_eq!(func_name, Some("DENSE_RANK".to_string()));
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_partition_columns() {
+        let stmt = parse_single_statement(
+            "SELECT ROW_NUMBER() OVER (PARTITION BY dept, region ORDER BY salary DESC) FROM employees",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectItem::Expr { expr, .. } = &select.projection[0] {
+                    if let Expr::Function(func) = expr {
+                        let over = func.over.as_ref().unwrap();
+                        assert_eq!(over.partition_by.len(), 2); // dept, region
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_order_columns() {
+        let stmt = parse_single_statement(
+            "SELECT ROW_NUMBER() OVER (ORDER BY dept ASC, salary DESC) FROM employees",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectItem::Expr { expr, .. } = &select.projection[0] {
+                    if let Expr::Function(func) = expr {
+                        let over = func.over.as_ref().unwrap();
+                        assert_eq!(over.order_by.len(), 2);
+                        assert!(over.order_by[0].asc); // ASC
+                        assert!(!over.order_by[1].asc); // DESC
+                    } else {
+                        panic!("expected Function expression");
+                    }
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_window_with_where() {
+        let stmt = parse_single_statement(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn
+             FROM employees
+             WHERE dept = 'Sales'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.where_clause.is_some());
+                assert_eq!(select.projection.len(), 2);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_window_functions() {
+        let stmt = parse_single_statement(
+            "SELECT name,
+                    ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn,
+                    RANK() OVER (ORDER BY salary DESC) AS rnk,
+                    DENSE_RANK() OVER (ORDER BY salary DESC) AS drnk
+             FROM employees",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.projection.len(), 4); // name + 3 window functions
+
+                // Check that all window functions have OVER clauses
+                for i in 1..4 {
+                    if let SelectItem::Expr { expr, .. } = &select.projection[i] {
+                        if let Expr::Function(func) = expr {
+                            assert!(
+                                func.over.is_some(),
+                                "window function {} should have OVER clause",
+                                i
+                            );
+                        } else {
+                            panic!("expected Function expression at position {}", i);
+                        }
+                    }
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+}

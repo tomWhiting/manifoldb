@@ -28,6 +28,7 @@ pub mod set_ops;
 pub mod sort;
 pub mod values;
 pub mod vector;
+pub mod window;
 
 // Re-exports for convenience
 pub use aggregate::{HashAggregateOp, SortMergeAggregateOp};
@@ -45,3 +46,4 @@ pub use set_ops::{SetOpOp, UnionOp};
 pub use sort::SortOp;
 pub use values::{EmptyOp, ValuesOp};
 pub use vector::{BruteForceSearchOp, HnswSearchOp};
+pub use window::WindowOp;

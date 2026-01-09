@@ -155,6 +155,15 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             validate_plan(input)?;
         }
 
+        LogicalPlan::Window { node, input } => {
+            validate_plan(input)?;
+            if node.window_exprs.is_empty() {
+                return Err(PlanError::InvalidAggregation(
+                    "window node must have at least one window expression".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::Alias { alias, input } => {
             validate_plan(input)?;
             if alias.is_empty() {

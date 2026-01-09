@@ -41,4 +41,5 @@ pub use node::{
     HashJoinNode, HnswSearchNode, HybridSearchComponentNode, HybridSearchNode, IndexRangeScanNode,
     IndexScanNode, JoinOrder, LimitExecNode, MergeJoinNode, NestedLoopJoinNode, PhysicalPlan,
     PhysicalScoreCombinationMethod, ProjectExecNode, SortExecNode, SortMergeAggregateNode,
+    WindowExecNode, WindowFunctionExpr,
 };
