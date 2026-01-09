@@ -144,10 +144,11 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             }
         }
 
-        // Graph SET/DELETE/REMOVE operations - have a required input plan
+        // Graph SET/DELETE/REMOVE/FOREACH operations - have a required input plan
         LogicalPlan::GraphSet { input, .. }
         | LogicalPlan::GraphDelete { input, .. }
-        | LogicalPlan::GraphRemove { input, .. } => {
+        | LogicalPlan::GraphRemove { input, .. }
+        | LogicalPlan::GraphForeach { input, .. } => {
             collect_tables_from_plan(input, tables);
         }
     }

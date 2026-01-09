@@ -49,8 +49,8 @@ pub use expr::{
 };
 pub use graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
-    GraphDeleteNode, GraphMergeNode, GraphRemoveAction, GraphRemoveNode, GraphSetAction,
-    GraphSetNode, MergePatternSpec, PathScanNode, PathStep,
+    GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
+    GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, PathScanNode, PathStep,
 };
 pub use node::LogicalPlan;
 pub use procedure::{ProcedureCallNode, YieldColumn};

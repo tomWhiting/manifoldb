@@ -384,7 +384,8 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         | PhysicalPlan::GraphMerge { .. }
         | PhysicalPlan::GraphSet { .. }
         | PhysicalPlan::GraphDelete { .. }
-        | PhysicalPlan::GraphRemove { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        | PhysicalPlan::GraphRemove { .. }
+        | PhysicalPlan::GraphForeach { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
         PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),

@@ -23,8 +23,8 @@ use super::ddl::{
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
-    ExpandNode, GraphCreateNode, GraphDeleteNode, GraphMergeNode, GraphRemoveNode, GraphSetNode,
-    PathScanNode,
+    ExpandNode, GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode,
+    GraphRemoveNode, GraphSetNode, PathScanNode,
 };
 use super::procedure::ProcedureCallNode;
 use super::relational::{
@@ -311,6 +311,14 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
     },
 
+    /// Cypher FOREACH operation (iterate over list with mutations).
+    GraphForeach {
+        /// The FOREACH node.
+        node: Box<GraphForeachNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<LogicalPlan>,
+    },
+
     // ========== Procedure Nodes ==========
     /// Procedure call (CALL/YIELD).
     ProcedureCall(Box<ProcedureCallNode>),
@@ -529,7 +537,8 @@ impl LogicalPlan {
             // Graph DML nodes (required input)
             Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
-            | Self::GraphRemove { input, .. } => vec![input.as_ref()],
+            | Self::GraphRemove { input, .. }
+            | Self::GraphForeach { input, .. } => vec![input.as_ref()],
 
             // Procedure nodes (leaf - no inputs)
             Self::ProcedureCall(_) => vec![],
@@ -561,7 +570,8 @@ impl LogicalPlan {
             | Self::Insert { input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
-            | Self::GraphRemove { input, .. } => vec![input.as_mut()],
+            | Self::GraphRemove { input, .. }
+            | Self::GraphForeach { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
             Self::Join { left, right, .. }
@@ -641,6 +651,7 @@ impl LogicalPlan {
             Self::GraphSet { .. } => "GraphSet",
             Self::GraphDelete { .. } => "GraphDelete",
             Self::GraphRemove { .. } => "GraphRemove",
+            Self::GraphForeach { .. } => "GraphForeach",
             Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
@@ -954,6 +965,15 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::GraphRemove { node, .. } => {
                 write!(f, "GraphRemove: {} actions", node.remove_actions.len())?;
+            }
+            LogicalPlan::GraphForeach { node, .. } => {
+                write!(
+                    f,
+                    "GraphForeach: {} IN {} ({} actions)",
+                    node.variable,
+                    node.list_expr,
+                    node.actions.len()
+                )?;
             }
             LogicalPlan::ProcedureCall(node) => {
                 write!(f, "ProcedureCall: {}", node.procedure_name)?;

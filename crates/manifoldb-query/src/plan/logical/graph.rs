@@ -631,6 +631,74 @@ impl GraphRemoveNode {
     }
 }
 
+// ============================================================================
+// Graph FOREACH Node
+// ============================================================================
+
+/// An action that can be performed inside a FOREACH clause.
+///
+/// This is the logical plan equivalent of `ForeachAction` from the AST.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GraphForeachAction {
+    /// SET action: SET n.prop = value or SET n:Label
+    Set(GraphSetAction),
+    /// CREATE action: Creates nodes/relationships
+    Create(GraphCreateNode),
+    /// MERGE action: Upsert semantics
+    Merge(GraphMergeNode),
+    /// DELETE action: DELETE n or DETACH DELETE n
+    Delete(GraphDeleteNode),
+    /// REMOVE action: REMOVE n.prop or REMOVE n:Label
+    Remove(GraphRemoveAction),
+    /// Nested FOREACH
+    Foreach(Box<GraphForeachNode>),
+}
+
+/// A graph FOREACH node for Cypher FOREACH operations.
+///
+/// Iterates over a list expression and executes mutation actions
+/// for each element in the list.
+///
+/// # Example
+///
+/// For the query:
+/// ```text
+/// MATCH (n:Person)
+/// FOREACH (x IN n.friends | SET x.contacted = true)
+/// ```
+///
+/// This node:
+/// - Takes a list expression (`n.friends`)
+/// - Binds each element to a variable (`x`)
+/// - Executes the nested actions for each element
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphForeachNode {
+    /// The iteration variable name bound to each list element.
+    pub variable: String,
+    /// The list expression to iterate over.
+    pub list_expr: LogicalExpr,
+    /// Actions to perform for each element.
+    pub actions: Vec<GraphForeachAction>,
+}
+
+impl GraphForeachNode {
+    /// Creates a new graph FOREACH node.
+    #[must_use]
+    pub fn new(
+        variable: impl Into<String>,
+        list_expr: LogicalExpr,
+        actions: Vec<GraphForeachAction>,
+    ) -> Self {
+        Self { variable: variable.into(), list_expr, actions }
+    }
+
+    /// Returns true if this FOREACH has nested FOREACH actions.
+    #[must_use]
+    pub fn has_nested_foreach(&self) -> bool {
+        self.actions.iter().any(|a| matches!(a, GraphForeachAction::Foreach(_)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
