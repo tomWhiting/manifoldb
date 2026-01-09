@@ -2,6 +2,8 @@
 
 This document provides a comprehensive roadmap for completing full SQL and Cypher support in ManifoldDB. It outlines the architectural approach, implementation phases, and specific work items needed to achieve production-ready query capabilities.
 
+> **Note:** This document covers **query language features** (SQL/Cypher completion). For **infrastructure improvements** (storage backends, connection handling, performance), see [docs/improvement-roadmap.md](./docs/improvement-roadmap.md).
+
 ## Executive Summary
 
 ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This roadmap describes the work needed to achieve:
@@ -10,6 +12,14 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 2. **Complete openCypher support** - Full read/write clauses, path operations, procedures
 3. **Graph algorithms via CALL/YIELD** - PageRank, shortest path, centrality, community detection
 4. **Unified query architecture** - Single IR that both languages compile to
+
+### Recently Completed
+
+- ✅ **CTEs (WITH clause)** - Non-recursive CTEs with multiple CTE support
+- ✅ **OPTIONAL MATCH** - LEFT OUTER JOIN semantics for graph patterns
+- ✅ **Graph-Constrained Vector Search** - `.within_traversal()` API
+- ✅ **EXPLAIN command** - Shows logical and physical plan trees
+- ✅ **Payload Indexing** - B-tree indexes on entity properties
 
 ---
 
@@ -114,7 +124,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 2.1 Parser Extensions
 **Goal:** Parse complete PostgreSQL-compatible SQL.
 
-- [ ] **CTEs**
+- [x] **CTEs** (basic support complete)
+  - [x] Non-recursive CTEs with multiple CTE support
   - [ ] WITH RECURSIVE support (currently rejected)
   - [ ] SEARCH DEPTH/BREADTH FIRST
   - [ ] CYCLE detection clause

@@ -6,7 +6,9 @@ A multi-paradigm embedded database for Rust that unifies graph, vector, and rela
 
 - **Graph Database**: Store entities and relationships with property graphs. Traverse with BFS, Dijkstra, A*, and pattern matching.
 - **Vector Database**: HNSW-based similarity search with multiple distance metrics (Cosine, Euclidean, Dot Product, Manhattan, Chebyshev, Hamming).
-- **SQL Support**: Query using familiar SQL syntax with graph pattern extensions.
+- **SQL Support**: Query using familiar SQL syntax with JOINs, CTEs, subqueries, and graph pattern extensions.
+- **Graph Patterns**: MATCH and OPTIONAL MATCH clauses for graph pattern matching within SQL.
+- **Graph-Constrained Search**: Vector similarity search restricted to traversal results.
 - **ACID Transactions**: Full transactional support across all operations with automatic rollback.
 - **Graph Analytics**: Built-in PageRank, betweenness centrality, and community detection.
 - **Product Quantization**: Optional vector compression for memory-efficient large-scale deployments.
@@ -110,6 +112,17 @@ let results = db.query_with_params(
     "SELECT * FROM users WHERE name = $1",
     &["Alice".into()],
 )?;
+
+// Common Table Expressions (CTEs)
+let results = db.query("
+    WITH active_users AS (
+        SELECT * FROM users WHERE status = 'active'
+    )
+    SELECT * FROM active_users WHERE age > 21
+")?;
+
+// Explain query plans
+let plan = db.query("EXPLAIN SELECT * FROM users WHERE age > 25")?;
 ```
 
 ### Vector Similarity Search
@@ -135,6 +148,16 @@ let similar = db.query_with_params("
     ORDER BY embedding <-> $1
     LIMIT 10
 ", &[Value::Vector(query_vector)])?;
+
+// Graph-constrained vector search - search within traversal results
+let results = db.search("documents", "embedding")
+    .query(query_vector)
+    .within_traversal(folder_id, |p| p
+        .edge_out("CONTAINS")
+        .variable_length(1, 10)
+    )
+    .limit(10)
+    .execute()?;
 ```
 
 ### Graph Traversal

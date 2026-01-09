@@ -86,15 +86,17 @@ Code must be:
 
 | Capability | Status | Description |
 |------------|--------|-------------|
-| Entity CRUD | Complete | Create, read, update, delete entities |
-| Edge CRUD | Complete | Typed edges with properties |
-| Vector Search | Complete | Dense, sparse, multi-vector ANN |
-| Hybrid Search | Complete | Combine dense + sparse with RRF |
-| Payload Indexing | Complete | B-tree indexes on properties |
-| SQL Queries | ~90% | SELECT, JOIN, GROUP BY, subqueries |
-| Graph Patterns | ~60% | MATCH clause, variable-length paths |
-| Cypher Write | ~40% | CREATE, MERGE in progress |
-| Graph-Constrained Search | Not Started | Vector search within traversal |
+| Entity CRUD | ✅ Complete | Create, read, update, delete entities |
+| Edge CRUD | ✅ Complete | Typed edges with properties |
+| Vector Search | ✅ Complete | Dense, sparse, multi-vector ANN |
+| Hybrid Search | ✅ Complete | Combine dense + sparse with RRF |
+| Payload Indexing | ✅ Complete | B-tree indexes on properties |
+| Graph-Constrained Search | ✅ Complete | Vector search within traversal results |
+| SQL Queries | ~95% | SELECT, JOIN, GROUP BY, CTEs, subqueries |
+| Graph Patterns | ~70% | MATCH, OPTIONAL MATCH, variable-length paths |
+| Cypher Write | Not Started | CREATE, MERGE, SET, DELETE |
+| Window Functions | Parsed Only | Not yet executed |
+| Graph Algorithms | Via API | PageRank, centrality, community detection |
 
 ## Success Criteria
 
@@ -119,21 +121,36 @@ Code must be:
 - **Not schema-enforced** - Flexible property graphs, schema is convention
 - **Not an ML platform** - Stores embeddings, doesn't generate them
 
-## Integration Points
+## Example Use Cases
 
-### Primary Consumer: Gimbal
+ManifoldDB is designed to support applications that need unified access to structured, relational, and semantic data:
 
-Gimbal is a code/documentation knowledge graph that uses ManifoldDB for:
-- Storing code symbols, documentation sections
-- Graph relationships (CONTAINS, FOLLOWED_BY, DEPENDS_ON)
-- Vector similarity search with language/visibility filters
-- **Graph-constrained search** (search within a repository) - CRITICAL GAP
+### Knowledge Graphs
+- Store entities with labels, properties, and typed relationships
+- Query via graph traversal (paths, neighbors, patterns)
+- Combine with vector search for semantic similarity
 
-### Embedding Generation: Tessera
+### Code Intelligence
+- Store code symbols and documentation as entities
+- Graph relationships for containment, dependencies, references
+- Vector search for "find similar code" with graph constraints
 
-ManifoldDB stores vectors but doesn't generate them. Tessera handles:
-- Dense embeddings (BGE, sentence-transformers)
-- Sparse embeddings (SPLADE)
+### Document Repositories
+- Store documents with metadata properties
+- Vector embeddings for semantic search
+- Graph edges for linking, citations, hierarchies
+
+### Recommendation Systems
+- User and item entities with properties
+- Edge types for interactions (viewed, purchased, rated)
+- Vector similarity for content-based recommendations
+- Graph traversal for collaborative filtering
+
+## Embedding Integration
+
+ManifoldDB stores vectors but doesn't generate them. Embeddings should be generated externally using:
+- Dense embeddings (BGE, OpenAI, Cohere, sentence-transformers)
+- Sparse embeddings (SPLADE, BM25)
 - Multi-vector embeddings (ColBERT)
 
 ## Guiding Questions for Review
@@ -144,4 +161,4 @@ When reviewing code, ask:
 2. **Is query execution correct?** - Logical plan → physical plan → results?
 3. **Is it production-ready?** - Error handling, performance, tests?
 4. **Does it follow conventions?** - Module structure, coding standards?
-5. **Does it serve Gimbal's needs?** - Graph-constrained search, write operations?
+5. **Is it complete?** - Parsing, planning, execution, and tests all present?

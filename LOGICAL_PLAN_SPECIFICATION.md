@@ -12,6 +12,80 @@ This document specifies the unified Intermediate Representation (IR) that both S
 
 ---
 
+## Implementation Status
+
+This section tracks what exists in the codebase vs. what needs to be created.
+
+### Existing Logical Plan Nodes
+
+Located in `crates/manifoldb-query/src/plan/logical/node.rs`:
+
+| Node | Status | File |
+|------|--------|------|
+| `Scan` | ✅ Exists | `relational.rs` |
+| `Values` | ✅ Exists | `relational.rs` |
+| `Empty` | ✅ Exists | `node.rs` |
+| `Filter` | ✅ Exists | `relational.rs` |
+| `Project` | ✅ Exists | `relational.rs` |
+| `Aggregate` | ✅ Exists | `relational.rs` |
+| `Sort` | ✅ Exists | `relational.rs` |
+| `Limit` | ✅ Exists | `relational.rs` |
+| `Distinct` | ✅ Exists | `relational.rs` |
+| `Alias` | ✅ Exists | `node.rs` |
+| `Join` | ✅ Exists | `relational.rs` |
+| `SetOp` | ✅ Exists | `relational.rs` |
+| `Union` | ✅ Exists | `relational.rs` |
+| `Expand` | ✅ Exists | `graph.rs` |
+| `PathScan` | ✅ Exists | `graph.rs` |
+| `AnnSearch` | ✅ Exists | `vector.rs` |
+| `VectorDistance` | ✅ Exists | `vector.rs` |
+| `HybridSearch` | ✅ Exists | `vector.rs` |
+| `Insert` | ✅ Exists | `node.rs` |
+| `Update` | ✅ Exists | `node.rs` |
+| `Delete` | ✅ Exists | `node.rs` |
+| `CreateTable` | ✅ Exists | `ddl.rs` |
+| `DropTable` | ✅ Exists | `ddl.rs` |
+| `CreateIndex` | ✅ Exists | `ddl.rs` |
+| `DropIndex` | ✅ Exists | `ddl.rs` |
+| `CreateCollection` | ✅ Exists | `ddl.rs` |
+| `DropCollection` | ✅ Exists | `ddl.rs` |
+
+### Nodes to Create
+
+| Node | Purpose | Priority | Depends On |
+|------|---------|----------|------------|
+| `Window` | Window function evaluation | Medium | Aggregate, Sort |
+| `RecursiveCTE` | Recursive CTE evaluation | Low | CTE (inlined) |
+| `Unwind` | List expansion (Cypher) | Medium | None |
+| `GraphCreate` | CREATE nodes/edges | High | None |
+| `GraphMerge` | MERGE with ON CREATE/MATCH | High | GraphCreate |
+| `GraphSet` | SET properties/labels | High | None |
+| `GraphRemove` | REMOVE properties/labels | Medium | None |
+| `GraphDelete` | DELETE/DETACH DELETE | High | None |
+| `ProcedureCall` | CALL ... YIELD | Medium | None |
+| `ShortestPath` | shortestPath() function | Medium | Expand |
+| `AllShortestPaths` | allShortestPaths() function | Low | ShortestPath |
+
+### Expression System
+
+Located in `crates/manifoldb-query/src/plan/logical/expr.rs`:
+
+| Expression Type | Status |
+|-----------------|--------|
+| Literals | ✅ Exists |
+| Column references | ✅ Exists |
+| Binary operators | ✅ Exists |
+| Unary operators | ✅ Exists |
+| Function calls | ✅ Exists |
+| CASE expressions | ✅ Exists |
+| CAST | ✅ Exists |
+| Subqueries (IN, EXISTS) | ✅ Exists |
+| List comprehensions | ❌ Needs creation |
+| Map projections | ❌ Needs creation |
+| Pattern expressions | ❌ Needs creation |
+
+---
+
 ## Node Categories
 
 ### Category 1: Leaf Nodes (Zero Inputs)

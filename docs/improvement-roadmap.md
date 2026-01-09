@@ -5,6 +5,10 @@
 
 ---
 
+> **Note:** This document covers **infrastructure improvements** (storage backends, connection handling, performance). For **query language features** (SQL/Cypher completion), see [QUERY_IMPLEMENTATION_ROADMAP.md](../QUERY_IMPLEMENTATION_ROADMAP.md).
+
+---
+
 ## Overview
 
 This roadmap prioritizes improvements to ManifoldDB based on:

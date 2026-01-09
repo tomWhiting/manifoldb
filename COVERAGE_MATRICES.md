@@ -18,6 +18,66 @@ This document tracks implementation status for all SQL and Cypher language featu
 
 ---
 
+## Implementation Dependencies
+
+This section helps agents understand what order to implement features. Features listed first must be completed before their dependents.
+
+### Core Infrastructure (Already Exists)
+
+These components are in place and can be extended:
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| SQL Parser | `parser/sql.rs` | ✅ Extensible |
+| Cypher Parser | `parser/extensions.rs` | ✅ Partial, embedded in SQL |
+| AST Types | `ast/statement.rs`, `ast/expr.rs` | ✅ Extensible |
+| LogicalPlan enum | `plan/logical/node.rs` | ✅ Add new variants |
+| PlanBuilder | `plan/logical/builder.rs` | ✅ Add new build methods |
+| PhysicalPlan enum | `plan/physical/node.rs` | ✅ Add new variants |
+| Execution operators | `exec/operators/*.rs` | ✅ Add new operators |
+
+### Feature Dependency Graph
+
+```
+Window Functions
+├── Depends on: Aggregate (exists)
+├── Depends on: Sort (exists)
+└── New: Window logical node, WindowOp physical operator
+
+Recursive CTEs
+├── Depends on: Non-recursive CTEs (exists)
+└── New: RecursiveCTE logical node, working table execution
+
+Cypher Writing Clauses
+├── CREATE: New GraphCreate logical node + operator
+├── MERGE: Depends on CREATE, new GraphMerge node + operator
+├── SET: Depends on MERGE (for ON CREATE/MATCH), new GraphSet node
+├── DELETE: Independent, new GraphDelete node + operator
+└── REMOVE: Similar to SET, new GraphRemove node
+
+CALL/YIELD Procedures
+├── New: ProcedureCall logical node
+├── New: Procedure registry infrastructure
+└── Then: Wire up existing graph algorithms as procedures
+
+Variable-Length Paths (Execution)
+├── Parser: ✅ Exists
+├── Logical Plan: ✅ PathScan node exists
+└── Needs: Physical operator implementation
+```
+
+### Parallel Work Streams
+
+These feature groups can be implemented independently:
+
+1. **SQL Functions** - String, numeric, date functions can be added without conflicts
+2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
+3. **Window Functions** - Isolated SQL feature
+4. **Graph Algorithms** - CALL/YIELD infrastructure
+5. **Variable-Length Paths** - Physical operator work
+
+---
+
 # Part 1: SQL Coverage Matrix
 
 ## 1.1 SELECT Statement
