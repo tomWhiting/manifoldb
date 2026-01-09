@@ -168,6 +168,31 @@ impl ProcedureArgs {
             _ => default,
         }
     }
+
+    /// Gets an argument as an array.
+    pub fn get_array(&self, index: usize, param_name: &str) -> ProcedureResult<&[Value]> {
+        match self.values.get(index) {
+            Some(Value::Array(arr)) => Ok(arr.as_slice()),
+            Some(other) => Err(ProcedureError::InvalidArgType {
+                param: param_name.to_string(),
+                expected: "ARRAY".to_string(),
+                actual: value_type_name(other),
+            }),
+            None => Err(ProcedureError::InvalidArgCount {
+                expected: format!("at least {}", index + 1),
+                actual: self.values.len(),
+            }),
+        }
+    }
+
+    /// Gets an optional argument as an array.
+    #[must_use]
+    pub fn get_array_opt(&self, index: usize) -> Option<&[Value]> {
+        match self.values.get(index) {
+            Some(Value::Array(arr)) => Some(arr.as_slice()),
+            _ => None,
+        }
+    }
 }
 
 /// Returns the type name of a value for error messages.

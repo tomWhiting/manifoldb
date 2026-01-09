@@ -1,0 +1,163 @@
+//! Overlap coefficient procedure implementation.
+
+use std::sync::Arc;
+
+use manifoldb_core::{EntityId, Value};
+use manifoldb_graph::analytics::overlap_coefficient;
+
+use crate::exec::{ExecutionContext, Row, RowBatch, Schema};
+use crate::procedure::signature::ProcedureParameter;
+use crate::procedure::traits::Procedure;
+use crate::procedure::{
+    ProcedureArgs, ProcedureError, ProcedureResult, ProcedureSignature, ReturnColumn,
+};
+
+/// Overlap coefficient procedure.
+///
+/// Computes Overlap coefficient between two nodes based on their neighborhoods.
+///
+/// Overlap coefficient = |A ∩ B| / min(|A|, |B|)
+///
+/// Where A and B are the neighbor sets of the two nodes.
+///
+/// This measure is useful when comparing nodes of very different degrees,
+/// as it normalizes by the smaller set.
+///
+/// # Usage
+///
+/// ```sql
+/// MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
+/// CALL algo.overlap(a, b) YIELD similarity
+/// RETURN similarity
+///
+/// CALL algo.overlap(1, 2, 'KNOWS') YIELD similarity
+/// RETURN similarity
+/// ```
+///
+/// # Parameters
+///
+/// - `node1` (required, INTEGER): The first node ID
+/// - `node2` (required, INTEGER): The second node ID
+/// - `edge_type` (optional, STRING): Filter by edge type
+///
+/// # Returns
+///
+/// - `similarity` (FLOAT): The Overlap coefficient (0.0 to 1.0)
+pub struct OverlapProcedure;
+
+impl Procedure for OverlapProcedure {
+    fn signature(&self) -> ProcedureSignature {
+        ProcedureSignature::new("algo.overlap")
+            .with_description(
+                "Computes Overlap coefficient between two nodes based on their neighborhoods",
+            )
+            .with_parameter(
+                ProcedureParameter::required("node1", "INTEGER")
+                    .with_description("The first node ID"),
+            )
+            .with_parameter(
+                ProcedureParameter::required("node2", "INTEGER")
+                    .with_description("The second node ID"),
+            )
+            .with_parameter(
+                ProcedureParameter::optional("edge_type", "STRING")
+                    .with_description("Optional edge type filter"),
+            )
+            .with_return(
+                ReturnColumn::new("similarity", "FLOAT")
+                    .with_description("The Overlap coefficient (0.0 to 1.0)"),
+            )
+    }
+
+    fn execute(&self, _args: ProcedureArgs) -> ProcedureResult<RowBatch> {
+        Err(ProcedureError::ExecutionFailed(
+            "algo.overlap requires graph storage context".to_string(),
+        ))
+    }
+
+    fn execute_with_context(
+        &self,
+        args: ProcedureArgs,
+        ctx: &ExecutionContext,
+    ) -> ProcedureResult<RowBatch> {
+        // Get required parameters
+        let node1 = args.get_int(0, "node1")?;
+        let node2 = args.get_int(1, "node2")?;
+        let edge_type = args.get_string_opt(2);
+
+        let _ = ctx;
+        let _ = node1;
+        let _ = node2;
+        let _ = edge_type;
+
+        // Return a placeholder error - the actual execution will be done
+        // in the manifoldb crate's executor where the transaction is available.
+        Err(ProcedureError::ExecutionFailed(
+            "Overlap execution requires direct transaction access. \
+             Use the higher-level executor in manifoldb crate."
+                .to_string(),
+        ))
+    }
+
+    fn requires_context(&self) -> bool {
+        true
+    }
+
+    fn output_schema(&self) -> Arc<Schema> {
+        Arc::new(Schema::new(vec!["similarity".to_string()]))
+    }
+}
+
+/// Helper function to execute Overlap coefficient with a transaction and return rows.
+///
+/// This function is intended to be called from the main manifoldb executor
+/// where the transaction is available.
+pub fn execute_overlap_with_tx<T: manifoldb_storage::Transaction>(
+    tx: &T,
+    node1_id: i64,
+    node2_id: i64,
+    edge_type: Option<&str>,
+) -> ProcedureResult<RowBatch> {
+    let node1 = EntityId::new(node1_id as u64);
+    let node2 = EntityId::new(node2_id as u64);
+
+    let similarity = overlap_coefficient(tx, node1, node2, edge_type)
+        .map_err(|e| ProcedureError::GraphError(e.to_string()))?;
+
+    // Build result rows
+    let schema = Arc::new(Schema::new(vec!["similarity".to_string()]));
+    let mut batch = RowBatch::new(Arc::clone(&schema));
+
+    let row = Row::new(Arc::clone(&schema), vec![Value::Float(similarity)]);
+    batch.push(row);
+
+    Ok(batch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature() {
+        let proc = OverlapProcedure;
+        let sig = proc.signature();
+        assert_eq!(sig.name, "algo.overlap");
+        assert_eq!(sig.parameters.len(), 3);
+        assert_eq!(sig.returns.len(), 1);
+        assert_eq!(sig.required_param_count(), 2);
+    }
+
+    #[test]
+    fn output_schema() {
+        let proc = OverlapProcedure;
+        let schema = proc.output_schema();
+        assert_eq!(schema.columns(), vec!["similarity"]);
+    }
+
+    #[test]
+    fn requires_context() {
+        let proc = OverlapProcedure;
+        assert!(proc.requires_context());
+    }
+}

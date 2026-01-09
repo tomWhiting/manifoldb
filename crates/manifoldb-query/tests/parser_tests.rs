@@ -2268,7 +2268,13 @@ mod builtin_procedures {
         assert!(registry.contains("algo.allShortestPaths"));
         assert!(registry.contains("algo.sssp"));
 
-        assert_eq!(registry.len(), 16);
+        // Similarity algorithms
+        assert!(registry.contains("algo.nodeSimilarity"));
+        assert!(registry.contains("algo.jaccard"));
+        assert!(registry.contains("algo.overlap"));
+        assert!(registry.contains("algo.cosine"));
+
+        assert_eq!(registry.len(), 20);
     }
 }
 

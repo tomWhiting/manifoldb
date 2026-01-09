@@ -82,7 +82,8 @@ CALL/YIELD Procedures
 ├── Centrality (betweenness, closeness, degree, eigenvector): ✅ Complete
 ├── Community (labelPropagation, connectedComponents, stronglyConnected): ✅ Complete
 ├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Complete
-└── Status: ✅ 15 procedures registered (Jan 2026)
+├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ✅ Complete (Jan 2026)
+└── Status: ✅ 20 procedures registered (Jan 2026)
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -107,7 +108,7 @@ These feature groups can be implemented independently:
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
 3. **Window Functions** - ✅ Complete (Jan 2026) - all ranking/distribution functions implemented
-4. **Graph Algorithms** - ✅ 15 procedures via CALL/YIELD (Jan 2026) - includes BFS/DFS traversal
+4. **Graph Algorithms** - ✅ 20 procedures via CALL/YIELD (Jan 2026) - includes BFS/DFS traversal and similarity
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---
@@ -898,10 +899,10 @@ These feature groups can be implemented independently:
 
 | Algorithm | Via CALL | Tested | Notes |
 |-----------|----------|--------|-------|
-| Node Similarity | | | Needs impl |
-| Jaccard | | | Needs impl |
-| Overlap | | | Needs impl |
-| Cosine | | | Needs impl |
+| Node Similarity | ✓ | ✓ | `algo.nodeSimilarity()` - Jaccard-based bulk similarity (Jan 2026)† |
+| Jaccard | ✓ | ✓ | `algo.jaccard()` - Pairwise Jaccard coefficient (Jan 2026)† |
+| Overlap | ✓ | ✓ | `algo.overlap()` - Pairwise Overlap coefficient (Jan 2026)† |
+| Cosine | ✓ | ✓ | `algo.cosine()` - Property-based cosine similarity (Jan 2026)† |
 
 ---
 

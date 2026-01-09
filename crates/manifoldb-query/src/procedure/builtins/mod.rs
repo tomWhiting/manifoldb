@@ -29,6 +29,13 @@
 //! - `algo.astar` - Weighted shortest path using A* with heuristics
 //! - `algo.allShortestPaths` - Finds all shortest paths between two nodes
 //! - `algo.sssp` - Single-source shortest paths to all reachable nodes
+//!
+//! ## Similarity Algorithms
+//!
+//! - `algo.nodeSimilarity` - Computes Jaccard similarity for all node pairs
+//! - `algo.jaccard` - Pairwise Jaccard similarity between two nodes
+//! - `algo.overlap` - Pairwise Overlap coefficient between two nodes
+//! - `algo.cosine` - Property-based cosine similarity between two nodes
 
 mod all_shortest_paths;
 mod astar;
@@ -37,11 +44,15 @@ mod bfs;
 mod closeness;
 mod community;
 mod connected;
+mod cosine;
 mod degree;
 mod dfs;
 mod dijkstra;
 mod eigenvector;
+mod jaccard;
 mod louvain;
+mod node_similarity;
+mod overlap;
 mod pagerank;
 mod shortest_path;
 mod sssp;
@@ -64,6 +75,12 @@ pub use louvain::{execute_louvain_with_tx, LouvainProcedure};
 pub use pagerank::{execute_pagerank_with_tx, PageRankProcedure};
 pub use shortest_path::{execute_shortest_path_with_tx, ShortestPathProcedure};
 pub use sssp::{execute_sssp_with_tx, SSSPProcedure};
+
+// Similarity algorithms
+pub use cosine::{execute_cosine_with_tx, CosineProcedure};
+pub use jaccard::{execute_jaccard_with_tx, JaccardProcedure};
+pub use node_similarity::{execute_node_similarity_with_tx, NodeSimilarityProcedure};
+pub use overlap::{execute_overlap_with_tx, OverlapProcedure};
 
 #[allow(unused_imports)] // Trait is used for Arc<dyn Procedure> coercion
 use super::traits::Procedure;
@@ -95,4 +112,10 @@ pub fn register_builtins(registry: &mut ProcedureRegistry) {
     registry.register(Arc::new(AStarProcedure));
     registry.register(Arc::new(AllShortestPathsProcedure));
     registry.register(Arc::new(SSSPProcedure));
+
+    // Similarity algorithms
+    registry.register(Arc::new(NodeSimilarityProcedure));
+    registry.register(Arc::new(JaccardProcedure));
+    registry.register(Arc::new(OverlapProcedure));
+    registry.register(Arc::new(CosineProcedure));
 }

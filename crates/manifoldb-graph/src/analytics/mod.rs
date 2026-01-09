@@ -53,6 +53,7 @@ mod degree;
 mod eigenvector;
 mod louvain;
 mod pagerank;
+mod similarity;
 mod triangle;
 
 pub use centrality::{BetweennessCentrality, BetweennessCentralityConfig, CentralityResult};
@@ -65,4 +66,8 @@ pub use eigenvector::{
 };
 pub use louvain::{LouvainCommunityDetection, LouvainConfig, LouvainResult};
 pub use pagerank::{PageRank, PageRankConfig, PageRankResult};
+pub use similarity::{
+    cosine_similarity_properties, get_neighbors, jaccard_similarity, overlap_coefficient,
+    NodeSimilarity, NodeSimilarityConfig, NodeSimilarityResult, SimilarityAlgorithm,
+};
 pub use triangle::{TriangleCount, TriangleCountConfig, TriangleCountResult};
