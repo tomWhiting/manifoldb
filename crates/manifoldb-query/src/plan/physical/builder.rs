@@ -396,6 +396,8 @@ impl PhysicalPlanner {
             LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
             LogicalPlan::CreateCollection(node) => PhysicalPlan::CreateCollection(node.clone()),
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
+
+            LogicalPlan::ProcedureCall(node) => PhysicalPlan::ProcedureCall(node.clone()),
         }
     }
 

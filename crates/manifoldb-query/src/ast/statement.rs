@@ -34,6 +34,8 @@ pub enum Statement {
     DropCollection(DropCollectionStatement),
     /// MATCH statement (Cypher-style graph query).
     Match(Box<MatchStatement>),
+    /// CALL statement for procedure invocation.
+    Call(Box<CallStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
 }
@@ -346,6 +348,116 @@ impl ReturnItem {
 impl From<Expr> for ReturnItem {
     fn from(expr: Expr) -> Self {
         Self::expr(expr)
+    }
+}
+
+/// A CALL statement for invoking procedures.
+///
+/// Supports both SQL and Cypher-style procedure invocation:
+///
+/// ```text
+/// -- SQL style
+/// CALL algo.pageRank('nodes', 'edges', {damping: 0.85}) YIELD node, score
+/// WHERE score > 0.1
+///
+/// -- Cypher style
+/// CALL algo.shortestPath(source, target) YIELD path, cost
+/// ```
+///
+/// Procedures can be built-in graph algorithms or user-defined functions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallStatement {
+    /// The fully-qualified procedure name (e.g., "algo.pageRank").
+    pub procedure_name: QualifiedName,
+    /// Arguments passed to the procedure.
+    pub arguments: Vec<Expr>,
+    /// Items to yield from the procedure result.
+    /// Empty vec means no YIELD clause (standalone CALL).
+    /// Contains `YieldItem::Wildcard` for `YIELD *`.
+    pub yield_items: Vec<YieldItem>,
+    /// Optional WHERE clause to filter yielded results.
+    pub where_clause: Option<Expr>,
+}
+
+impl CallStatement {
+    /// Creates a new CALL statement.
+    #[must_use]
+    pub fn new(procedure_name: impl Into<QualifiedName>, arguments: Vec<Expr>) -> Self {
+        Self {
+            procedure_name: procedure_name.into(),
+            arguments,
+            yield_items: vec![],
+            where_clause: None,
+        }
+    }
+
+    /// Adds YIELD items to the statement.
+    #[must_use]
+    pub fn yield_items(mut self, items: Vec<YieldItem>) -> Self {
+        self.yield_items = items;
+        self
+    }
+
+    /// Adds a YIELD * clause.
+    #[must_use]
+    pub fn yield_all(mut self) -> Self {
+        self.yield_items = vec![YieldItem::Wildcard];
+        self
+    }
+
+    /// Sets the WHERE clause for filtering yielded results.
+    #[must_use]
+    pub fn where_clause(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+}
+
+/// An item in a YIELD clause.
+///
+/// YIELD clauses specify which columns to extract from procedure results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum YieldItem {
+    /// A wildcard (*) - yield all columns from the procedure.
+    Wildcard,
+    /// A named column, optionally aliased.
+    Column {
+        /// The column name from the procedure result.
+        name: Identifier,
+        /// Optional alias (AS name).
+        alias: Option<Identifier>,
+    },
+}
+
+impl YieldItem {
+    /// Creates a wildcard yield item.
+    #[must_use]
+    pub const fn wildcard() -> Self {
+        Self::Wildcard
+    }
+
+    /// Creates an unaliased column yield item.
+    #[must_use]
+    pub fn column(name: impl Into<Identifier>) -> Self {
+        Self::Column { name: name.into(), alias: None }
+    }
+
+    /// Creates an aliased column yield item.
+    #[must_use]
+    pub fn aliased(name: impl Into<Identifier>, alias: impl Into<Identifier>) -> Self {
+        Self::Column { name: name.into(), alias: Some(alias.into()) }
+    }
+}
+
+impl From<&str> for YieldItem {
+    fn from(s: &str) -> Self {
+        Self::column(s)
+    }
+}
+
+impl From<Identifier> for YieldItem {
+    fn from(id: Identifier) -> Self {
+        Self::Column { name: id, alias: None }
     }
 }
 
@@ -1252,5 +1364,39 @@ mod tests {
     fn assignment() {
         let assign = Assignment::new("status", Expr::string("active"));
         assert_eq!(assign.column.name, "status");
+    }
+
+    #[test]
+    fn call_statement_builder() {
+        let stmt = CallStatement::new(
+            QualifiedName::qualified("algo", "pageRank"),
+            vec![Expr::string("nodes"), Expr::string("edges")],
+        )
+        .yield_items(vec![YieldItem::column("node"), YieldItem::aliased("score", "rank")])
+        .where_clause(Expr::column(QualifiedName::simple("score")).gt(Expr::float(0.1)));
+
+        assert_eq!(stmt.procedure_name.parts.len(), 2);
+        assert_eq!(stmt.arguments.len(), 2);
+        assert_eq!(stmt.yield_items.len(), 2);
+        assert!(stmt.where_clause.is_some());
+    }
+
+    #[test]
+    fn call_statement_yield_all() {
+        let stmt = CallStatement::new(QualifiedName::simple("listProcedures"), vec![]).yield_all();
+
+        assert_eq!(stmt.yield_items.len(), 1);
+        assert!(matches!(stmt.yield_items[0], YieldItem::Wildcard));
+    }
+
+    #[test]
+    fn yield_item_conversions() {
+        let from_str: YieldItem = "column_name".into();
+        assert!(
+            matches!(from_str, YieldItem::Column { name, alias: None } if name.name == "column_name")
+        );
+
+        let from_id: YieldItem = Identifier::new("other").into();
+        assert!(matches!(from_id, YieldItem::Column { name, alias: None } if name.name == "other"));
     }
 }

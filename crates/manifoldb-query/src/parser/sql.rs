@@ -8,13 +8,13 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
-    Assignment, BinaryOp, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget,
-    CreateIndexStatement, CreateTableStatement, DataType, DeleteStatement, DropIndexStatement,
-    DropTableStatement, Expr, FunctionCall, Identifier, IndexColumn, InsertSource, InsertStatement,
-    JoinClause, JoinCondition, JoinType, Literal, OnConflict, OrderByExpr, ParameterRef,
-    QualifiedName, SelectItem, SelectStatement, SetOperation, SetOperator, Statement, TableAlias,
-    TableConstraint, TableRef, UnaryOp, UpdateStatement, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowSpec, WithClause,
+    Assignment, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction,
+    ConflictTarget, CreateIndexStatement, CreateTableStatement, DataType, DeleteStatement,
+    DropIndexStatement, DropTableStatement, Expr, FunctionCall, Identifier, IndexColumn,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, Literal, OnConflict,
+    OrderByExpr, ParameterRef, QualifiedName, SelectItem, SelectStatement, SetOperation,
+    SetOperator, Statement, TableAlias, TableConstraint, TableRef, UnaryOp, UpdateStatement,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -98,6 +98,10 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         sp::Statement::Explain { statement, .. } => {
             let inner = convert_statement(*statement)?;
             Ok(Statement::Explain(Box::new(inner)))
+        }
+        sp::Statement::Call(function) => {
+            let call_stmt = convert_call(function)?;
+            Ok(Statement::Call(Box::new(call_stmt)))
         }
         _ => Err(ParseError::Unsupported(format!("statement type: {stmt:?}"))),
     }
@@ -669,6 +673,17 @@ fn convert_function(func: sp::Function) -> ParseResult<Expr> {
         filter,
         over,
     }))
+}
+
+/// Converts a CALL statement.
+///
+/// Note: This converts basic CALL statements. YIELD clause support
+/// is handled separately by the ExtendedParser.
+fn convert_call(func: sp::Function) -> ParseResult<CallStatement> {
+    let procedure_name = convert_object_name(func.name);
+    let arguments = convert_function_args(func.args)?;
+
+    Ok(CallStatement::new(procedure_name, arguments))
 }
 
 /// Converts a window specification.

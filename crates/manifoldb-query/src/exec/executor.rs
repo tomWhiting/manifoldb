@@ -363,6 +363,9 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         | PhysicalPlan::DropIndex(_)
         | PhysicalPlan::CreateCollection(_)
         | PhysicalPlan::DropCollection(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+
+        // Procedure calls are handled via the ProcedureRegistry at a higher level
+        PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
     }
 }
 

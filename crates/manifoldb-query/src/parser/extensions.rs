@@ -46,11 +46,11 @@
 //! ```
 
 use crate::ast::{
-    BinaryOp, CreateCollectionStatement, DataType, DistanceMetric, DropCollectionStatement,
-    EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern, Identifier, MatchStatement,
-    NodePattern, OrderByExpr, ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition,
-    QualifiedName, ReturnItem, SelectStatement, ShortestPathPattern, Statement, VectorDef,
-    VectorTypeDef, WeightSpec,
+    BinaryOp, CallStatement, CreateCollectionStatement, DataType, DistanceMetric,
+    DropCollectionStatement, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
+    Identifier, MatchStatement, NodePattern, OrderByExpr, ParameterRef, PathPattern,
+    PayloadFieldDef, PropertyCondition, QualifiedName, ReturnItem, SelectStatement,
+    ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec, YieldItem,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -89,6 +89,11 @@ impl ExtendedParser {
         // Check for DROP COLLECTION statement (not supported by sqlparser)
         if Self::is_drop_collection(input) {
             return Self::parse_drop_collection(input);
+        }
+
+        // Check for CALL with YIELD (requires custom parsing for Cypher-style YIELD clause)
+        if Self::is_call_with_yield(input) {
+            return Self::parse_call_with_yield(input);
         }
 
         // Step 1: Extract MATCH and OPTIONAL MATCH clauses (they're not valid SQL)
@@ -188,6 +193,262 @@ impl ExtendedParser {
         }
 
         Ok(vec![Statement::DropCollection(stmt)])
+    }
+
+    /// Checks if the input is a CALL statement with YIELD clause.
+    fn is_call_with_yield(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+        upper.starts_with("CALL") && upper.contains("YIELD")
+    }
+
+    /// Parses a CALL statement with YIELD clause.
+    ///
+    /// Syntax:
+    /// ```text
+    /// CALL procedure.name(arg1, arg2, ...) YIELD col1, col2 AS alias, ... [WHERE condition]
+    /// CALL procedure.name(arg1, arg2, ...) YIELD *
+    /// ```
+    fn parse_call_with_yield(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+
+        // Split into CALL part and YIELD part
+        let upper = input.to_uppercase();
+        let yield_pos = upper
+            .find(" YIELD ")
+            .ok_or_else(|| ParseError::SqlSyntax("expected YIELD clause after CALL".to_string()))?;
+
+        let call_part = &input[4..yield_pos].trim(); // Skip "CALL "
+        let yield_part = &input[yield_pos + 7..]; // Skip " YIELD "
+
+        // Parse procedure name and arguments
+        let (procedure_name, arguments) = Self::parse_procedure_call(call_part)?;
+
+        // Parse YIELD clause and optional WHERE
+        let (yield_items, where_clause) = Self::parse_yield_clause(yield_part)?;
+
+        let mut stmt = CallStatement::new(procedure_name, arguments).yield_items(yield_items);
+
+        if let Some(condition) = where_clause {
+            stmt = stmt.where_clause(condition);
+        }
+
+        Ok(vec![Statement::Call(Box::new(stmt))])
+    }
+
+    /// Parses a procedure call (name and arguments).
+    fn parse_procedure_call(input: &str) -> ParseResult<(QualifiedName, Vec<Expr>)> {
+        // Find the opening paren
+        let paren_pos = input.find('(').ok_or_else(|| {
+            ParseError::SqlSyntax("expected '(' after procedure name".to_string())
+        })?;
+
+        let name_part = input[..paren_pos].trim();
+        let args_part = input[paren_pos + 1..].trim();
+
+        // Parse procedure name (can be qualified like algo.pageRank)
+        let procedure_name = Self::parse_qualified_name(name_part)?;
+
+        // Find closing paren
+        let close_pos = args_part.rfind(')').ok_or_else(|| {
+            ParseError::SqlSyntax("expected ')' to close procedure arguments".to_string())
+        })?;
+
+        let args_str = args_part[..close_pos].trim();
+
+        // Parse arguments
+        let arguments =
+            if args_str.is_empty() { vec![] } else { Self::parse_argument_list(args_str)? };
+
+        Ok((procedure_name, arguments))
+    }
+
+    /// Parses a qualified name (e.g., "algo.pageRank").
+    fn parse_qualified_name(input: &str) -> ParseResult<QualifiedName> {
+        let parts: Vec<&str> = input.split('.').collect();
+        if parts.is_empty() || parts.iter().any(|p| p.trim().is_empty()) {
+            return Err(ParseError::SqlSyntax("invalid procedure name".to_string()));
+        }
+
+        let identifiers: Vec<Identifier> =
+            parts.iter().map(|s| Identifier::new(s.trim())).collect();
+        Ok(QualifiedName::new(identifiers))
+    }
+
+    /// Parses a comma-separated argument list.
+    fn parse_argument_list(input: &str) -> ParseResult<Vec<Expr>> {
+        // Handle nested parentheses and quotes for proper splitting
+        let mut args = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+        let mut in_string = false;
+        let mut string_char = '"';
+
+        for ch in input.chars() {
+            match ch {
+                '"' | '\'' if !in_string => {
+                    in_string = true;
+                    string_char = ch;
+                    current.push(ch);
+                }
+                c if c == string_char && in_string => {
+                    in_string = false;
+                    current.push(ch);
+                }
+                '(' if !in_string => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                ')' if !in_string => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if !in_string && depth == 0 => {
+                    args.push(Self::parse_simple_expr(current.trim())?);
+                    current = String::new();
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        // Don't forget the last argument
+        if !current.trim().is_empty() {
+            args.push(Self::parse_simple_expr(current.trim())?);
+        }
+
+        Ok(args)
+    }
+
+    /// Parses a simple expression (literal, identifier, or parameter).
+    fn parse_simple_expr(input: &str) -> ParseResult<Expr> {
+        let trimmed = input.trim();
+
+        // NULL
+        if trimmed.eq_ignore_ascii_case("null") {
+            return Ok(Expr::null());
+        }
+
+        // Boolean
+        if trimmed.eq_ignore_ascii_case("true") {
+            return Ok(Expr::boolean(true));
+        }
+        if trimmed.eq_ignore_ascii_case("false") {
+            return Ok(Expr::boolean(false));
+        }
+
+        // String literal
+        if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+            || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        {
+            let s = &trimmed[1..trimmed.len() - 1];
+            return Ok(Expr::string(s));
+        }
+
+        // Parameter ($name or $1)
+        if let Some(rest) = trimmed.strip_prefix('$') {
+            if let Ok(pos) = rest.parse::<u32>() {
+                return Ok(Expr::Parameter(ParameterRef::Positional(pos)));
+            }
+            return Ok(Expr::Parameter(ParameterRef::Named(rest.to_string())));
+        }
+
+        // Integer
+        if let Ok(i) = trimmed.parse::<i64>() {
+            return Ok(Expr::integer(i));
+        }
+
+        // Float
+        if let Ok(f) = trimmed.parse::<f64>() {
+            return Ok(Expr::float(f));
+        }
+
+        // Column reference (identifier or qualified)
+        Ok(Expr::Column(Self::parse_qualified_name(trimmed)?))
+    }
+
+    /// Parses a YIELD clause including optional WHERE.
+    fn parse_yield_clause(input: &str) -> ParseResult<(Vec<YieldItem>, Option<Expr>)> {
+        let upper = input.to_uppercase();
+
+        // Check for WHERE clause
+        let (yield_part, where_clause) = if let Some(where_pos) = upper.find(" WHERE ") {
+            let yield_str = input[..where_pos].trim();
+            let where_str = input[where_pos + 7..].trim();
+            let condition = Self::parse_where_condition(where_str)?;
+            (yield_str, Some(condition))
+        } else {
+            (input.trim(), None)
+        };
+
+        // Parse YIELD items
+        let yield_items = Self::parse_yield_items(yield_part)?;
+
+        Ok((yield_items, where_clause))
+    }
+
+    /// Parses YIELD items (column names with optional aliases).
+    fn parse_yield_items(input: &str) -> ParseResult<Vec<YieldItem>> {
+        let trimmed = input.trim();
+
+        // Handle YIELD *
+        if trimmed == "*" {
+            return Ok(vec![YieldItem::Wildcard]);
+        }
+
+        // Parse comma-separated items
+        let mut items = Vec::new();
+        for part in trimmed.split(',') {
+            let part = part.trim();
+            let upper_part = part.to_uppercase();
+
+            // Check for AS alias
+            if let Some(as_pos) = upper_part.find(" AS ") {
+                let name = part[..as_pos].trim();
+                let alias = part[as_pos + 4..].trim();
+                items.push(YieldItem::aliased(name, alias));
+            } else {
+                items.push(YieldItem::column(part));
+            }
+        }
+
+        if items.is_empty() {
+            return Err(ParseError::SqlSyntax("expected at least one YIELD item".to_string()));
+        }
+
+        Ok(items)
+    }
+
+    /// Parses a WHERE condition after YIELD.
+    fn parse_where_condition(input: &str) -> ParseResult<Expr> {
+        // For now, handle simple binary comparisons
+        // Format: column_name op value
+        let trimmed = input.trim();
+
+        // Try to find a comparison operator
+        for (op_str, op) in &[
+            (">=", BinaryOp::GtEq),
+            ("<=", BinaryOp::LtEq),
+            ("<>", BinaryOp::NotEq),
+            ("!=", BinaryOp::NotEq),
+            ("=", BinaryOp::Eq),
+            (">", BinaryOp::Gt),
+            ("<", BinaryOp::Lt),
+        ] {
+            if let Some(pos) = trimmed.find(op_str) {
+                let left = trimmed[..pos].trim();
+                let right = trimmed[pos + op_str.len()..].trim();
+
+                let left_expr = Self::parse_simple_expr(left)?;
+                let right_expr = Self::parse_simple_expr(right)?;
+
+                return Ok(Expr::BinaryOp {
+                    left: Box::new(left_expr),
+                    op: *op,
+                    right: Box::new(right_expr),
+                });
+            }
+        }
+
+        Err(ParseError::SqlSyntax(format!("unsupported WHERE condition: {trimmed}")))
     }
 
     /// Parses a CREATE COLLECTION statement.

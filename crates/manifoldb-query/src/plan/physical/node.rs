@@ -21,7 +21,8 @@ use crate::ast::DistanceMetric;
 use crate::ast::WindowFunction;
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, ExpandDirection, ExpandLength, JoinType, LogicalExpr, SetOpType, SortOrder,
+    DropTableNode, ExpandDirection, ExpandLength, JoinType, LogicalExpr, ProcedureCallNode,
+    SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -291,6 +292,10 @@ pub enum PhysicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    // ========== Procedure Operations ==========
+    /// Procedure call (CALL/YIELD).
+    ProcedureCall(Box<ProcedureCallNode>),
 }
 
 // ============================================================================
@@ -1623,7 +1628,8 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1673,7 +1679,8 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1722,6 +1729,7 @@ impl PhysicalPlan {
                 | Self::DropIndex(_)
                 | Self::CreateCollection(_)
                 | Self::DropCollection(_)
+                | Self::ProcedureCall(_)
         )
     }
 
@@ -1762,6 +1770,7 @@ impl PhysicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
 
@@ -1796,13 +1805,14 @@ impl PhysicalPlan {
             Self::Insert { cost, .. } => *cost,
             Self::Update { cost, .. } => *cost,
             Self::Delete { cost, .. } => *cost,
-            // DDL operations have zero query cost
+            // DDL and procedure operations have zero query cost
             Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => Cost::zero(),
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => Cost::zero(),
         }
     }
 
@@ -2176,6 +2186,31 @@ impl DisplayTree<'_> {
                 }
                 if node.cascade {
                     write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::ProcedureCall(node) => {
+                write!(f, "ProcedureCall: {}", node.procedure_name)?;
+                if !node.arguments.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in node.arguments.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                if !node.yield_columns.is_empty() {
+                    write!(f, " YIELD ")?;
+                    for (i, col) in node.yield_columns.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", col.name)?;
+                        if let Some(alias) = &col.alias {
+                            write!(f, " AS {alias}")?;
+                        }
+                    }
                 }
             }
         }

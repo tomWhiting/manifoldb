@@ -1527,6 +1527,11 @@ fn execute_logical_plan<T: Transaction>(
             "Window functions should be executed through execute_physical_plan, not execute_logical_plan"
                 .to_string(),
         )),
+
+        LogicalPlan::ProcedureCall(_) => Err(Error::Execution(
+            "Procedure calls should be executed through execute_physical_plan, not execute_logical_plan"
+                .to_string(),
+        )),
     }
 }
 

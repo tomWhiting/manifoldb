@@ -1557,6 +1557,229 @@ mod cte {
 // Window Function Parsing Tests
 // ============================================================================
 
+// ============================================================================
+// CALL/YIELD Statement Parsing Tests
+// ============================================================================
+
+mod call_yield {
+    use super::*;
+    use manifoldb_query::ast::{Statement, YieldItem};
+
+    #[test]
+    fn parse_simple_call() {
+        let stmts = ExtendedParser::parse("CALL algo.pageRank()").unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.procedure_name.parts.len(), 2);
+            assert_eq!(call.procedure_name.parts[0].name, "algo");
+            assert_eq!(call.procedure_name.parts[1].name, "pageRank");
+            assert!(call.arguments.is_empty());
+            assert!(call.yield_items.is_empty());
+            assert!(call.where_clause.is_none());
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_arguments() {
+        let stmts = ExtendedParser::parse("CALL algo.pageRank(0.85, 100)").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.arguments.len(), 2);
+            // First arg should be a float literal
+            if let Expr::Literal(Literal::Float(f)) = &call.arguments[0] {
+                assert!((*f - 0.85).abs() < 0.001);
+            } else {
+                panic!("expected float literal for first argument");
+            }
+            // Second arg should be an integer literal
+            if let Expr::Literal(Literal::Integer(i)) = &call.arguments[1] {
+                assert_eq!(*i, 100);
+            } else {
+                panic!("expected integer literal for second argument");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_yield() {
+        let stmts = ExtendedParser::parse("CALL algo.pageRank() YIELD nodeId, score").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.yield_items.len(), 2);
+            if let YieldItem::Column { name, alias } = &call.yield_items[0] {
+                assert_eq!(name.name, "nodeId");
+                assert!(alias.is_none());
+            } else {
+                panic!("expected column yield item");
+            }
+            if let YieldItem::Column { name, alias } = &call.yield_items[1] {
+                assert_eq!(name.name, "score");
+                assert!(alias.is_none());
+            } else {
+                panic!("expected column yield item");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_yield_wildcard() {
+        let stmts = ExtendedParser::parse("CALL algo.pageRank() YIELD *").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.yield_items.len(), 1);
+            assert!(matches!(call.yield_items[0], YieldItem::Wildcard));
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_yield_alias() {
+        let stmts = ExtendedParser::parse("CALL algo.pageRank() YIELD nodeId AS id, score AS rank")
+            .unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.yield_items.len(), 2);
+            if let YieldItem::Column { name, alias } = &call.yield_items[0] {
+                assert_eq!(name.name, "nodeId");
+                assert!(alias.is_some());
+                assert_eq!(alias.as_ref().unwrap().name, "id");
+            } else {
+                panic!("expected column yield item");
+            }
+            if let YieldItem::Column { name, alias } = &call.yield_items[1] {
+                assert_eq!(name.name, "score");
+                assert!(alias.is_some());
+                assert_eq!(alias.as_ref().unwrap().name, "rank");
+            } else {
+                panic!("expected column yield item");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_yield_and_where() {
+        let stmts =
+            ExtendedParser::parse("CALL algo.pageRank() YIELD nodeId, score WHERE score > 0.1")
+                .unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.yield_items.len(), 2);
+            assert!(call.where_clause.is_some());
+            // Check the WHERE clause is a comparison
+            if let Some(Expr::BinaryOp { op: BinaryOp::Gt, .. }) = &call.where_clause {
+                // Good
+            } else {
+                panic!("expected > comparison in WHERE");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_shortest_path() {
+        let stmts =
+            ExtendedParser::parse("CALL algo.shortestPath(1, 10) YIELD path, length").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.procedure_name.parts[0].name, "algo");
+            assert_eq!(call.procedure_name.parts[1].name, "shortestPath");
+            assert_eq!(call.arguments.len(), 2);
+            assert_eq!(call.yield_items.len(), 2);
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_string_argument() {
+        let stmts =
+            ExtendedParser::parse("CALL algo.shortestPath(1, 10, 'FRIEND') YIELD path").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.arguments.len(), 3);
+            // Third arg should be a string literal
+            if let Expr::Literal(Literal::String(s)) = &call.arguments[2] {
+                assert_eq!(s, "FRIEND");
+            } else {
+                panic!("expected string literal for third argument");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_with_parameter() {
+        let stmts =
+            ExtendedParser::parse("CALL algo.pageRank($damping) YIELD nodeId, score").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.arguments.len(), 1);
+            // Arg should be a named parameter
+            if let Expr::Parameter(ParameterRef::Named(name)) = &call.arguments[0] {
+                assert_eq!(name, "damping");
+            } else {
+                panic!("expected named parameter");
+            }
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_simple_name() {
+        let stmts = ExtendedParser::parse("CALL dbms.info() YIELD version").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.procedure_name.parts.len(), 2);
+            assert_eq!(call.procedure_name.parts[0].name, "dbms");
+            assert_eq!(call.procedure_name.parts[1].name, "info");
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_no_yield() {
+        // CALL without YIELD should still parse
+        let stmts = ExtendedParser::parse("CALL db.index.rebuild('users')").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            assert_eq!(call.arguments.len(), 1);
+            assert!(call.yield_items.is_empty());
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+
+    #[test]
+    fn parse_call_nested_procedure_name() {
+        let stmts = ExtendedParser::parse("CALL gds.graph.project.cypher('myGraph')").unwrap();
+
+        if let Statement::Call(call) = &stmts[0] {
+            // Should have 4 parts: gds.graph.project.cypher
+            assert_eq!(call.procedure_name.parts.len(), 4);
+            assert_eq!(call.procedure_name.parts[0].name, "gds");
+            assert_eq!(call.procedure_name.parts[1].name, "graph");
+            assert_eq!(call.procedure_name.parts[2].name, "project");
+            assert_eq!(call.procedure_name.parts[3].name, "cypher");
+        } else {
+            panic!("expected CALL statement");
+        }
+    }
+}
+
 mod window_functions {
     use super::*;
 
@@ -1752,5 +1975,243 @@ mod window_functions {
             }
             _ => panic!("expected SELECT"),
         }
+    }
+}
+
+// ============================================================================
+// Procedure Infrastructure Tests
+// ============================================================================
+
+mod procedure_infrastructure {
+    use std::sync::Arc;
+
+    use manifoldb_core::Value;
+    use manifoldb_query::exec::{Row, RowBatch, Schema};
+    use manifoldb_query::procedure::{
+        Procedure, ProcedureArgs, ProcedureError, ProcedureParameter, ProcedureRegistry,
+        ProcedureResult, ProcedureSignature, ReturnColumn,
+    };
+
+    // Test procedure implementation that echoes its input
+    struct EchoProcedure;
+
+    impl Procedure for EchoProcedure {
+        fn signature(&self) -> ProcedureSignature {
+            ProcedureSignature::new("test.echo")
+                .with_description("Echoes the input value")
+                .with_parameter(ProcedureParameter::required("value", "STRING"))
+                .with_return(ReturnColumn::new("result", "STRING"))
+        }
+
+        fn execute(&self, args: ProcedureArgs) -> ProcedureResult<RowBatch> {
+            let schema = Arc::new(Schema::new(vec!["result".to_string()]));
+            let mut batch = RowBatch::new(Arc::clone(&schema));
+
+            if let Some(value) = args.get(0) {
+                batch.push(Row::new(schema, vec![value.clone()]));
+            }
+
+            Ok(batch)
+        }
+    }
+
+    #[test]
+    fn registry_register_and_get() {
+        let mut registry = ProcedureRegistry::new();
+        registry.register(Arc::new(EchoProcedure));
+
+        assert!(registry.contains("test.echo"));
+        assert!(!registry.contains("test.unknown"));
+
+        let proc = registry.get("test.echo");
+        assert!(proc.is_some());
+    }
+
+    #[test]
+    fn registry_get_or_error() {
+        let mut registry = ProcedureRegistry::new();
+        registry.register(Arc::new(EchoProcedure));
+
+        assert!(registry.get_or_error("test.echo").is_ok());
+        assert!(matches!(registry.get_or_error("unknown"), Err(ProcedureError::NotFound(_))));
+    }
+
+    #[test]
+    fn registry_execute_procedure() {
+        let mut registry = ProcedureRegistry::new();
+        registry.register(Arc::new(EchoProcedure));
+
+        let proc = registry.get("test.echo").unwrap();
+        let args = ProcedureArgs::new(vec![Value::from("hello")]);
+        let result = proc.execute(args).expect("execution should succeed");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rows()[0].get(0), Some(&Value::from("hello")));
+    }
+
+    #[test]
+    fn registry_list_procedures() {
+        let mut registry = ProcedureRegistry::new();
+        registry.register(Arc::new(EchoProcedure));
+
+        let names = registry.list_names();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains(&"test.echo"));
+
+        let sigs = registry.list_signatures();
+        assert_eq!(sigs.len(), 1);
+        assert_eq!(sigs[0].name, "test.echo");
+    }
+
+    #[test]
+    fn registry_unregister() {
+        let mut registry = ProcedureRegistry::new();
+        registry.register(Arc::new(EchoProcedure));
+
+        assert!(registry.contains("test.echo"));
+        registry.unregister("test.echo");
+        assert!(!registry.contains("test.echo"));
+    }
+
+    #[test]
+    fn procedure_args_get_string() {
+        let args = ProcedureArgs::new(vec![Value::from("test"), Value::from(42i64)]);
+
+        assert_eq!(args.get_string(0, "param").ok(), Some("test"));
+        assert!(args.get_string(1, "param").is_err()); // Wrong type
+        assert!(args.get_string(2, "param").is_err()); // Out of bounds
+    }
+
+    #[test]
+    fn procedure_args_get_int() {
+        let args = ProcedureArgs::new(vec![Value::from(42i64)]);
+
+        assert_eq!(args.get_int(0, "param").ok(), Some(42));
+        assert!(args.get_int(1, "param").is_err()); // Out of bounds
+    }
+
+    #[test]
+    fn procedure_args_get_float() {
+        let args = ProcedureArgs::new(vec![Value::from(3.14f64), Value::from(42i64)]);
+
+        assert_eq!(args.get_float(0, "param").ok(), Some(3.14));
+        // Integer promotion to float
+        assert_eq!(args.get_float(1, "param").ok(), Some(42.0));
+    }
+
+    #[test]
+    fn procedure_args_get_float_or_default() {
+        let args = ProcedureArgs::new(vec![Value::from(0.5f64)]);
+
+        assert_eq!(args.get_float_or(0, 0.85), 0.5);
+        assert_eq!(args.get_float_or(1, 0.85), 0.85); // Default
+    }
+
+    #[test]
+    fn signature_parameter_count() {
+        let sig = ProcedureSignature::new("test.proc")
+            .with_parameter(ProcedureParameter::required("a", "STRING"))
+            .with_parameter(ProcedureParameter::required("b", "INTEGER"))
+            .with_parameter(ProcedureParameter::optional("c", "FLOAT"));
+
+        assert_eq!(sig.required_param_count(), 2);
+        assert_eq!(sig.parameters.len(), 3);
+    }
+
+    #[test]
+    fn signature_validate_arg_count_success() {
+        let sig = ProcedureSignature::new("test.proc")
+            .with_parameter(ProcedureParameter::required("name", "STRING"));
+
+        assert!(sig.validate_arg_count(1).is_ok());
+    }
+
+    #[test]
+    fn signature_validate_arg_count_missing_required() {
+        let sig = ProcedureSignature::new("test.proc")
+            .with_parameter(ProcedureParameter::required("name", "STRING"))
+            .with_parameter(ProcedureParameter::required("value", "INTEGER"));
+
+        // Missing second required arg
+        assert!(sig.validate_arg_count(1).is_err());
+    }
+
+    #[test]
+    fn return_column_description() {
+        let col = ReturnColumn::new("score", "FLOAT").with_description("The computed score");
+
+        assert_eq!(col.name, "score");
+        assert_eq!(col.type_hint, "FLOAT");
+        assert_eq!(col.description, "The computed score");
+    }
+}
+
+// ============================================================================
+// Built-in Procedure Tests
+// ============================================================================
+
+mod builtin_procedures {
+    use manifoldb_query::procedure::{
+        register_builtins, PageRankProcedure, Procedure, ProcedureRegistry, ShortestPathProcedure,
+    };
+
+    #[test]
+    fn pagerank_signature() {
+        let proc = PageRankProcedure;
+        let sig = proc.signature();
+
+        assert_eq!(sig.name, "algo.pageRank");
+        assert_eq!(sig.parameters.len(), 2);
+        assert_eq!(sig.returns.len(), 2);
+        assert!(!sig.description.is_empty());
+    }
+
+    #[test]
+    fn pagerank_output_schema() {
+        let proc = PageRankProcedure;
+        let schema = proc.output_schema();
+
+        assert_eq!(schema.columns(), vec!["nodeId", "score"]);
+    }
+
+    #[test]
+    fn pagerank_requires_context() {
+        let proc = PageRankProcedure;
+        assert!(proc.requires_context());
+    }
+
+    #[test]
+    fn shortest_path_signature() {
+        let proc = ShortestPathProcedure;
+        let sig = proc.signature();
+
+        assert_eq!(sig.name, "algo.shortestPath");
+        assert_eq!(sig.parameters.len(), 4);
+        assert_eq!(sig.required_param_count(), 2);
+        assert_eq!(sig.returns.len(), 2);
+    }
+
+    #[test]
+    fn shortest_path_output_schema() {
+        let proc = ShortestPathProcedure;
+        let schema = proc.output_schema();
+
+        assert_eq!(schema.columns(), vec!["path", "length"]);
+    }
+
+    #[test]
+    fn shortest_path_requires_context() {
+        let proc = ShortestPathProcedure;
+        assert!(proc.requires_context());
+    }
+
+    #[test]
+    fn register_builtins_adds_procedures() {
+        let mut registry = ProcedureRegistry::new();
+        register_builtins(&mut registry);
+
+        assert!(registry.contains("algo.pageRank"));
+        assert!(registry.contains("algo.shortestPath"));
+        assert_eq!(registry.len(), 2);
     }
 }

@@ -23,6 +23,7 @@ use super::ddl::{
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
+use super::procedure::ProcedureCallNode;
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
     SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
@@ -250,6 +251,10 @@ pub enum LogicalPlan {
 
     /// DROP COLLECTION operation.
     DropCollection(DropCollectionNode),
+
+    // ========== Procedure Nodes ==========
+    /// Procedure call (CALL/YIELD).
+    ProcedureCall(Box<ProcedureCallNode>),
 }
 
 impl LogicalPlan {
@@ -277,6 +282,12 @@ impl LogicalPlan {
     #[must_use]
     pub fn values(rows: Vec<Vec<LogicalExpr>>) -> Self {
         Self::Values(ValuesNode::new(rows))
+    }
+
+    /// Creates a procedure call node.
+    #[must_use]
+    pub fn procedure_call(node: ProcedureCallNode) -> Self {
+        Self::ProcedureCall(Box::new(node))
     }
 
     // ========== Builder Methods ==========
@@ -448,6 +459,9 @@ impl LogicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_) => vec![],
+
+            // Procedure nodes (leaf - no inputs)
+            Self::ProcedureCall(_) => vec![],
         }
     }
 
@@ -493,6 +507,9 @@ impl LogicalPlan {
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_) => vec![],
+
+            // Procedure nodes (leaf - no inputs)
+            Self::ProcedureCall(_) => vec![],
         }
     }
 
@@ -535,6 +552,7 @@ impl LogicalPlan {
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
+            Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
 
@@ -795,6 +813,31 @@ impl DisplayTree<'_> {
                 }
                 if node.cascade {
                     write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::ProcedureCall(node) => {
+                write!(f, "ProcedureCall: {}", node.procedure_name)?;
+                if !node.arguments.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in node.arguments.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                if !node.yield_columns.is_empty() {
+                    write!(f, " YIELD ")?;
+                    for (i, col) in node.yield_columns.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", col.name)?;
+                        if let Some(alias) = &col.alias {
+                            write!(f, " AS {alias}")?;
+                        }
+                    }
                 }
             }
         }
