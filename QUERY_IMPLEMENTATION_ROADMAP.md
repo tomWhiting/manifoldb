@@ -217,8 +217,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] make_timestamp, make_date, make_time
   - [ ] timezone, at time zone
 
-- [ ] **Aggregate Functions** (Tier 1)
-  - [ ] count, sum, avg, min, max (already have)
+- [x] **Aggregate Functions** (Tier 1) - Core complete
+  - [x] count, sum, avg, min, max ✅ Complete
   - [ ] array_agg, string_agg
   - [ ] json_agg, jsonb_agg, json_object_agg
   - [ ] bool_and, bool_or, every
@@ -249,9 +249,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] unnest
   - [ ] Subscript access array[n]
 
-- [ ] **Type Conversion** (Tier 1)
-  - [ ] CAST(expr AS type)
-  - [ ] :: operator
+- [x] **Type Conversion** (Tier 1) - Core complete
+  - [x] CAST(expr AS type) ✅ Complete
+  - [x] :: operator ✅ Complete
   - [ ] to_text, to_number, to_boolean
 
 #### 2.3 Logical Plan Generation
@@ -319,15 +319,15 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
 - [x] Map projections: `node{.prop1, .prop2, key: expr}` ✅ Jan 2026
 - [ ] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]`
-- [ ] CASE expressions (simple and searched)
-- [ ] Parameter syntax ($param)
+- [x] CASE expressions (simple and searched) ✅ Complete
+- [x] Parameter syntax ($param) ✅ Complete
 
 #### 3.3 Function Library
 **Goal:** Implement openCypher function library.
 
-- [ ] **Scalar Functions**
+- [x] **Scalar Functions** - Partial
   - [x] head, tail, last ✅ Jan 2026
-  - [ ] coalesce
+  - [x] coalesce ✅ Complete
   - [x] size (for lists, strings) ✅ Jan 2026
   - [ ] length (for paths)
   - [ ] type, labels, id, properties
@@ -335,8 +335,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] startNode, endNode
   - [ ] toBoolean, toInteger, toFloat, toString
 
-- [ ] **Aggregating Functions**
-  - [ ] collect, count, sum, avg, min, max
+- [x] **Aggregating Functions** - Core complete
+  - [x] collect, count, sum, avg, min, max ✅ Complete
   - [ ] percentileCont, percentileDisc
   - [ ] stDev, stDevP
 
@@ -349,8 +349,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] Same as SQL tier + specific Cypher names
   - [ ] left, right
 
-- [ ] **Mathematical Functions**
-  - [ ] Same as SQL tier
+- [x] **Mathematical Functions** - Shares SQL implementation
+  - [x] Same as SQL tier ✅ Jan 2026
 
 - [ ] **Temporal Functions** (Tier 2)
   - [ ] datetime, localdatetime, date, time, localtime

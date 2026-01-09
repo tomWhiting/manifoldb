@@ -794,12 +794,12 @@ These feature groups can be implemented independently:
 | sign() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | sqrt() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | rand() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| log() | ✓ | ✓ | | | | | |
-| log10() | ✓ | ✓ | | | | | |
-| exp() | ✓ | ✓ | | | | | |
+| log() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Shares SQL impl † |
+| log10() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Shares SQL impl † |
+| exp() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Shares SQL impl † |
 | e() | ✓ | ✓ | | | | | |
-| sin/cos/tan/etc | ✓ | ✓ | | | | | |
-| pi() | ✓ | ✓ | | | | | |
+| sin/cos/tan/etc | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Shares SQL impl † |
+| pi() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Shares SQL impl † |
 
 ## 2.13 Temporal Functions
 
@@ -940,7 +940,7 @@ These feature groups can be implemented independently:
 | Aggregating Functions | 12 | 6 | 2 | 4 |
 | List Functions | 12 | 8 | 0 | 4 |
 | String Functions | 10 | 6 | 2 | 2 |
-| Math Functions | 15 | 8 | 5 | 2 |
+| Math Functions | 15 | 13 | 0 | 2 |
 | Temporal Functions | 10 | 0 | 0 | 10 |
 | Spatial Functions | 5 | 0 | 0 | 5 |
 
