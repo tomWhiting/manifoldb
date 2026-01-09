@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use manifoldb_core::Value;
 
-use crate::ast::WindowFunction;
+use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunction};
 use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
@@ -283,6 +283,7 @@ impl WindowOp {
     }
 
     /// Computes FIRST_VALUE, LAST_VALUE, and NTH_VALUE window functions.
+    /// These functions respect window frame specifications.
     fn compute_frame_value(
         &self,
         rows: &[Row],
@@ -296,19 +297,35 @@ impl WindowOp {
         for (sorted_pos, &idx) in indices.iter().enumerate() {
             let (partition_start, partition_end) = partition_ranges[sorted_pos];
 
-            // Determine which row to get the value from
+            // Compute frame boundaries for the current row
+            let (frame_start, frame_end) = self.compute_frame_bounds(
+                rows,
+                indices,
+                expr,
+                sorted_pos,
+                partition_start,
+                partition_end,
+            );
+
+            // Determine which row to get the value from within the frame
             let target_sorted_pos = match &expr.func {
-                WindowFunction::FirstValue => Some(partition_start),
+                WindowFunction::FirstValue => {
+                    if frame_start < frame_end {
+                        Some(frame_start)
+                    } else {
+                        None
+                    }
+                }
                 WindowFunction::LastValue => {
-                    if partition_end > 0 {
-                        Some(partition_end - 1)
+                    if frame_end > frame_start {
+                        Some(frame_end - 1)
                     } else {
                         None
                     }
                 }
                 WindowFunction::NthValue { n } => {
-                    let nth_pos = partition_start + (*n as usize) - 1; // n is 1-indexed
-                    if nth_pos < partition_end {
+                    let nth_pos = frame_start + (*n as usize) - 1; // n is 1-indexed
+                    if nth_pos < frame_end {
                         Some(nth_pos)
                     } else {
                         None
@@ -329,6 +346,310 @@ impl WindowOp {
             };
 
             window_values[idx] = value;
+        }
+    }
+
+    /// Computes the frame boundaries (start, end) for a row in sorted order.
+    /// Returns (frame_start, frame_end) as indices into the sorted indices array.
+    fn compute_frame_bounds(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_start: usize,
+        partition_end: usize,
+    ) -> (usize, usize) {
+        // Get the frame specification or use defaults
+        let frame = match &expr.frame {
+            Some(f) => f.clone(),
+            None => {
+                // Default frame: if ORDER BY is present, use RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                // Otherwise, use the entire partition
+                if expr.order_by.is_empty() {
+                    return (partition_start, partition_end);
+                }
+                WindowFrame {
+                    units: WindowFrameUnits::Range,
+                    start: WindowFrameBound::UnboundedPreceding,
+                    end: Some(WindowFrameBound::CurrentRow),
+                }
+            }
+        };
+
+        // Get the end bound (default to same as start if not BETWEEN)
+        let end_bound = frame.end.clone().unwrap_or_else(|| frame.start.clone());
+
+        // Compute frame start
+        let frame_start = match &frame.start {
+            WindowFrameBound::UnboundedPreceding => partition_start,
+            WindowFrameBound::CurrentRow => {
+                if frame.units == WindowFrameUnits::Rows {
+                    sorted_pos
+                } else {
+                    // RANGE: find first row with same ORDER BY value
+                    self.find_peers_start(rows, indices, expr, sorted_pos, partition_start)
+                }
+            }
+            WindowFrameBound::Preceding(n_expr) => {
+                let n = self.eval_bound_offset(n_expr);
+                if frame.units == WindowFrameUnits::Rows {
+                    sorted_pos.saturating_sub(n).max(partition_start)
+                } else {
+                    // RANGE: find rows within n value difference
+                    self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                }
+            }
+            WindowFrameBound::Following(n_expr) => {
+                let n = self.eval_bound_offset(n_expr);
+                if frame.units == WindowFrameUnits::Rows {
+                    (sorted_pos + n).min(partition_end)
+                } else {
+                    self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                }
+            }
+            WindowFrameBound::UnboundedFollowing => partition_end,
+        };
+
+        // Compute frame end (exclusive)
+        let frame_end = match &end_bound {
+            WindowFrameBound::UnboundedFollowing => partition_end,
+            WindowFrameBound::CurrentRow => {
+                if frame.units == WindowFrameUnits::Rows {
+                    (sorted_pos + 1).min(partition_end)
+                } else {
+                    // RANGE: find last row with same ORDER BY value + 1
+                    self.find_peers_end(rows, indices, expr, sorted_pos, partition_end)
+                }
+            }
+            WindowFrameBound::Following(n_expr) => {
+                let n = self.eval_bound_offset(n_expr);
+                if frame.units == WindowFrameUnits::Rows {
+                    (sorted_pos + n + 1).min(partition_end)
+                } else {
+                    self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                }
+            }
+            WindowFrameBound::Preceding(n_expr) => {
+                let n = self.eval_bound_offset(n_expr);
+                if frame.units == WindowFrameUnits::Rows {
+                    (sorted_pos.saturating_sub(n) + 1).max(partition_start)
+                } else {
+                    self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                }
+            }
+            WindowFrameBound::UnboundedPreceding => partition_start,
+        };
+
+        // Ensure start <= end
+        let frame_start = frame_start.max(partition_start);
+        let frame_end = frame_end.min(partition_end);
+        let frame_start = frame_start.min(frame_end);
+
+        (frame_start, frame_end)
+    }
+
+    /// Evaluates a frame bound offset expression to get the numeric offset.
+    fn eval_bound_offset(&self, expr: &Expr) -> usize {
+        match expr {
+            Expr::Literal(Literal::Integer(n)) => (*n).try_into().unwrap_or(0),
+            _ => 0, // Default to 0 for non-literal expressions
+        }
+    }
+
+    /// Finds the start of peer rows (rows with the same ORDER BY value).
+    fn find_peers_start(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_start: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_start;
+        }
+
+        let current_idx = indices[sorted_pos];
+        let current_key: Vec<Value> = expr
+            .order_by
+            .iter()
+            .map(|s| evaluate_expr(&s.expr, &rows[current_idx]).unwrap_or(Value::Null))
+            .collect();
+
+        let mut start = sorted_pos;
+        while start > partition_start {
+            let prev_idx = indices[start - 1];
+            let prev_key: Vec<Value> = expr
+                .order_by
+                .iter()
+                .map(|s| evaluate_expr(&s.expr, &rows[prev_idx]).unwrap_or(Value::Null))
+                .collect();
+            if prev_key != current_key {
+                break;
+            }
+            start -= 1;
+        }
+        start
+    }
+
+    /// Finds the end of peer rows (rows with the same ORDER BY value).
+    fn find_peers_end(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_end: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_end;
+        }
+
+        let current_idx = indices[sorted_pos];
+        let current_key: Vec<Value> = expr
+            .order_by
+            .iter()
+            .map(|s| evaluate_expr(&s.expr, &rows[current_idx]).unwrap_or(Value::Null))
+            .collect();
+
+        let mut end = sorted_pos + 1;
+        while end < partition_end {
+            let next_idx = indices[end];
+            let next_key: Vec<Value> = expr
+                .order_by
+                .iter()
+                .map(|s| evaluate_expr(&s.expr, &rows[next_idx]).unwrap_or(Value::Null))
+                .collect();
+            if next_key != current_key {
+                break;
+            }
+            end += 1;
+        }
+        end
+    }
+
+    /// Finds the start position for RANGE with a preceding offset.
+    fn find_range_start(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_start: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_start;
+        }
+
+        // Get the current row's ORDER BY value
+        let current_idx = indices[sorted_pos];
+        let current_value = if let Some(sort) = expr.order_by.first() {
+            evaluate_expr(&sort.expr, &rows[current_idx]).unwrap_or(Value::Null)
+        } else {
+            return partition_start;
+        };
+
+        // Find rows where value >= current_value - offset (for ASC sort)
+        let offset_value = self.subtract_offset(&current_value, offset);
+
+        let mut start = partition_start;
+        for pos in partition_start..sorted_pos {
+            let idx = indices[pos];
+            let value = if let Some(sort) = expr.order_by.first() {
+                evaluate_expr(&sort.expr, &rows[idx]).unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+
+            if self.value_in_range(
+                &value,
+                &offset_value,
+                &current_value,
+                expr.order_by.first().map(|s| s.ascending).unwrap_or(true),
+            ) {
+                start = pos;
+                break;
+            }
+        }
+        start
+    }
+
+    /// Finds the end position for RANGE with a following offset.
+    fn find_range_end(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_end: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_end;
+        }
+
+        // Get the current row's ORDER BY value
+        let current_idx = indices[sorted_pos];
+        let current_value = if let Some(sort) = expr.order_by.first() {
+            evaluate_expr(&sort.expr, &rows[current_idx]).unwrap_or(Value::Null)
+        } else {
+            return partition_end;
+        };
+
+        // Find rows where value <= current_value + offset (for ASC sort)
+        let offset_value = self.add_offset(&current_value, offset);
+
+        let mut end = partition_end;
+        for pos in (sorted_pos + 1)..partition_end {
+            let idx = indices[pos];
+            let value = if let Some(sort) = expr.order_by.first() {
+                evaluate_expr(&sort.expr, &rows[idx]).unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+
+            if !self.value_in_range(
+                &value,
+                &current_value,
+                &offset_value,
+                expr.order_by.first().map(|s| s.ascending).unwrap_or(true),
+            ) {
+                end = pos;
+                break;
+            }
+        }
+        end
+    }
+
+    /// Subtracts an offset from a value (for RANGE frames).
+    fn subtract_offset(&self, value: &Value, offset: usize) -> Value {
+        match value {
+            Value::Int(n) => Value::Int(n - offset as i64),
+            Value::Float(n) => Value::Float(n - offset as f64),
+            _ => value.clone(),
+        }
+    }
+
+    /// Adds an offset to a value (for RANGE frames).
+    fn add_offset(&self, value: &Value, offset: usize) -> Value {
+        match value {
+            Value::Int(n) => Value::Int(n + offset as i64),
+            Value::Float(n) => Value::Float(n + offset as f64),
+            _ => value.clone(),
+        }
+    }
+
+    /// Checks if a value is within the range [low, high] based on sort order.
+    fn value_in_range(&self, value: &Value, low: &Value, high: &Value, ascending: bool) -> bool {
+        let cmp_low = compare_values(value, low);
+        let cmp_high = compare_values(value, high);
+
+        if ascending {
+            cmp_low != Ordering::Less && cmp_high != Ordering::Greater
+        } else {
+            cmp_low != Ordering::Greater && cmp_high != Ordering::Less
         }
     }
 
@@ -990,6 +1311,9 @@ mod tests {
 
     #[test]
     fn last_value_basic() {
+        // LAST_VALUE over entire partition using explicit frame
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
         let input: BoxedOperator = Box::new(ValuesOp::with_columns(
             vec!["name".to_string(), "salary".to_string()],
             vec![
@@ -999,12 +1323,20 @@ mod tests {
             ],
         ));
 
-        let window_expr = WindowFunctionExpr::with_arg(
+        // Explicit frame to cover entire partition
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
             WindowFunction::LastValue,
-            LogicalExpr::column("name"),
+            Some(LogicalExpr::column("name")),
             None,
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
             "last_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1028,6 +1360,8 @@ mod tests {
 
     #[test]
     fn last_value_with_partition() {
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
         let input: BoxedOperator = Box::new(ValuesOp::with_columns(
             vec!["name".to_string(), "dept".to_string(), "salary".to_string()],
             vec![
@@ -1038,12 +1372,20 @@ mod tests {
             ],
         ));
 
-        let window_expr = WindowFunctionExpr::with_arg(
+        // Explicit frame to cover entire partition
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
             WindowFunction::LastValue,
-            LogicalExpr::column("name"),
+            Some(LogicalExpr::column("name")),
             None,
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
             "lowest_in_dept",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1075,6 +1417,9 @@ mod tests {
 
     #[test]
     fn nth_value_basic() {
+        // NTH_VALUE over entire partition using explicit frame
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
         let input: BoxedOperator = Box::new(ValuesOp::with_columns(
             vec!["name".to_string(), "salary".to_string()],
             vec![
@@ -1085,12 +1430,20 @@ mod tests {
             ],
         ));
 
-        let window_expr = WindowFunctionExpr::with_arg(
+        // Explicit frame to cover entire partition
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
             WindowFunction::NthValue { n: 2 },
-            LogicalExpr::column("name"),
+            Some(LogicalExpr::column("name")),
             None,
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
             "second_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1114,6 +1467,8 @@ mod tests {
 
     #[test]
     fn nth_value_out_of_range() {
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
         let input: BoxedOperator = Box::new(ValuesOp::with_columns(
             vec!["name".to_string(), "salary".to_string()],
             vec![
@@ -1122,13 +1477,21 @@ mod tests {
             ],
         ));
 
+        // Explicit frame to cover entire partition
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
         // Try to get 5th value when there are only 2 rows
-        let window_expr = WindowFunctionExpr::with_arg(
+        let window_expr = WindowFunctionExpr::with_frame(
             WindowFunction::NthValue { n: 5 },
-            LogicalExpr::column("name"),
+            Some(LogicalExpr::column("name")),
             None,
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
             "fifth_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1151,6 +1514,8 @@ mod tests {
 
     #[test]
     fn nth_value_with_partition() {
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
         let input: BoxedOperator = Box::new(ValuesOp::with_columns(
             vec!["name".to_string(), "dept".to_string(), "salary".to_string()],
             vec![
@@ -1162,12 +1527,20 @@ mod tests {
             ],
         ));
 
-        let window_expr = WindowFunctionExpr::with_arg(
+        // Explicit frame to cover entire partition
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
             WindowFunction::NthValue { n: 2 },
-            LogicalExpr::column("name"),
+            Some(LogicalExpr::column("name")),
             None,
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
             "second_in_dept",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1236,6 +1609,362 @@ mod tests {
         assert_eq!(results.get("Alice"), Some(&Value::Null));
         assert_eq!(results.get("Bob"), Some(&Value::Int(100)));
         assert_eq!(results.get("Carol"), Some(&Value::Null));
+
+        op.close().unwrap();
+    }
+
+    // ========== Window Frame Tests ==========
+
+    #[test]
+    fn first_value_with_rows_frame_unbounded_preceding_to_current() {
+        // ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        // Should behave same as default for FIRST_VALUE
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::UnboundedPreceding,
+            end: Some(WindowFrameBound::CurrentRow),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::FirstValue,
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "first_name",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(first))) =
+                (row.get_by_name("name"), row.get_by_name("first_name"))
+            {
+                results.insert(name.clone(), first.clone());
+            }
+        }
+
+        // Sorted DESC: Alice(100), Bob(90), Carol(80), Dave(70)
+        // All should return Alice (first in frame starting at unbounded preceding)
+        assert_eq!(results.get("Alice"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Alice".to_string()));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn last_value_with_rows_frame_unbounded_following() {
+        // ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
+        use crate::ast::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::CurrentRow,
+            end: Some(WindowFrameBound::UnboundedFollowing),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::LastValue,
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "last_name",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(last))) =
+                (row.get_by_name("name"), row.get_by_name("last_name"))
+            {
+                results.insert(name.clone(), last.clone());
+            }
+        }
+
+        // Sorted DESC: Alice(100), Bob(90), Carol(80), Dave(70)
+        // All should return Dave (last in frame extending to unbounded following)
+        assert_eq!(results.get("Alice"), Some(&"Dave".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Dave".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Dave".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Dave".to_string()));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn first_value_with_rows_frame_n_preceding() {
+        // ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+        // Creates a 2-row sliding window
+        use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
+            end: Some(WindowFrameBound::CurrentRow),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::FirstValue,
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "first_in_window",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(first))) =
+                (row.get_by_name("name"), row.get_by_name("first_in_window"))
+            {
+                results.insert(name.clone(), first.clone());
+            }
+        }
+
+        // Sorted DESC: Alice(100), Bob(90), Carol(80), Dave(70)
+        // Frame is 1 preceding to current:
+        // Alice: [Alice] -> Alice (no preceding)
+        // Bob: [Alice, Bob] -> Alice
+        // Carol: [Bob, Carol] -> Bob
+        // Dave: [Carol, Dave] -> Carol
+        assert_eq!(results.get("Alice"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Bob".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Carol".to_string()));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn last_value_with_rows_frame_n_following() {
+        // ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING
+        // Creates a 2-row sliding window looking forward
+        use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::CurrentRow,
+            end: Some(WindowFrameBound::Following(Box::new(Expr::Literal(Literal::Integer(1))))),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::LastValue,
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "last_in_window",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(last))) =
+                (row.get_by_name("name"), row.get_by_name("last_in_window"))
+            {
+                results.insert(name.clone(), last.clone());
+            }
+        }
+
+        // Sorted DESC: Alice(100), Bob(90), Carol(80), Dave(70)
+        // Frame is current to 1 following:
+        // Alice: [Alice, Bob] -> Bob
+        // Bob: [Bob, Carol] -> Carol
+        // Carol: [Carol, Dave] -> Dave
+        // Dave: [Dave] -> Dave (no following)
+        assert_eq!(results.get("Alice"), Some(&"Bob".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Carol".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Dave".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Dave".to_string()));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn nth_value_with_rows_frame_3_row_moving_window() {
+        // ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+        // Creates a 3-row moving window for NTH_VALUE(2)
+        use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
+            end: Some(WindowFrameBound::Following(Box::new(Expr::Literal(Literal::Integer(1))))),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::NthValue { n: 2 },
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "second_in_window",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(second))) =
+                (row.get_by_name("name"), row.get_by_name("second_in_window"))
+            {
+                results.insert(name.clone(), second.clone());
+            }
+        }
+
+        // Sorted DESC: Alice(100), Bob(90), Carol(80), Dave(70)
+        // Frame is 1 preceding to 1 following:
+        // Alice: [Alice, Bob] -> 2nd is Bob
+        // Bob: [Alice, Bob, Carol] -> 2nd is Bob
+        // Carol: [Bob, Carol, Dave] -> 2nd is Carol
+        // Dave: [Carol, Dave] -> 2nd is Dave
+        assert_eq!(results.get("Alice"), Some(&"Bob".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Bob".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Carol".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Dave".to_string()));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn first_value_with_frame_and_partition() {
+        // Test that frame works correctly with partitions
+        use crate::ast::{Expr, Literal, WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "dept".to_string(), "salary".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::from("Sales"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::from("Sales"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::from("Sales"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::from("IT"), Value::Int(95)],
+                vec![Value::from("Eve"), Value::from("IT"), Value::Int(85)],
+            ],
+        ));
+
+        let frame = Some(WindowFrame {
+            units: WindowFrameUnits::Rows,
+            start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
+            end: Some(WindowFrameBound::CurrentRow),
+        });
+
+        let window_expr = WindowFunctionExpr::with_frame(
+            WindowFunction::FirstValue,
+            Some(LogicalExpr::column("name")),
+            None,
+            vec![LogicalExpr::column("dept")],
+            vec![SortOrder::desc(LogicalExpr::column("salary"))],
+            frame,
+            "prev_or_current",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::String(prev))) =
+                (row.get_by_name("name"), row.get_by_name("prev_or_current"))
+            {
+                results.insert(name.clone(), prev.clone());
+            }
+        }
+
+        // Sales (sorted DESC): Alice(100), Bob(90), Carol(80)
+        // IT (sorted DESC): Dave(95), Eve(85)
+        // Frame is 1 preceding to current:
+        // Alice: [Alice] -> Alice
+        // Bob: [Alice, Bob] -> Alice
+        // Carol: [Bob, Carol] -> Bob
+        // Dave: [Dave] -> Dave (partition boundary)
+        // Eve: [Dave, Eve] -> Dave
+        assert_eq!(results.get("Alice"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Bob"), Some(&"Alice".to_string()));
+        assert_eq!(results.get("Carol"), Some(&"Bob".to_string()));
+        assert_eq!(results.get("Dave"), Some(&"Dave".to_string()));
+        assert_eq!(results.get("Eve"), Some(&"Dave".to_string()));
 
         op.close().unwrap();
     }

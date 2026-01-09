@@ -18,7 +18,7 @@
 use std::fmt;
 
 use crate::ast::DistanceMetric;
-use crate::ast::WindowFunction;
+use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
     DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode, GraphMergeNode,
@@ -767,6 +767,9 @@ pub struct WindowFunctionExpr {
     pub partition_by: Vec<LogicalExpr>,
     /// Order by expressions.
     pub order_by: Vec<SortOrder>,
+    /// Window frame specification for controlling which rows are included in calculations.
+    /// If None, uses the default frame based on function type and ORDER BY presence.
+    pub frame: Option<WindowFrame>,
     /// Output column alias.
     pub alias: String,
 }
@@ -780,7 +783,15 @@ impl WindowFunctionExpr {
         order_by: Vec<SortOrder>,
         alias: impl Into<String>,
     ) -> Self {
-        Self { func, arg: None, default_value: None, partition_by, order_by, alias: alias.into() }
+        Self {
+            func,
+            arg: None,
+            default_value: None,
+            partition_by,
+            order_by,
+            frame: None,
+            alias: alias.into(),
+        }
     }
 
     /// Creates a new window function expression with argument (for value functions).
@@ -799,6 +810,29 @@ impl WindowFunctionExpr {
             default_value: default_value.map(Box::new),
             partition_by,
             order_by,
+            frame: None,
+            alias: alias.into(),
+        }
+    }
+
+    /// Creates a window function expression with frame specification.
+    #[must_use]
+    pub fn with_frame(
+        func: WindowFunction,
+        arg: Option<LogicalExpr>,
+        default_value: Option<LogicalExpr>,
+        partition_by: Vec<LogicalExpr>,
+        order_by: Vec<SortOrder>,
+        frame: Option<WindowFrame>,
+        alias: impl Into<String>,
+    ) -> Self {
+        Self {
+            func,
+            arg: arg.map(Box::new),
+            default_value: default_value.map(Box::new),
+            partition_by,
+            order_by,
+            frame,
             alias: alias.into(),
         }
     }

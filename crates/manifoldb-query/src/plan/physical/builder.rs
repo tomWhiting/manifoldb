@@ -996,25 +996,18 @@ impl PhysicalPlanner {
                     default_value,
                     partition_by,
                     order_by,
+                    frame,
                 } = expr
                 {
-                    Some(if let Some(arg_expr) = arg {
-                        WindowFunctionExpr::with_arg(
-                            func.clone(),
-                            (**arg_expr).clone(),
-                            default_value.as_ref().map(|d| (**d).clone()),
-                            partition_by.clone(),
-                            order_by.clone(),
-                            alias.clone(),
-                        )
-                    } else {
-                        WindowFunctionExpr::new(
-                            func.clone(),
-                            partition_by.clone(),
-                            order_by.clone(),
-                            alias.clone(),
-                        )
-                    })
+                    Some(WindowFunctionExpr::with_frame(
+                        func.clone(),
+                        arg.as_ref().map(|a| (**a).clone()),
+                        default_value.as_ref().map(|d| (**d).clone()),
+                        partition_by.clone(),
+                        order_by.clone(),
+                        frame.clone(),
+                        alias.clone(),
+                    ))
                 } else {
                     None
                 }

@@ -203,14 +203,14 @@ These feature groups can be implemented independently:
 | ORDER BY in OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | Named windows | | | | | | | Not implemented |
 | **Frame Clause** |
-| ROWS | ✓ | ✓ | | | | | Needs logical/physical |
-| RANGE | ✓ | ✓ | | | | | Needs logical/physical |
+| ROWS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| RANGE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | GROUPS | | | | | | | Not implemented |
-| UNBOUNDED PRECEDING | ✓ | ✓ | | | | | Needs logical/physical |
-| n PRECEDING | ✓ | ✓ | | | | | Needs logical/physical |
-| CURRENT ROW | ✓ | ✓ | | | | | Needs logical/physical |
-| n FOLLOWING | ✓ | ✓ | | | | | Needs logical/physical |
-| UNBOUNDED FOLLOWING | ✓ | ✓ | | | | | Needs logical/physical |
+| UNBOUNDED PRECEDING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| n PRECEDING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| CURRENT ROW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| n FOLLOWING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| UNBOUNDED FOLLOWING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | EXCLUDE CURRENT ROW | | | | | | | Not implemented |
 | EXCLUDE GROUP | | | | | | | Not implemented |
 | EXCLUDE TIES | | | | | | | Not implemented |
@@ -905,7 +905,7 @@ These feature groups can be implemented independently:
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
 | CTEs | 10 | 5 | 0 | 5 |
-| Window Functions | 25 | 8 | 10 | 7 |
+| Window Functions | 25 | 15 | 3 | 7 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 30 | 12 | 3 | 15 |
 | Transactions | 8 | 0 | 0 | 8 |
