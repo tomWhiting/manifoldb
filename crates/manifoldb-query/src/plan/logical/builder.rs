@@ -1975,6 +1975,11 @@ impl PlanBuilder {
                     "ID" => Some(ScalarFunction::Id),
                     "PROPERTIES" => Some(ScalarFunction::Properties),
                     "KEYS" => Some(ScalarFunction::Keys),
+                    // Cypher type conversion functions
+                    "TOBOOLEAN" => Some(ScalarFunction::ToBoolean),
+                    "TOINTEGER" | "TOINT" => Some(ScalarFunction::ToInteger),
+                    "TOFLOAT" => Some(ScalarFunction::ToFloat),
+                    "TOSTRING" => Some(ScalarFunction::CypherToString),
                     _ => None,
                 };
 

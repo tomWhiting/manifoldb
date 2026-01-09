@@ -1684,6 +1684,94 @@ fn evaluate_scalar_function(
             cypher_keys(args)
         }
 
+        // ========== Cypher Type Conversion Functions ==========
+        ScalarFunction::ToBoolean => {
+            // toBoolean(expression)
+            // Converts to boolean per openCypher spec.
+            match args.first() {
+                Some(Value::Null) | None => Ok(Value::Null),
+                Some(Value::Bool(b)) => Ok(Value::Bool(*b)),
+                Some(Value::Int(i)) => Ok(Value::Bool(*i != 0)),
+                Some(Value::Float(f)) => Ok(Value::Bool(*f != 0.0)),
+                Some(Value::String(s)) => {
+                    let s_lower = s.to_lowercase();
+                    match s_lower.as_str() {
+                        "true" => Ok(Value::Bool(true)),
+                        "false" => Ok(Value::Bool(false)),
+                        _ => Ok(Value::Null), // Invalid string returns null
+                    }
+                }
+                _ => Ok(Value::Null), // Other types return null
+            }
+        }
+        ScalarFunction::ToInteger => {
+            // toInteger(expression)
+            // Converts to integer per openCypher spec.
+            match args.first() {
+                Some(Value::Null) | None => Ok(Value::Null),
+                Some(Value::Int(i)) => Ok(Value::Int(*i)),
+                Some(Value::Float(f)) => {
+                    // Truncate towards zero (as per openCypher spec)
+                    Ok(Value::Int(f.trunc() as i64))
+                }
+                Some(Value::Bool(b)) => Ok(Value::Int(if *b { 1 } else { 0 })),
+                Some(Value::String(s)) => {
+                    // Try parsing as integer first, then as float (truncating)
+                    if let Ok(i) = s.trim().parse::<i64>() {
+                        Ok(Value::Int(i))
+                    } else if let Ok(f) = s.trim().parse::<f64>() {
+                        Ok(Value::Int(f.trunc() as i64))
+                    } else {
+                        Ok(Value::Null) // Invalid string returns null
+                    }
+                }
+                _ => Ok(Value::Null), // Other types return null
+            }
+        }
+        ScalarFunction::ToFloat => {
+            // toFloat(expression)
+            // Converts to float per openCypher spec.
+            match args.first() {
+                Some(Value::Null) | None => Ok(Value::Null),
+                Some(Value::Float(f)) => Ok(Value::Float(*f)),
+                Some(Value::Int(i)) => Ok(Value::Float(*i as f64)),
+                Some(Value::Bool(b)) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                Some(Value::String(s)) => {
+                    if let Ok(f) = s.trim().parse::<f64>() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Ok(Value::Null) // Invalid string returns null
+                    }
+                }
+                _ => Ok(Value::Null), // Other types return null
+            }
+        }
+        ScalarFunction::CypherToString => {
+            // toString(expression)
+            // Converts to string per openCypher spec.
+            match args.first() {
+                Some(Value::Null) | None => Ok(Value::Null),
+                Some(Value::String(s)) => Ok(Value::String(s.clone())),
+                Some(Value::Bool(b)) => Ok(Value::String(b.to_string())),
+                Some(Value::Int(i)) => Ok(Value::String(i.to_string())),
+                Some(Value::Float(f)) => {
+                    // Format float to remove unnecessary trailing zeros
+                    let s = if f.fract() == 0.0 {
+                        format!("{:.1}", f) // Keep at least one decimal for floats like 3.0
+                    } else {
+                        f.to_string()
+                    };
+                    Ok(Value::String(s))
+                }
+                // Lists and arrays are also converted per Cypher
+                Some(Value::Array(arr)) => {
+                    let elements: Vec<String> = arr.iter().map(value_to_string).collect();
+                    Ok(Value::String(format!("[{}]", elements.join(", "))))
+                }
+                _ => Ok(Value::Null), // Other types return null
+            }
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -5338,5 +5426,379 @@ mod tests {
         let entity = r#"{"_id": 1, "_labels": ["Person"]}"#;
         let result = eval_fn(ScalarFunction::Keys, vec![Value::from(entity)]);
         assert_eq!(result, Value::Array(vec![]));
+    }
+
+    // ========== Cypher Type Conversion Function Tests ==========
+
+    #[test]
+    fn test_to_boolean_from_string() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toBoolean("true") = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("true")]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean("TRUE") = true (case-insensitive)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("TRUE")]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean("True") = true (case-insensitive)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("True")]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean("false") = false
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("false")]);
+        assert_eq!(result, Value::Bool(false));
+
+        // toBoolean("FALSE") = false (case-insensitive)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("FALSE")]);
+        assert_eq!(result, Value::Bool(false));
+
+        // toBoolean("invalid") = null (invalid string)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("invalid")]);
+        assert_eq!(result, Value::Null);
+
+        // toBoolean("") = null (empty string is invalid)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("")]);
+        assert_eq!(result, Value::Null);
+
+        // toBoolean("1") = null (numeric string is invalid for boolean)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::from("1")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_boolean_from_integer() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toBoolean(0) = false
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Int(0)]);
+        assert_eq!(result, Value::Bool(false));
+
+        // toBoolean(1) = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Int(1)]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean(-1) = true (any non-zero integer)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Int(-1)]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean(42) = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Int(42)]);
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_to_boolean_from_float() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toBoolean(0.0) = false
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Float(0.0)]);
+        assert_eq!(result, Value::Bool(false));
+
+        // toBoolean(1.0) = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Float(1.0)]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean(-0.1) = true (any non-zero float)
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Float(-0.1)]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean(3.14) = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Float(3.14)]);
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_to_boolean_from_boolean() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toBoolean(true) = true
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Bool(true)]);
+        assert_eq!(result, Value::Bool(true));
+
+        // toBoolean(false) = false
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Bool(false)]);
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_to_boolean_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toBoolean(null) = null
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // toBoolean() with no args = null
+        let result = eval_fn(ScalarFunction::ToBoolean, vec![]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_integer_from_string() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toInteger("123") = 123
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("123")]);
+        assert_eq!(result, Value::Int(123));
+
+        // toInteger("-456") = -456
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("-456")]);
+        assert_eq!(result, Value::Int(-456));
+
+        // toInteger("  789  ") = 789 (whitespace trimmed)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("  789  ")]);
+        assert_eq!(result, Value::Int(789));
+
+        // toInteger("3.14") = 3 (truncates decimal)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("3.14")]);
+        assert_eq!(result, Value::Int(3));
+
+        // toInteger("-3.99") = -3 (truncates towards zero)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("-3.99")]);
+        assert_eq!(result, Value::Int(-3));
+
+        // toInteger("invalid") = null
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("invalid")]);
+        assert_eq!(result, Value::Null);
+
+        // toInteger("") = null (empty string)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::from("")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_integer_from_float() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toInteger(3.14) = 3 (truncates)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Float(3.14)]);
+        assert_eq!(result, Value::Int(3));
+
+        // toInteger(3.99) = 3 (truncates, not rounds)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Float(3.99)]);
+        assert_eq!(result, Value::Int(3));
+
+        // toInteger(-3.14) = -3 (truncates towards zero)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Float(-3.14)]);
+        assert_eq!(result, Value::Int(-3));
+
+        // toInteger(-3.99) = -3 (truncates towards zero)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Float(-3.99)]);
+        assert_eq!(result, Value::Int(-3));
+
+        // toInteger(5.0) = 5
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Float(5.0)]);
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn test_to_integer_from_boolean() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toInteger(true) = 1
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Bool(true)]);
+        assert_eq!(result, Value::Int(1));
+
+        // toInteger(false) = 0
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Bool(false)]);
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_to_integer_from_integer() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toInteger(42) = 42 (identity)
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Int(42)]);
+        assert_eq!(result, Value::Int(42));
+
+        // toInteger(-100) = -100
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Int(-100)]);
+        assert_eq!(result, Value::Int(-100));
+    }
+
+    #[test]
+    fn test_to_integer_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toInteger(null) = null
+        let result = eval_fn(ScalarFunction::ToInteger, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // toInteger() with no args = null
+        let result = eval_fn(ScalarFunction::ToInteger, vec![]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_float_from_string() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toFloat("3.14") = 3.14
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("3.14")]);
+        assert_eq!(result, Value::Float(3.14));
+
+        // toFloat("-2.5") = -2.5
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("-2.5")]);
+        assert_eq!(result, Value::Float(-2.5));
+
+        // toFloat("  1.0  ") = 1.0 (whitespace trimmed)
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("  1.0  ")]);
+        assert_eq!(result, Value::Float(1.0));
+
+        // toFloat("100") = 100.0 (integer string to float)
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("100")]);
+        assert_eq!(result, Value::Float(100.0));
+
+        // toFloat("invalid") = null
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("invalid")]);
+        assert_eq!(result, Value::Null);
+
+        // toFloat("") = null
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::from("")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_float_from_integer() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toFloat(3) = 3.0
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Int(3)]);
+        assert_eq!(result, Value::Float(3.0));
+
+        // toFloat(-10) = -10.0
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Int(-10)]);
+        assert_eq!(result, Value::Float(-10.0));
+
+        // toFloat(0) = 0.0
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Int(0)]);
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_to_float_from_boolean() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toFloat(true) = 1.0
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Bool(true)]);
+        assert_eq!(result, Value::Float(1.0));
+
+        // toFloat(false) = 0.0
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Bool(false)]);
+        assert_eq!(result, Value::Float(0.0));
+    }
+
+    #[test]
+    fn test_to_float_from_float() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toFloat(3.14) = 3.14 (identity)
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Float(3.14)]);
+        assert_eq!(result, Value::Float(3.14));
+    }
+
+    #[test]
+    fn test_to_float_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toFloat(null) = null
+        let result = eval_fn(ScalarFunction::ToFloat, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // toFloat() with no args = null
+        let result = eval_fn(ScalarFunction::ToFloat, vec![]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_to_string_from_integer() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString(123) = "123"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Int(123)]);
+        assert_eq!(result, Value::String("123".to_string()));
+
+        // toString(-456) = "-456"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Int(-456)]);
+        assert_eq!(result, Value::String("-456".to_string()));
+
+        // toString(0) = "0"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Int(0)]);
+        assert_eq!(result, Value::String("0".to_string()));
+    }
+
+    #[test]
+    fn test_to_string_from_float() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString(3.14) = "3.14"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Float(3.14)]);
+        assert_eq!(result, Value::String("3.14".to_string()));
+
+        // toString(3.0) = "3.0" (keeps one decimal for floats)
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Float(3.0)]);
+        assert_eq!(result, Value::String("3.0".to_string()));
+
+        // toString(-2.5) = "-2.5"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Float(-2.5)]);
+        assert_eq!(result, Value::String("-2.5".to_string()));
+    }
+
+    #[test]
+    fn test_to_string_from_boolean() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString(true) = "true"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Bool(true)]);
+        assert_eq!(result, Value::String("true".to_string()));
+
+        // toString(false) = "false"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Bool(false)]);
+        assert_eq!(result, Value::String("false".to_string()));
+    }
+
+    #[test]
+    fn test_to_string_from_string() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString("hello") = "hello" (identity)
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::from("hello")]);
+        assert_eq!(result, Value::String("hello".to_string()));
+
+        // toString("") = "" (empty string)
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::from("")]);
+        assert_eq!(result, Value::String(String::new()));
+    }
+
+    #[test]
+    fn test_to_string_from_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString([1, 2, 3]) = "[1, 2, 3]"
+        let result = eval_fn(
+            ScalarFunction::CypherToString,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::String("[1, 2, 3]".to_string()));
+
+        // toString([]) = "[]"
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::String("[]".to_string()));
+    }
+
+    #[test]
+    fn test_to_string_null_handling() {
+        use crate::plan::logical::ScalarFunction;
+
+        // toString(null) = null
+        let result = eval_fn(ScalarFunction::CypherToString, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // toString() with no args = null
+        let result = eval_fn(ScalarFunction::CypherToString, vec![]);
+        assert_eq!(result, Value::Null);
     }
 }
