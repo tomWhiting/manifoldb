@@ -166,6 +166,12 @@ impl From<manifoldb_query::ParseError> for Error {
     }
 }
 
+impl From<manifoldb_query::PlanError> for Error {
+    fn from(err: manifoldb_query::PlanError) -> Self {
+        Self::Execution(err.to_string())
+    }
+}
+
 /// A specialized `Result` type for `ManifoldDB` operations.
 pub type Result<T> = std::result::Result<T, Error>;
 

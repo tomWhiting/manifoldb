@@ -26,6 +26,7 @@ pub mod match_filter;
 pub mod prepared;
 pub mod recovery;
 pub mod scale;
+pub mod session_transactions;
 pub mod set_property;
 pub mod sql;
 pub mod transactions;

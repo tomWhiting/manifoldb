@@ -352,16 +352,24 @@ These feature groups can be implemented independently:
 
 ## 1.9 Transaction Statements
 
+Transaction execution is implemented via the `Session` API which provides explicit transaction control.
+Use `Session::new(&db)` to create a session, then execute transaction control statements.
+
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| BEGIN | P | A | L | O | | T | Parsed through sqlparser, AST/logical/physical nodes implemented **†** |
-| START TRANSACTION | P | A | L | O | | T | Alias for BEGIN **†** |
-| COMMIT | P | A | L | O | | T | Parsed through sqlparser **†** |
-| ROLLBACK | P | A | L | O | | T | Parsed through sqlparser **†** |
-| SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
-| RELEASE SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
-| ROLLBACK TO SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
-| SET TRANSACTION | P | A | L | O | | T | Parsed through sqlparser **†** |
+| BEGIN | P | A | L | O | E | T | Session API manages transaction state (Jan 2026) |
+| START TRANSACTION | P | A | L | O | E | T | Alias for BEGIN, with isolation levels (Jan 2026) |
+| COMMIT | P | A | L | O | E | T | Commits active transaction (Jan 2026) |
+| ROLLBACK | P | A | L | O | E | T | Rolls back active transaction (Jan 2026) |
+| SAVEPOINT | P | A | L | O | E | T | Creates named savepoint in transaction (Jan 2026) |
+| RELEASE SAVEPOINT | P | A | L | O | E | T | Releases savepoint (Jan 2026) |
+| ROLLBACK TO SAVEPOINT | P | A | L | O | E | T | Partial rollback to savepoint (Jan 2026) |
+| SET TRANSACTION | P | A | L | O | E | T | Sets transaction characteristics (Jan 2026) |
+
+**Session API Limitations:**
+- Isolation levels are parsed but redb provides serializable isolation only
+- Queries within explicit transactions use separate read transactions (no read-your-own-writes)
+- Savepoints are tracked but full buffered write rollback requires simple operations
 
 ## 1.10 Utility Statements
 
@@ -958,7 +966,7 @@ These feature groups can be implemented independently:
 | Window Functions | 25 | 22 | 1 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 44 | 32 | 3 | 9 |
-| Transactions | 8 | 0 | 8 | 0 |
+| Transactions | 8 | 8 | 0 | 0 |
 | Utility | 10 | 1 | 0 | 9 |
 | Data Types | 25 | 22 | 0 | 3 |
 | Expressions | 40 | 30 | 8 | 2 |

@@ -161,6 +161,7 @@ pub mod metrics;
 pub mod prepared;
 pub mod schema;
 mod search;
+pub mod session;
 pub mod transaction;
 pub mod vector;
 
@@ -193,3 +194,6 @@ pub use manifoldb_vector::distance::DistanceMetric;
 
 // Re-export index types
 pub use index::{IndexInfo, IndexMetadata, IndexStats, IndexType};
+
+// Re-export session types
+pub use session::{Session, TransactionState};
