@@ -1671,6 +1671,17 @@ impl PlanBuilder {
                     "TAIL" => Some(ScalarFunction::Tail),
                     "LAST" => Some(ScalarFunction::Last),
                     "REVERSE" => Some(ScalarFunction::Reverse),
+                    // Array functions (PostgreSQL-compatible)
+                    "ARRAY_LENGTH" => Some(ScalarFunction::ArrayLength),
+                    "CARDINALITY" => Some(ScalarFunction::Cardinality),
+                    "ARRAY_APPEND" => Some(ScalarFunction::ArrayAppend),
+                    "ARRAY_PREPEND" => Some(ScalarFunction::ArrayPrepend),
+                    "ARRAY_CAT" => Some(ScalarFunction::ArrayCat),
+                    "ARRAY_REMOVE" => Some(ScalarFunction::ArrayRemove),
+                    "ARRAY_REPLACE" => Some(ScalarFunction::ArrayReplace),
+                    "ARRAY_POSITION" => Some(ScalarFunction::ArrayPosition),
+                    "ARRAY_POSITIONS" => Some(ScalarFunction::ArrayPositions),
+                    "UNNEST" => Some(ScalarFunction::Unnest),
                     // JSON functions
                     "JSON_EXTRACT_PATH" => Some(ScalarFunction::JsonExtractPath),
                     "JSONB_EXTRACT_PATH" => Some(ScalarFunction::JsonbExtractPath),
