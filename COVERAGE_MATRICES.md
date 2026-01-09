@@ -743,12 +743,12 @@ These feature groups can be implemented independently:
 
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
-| size() | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| head() | ✓ | ✓ | | | | | |
-| tail() | ✓ | ✓ | | | | | |
-| last() | ✓ | ✓ | | | | | |
-| reverse() | ✓ | ✓ | | | | | |
-| range() | ✓ | ✓ | | | | | |
+| size() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| head() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| tail() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| last() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| reverse() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| range() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
 | reduce() | | | | | | | Not impl |
 | all() | | | | | | | Not impl |
 | any() | | | | | | | Not impl |
@@ -905,7 +905,7 @@ These feature groups can be implemented independently:
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
 | CTEs | 10 | 5 | 0 | 5 |
-| Window Functions | 25 | 0 | 18 | 7 |
+| Window Functions | 25 | 8 | 10 | 7 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 30 | 12 | 3 | 15 |
 | Transactions | 8 | 0 | 0 | 8 |
@@ -919,13 +919,13 @@ These feature groups can be implemented independently:
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | Reading Clauses | 25 | 17 | 3 | 5 |
-| Writing Clauses | 15 | 0 | 0 | 15 |
+| Writing Clauses | 15 | 5 | 0 | 10 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
 | Expressions | 10 | 5 | 0 | 5 |
 | Scalar Functions | 20 | 5 | 10 | 5 |
 | Aggregating Functions | 12 | 6 | 2 | 4 |
-| List Functions | 12 | 2 | 4 | 6 |
+| List Functions | 12 | 8 | 0 | 4 |
 | String Functions | 10 | 6 | 2 | 2 |
 | Math Functions | 15 | 8 | 5 | 2 |
 | Temporal Functions | 10 | 0 | 0 | 10 |

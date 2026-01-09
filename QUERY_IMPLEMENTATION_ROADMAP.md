@@ -31,6 +31,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Cypher CREATE/MERGE** - Parsing and logical/physical planning (execution TBD)
 - ✅ **Cypher SET/DELETE/REMOVE** - Parsing and logical/physical planning (execution TBD)
 - ✅ **CALL/YIELD Infrastructure** - Procedure registry, ProcedureCall plan node, algo.pageRank, algo.shortestPath
+- ✅ **Window Value Functions** - LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
+- ✅ **Cypher List Comprehensions** - `[x IN list WHERE pred | expr]` with list functions (range, size, head, tail, last, reverse)
+- ✅ **Centrality Procedures** - algo.betweennessCentrality, algo.closenessCentrality, algo.degreeCentrality, algo.eigenvectorCentrality
 
 ---
 
@@ -217,8 +220,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **Window Functions** (Tier 2) - Basic ranking complete ✅ Jan 2026
   - [x] row_number, rank, dense_rank ✅ Jan 2026
   - [ ] ntile
-  - [ ] lag, lead
-  - [ ] first_value, last_value, nth_value
+  - [x] lag, lead ✅ Jan 2026
+  - [x] first_value, last_value, nth_value ✅ Jan 2026
   - [ ] percent_rank, cume_dist
   - [ ] Any aggregate as window function
 
@@ -306,7 +309,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.2 Expression Extensions
 **Goal:** Support all Cypher expression forms.
 
-- [ ] List comprehensions: `[x IN list WHERE pred | expr]`
+- [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
 - [ ] Map projections: `node{.prop1, .prop2, key: expr}`
 - [ ] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]`
 - [ ] CASE expressions (simple and searched)
@@ -316,8 +319,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Implement openCypher function library.
 
 - [ ] **Scalar Functions**
-  - [ ] coalesce, head, tail, last
-  - [ ] size, length (for lists, strings, paths)
+  - [x] head, tail, last ✅ Jan 2026
+  - [ ] coalesce
+  - [x] size (for lists, strings) ✅ Jan 2026
+  - [ ] length (for paths)
   - [ ] type, labels, id, properties
   - [ ] keys, nodes, relationships
   - [ ] startNode, endNode
@@ -329,7 +334,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [ ] stDev, stDevP
 
 - [ ] **List Functions**
-  - [ ] range, reverse
+  - [x] range, reverse ✅ Jan 2026
   - [ ] reduce (fold operation)
   - [ ] all, any, none, single (predicate tests)
 
@@ -403,10 +408,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Expose centrality algorithms as procedures.
 
 - [x] `algo.pageRank(config) YIELD node, score` ✅ Jan 2026
-- [ ] `algo.betweennessCentrality(config) YIELD node, score`
-- [ ] `algo.closenessCentrality(config) YIELD node, score`
-- [ ] `algo.degreeCentrality(config) YIELD node, score`
-- [ ] `algo.eigenvectorCentrality(config) YIELD node, score`
+- [x] `algo.betweennessCentrality(config) YIELD node, score` ✅ Jan 2026
+- [x] `algo.closenessCentrality(config) YIELD node, score` ✅ Jan 2026
+- [x] `algo.degreeCentrality(config) YIELD node, score` ✅ Jan 2026
+- [x] `algo.eigenvectorCentrality(config) YIELD node, score` ✅ Jan 2026
 
 #### 4.4 Community Detection
 **Goal:** Expose community algorithms as procedures.
