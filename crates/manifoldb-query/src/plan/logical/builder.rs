@@ -2298,6 +2298,14 @@ impl PlanBuilder {
                     "TOINTEGER" | "TOINT" => Some(ScalarFunction::ToInteger),
                     "TOFLOAT" => Some(ScalarFunction::ToFloat),
                     "TOSTRING" => Some(ScalarFunction::CypherToString),
+                    // Cypher temporal functions
+                    "DATETIME" => Some(ScalarFunction::CypherDatetime),
+                    "DATE" => Some(ScalarFunction::CypherDate),
+                    "TIME" => Some(ScalarFunction::CypherTime),
+                    "LOCALDATETIME" => Some(ScalarFunction::CypherLocalDatetime),
+                    "LOCALTIME" => Some(ScalarFunction::CypherLocalTime),
+                    "DURATION" => Some(ScalarFunction::CypherDuration),
+                    "DATETIME.TRUNCATE" => Some(ScalarFunction::CypherDatetimeTruncate),
                     _ => None,
                 };
 

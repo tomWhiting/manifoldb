@@ -834,14 +834,14 @@ These feature groups can be implemented independently:
 
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
-| datetime() | | | | | | | Not impl |
-| localdatetime() | | | | | | | Not impl |
-| date() | | | | | | | Not impl |
-| time() | | | | | | | Not impl |
-| localtime() | | | | | | | Not impl |
-| duration() | | | | | | | Not impl |
-| datetime.truncate() | | | | | | | Not impl |
-| timestamp() | | | | | | | Not impl |
+| datetime() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ISO 8601 string & map construction (Jan 2026)† |
+| localdatetime() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | No timezone variant (Jan 2026)† |
+| date() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ISO 8601 date (Jan 2026)† |
+| time() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ISO 8601 time with timezone (Jan 2026)† |
+| localtime() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | No timezone variant (Jan 2026)† |
+| duration() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ISO 8601 duration & map construction (Jan 2026)† |
+| datetime.truncate() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Truncate to unit (Jan 2026)† |
+| timestamp() | | | | | | | Not impl - use datetime() |
 
 ## 2.14 Spatial Functions
 
@@ -977,7 +977,7 @@ These feature groups can be implemented independently:
 | List Functions | 12 | 11 | 0 | 1 |
 | String Functions | 10 | 10 | 0 | 0 |
 | Math Functions | 15 | 13 | 0 | 2 |
-| Temporal Functions | 10 | 0 | 0 | 10 |
+| Temporal Functions | 10 | 7 | 0 | 3 |
 | Spatial Functions | 5 | 0 | 0 | 5 |
 
 ## Vector Coverage

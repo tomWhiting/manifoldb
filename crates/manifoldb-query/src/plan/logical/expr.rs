@@ -1681,6 +1681,49 @@ pub enum ScalarFunction {
     /// `TIMEZONE(zone, timestamp)` - Convert timestamp to timezone.
     Timezone,
 
+    // Cypher temporal functions
+    /// `datetime()` - Returns current datetime or constructs from string/map.
+    ///
+    /// Examples:
+    /// - `datetime()` - current datetime
+    /// - `datetime('2024-01-15T10:30:00')` - parse ISO 8601 string
+    /// - `datetime({year: 2024, month: 1, day: 15})` - construct from map
+    CypherDatetime,
+    /// `date()` - Returns current date or constructs from string/map.
+    ///
+    /// Examples:
+    /// - `date()` - current date
+    /// - `date('2024-01-15')` - parse ISO 8601 string
+    /// - `date({year: 2024, month: 1, day: 15})` - construct from map
+    CypherDate,
+    /// `time()` - Returns current time or constructs from string/map.
+    ///
+    /// Examples:
+    /// - `time()` - current time
+    /// - `time('10:30:00')` - parse ISO 8601 string
+    /// - `time({hour: 10, minute: 30})` - construct from map
+    CypherTime,
+    /// `localdatetime()` - Returns current local datetime or constructs from string/map.
+    ///
+    /// Similar to `datetime()` but without timezone.
+    CypherLocalDatetime,
+    /// `localtime()` - Returns current local time or constructs from string/map.
+    ///
+    /// Similar to `time()` but without timezone.
+    CypherLocalTime,
+    /// `duration()` - Creates a duration from ISO 8601 string or map.
+    ///
+    /// Examples:
+    /// - `duration('P1Y2M3D')` - ISO 8601 duration
+    /// - `duration({days: 14, hours: 16})` - construct from map
+    CypherDuration,
+    /// `datetime.truncate(unit, datetime)` - Truncates datetime to specified unit.
+    ///
+    /// Examples:
+    /// - `datetime.truncate('day', datetime())` - start of day
+    /// - `datetime.truncate('month', datetime())` - start of month
+    CypherDatetimeTruncate,
+
     // Vector functions
     /// `VECTOR_DIMENSION(vector)`.
     VectorDimension,
@@ -1944,6 +1987,14 @@ impl fmt::Display for ScalarFunction {
             Self::MakeDate => "MAKE_DATE",
             Self::MakeTime => "MAKE_TIME",
             Self::Timezone => "TIMEZONE",
+            // Cypher temporal functions
+            Self::CypherDatetime => "datetime",
+            Self::CypherDate => "date",
+            Self::CypherTime => "time",
+            Self::CypherLocalDatetime => "localdatetime",
+            Self::CypherLocalTime => "localtime",
+            Self::CypherDuration => "duration",
+            Self::CypherDatetimeTruncate => "datetime.truncate",
             // Vector functions
             Self::VectorDimension => "VECTOR_DIMENSION",
             Self::VectorNorm => "VECTOR_NORM",
