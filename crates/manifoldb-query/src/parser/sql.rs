@@ -8,16 +8,19 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
-    AlterColumnAction, AlterTableAction, AlterTableStatement, Assignment, BeginTransaction,
-    BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget,
-    CreateIndexStatement, CreateTableStatement, CreateViewStatement, DataType, DeleteStatement,
-    DropIndexStatement, DropTableStatement, DropViewStatement, Expr, FunctionCall, Identifier,
+    AlterColumnAction, AlterTableAction, AlterTableStatement, AnalyzeStatement, Assignment,
+    BeginTransaction, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef,
+    ConflictAction, ConflictTarget, CopyDestination, CopyDirection, CopyFormat, CopyOptions,
+    CopySource, CopyStatement, CopyTarget, CreateIndexStatement, CreateTableStatement,
+    CreateViewStatement, DataType, DeleteStatement, DropIndexStatement, DropTableStatement,
+    DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall, Identifier,
     IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause, JoinCondition,
     JoinType, Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName,
     ReleaseSavepointStatement, RollbackTransaction, SavepointStatement, SelectItem,
-    SelectStatement, SetOperation, SetOperator, SetTransactionStatement, Statement, TableAlias,
-    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, UnaryOp,
-    UpdateStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
+    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
+    TransactionAccessMode, TransactionStatement, UnaryOp, UpdateStatement, UtilityStatement,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -119,13 +122,36 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
             }
             _ => Err(ParseError::Unsupported(format!("DROP {object_type:?}"))),
         },
-        sp::Statement::Explain { statement, .. } => {
+        sp::Statement::Explain { statement, analyze, format, verbose, .. } => {
             let inner = convert_statement(*statement)?;
-            Ok(Statement::Explain(Box::new(inner)))
+            // Check if ANALYZE option is present
+            if analyze {
+                let explain_stmt = convert_explain_analyze(inner, verbose, format)?;
+                Ok(Statement::ExplainAnalyze(Box::new(explain_stmt)))
+            } else {
+                Ok(Statement::Explain(Box::new(inner)))
+            }
         }
         sp::Statement::Call(function) => {
             let call_stmt = convert_call(function)?;
             Ok(Statement::Call(Box::new(call_stmt)))
+        }
+        // Utility statements
+        sp::Statement::Copy { source, to, target, options, values, .. } => {
+            let copy_stmt = convert_copy(source, to, target, options, values)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Copy(copy_stmt))))
+        }
+        sp::Statement::SetVariable { variables, value, local, .. } => {
+            let set_stmt = convert_set_variable(variables, value, local)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Set(set_stmt))))
+        }
+        sp::Statement::ShowVariable { variable } => {
+            let show_stmt = convert_show_variable(variable)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Show(show_stmt))))
+        }
+        sp::Statement::Analyze { table_name, partitions, columns, .. } => {
+            let analyze_stmt = convert_analyze(table_name, partitions, columns)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Analyze(analyze_stmt))))
         }
         // Transaction control statements
         sp::Statement::StartTransaction { modes, begin, .. } => {
@@ -1349,6 +1375,173 @@ fn convert_access_mode(mode: sp::TransactionAccessMode) -> TransactionAccessMode
         sp::TransactionAccessMode::ReadOnly => TransactionAccessMode::ReadOnly,
         sp::TransactionAccessMode::ReadWrite => TransactionAccessMode::ReadWrite,
     }
+}
+
+// ============================================================================
+// Utility Statement Conversions
+// ============================================================================
+
+/// Converts EXPLAIN ANALYZE options to our statement.
+fn convert_explain_analyze(
+    statement: Statement,
+    verbose: bool,
+    format: Option<sp::AnalyzeFormat>,
+) -> ParseResult<ExplainAnalyzeStatement> {
+    let explain_format = match format {
+        Some(sp::AnalyzeFormat::TEXT) | None => ExplainFormat::Text,
+        Some(sp::AnalyzeFormat::JSON) => ExplainFormat::Json,
+        Some(sp::AnalyzeFormat::GRAPHVIZ) => ExplainFormat::Text, // Fall back to text
+    };
+
+    Ok(ExplainAnalyzeStatement {
+        statement,
+        buffers: false, // Not supported by default
+        timing: true,   // Default true
+        format: explain_format,
+        verbose,
+        costs: true,     // Default true
+        settings: false, // Not supported
+    })
+}
+
+/// Converts a COPY statement.
+#[allow(clippy::too_many_arguments)]
+fn convert_copy(
+    source: sp::CopySource,
+    to: bool,
+    target: sp::CopyTarget,
+    options: Vec<sp::CopyOption>,
+    _values: Vec<Option<String>>,
+) -> ParseResult<CopyStatement> {
+    // Convert source (table or query)
+    let copy_target = match source {
+        sp::CopySource::Table { table_name, columns } => CopyTarget::Table {
+            name: convert_object_name(table_name),
+            columns: columns.into_iter().map(convert_ident).collect(),
+        },
+        sp::CopySource::Query(query) => CopyTarget::Query(Box::new(convert_query(*query)?)),
+    };
+
+    // Convert target (file path or stdout/stdin)
+    let direction = if to {
+        // COPY TO
+        let dest = match target {
+            sp::CopyTarget::File { filename } => CopyDestination::File(filename),
+            sp::CopyTarget::Stdout => CopyDestination::Stdout,
+            sp::CopyTarget::Program { command } => CopyDestination::Program(command),
+            sp::CopyTarget::Stdin => {
+                return Err(ParseError::SqlSyntax("cannot use STDIN with COPY TO".to_string()));
+            }
+        };
+        CopyDirection::To(dest)
+    } else {
+        // COPY FROM
+        let src = match target {
+            sp::CopyTarget::File { filename } => CopySource::File(filename),
+            sp::CopyTarget::Stdin => CopySource::Stdin,
+            sp::CopyTarget::Program { command } => CopySource::Program(command),
+            sp::CopyTarget::Stdout => {
+                return Err(ParseError::SqlSyntax("cannot use STDOUT with COPY FROM".to_string()));
+            }
+        };
+        CopyDirection::From(src)
+    };
+
+    // Convert options
+    let mut copy_options = CopyOptions::default();
+    for opt in options {
+        match opt {
+            sp::CopyOption::Format(f) => {
+                copy_options.format = match f.value.to_uppercase().as_str() {
+                    "CSV" => CopyFormat::Csv,
+                    "TEXT" => CopyFormat::Text,
+                    "BINARY" => CopyFormat::Binary,
+                    _ => CopyFormat::Text,
+                };
+            }
+            sp::CopyOption::Header(h) => copy_options.header = h,
+            sp::CopyOption::Delimiter(d) => {
+                copy_options.delimiter = Some(d);
+            }
+            sp::CopyOption::Null(n) => copy_options.null_string = Some(n),
+            sp::CopyOption::Quote(q) => copy_options.quote = Some(q),
+            sp::CopyOption::Escape(e) => copy_options.escape = Some(e),
+            sp::CopyOption::Encoding(e) => copy_options.encoding = Some(e),
+            sp::CopyOption::ForceQuote(cols) => {
+                copy_options.force_quote = cols.into_iter().map(convert_ident).collect();
+            }
+            sp::CopyOption::ForceNotNull(cols) => {
+                copy_options.force_not_null = cols.into_iter().map(convert_ident).collect();
+            }
+            // Ignore other options
+            _ => {}
+        }
+    }
+
+    Ok(CopyStatement { target: copy_target, direction, options: copy_options })
+}
+
+/// Converts a SET statement.
+fn convert_set_variable(
+    variables: sp::OneOrManyWithParens<sp::ObjectName>,
+    value: Vec<sp::Expr>,
+    local: bool,
+) -> ParseResult<SetSessionStatement> {
+    // Get the variable name
+    let var_names = match variables {
+        sp::OneOrManyWithParens::One(name) => vec![name],
+        sp::OneOrManyWithParens::Many(names) => names,
+    };
+
+    let first_name = var_names
+        .into_iter()
+        .next()
+        .ok_or_else(|| ParseError::MissingClause("variable name in SET statement".to_string()))?;
+
+    let name =
+        first_name.0.into_iter().next().map(convert_ident).ok_or_else(|| {
+            ParseError::MissingClause("variable name in SET statement".to_string())
+        })?;
+
+    // Convert value
+    let set_value = if value.is_empty() {
+        None // SET x TO DEFAULT
+    } else if value.len() == 1 {
+        // Safe: we just checked that value.len() == 1, so there's at least one element
+        let first_expr = value.into_iter().next().expect("checked len == 1");
+        Some(SetValue::Single(convert_expr(first_expr)?))
+    } else {
+        Some(SetValue::List(value.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?))
+    };
+
+    Ok(SetSessionStatement { name, value: set_value, local })
+}
+
+/// Converts a SHOW statement.
+fn convert_show_variable(variable: Vec<sp::Ident>) -> ParseResult<ShowStatement> {
+    let name = if variable.is_empty()
+        || (variable.len() == 1 && variable[0].value.eq_ignore_ascii_case("ALL"))
+    {
+        None // SHOW ALL
+    } else {
+        // Join multi-part variable names
+        let name_str = variable.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join(".");
+        Some(Identifier::new(name_str))
+    };
+
+    Ok(ShowStatement { name })
+}
+
+/// Converts an ANALYZE statement.
+fn convert_analyze(
+    table_name: sp::ObjectName,
+    _partitions: Option<Vec<sp::Expr>>,
+    columns: Vec<sp::Ident>,
+) -> ParseResult<AnalyzeStatement> {
+    let table = Some(convert_object_name(table_name));
+    let columns = columns.into_iter().map(convert_ident).collect();
+
+    Ok(AnalyzeStatement { table, columns })
 }
 
 #[cfg(test)]

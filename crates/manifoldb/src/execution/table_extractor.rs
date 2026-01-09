@@ -173,6 +173,37 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::SetTransaction(_) => {
             // Transaction statements don't reference tables
         }
+
+        // Utility statements - some may reference tables
+        LogicalPlan::ExplainAnalyze(node) => {
+            // Analyze the inner plan for table references
+            collect_tables_from_plan(&node.input, tables);
+        }
+        LogicalPlan::Vacuum(node) => {
+            // VACUUM may target a specific table
+            if let Some(table) = &node.table {
+                tables.push(table.to_string());
+            }
+        }
+        LogicalPlan::Analyze(node) => {
+            // ANALYZE may target a specific table
+            if let Some(table) = &node.table {
+                tables.push(table.to_string());
+            }
+        }
+        LogicalPlan::Copy(node) => {
+            // COPY may target a table or have a query plan
+            use manifoldb_query::ast::CopyTarget;
+            if let CopyTarget::Table { name, .. } = &node.target {
+                tables.push(name.to_string());
+            }
+            if let Some(query_plan) = &node.query_plan {
+                collect_tables_from_plan(query_plan, tables);
+            }
+        }
+        LogicalPlan::SetSession(_) | LogicalPlan::Show(_) | LogicalPlan::Reset(_) => {
+            // Session variable statements don't reference tables
+        }
     }
 }
 

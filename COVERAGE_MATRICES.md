@@ -376,13 +376,22 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
 | EXPLAIN | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| EXPLAIN ANALYZE | | | | | | | Not implemented |
-| ANALYZE | | | | | | | Not implemented |
-| VACUUM | | | | | | | Not implemented |
-| COPY | | | | | | | Not implemented |
-| SET | | | | | | | Not implemented |
-| SHOW | | | | | | | Not implemented |
-| RESET | | | | | | | Not implemented |
+| EXPLAIN ANALYZE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - executes plan with stats |
+| ANALYZE TABLE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - placeholder execution |
+| VACUUM | | ✓ | ✓ | ✓ | ✓ | | AST defined, not parsed by sqlparser 0.52 |
+| COPY TO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - export with CSV/TEXT |
+| COPY FROM | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - import with CSV/TEXT |
+| SET | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - session variables |
+| SET LOCAL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - transaction-scoped |
+| SHOW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - view variable values |
+| SHOW ALL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| RESET | | ✓ | ✓ | ✓ | ✓ | | AST defined, not parsed by sqlparser 0.52 |
+
+**Utility Statement Notes:**
+- EXPLAIN ANALYZE supports FORMAT TEXT/JSON/XML/YAML, BUFFERS, TIMING, VERBOSE, COSTS options
+- VACUUM is fully modeled but sqlparser 0.52 doesn't parse it; use PostgreSQL dialect extensions if needed
+- COPY supports CSV/TEXT/BINARY formats with HEADER, DELIMITER, QUOTE, ESCAPE options
+- SET/SHOW/RESET handle session configuration variables
 
 ## 1.11 Data Types
 

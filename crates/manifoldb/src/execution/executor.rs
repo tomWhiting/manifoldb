@@ -1715,6 +1715,18 @@ fn execute_logical_plan<T: Transaction>(
             // The full CALL subquery semantics are handled by the physical operator
             execute_logical_plan(tx, input, ctx)
         }
+
+        // Utility statements don't return entities
+        LogicalPlan::ExplainAnalyze(_)
+        | LogicalPlan::Vacuum(_)
+        | LogicalPlan::Analyze(_)
+        | LogicalPlan::Copy(_)
+        | LogicalPlan::SetSession(_)
+        | LogicalPlan::Show(_)
+        | LogicalPlan::Reset(_) => {
+            // Utility statements are handled at the session level, not here
+            Ok(Vec::new())
+        }
     }
 }
 

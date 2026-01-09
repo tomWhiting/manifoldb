@@ -446,6 +446,20 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 }
             }
         }
+
+        // Utility statements are always valid structurally
+        LogicalPlan::ExplainAnalyze(node) => {
+            // Validate the inner plan
+            validate_plan(&node.input)?;
+        }
+        LogicalPlan::Vacuum(_)
+        | LogicalPlan::Analyze(_)
+        | LogicalPlan::Copy(_)
+        | LogicalPlan::SetSession(_)
+        | LogicalPlan::Show(_)
+        | LogicalPlan::Reset(_) => {
+            // Utility statements have no structural validation requirements
+        }
     }
 
     Ok(())

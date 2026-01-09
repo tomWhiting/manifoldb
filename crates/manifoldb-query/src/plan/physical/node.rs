@@ -412,6 +412,28 @@ pub enum PhysicalPlan {
 
     /// SET TRANSACTION.
     SetTransaction(SetTransactionNode),
+
+    // ========== Utility Operations ==========
+    /// EXPLAIN ANALYZE (executes and collects statistics).
+    ExplainAnalyze(Box<ExplainAnalyzeExecNode>),
+
+    /// VACUUM operation.
+    Vacuum(VacuumExecNode),
+
+    /// ANALYZE operation.
+    Analyze(AnalyzeExecNode),
+
+    /// COPY operation (import/export).
+    Copy(CopyExecNode),
+
+    /// SET session variable.
+    SetSession(SetSessionExecNode),
+
+    /// SHOW session variable.
+    Show(ShowExecNode),
+
+    /// RESET session variable.
+    Reset(ResetExecNode),
 }
 
 // ============================================================================
@@ -1972,6 +1994,228 @@ impl CallSubqueryExecNode {
 }
 
 // ============================================================================
+// Utility Execution Nodes
+// ============================================================================
+
+/// EXPLAIN ANALYZE execution node.
+///
+/// Executes the inner plan and collects execution statistics.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ExplainAnalyzeExecNode {
+    /// The input plan to execute and analyze.
+    pub input: Box<PhysicalPlan>,
+    /// Whether to include buffer usage statistics.
+    pub buffers: bool,
+    /// Whether to include timing information.
+    pub timing: bool,
+    /// Output format for the plan.
+    pub format: ExplainExecFormat,
+    /// Whether to show verbose output.
+    pub verbose: bool,
+    /// Whether to show cost estimates.
+    pub costs: bool,
+}
+
+impl ExplainAnalyzeExecNode {
+    /// Creates a new EXPLAIN ANALYZE execution node.
+    #[must_use]
+    pub fn new(input: PhysicalPlan) -> Self {
+        Self {
+            input: Box::new(input),
+            buffers: false,
+            timing: true,
+            format: ExplainExecFormat::Text,
+            verbose: false,
+            costs: true,
+        }
+    }
+}
+
+/// Output format for EXPLAIN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExplainExecFormat {
+    /// Plain text format (default).
+    #[default]
+    Text,
+    /// JSON format.
+    Json,
+    /// XML format.
+    Xml,
+    /// YAML format.
+    Yaml,
+}
+
+impl std::fmt::Display for ExplainExecFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "TEXT"),
+            Self::Json => write!(f, "JSON"),
+            Self::Xml => write!(f, "XML"),
+            Self::Yaml => write!(f, "YAML"),
+        }
+    }
+}
+
+/// VACUUM execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VacuumExecNode {
+    /// Whether FULL vacuum is requested.
+    pub full: bool,
+    /// Whether to also collect statistics.
+    pub analyze: bool,
+    /// Target table (None means all tables).
+    pub table: Option<String>,
+    /// Specific columns to analyze.
+    pub columns: Vec<String>,
+}
+
+impl VacuumExecNode {
+    /// Creates a VACUUM node for all tables.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { full: false, analyze: false, table: None, columns: vec![] }
+    }
+}
+
+/// ANALYZE execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalyzeExecNode {
+    /// Target table (None means all tables).
+    pub table: Option<String>,
+    /// Specific columns to analyze.
+    pub columns: Vec<String>,
+}
+
+impl AnalyzeExecNode {
+    /// Creates an ANALYZE node for all tables.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { table: None, columns: vec![] }
+    }
+}
+
+/// COPY execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyExecNode {
+    /// Whether this is an export (true) or import (false).
+    pub is_export: bool,
+    /// Table name (for table-based COPY).
+    pub table: Option<String>,
+    /// Columns to copy.
+    pub columns: Vec<String>,
+    /// File path (for file-based COPY).
+    pub path: Option<String>,
+    /// Whether the file has a header row.
+    pub header: bool,
+    /// Field delimiter.
+    pub delimiter: Option<char>,
+    /// Data format.
+    pub format: CopyExecFormat,
+}
+
+impl CopyExecNode {
+    /// Creates a new COPY TO (export) node.
+    #[must_use]
+    pub fn export(table: String, path: String) -> Self {
+        Self {
+            is_export: true,
+            table: Some(table),
+            columns: vec![],
+            path: Some(path),
+            header: true,
+            delimiter: None,
+            format: CopyExecFormat::Csv,
+        }
+    }
+
+    /// Creates a new COPY FROM (import) node.
+    #[must_use]
+    pub fn import(table: String, path: String) -> Self {
+        Self {
+            is_export: false,
+            table: Some(table),
+            columns: vec![],
+            path: Some(path),
+            header: true,
+            delimiter: None,
+            format: CopyExecFormat::Csv,
+        }
+    }
+}
+
+/// Data format for COPY execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyExecFormat {
+    /// Comma-separated values.
+    #[default]
+    Csv,
+    /// Tab-separated text.
+    Text,
+    /// Binary format.
+    Binary,
+}
+
+impl std::fmt::Display for CopyExecFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Csv => write!(f, "CSV"),
+            Self::Text => write!(f, "TEXT"),
+            Self::Binary => write!(f, "BINARY"),
+        }
+    }
+}
+
+/// SET session variable execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetSessionExecNode {
+    /// The variable name.
+    pub name: String,
+    /// The value to set as a string representation.
+    pub value: Option<String>,
+    /// Whether this is SET LOCAL (transaction-scoped).
+    pub local: bool,
+}
+
+impl SetSessionExecNode {
+    /// Creates a SET node with a value.
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { name: name.into(), value: Some(value.into()), local: false }
+    }
+}
+
+/// SHOW session variable execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowExecNode {
+    /// The variable to show (None means ALL).
+    pub name: Option<String>,
+}
+
+impl ShowExecNode {
+    /// Creates a SHOW ALL node.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { name: None }
+    }
+}
+
+/// RESET session variable execution node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetExecNode {
+    /// The variable to reset (None means ALL).
+    pub name: Option<String>,
+}
+
+impl ResetExecNode {
+    /// Creates a RESET ALL node.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { name: None }
+    }
+}
+
+// ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
 
@@ -2051,6 +2295,15 @@ impl PhysicalPlan {
             Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {
                 input.as_ref().map_or(vec![], |i| vec![i.as_ref()])
             }
+
+            // Utility nodes
+            Self::ExplainAnalyze(node) => vec![node.input.as_ref()],
+            Self::Vacuum(_)
+            | Self::Analyze(_)
+            | Self::Copy(_)
+            | Self::SetSession(_)
+            | Self::Show(_)
+            | Self::Reset(_) => vec![],
         }
     }
 
@@ -2129,6 +2382,15 @@ impl PhysicalPlan {
             Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {
                 input.as_mut().map_or(vec![], |i| vec![i.as_mut()])
             }
+
+            // Utility nodes
+            Self::ExplainAnalyze(node) => vec![node.input.as_mut()],
+            Self::Vacuum(_)
+            | Self::Analyze(_)
+            | Self::Copy(_)
+            | Self::SetSession(_)
+            | Self::Show(_)
+            | Self::Reset(_) => vec![],
         }
     }
 
@@ -2158,6 +2420,12 @@ impl PhysicalPlan {
                 | Self::Savepoint(_)
                 | Self::ReleaseSavepoint(_)
                 | Self::SetTransaction(_)
+                | Self::Vacuum(_)
+                | Self::Analyze(_)
+                | Self::Copy(_)
+                | Self::SetSession(_)
+                | Self::Show(_)
+                | Self::Reset(_)
         )
     }
 
@@ -2217,6 +2485,13 @@ impl PhysicalPlan {
             Self::Savepoint(_) => "Savepoint",
             Self::ReleaseSavepoint(_) => "ReleaseSavepoint",
             Self::SetTransaction(_) => "SetTransaction",
+            Self::ExplainAnalyze(_) => "ExplainAnalyze",
+            Self::Vacuum(_) => "Vacuum",
+            Self::Analyze(_) => "Analyze",
+            Self::Copy(_) => "Copy",
+            Self::SetSession(_) => "SetSession",
+            Self::Show(_) => "Show",
+            Self::Reset(_) => "Reset",
         }
     }
 
@@ -2271,7 +2546,15 @@ impl PhysicalPlan {
             | Self::Rollback(_)
             | Self::Savepoint(_)
             | Self::ReleaseSavepoint(_)
-            | Self::SetTransaction(_) => Cost::zero(),
+            | Self::SetTransaction(_)
+            // Utility operations have zero cost
+            | Self::ExplainAnalyze(_)
+            | Self::Vacuum(_)
+            | Self::Analyze(_)
+            | Self::Copy(_)
+            | Self::SetSession(_)
+            | Self::Show(_)
+            | Self::Reset(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. }
             | Self::GraphMerge { .. }
@@ -2821,6 +3104,73 @@ impl DisplayTree<'_> {
                 }
                 if let Some(mode) = &node.access_mode {
                     write!(f, " {mode}")?;
+                }
+            }
+            // Utility statement nodes
+            PhysicalPlan::ExplainAnalyze(node) => {
+                write!(f, "ExplainAnalyze")?;
+                write!(f, " FORMAT {}", node.format)?;
+                if node.buffers {
+                    write!(f, " BUFFERS")?;
+                }
+                if node.timing {
+                    write!(f, " TIMING")?;
+                }
+                if node.verbose {
+                    write!(f, " VERBOSE")?;
+                }
+            }
+            PhysicalPlan::Vacuum(node) => {
+                write!(f, "Vacuum")?;
+                if node.full {
+                    write!(f, " FULL")?;
+                }
+                if node.analyze {
+                    write!(f, " ANALYZE")?;
+                }
+                if let Some(table) = &node.table {
+                    write!(f, ": {table}")?;
+                }
+            }
+            PhysicalPlan::Analyze(node) => {
+                write!(f, "Analyze")?;
+                if let Some(table) = &node.table {
+                    write!(f, ": {table}")?;
+                }
+                if !node.columns.is_empty() {
+                    write!(f, " ({})", node.columns.join(", "))?;
+                }
+            }
+            PhysicalPlan::Copy(node) => {
+                write!(f, "Copy")?;
+                write!(f, " {}", if node.is_export { "TO" } else { "FROM" })?;
+                write!(f, " FORMAT {:?}", node.format)?;
+            }
+            PhysicalPlan::SetSession(node) => {
+                write!(f, "SetSession: {}", node.name)?;
+                if let Some(val) = &node.value {
+                    write!(f, " = {val}")?;
+                } else {
+                    write!(f, " TO DEFAULT")?;
+                }
+                if node.local {
+                    write!(f, " LOCAL")?;
+                }
+            }
+            PhysicalPlan::Show(node) => {
+                write!(f, "Show")?;
+                if let Some(name) = &node.name {
+                    write!(f, ": {name}")?;
+                } else {
+                    write!(f, " ALL")?;
+                }
+            }
+            PhysicalPlan::Reset(node) => {
+                write!(f, "Reset")?;
+                if let Some(name) = &node.name {
+                    write!(f, ": {name}")?;
+                } else {
+                    write!(f, " ALL")?;
                 }
             }
         }

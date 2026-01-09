@@ -35,6 +35,9 @@ use super::transaction::{
     BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
     SetTransactionNode,
 };
+use super::utility::{
+    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ResetNode, SetSessionNode, ShowNode, VacuumNode,
+};
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
 /// A logical query plan.
@@ -380,6 +383,28 @@ pub enum LogicalPlan {
 
     /// SET TRANSACTION.
     SetTransaction(SetTransactionNode),
+
+    // ========== Utility Nodes ==========
+    /// EXPLAIN ANALYZE (executes and collects statistics).
+    ExplainAnalyze(ExplainAnalyzeNode),
+
+    /// VACUUM operation.
+    Vacuum(VacuumNode),
+
+    /// ANALYZE operation.
+    Analyze(AnalyzeNode),
+
+    /// COPY operation (import/export).
+    Copy(CopyNode),
+
+    /// SET session variable.
+    SetSession(SetSessionNode),
+
+    /// SHOW session variable.
+    Show(ShowNode),
+
+    /// RESET session variable.
+    Reset(ResetNode),
 }
 
 impl LogicalPlan {
@@ -613,6 +638,15 @@ impl LogicalPlan {
             | Self::Savepoint(_)
             | Self::ReleaseSavepoint(_)
             | Self::SetTransaction(_) => vec![],
+
+            // Utility nodes
+            Self::ExplainAnalyze(node) => vec![node.input.as_ref()],
+            Self::Vacuum(_)
+            | Self::Analyze(_)
+            | Self::Copy(_)
+            | Self::SetSession(_)
+            | Self::Show(_)
+            | Self::Reset(_) => vec![],
         }
     }
 
@@ -687,6 +721,15 @@ impl LogicalPlan {
             | Self::Savepoint(_)
             | Self::ReleaseSavepoint(_)
             | Self::SetTransaction(_) => vec![],
+
+            // Utility nodes
+            Self::ExplainAnalyze(node) => vec![node.input.as_mut()],
+            Self::Vacuum(_)
+            | Self::Analyze(_)
+            | Self::Copy(_)
+            | Self::SetSession(_)
+            | Self::Show(_)
+            | Self::Reset(_) => vec![],
         }
     }
 
@@ -748,6 +791,13 @@ impl LogicalPlan {
             Self::Savepoint(_) => "Savepoint",
             Self::ReleaseSavepoint(_) => "ReleaseSavepoint",
             Self::SetTransaction(_) => "SetTransaction",
+            Self::ExplainAnalyze(_) => "ExplainAnalyze",
+            Self::Vacuum(_) => "Vacuum",
+            Self::Analyze(_) => "Analyze",
+            Self::Copy(_) => "Copy",
+            Self::SetSession(_) => "SetSession",
+            Self::Show(_) => "Show",
+            Self::Reset(_) => "Reset",
         }
     }
 
@@ -1172,6 +1222,69 @@ impl DisplayTree<'_> {
                 }
                 if let Some(mode) = &node.access_mode {
                     write!(f, " {mode}")?;
+                }
+            }
+            // Utility nodes
+            LogicalPlan::ExplainAnalyze(node) => {
+                write!(f, "ExplainAnalyze")?;
+                write!(f, " (format: {})", node.format)?;
+                if node.verbose {
+                    write!(f, " VERBOSE")?;
+                }
+                if node.buffers {
+                    write!(f, " BUFFERS")?;
+                }
+            }
+            LogicalPlan::Vacuum(node) => {
+                write!(f, "Vacuum")?;
+                if node.full {
+                    write!(f, " FULL")?;
+                }
+                if node.analyze {
+                    write!(f, " ANALYZE")?;
+                }
+                if let Some(table) = &node.table {
+                    write!(f, " {table}")?;
+                }
+            }
+            LogicalPlan::Analyze(node) => {
+                write!(f, "Analyze")?;
+                if let Some(table) = &node.table {
+                    write!(f, " {table}")?;
+                }
+                if !node.columns.is_empty() {
+                    write!(f, " ({})", node.columns.join(", "))?;
+                }
+            }
+            LogicalPlan::Copy(node) => {
+                write!(f, "Copy")?;
+                if node.is_export() {
+                    write!(f, " TO")?;
+                } else {
+                    write!(f, " FROM")?;
+                }
+                write!(f, " (format: {})", node.options.format)?;
+            }
+            LogicalPlan::SetSession(node) => {
+                write!(f, "SetSession: {}", node.name)?;
+                if node.local {
+                    write!(f, " LOCAL")?;
+                }
+            }
+            LogicalPlan::Show(node) => {
+                write!(f, "Show")?;
+                if let Some(name) = &node.name {
+                    write!(f, ": {name}")?;
+                } else {
+                    write!(f, " ALL")?;
+                }
+            }
+            LogicalPlan::Reset(node) => {
+                write!(f, "Reset")?;
+                if let Some(name) = &node.name {
+                    write!(f, ": {name}")?;
+                } else {
+                    write!(f, " ALL")?;
                 }
             }
         }

@@ -117,6 +117,8 @@ impl PlanBuilder {
             Statement::Remove(remove) => self.build_graph_remove(remove),
             Statement::Foreach(foreach) => self.build_graph_foreach(foreach),
             Statement::Transaction(txn) => self.build_transaction(txn),
+            Statement::ExplainAnalyze(explain) => self.build_explain_analyze(explain),
+            Statement::Utility(utility) => self.build_utility(utility),
         }
     }
 
@@ -166,6 +168,82 @@ impl PlanBuilder {
                     node = node.with_access_mode(mode);
                 }
                 Ok(LogicalPlan::SetTransaction(node))
+            }
+        }
+    }
+
+    /// Builds a logical plan from an EXPLAIN ANALYZE statement.
+    fn build_explain_analyze(
+        &mut self,
+        explain: &ast::ExplainAnalyzeStatement,
+    ) -> PlanResult<LogicalPlan> {
+        use super::utility::{ExplainAnalyzeNode, ExplainFormat as PlanExplainFormat};
+
+        // Build the inner statement plan
+        let inner_plan = self.build_statement(&explain.statement)?;
+
+        let format = match explain.format {
+            ast::ExplainFormat::Text => PlanExplainFormat::Text,
+            ast::ExplainFormat::Json => PlanExplainFormat::Json,
+            ast::ExplainFormat::Xml => PlanExplainFormat::Xml,
+            ast::ExplainFormat::Yaml => PlanExplainFormat::Yaml,
+        };
+
+        let node = ExplainAnalyzeNode {
+            input: Box::new(inner_plan),
+            buffers: explain.buffers,
+            timing: explain.timing,
+            format,
+            verbose: explain.verbose,
+            costs: explain.costs,
+        };
+
+        Ok(LogicalPlan::ExplainAnalyze(node))
+    }
+
+    /// Builds a logical plan from a utility statement.
+    fn build_utility(&self, utility: &ast::UtilityStatement) -> PlanResult<LogicalPlan> {
+        use super::utility::{
+            AnalyzeNode, CopyNode, ResetNode, SetSessionNode, ShowNode, VacuumNode,
+        };
+        use crate::ast::UtilityStatement;
+
+        match utility {
+            UtilityStatement::Vacuum(vacuum) => {
+                let node = VacuumNode {
+                    full: vacuum.full,
+                    analyze: vacuum.analyze,
+                    table: vacuum.table.clone(),
+                    columns: vacuum.columns.iter().map(|i| i.name.clone()).collect(),
+                };
+                Ok(LogicalPlan::Vacuum(node))
+            }
+            UtilityStatement::Analyze(analyze) => {
+                let node = AnalyzeNode {
+                    table: analyze.table.clone(),
+                    columns: analyze.columns.iter().map(|i| i.name.clone()).collect(),
+                };
+                Ok(LogicalPlan::Analyze(node))
+            }
+            UtilityStatement::Copy(copy) => {
+                let node = CopyNode::from_ast(copy)?;
+                Ok(LogicalPlan::Copy(node))
+            }
+            UtilityStatement::Set(set) => {
+                let node = SetSessionNode {
+                    name: set.name.name.clone(),
+                    value: set.value.clone(),
+                    local: set.local,
+                };
+                Ok(LogicalPlan::SetSession(node))
+            }
+            UtilityStatement::Show(show) => {
+                let node = ShowNode { name: show.name.as_ref().map(|i| i.name.clone()) };
+                Ok(LogicalPlan::Show(node))
+            }
+            UtilityStatement::Reset(reset) => {
+                let node = ResetNode { name: reset.name.as_ref().map(|i| i.name.clone()) };
+                Ok(LogicalPlan::Reset(node))
             }
         }
     }

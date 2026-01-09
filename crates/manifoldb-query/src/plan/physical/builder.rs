@@ -12,12 +12,14 @@
 
 use super::cost::{Cost, CostModel};
 use super::node::{
-    BruteForceSearchNode, CallSubqueryExecNode, FilterExecNode, FullScanNode, GraphExpandExecNode,
+    AnalyzeExecNode, BruteForceSearchNode, CallSubqueryExecNode, CopyExecFormat, CopyExecNode,
+    ExplainAnalyzeExecNode, ExplainExecFormat, FilterExecNode, FullScanNode, GraphExpandExecNode,
     GraphPathScanExecNode, HashAggregateNode, HashJoinNode, HnswSearchNode,
     HybridSearchComponentNode, HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode,
     IndexScanNode, JoinOrder, LimitExecNode, NestedLoopJoinNode, PhysicalPlan,
-    PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ShortestPathExecNode,
-    SortExecNode, UnwindExecNode, WindowExecNode, WindowFunctionExpr,
+    PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ResetExecNode,
+    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, SortExecNode, UnwindExecNode,
+    VacuumExecNode, WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
@@ -455,6 +457,83 @@ impl PhysicalPlanner {
             LogicalPlan::Savepoint(node) => PhysicalPlan::Savepoint(node.clone()),
             LogicalPlan::ReleaseSavepoint(node) => PhysicalPlan::ReleaseSavepoint(node.clone()),
             LogicalPlan::SetTransaction(node) => PhysicalPlan::SetTransaction(node.clone()),
+
+            // Utility statements - convert logical to physical nodes
+            LogicalPlan::ExplainAnalyze(node) => {
+                let input_plan = Box::new(self.plan(&node.input));
+                PhysicalPlan::ExplainAnalyze(Box::new(ExplainAnalyzeExecNode {
+                    input: input_plan,
+                    buffers: node.buffers,
+                    timing: node.timing,
+                    format: match node.format {
+                        crate::plan::logical::ExplainFormat::Text => ExplainExecFormat::Text,
+                        crate::plan::logical::ExplainFormat::Json => ExplainExecFormat::Json,
+                        crate::plan::logical::ExplainFormat::Xml => ExplainExecFormat::Xml,
+                        crate::plan::logical::ExplainFormat::Yaml => ExplainExecFormat::Yaml,
+                    },
+                    verbose: node.verbose,
+                    costs: node.costs,
+                }))
+            }
+            LogicalPlan::Vacuum(node) => PhysicalPlan::Vacuum(VacuumExecNode {
+                full: node.full,
+                analyze: node.analyze,
+                table: node.table.as_ref().map(|t| t.to_string()),
+                columns: node.columns.clone(),
+            }),
+            LogicalPlan::Analyze(node) => PhysicalPlan::Analyze(AnalyzeExecNode {
+                table: node.table.as_ref().map(|t| t.to_string()),
+                columns: node.columns.clone(),
+            }),
+            LogicalPlan::Copy(node) => {
+                use crate::ast::{CopyDestination, CopyDirection, CopySource, CopyTarget};
+
+                // Extract table name and columns from target
+                let (table, columns) = match &node.target {
+                    CopyTarget::Table { name, columns } => {
+                        (Some(name.to_string()), columns.iter().map(|c| c.to_string()).collect())
+                    }
+                    CopyTarget::Query(_) => (None, vec![]),
+                };
+
+                // Extract file path from direction
+                let path = match &node.direction {
+                    CopyDirection::To(dest) => match dest {
+                        CopyDestination::File(p) => Some(p.clone()),
+                        _ => None,
+                    },
+                    CopyDirection::From(src) => match src {
+                        CopySource::File(p) => Some(p.clone()),
+                        _ => None,
+                    },
+                };
+
+                // Convert format
+                let format = match node.options.format {
+                    crate::ast::CopyFormat::Csv => CopyExecFormat::Csv,
+                    crate::ast::CopyFormat::Text => CopyExecFormat::Text,
+                    crate::ast::CopyFormat::Binary => CopyExecFormat::Binary,
+                };
+
+                PhysicalPlan::Copy(CopyExecNode {
+                    is_export: node.is_export(),
+                    table,
+                    columns,
+                    path,
+                    header: node.options.header,
+                    delimiter: node.options.delimiter,
+                    format,
+                })
+            }
+            LogicalPlan::SetSession(node) => PhysicalPlan::SetSession(SetSessionExecNode {
+                name: node.name.clone(),
+                value: node.value.as_ref().map(|v| v.to_string()),
+                local: node.local,
+            }),
+            LogicalPlan::Show(node) => PhysicalPlan::Show(ShowExecNode { name: node.name.clone() }),
+            LogicalPlan::Reset(node) => {
+                PhysicalPlan::Reset(ResetExecNode { name: node.name.clone() })
+            }
         }
     }
 

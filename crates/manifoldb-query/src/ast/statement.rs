@@ -54,10 +54,14 @@ pub enum Statement {
     Remove(Box<RemoveGraphStatement>),
     /// Cypher FOREACH statement for iterating over lists.
     Foreach(Box<ForeachStatement>),
-    /// EXPLAIN statement.
+    /// EXPLAIN statement (basic - just shows plan).
     Explain(Box<Statement>),
+    /// EXPLAIN ANALYZE statement (with execution statistics).
+    ExplainAnalyze(Box<ExplainAnalyzeStatement>),
     /// Transaction control statements.
     Transaction(TransactionStatement),
+    /// Utility statements (VACUUM, ANALYZE, COPY, SET/SHOW/RESET).
+    Utility(Box<UtilityStatement>),
 }
 
 // ============================================================================
@@ -2664,6 +2668,584 @@ impl ForeachStatement {
     pub fn with_where(mut self, condition: Expr) -> Self {
         self.where_clause = Some(condition);
         self
+    }
+}
+
+// ============================================================================
+// Utility Statements
+// ============================================================================
+
+/// A utility statement (VACUUM, ANALYZE, COPY, SET, SHOW, RESET).
+///
+/// These statements perform database maintenance and configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UtilityStatement {
+    /// VACUUM statement for table maintenance.
+    Vacuum(VacuumStatement),
+    /// ANALYZE statement for statistics collection.
+    Analyze(AnalyzeStatement),
+    /// COPY statement for data import/export.
+    Copy(CopyStatement),
+    /// SET statement for session variables.
+    Set(SetSessionStatement),
+    /// SHOW statement for viewing configuration.
+    Show(ShowStatement),
+    /// RESET statement for resetting variables.
+    Reset(ResetStatement),
+}
+
+/// An EXPLAIN ANALYZE statement.
+///
+/// EXPLAIN ANALYZE executes the statement and shows actual execution statistics.
+///
+/// # Examples
+///
+/// Basic usage:
+/// ```sql
+/// EXPLAIN ANALYZE SELECT * FROM users WHERE id = 1;
+/// ```
+///
+/// With options:
+/// ```sql
+/// EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM users;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ExplainAnalyzeStatement {
+    /// The statement to analyze.
+    pub statement: Statement,
+    /// Whether to include buffer usage statistics.
+    pub buffers: bool,
+    /// Whether to include timing information (default true).
+    pub timing: bool,
+    /// Output format for the plan.
+    pub format: ExplainFormat,
+    /// Whether to show verbose output.
+    pub verbose: bool,
+    /// Whether to show cost estimates.
+    pub costs: bool,
+    /// Whether to show settings.
+    pub settings: bool,
+}
+
+impl ExplainAnalyzeStatement {
+    /// Creates a new EXPLAIN ANALYZE statement with default options.
+    #[must_use]
+    pub fn new(statement: Statement) -> Self {
+        Self {
+            statement,
+            buffers: false,
+            timing: true,
+            format: ExplainFormat::Text,
+            verbose: false,
+            costs: true,
+            settings: false,
+        }
+    }
+
+    /// Sets the buffers flag.
+    #[must_use]
+    pub const fn with_buffers(mut self, buffers: bool) -> Self {
+        self.buffers = buffers;
+        self
+    }
+
+    /// Sets the timing flag.
+    #[must_use]
+    pub const fn with_timing(mut self, timing: bool) -> Self {
+        self.timing = timing;
+        self
+    }
+
+    /// Sets the output format.
+    #[must_use]
+    pub const fn with_format(mut self, format: ExplainFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// Sets the verbose flag.
+    #[must_use]
+    pub const fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
+        self
+    }
+
+    /// Sets the costs flag.
+    #[must_use]
+    pub const fn with_costs(mut self, costs: bool) -> Self {
+        self.costs = costs;
+        self
+    }
+}
+
+/// Output format for EXPLAIN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExplainFormat {
+    /// Plain text format (default).
+    #[default]
+    Text,
+    /// JSON format.
+    Json,
+    /// XML format.
+    Xml,
+    /// YAML format.
+    Yaml,
+}
+
+impl std::fmt::Display for ExplainFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "TEXT"),
+            Self::Json => write!(f, "JSON"),
+            Self::Xml => write!(f, "XML"),
+            Self::Yaml => write!(f, "YAML"),
+        }
+    }
+}
+
+/// A VACUUM statement for table maintenance.
+///
+/// VACUUM reclaims storage and optionally updates statistics.
+///
+/// # Examples
+///
+/// ```sql
+/// VACUUM users;
+/// VACUUM FULL users;
+/// VACUUM ANALYZE users;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VacuumStatement {
+    /// Whether FULL vacuum is requested (reclaims more space).
+    pub full: bool,
+    /// Whether to also collect statistics (VACUUM ANALYZE).
+    pub analyze: bool,
+    /// Target table (None means all tables).
+    pub table: Option<QualifiedName>,
+    /// Specific columns to analyze (only with analyze=true).
+    pub columns: Vec<Identifier>,
+}
+
+impl VacuumStatement {
+    /// Creates a new VACUUM statement for all tables.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { full: false, analyze: false, table: None, columns: vec![] }
+    }
+
+    /// Creates a VACUUM statement for a specific table.
+    #[must_use]
+    pub fn table(name: impl Into<QualifiedName>) -> Self {
+        Self { full: false, analyze: false, table: Some(name.into()), columns: vec![] }
+    }
+
+    /// Sets the FULL flag.
+    #[must_use]
+    pub const fn full(mut self) -> Self {
+        self.full = true;
+        self
+    }
+
+    /// Sets the ANALYZE flag.
+    #[must_use]
+    pub const fn analyze(mut self) -> Self {
+        self.analyze = true;
+        self
+    }
+
+    /// Sets specific columns to analyze.
+    #[must_use]
+    pub fn columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// An ANALYZE statement for statistics collection.
+///
+/// ANALYZE collects statistics about table contents for the query planner.
+///
+/// # Examples
+///
+/// ```sql
+/// ANALYZE;           -- All tables
+/// ANALYZE users;     -- Specific table
+/// ANALYZE users (name, email);  -- Specific columns
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalyzeStatement {
+    /// Target table (None means all tables).
+    pub table: Option<QualifiedName>,
+    /// Specific columns to analyze.
+    pub columns: Vec<Identifier>,
+}
+
+impl AnalyzeStatement {
+    /// Creates an ANALYZE statement for all tables.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { table: None, columns: vec![] }
+    }
+
+    /// Creates an ANALYZE statement for a specific table.
+    #[must_use]
+    pub fn table(name: impl Into<QualifiedName>) -> Self {
+        Self { table: Some(name.into()), columns: vec![] }
+    }
+
+    /// Sets specific columns to analyze.
+    #[must_use]
+    pub fn columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// A COPY statement for data import/export.
+///
+/// COPY moves data between tables and files or standard output.
+///
+/// # Examples
+///
+/// Export to file:
+/// ```sql
+/// COPY users TO '/tmp/users.csv' WITH (FORMAT CSV, HEADER);
+/// ```
+///
+/// Import from file:
+/// ```sql
+/// COPY users FROM '/tmp/users.csv' WITH (FORMAT CSV, HEADER);
+/// ```
+///
+/// Export query to stdout:
+/// ```sql
+/// COPY (SELECT * FROM users WHERE active) TO STDOUT;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyStatement {
+    /// The copy target (table or query).
+    pub target: CopyTarget,
+    /// The copy direction.
+    pub direction: CopyDirection,
+    /// Copy options.
+    pub options: CopyOptions,
+}
+
+impl CopyStatement {
+    /// Creates a COPY TO statement for a table.
+    #[must_use]
+    pub fn table_to(table: impl Into<QualifiedName>, destination: impl Into<String>) -> Self {
+        Self {
+            target: CopyTarget::Table { name: table.into(), columns: vec![] },
+            direction: CopyDirection::To(CopyDestination::File(destination.into())),
+            options: CopyOptions::default(),
+        }
+    }
+
+    /// Creates a COPY FROM statement for a table.
+    #[must_use]
+    pub fn table_from(table: impl Into<QualifiedName>, source: impl Into<String>) -> Self {
+        Self {
+            target: CopyTarget::Table { name: table.into(), columns: vec![] },
+            direction: CopyDirection::From(CopySource::File(source.into())),
+            options: CopyOptions::default(),
+        }
+    }
+
+    /// Creates a COPY TO statement for a query.
+    #[must_use]
+    pub fn query_to(query: SelectStatement, destination: impl Into<String>) -> Self {
+        Self {
+            target: CopyTarget::Query(Box::new(query)),
+            direction: CopyDirection::To(CopyDestination::File(destination.into())),
+            options: CopyOptions::default(),
+        }
+    }
+
+    /// Sets copy options.
+    #[must_use]
+    pub fn with_options(mut self, options: CopyOptions) -> Self {
+        self.options = options;
+        self
+    }
+}
+
+/// The target of a COPY statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CopyTarget {
+    /// A table (optionally with specific columns).
+    Table {
+        /// Table name.
+        name: QualifiedName,
+        /// Specific columns (empty means all).
+        columns: Vec<Identifier>,
+    },
+    /// A query (for COPY TO only).
+    Query(Box<SelectStatement>),
+}
+
+/// The direction of a COPY statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyDirection {
+    /// COPY TO (export).
+    To(CopyDestination),
+    /// COPY FROM (import).
+    From(CopySource),
+}
+
+/// The destination for COPY TO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyDestination {
+    /// A file path.
+    File(String),
+    /// Standard output.
+    Stdout,
+    /// A program to pipe to.
+    Program(String),
+}
+
+/// The source for COPY FROM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopySource {
+    /// A file path.
+    File(String),
+    /// Standard input.
+    Stdin,
+    /// A program to pipe from.
+    Program(String),
+}
+
+/// Options for COPY statements.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CopyOptions {
+    /// Data format (CSV, TEXT, BINARY).
+    pub format: CopyFormat,
+    /// Whether the file has a header row.
+    pub header: bool,
+    /// Field delimiter (default comma for CSV, tab for TEXT).
+    pub delimiter: Option<char>,
+    /// NULL string representation.
+    pub null_string: Option<String>,
+    /// Quote character for CSV.
+    pub quote: Option<char>,
+    /// Escape character for CSV.
+    pub escape: Option<char>,
+    /// Encoding of the file.
+    pub encoding: Option<String>,
+    /// Whether to force quote all columns (COPY TO only).
+    pub force_quote: Vec<Identifier>,
+    /// Whether to not quote specific columns.
+    pub force_not_null: Vec<Identifier>,
+}
+
+impl CopyOptions {
+    /// Creates default CSV options.
+    #[must_use]
+    pub fn csv() -> Self {
+        Self { format: CopyFormat::Csv, header: true, ..Default::default() }
+    }
+
+    /// Creates default text options.
+    #[must_use]
+    pub fn text() -> Self {
+        Self { format: CopyFormat::Text, ..Default::default() }
+    }
+
+    /// Creates binary options.
+    #[must_use]
+    pub fn binary() -> Self {
+        Self { format: CopyFormat::Binary, ..Default::default() }
+    }
+
+    /// Sets the header flag.
+    #[must_use]
+    pub const fn with_header(mut self, header: bool) -> Self {
+        self.header = header;
+        self
+    }
+
+    /// Sets the delimiter.
+    #[must_use]
+    pub const fn with_delimiter(mut self, delimiter: char) -> Self {
+        self.delimiter = Some(delimiter);
+        self
+    }
+
+    /// Sets the null string.
+    #[must_use]
+    pub fn with_null(mut self, null_string: impl Into<String>) -> Self {
+        self.null_string = Some(null_string.into());
+        self
+    }
+}
+
+/// Data format for COPY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyFormat {
+    /// Comma-separated values.
+    #[default]
+    Csv,
+    /// Tab-separated text.
+    Text,
+    /// Binary format.
+    Binary,
+}
+
+impl std::fmt::Display for CopyFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Csv => write!(f, "CSV"),
+            Self::Text => write!(f, "TEXT"),
+            Self::Binary => write!(f, "BINARY"),
+        }
+    }
+}
+
+/// A SET statement for session variables.
+///
+/// Sets a session-level configuration parameter.
+///
+/// # Examples
+///
+/// ```sql
+/// SET search_path TO myschema, public;
+/// SET timezone TO 'UTC';
+/// SET statement_timeout TO '30s';
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetSessionStatement {
+    /// The variable name.
+    pub name: Identifier,
+    /// The value to set (None means DEFAULT).
+    pub value: Option<SetValue>,
+    /// Whether this is SET LOCAL (transaction-scoped) vs SET (session-scoped).
+    pub local: bool,
+}
+
+impl SetSessionStatement {
+    /// Creates a SET statement with a value.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, value: SetValue) -> Self {
+        Self { name: name.into(), value: Some(value), local: false }
+    }
+
+    /// Creates a SET statement to DEFAULT.
+    #[must_use]
+    pub fn to_default(name: impl Into<Identifier>) -> Self {
+        Self { name: name.into(), value: None, local: false }
+    }
+
+    /// Sets the LOCAL flag.
+    #[must_use]
+    pub const fn local(mut self) -> Self {
+        self.local = true;
+        self
+    }
+}
+
+/// The value for a SET statement.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetValue {
+    /// A single value.
+    Single(Expr),
+    /// A list of values (e.g., search_path).
+    List(Vec<Expr>),
+    /// DEFAULT keyword.
+    Default,
+}
+
+impl SetValue {
+    /// Creates a single string value.
+    #[must_use]
+    pub fn string(s: impl Into<String>) -> Self {
+        Self::Single(Expr::string(s.into()))
+    }
+
+    /// Creates a single identifier value.
+    #[must_use]
+    pub fn identifier(name: impl Into<String>) -> Self {
+        Self::Single(Expr::Column(QualifiedName::simple(name.into())))
+    }
+}
+
+impl std::fmt::Display for SetValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Single(expr) => write!(f, "{expr:?}"),
+            Self::List(exprs) => {
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{expr:?}")?;
+                }
+                Ok(())
+            }
+            Self::Default => write!(f, "DEFAULT"),
+        }
+    }
+}
+
+/// A SHOW statement for viewing configuration.
+///
+/// Displays the current value of a configuration parameter.
+///
+/// # Examples
+///
+/// ```sql
+/// SHOW search_path;
+/// SHOW ALL;
+/// SHOW timezone;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowStatement {
+    /// The variable to show (None means ALL).
+    pub name: Option<Identifier>,
+}
+
+impl ShowStatement {
+    /// Creates a SHOW ALL statement.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { name: None }
+    }
+
+    /// Creates a SHOW statement for a specific variable.
+    #[must_use]
+    pub fn variable(name: impl Into<Identifier>) -> Self {
+        Self { name: Some(name.into()) }
+    }
+}
+
+/// A RESET statement for resetting variables.
+///
+/// Resets a configuration parameter to its default value.
+///
+/// # Examples
+///
+/// ```sql
+/// RESET search_path;
+/// RESET ALL;
+/// RESET timezone;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetStatement {
+    /// The variable to reset (None means ALL).
+    pub name: Option<Identifier>,
+}
+
+impl ResetStatement {
+    /// Creates a RESET ALL statement.
+    #[must_use]
+    pub fn all() -> Self {
+        Self { name: None }
+    }
+
+    /// Creates a RESET statement for a specific variable.
+    #[must_use]
+    pub fn variable(name: impl Into<Identifier>) -> Self {
+        Self { name: Some(name.into()) }
     }
 }
 
