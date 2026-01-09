@@ -394,8 +394,21 @@ impl PlanBuilder {
             "AVG" => Some(AggregateFunction::Avg),
             "MIN" => Some(AggregateFunction::Min),
             "MAX" => Some(AggregateFunction::Max),
-            "ARRAY_AGG" => Some(AggregateFunction::ArrayAgg),
+            // Cypher collect() maps to ARRAY_AGG
+            "ARRAY_AGG" | "COLLECT" => Some(AggregateFunction::ArrayAgg),
             "STRING_AGG" => Some(AggregateFunction::StringAgg),
+            // Standard deviation (sample): SQL STDDEV/STDDEV_SAMP, Cypher stDev
+            "STDDEV" | "STDDEV_SAMP" | "STDEV" => Some(AggregateFunction::StddevSamp),
+            // Standard deviation (population): SQL STDDEV_POP, Cypher stDevP
+            "STDDEV_POP" | "STDEVP" => Some(AggregateFunction::StddevPop),
+            // Variance (sample): SQL VARIANCE/VAR_SAMP
+            "VARIANCE" | "VAR_SAMP" | "VAR" => Some(AggregateFunction::VarianceSamp),
+            // Variance (population): SQL VAR_POP
+            "VAR_POP" | "VARP" => Some(AggregateFunction::VariancePop),
+            // Cypher percentile functions
+            "PERCENTILECONT" | "PERCENTILE_CONT" => Some(AggregateFunction::PercentileCont),
+            "PERCENTILEDISC" | "PERCENTILE_DISC" => Some(AggregateFunction::PercentileDisc),
+            // Vector aggregates
             "VECTOR_AVG" => Some(AggregateFunction::VectorAvg),
             "VECTOR_CENTROID" => Some(AggregateFunction::VectorCentroid),
             _ => None,
