@@ -37,6 +37,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Community Detection Procedures** - algo.labelPropagation, algo.connectedComponents, algo.stronglyConnectedComponents
 - ✅ **Path Algorithm Procedures** - algo.dijkstra, algo.astar, algo.allShortestPaths, algo.sssp
 - ✅ **Window Frame Clause** - ROWS/RANGE BETWEEN with all bound types (UNBOUNDED PRECEDING/FOLLOWING, n PRECEDING/FOLLOWING, CURRENT ROW)
+- ✅ **JSON Functions†** - json_extract_path, jsonb_set, json_build_object, json_build_array, jsonb_strip_nulls (11 functions)
+- ✅ **Cypher Map Projections†** - `node{.property, key: expr, .*}` syntax for property extraction and transformation
+- ✅ **Aggregate Window Functions†** - SUM/AVG/COUNT/MIN/MAX OVER with frame awareness
 
 ---
 
