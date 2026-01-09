@@ -339,10 +339,10 @@ These feature groups can be implemented independently:
 | IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **VIEW** |
-| CREATE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
-| CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
-| DROP VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
-| DROP VIEW IF EXISTS | ✓ | ✓ | ✓ | ✓ | | ✓ | Parsing, planning, schema storage |
+| CREATE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works; view expansion in queries pending |
+| CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works; view expansion in queries pending |
+| DROP VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works |
+| DROP VIEW IF EXISTS | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works |
 | DROP VIEW CASCADE | ✓ | ✓ | ✓ | ✓ | | | Parsing, planning (cascade not exec) |
 | MATERIALIZED VIEW | | | | | | | Not implemented |
 | **SCHEMA** |
@@ -618,7 +618,7 @@ These feature groups can be implemented independently:
 | Pattern predicates | ✓ | ✓ | | | | | |
 | EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Uncorrelated complete (Jan 2026)† - correlated WITH binding pending |
 | **Path Functions** |
 | shortestPath() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |
 | allShortestPaths() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |

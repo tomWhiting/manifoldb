@@ -169,7 +169,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **DDL Extensions** (partial)
   - [x] ALTER TABLE (ADD/DROP/ALTER COLUMN) ✅ Jan 2026
   - [ ] ALTER INDEX
-  - [x] CREATE VIEW / DROP VIEW ✅ Jan 2026 (ALTER VIEW not implemented)
+  - [x] CREATE VIEW / DROP VIEW ✅ Jan 2026 (ALTER VIEW not implemented, view expansion in queries pending)
   - [ ] CREATE/ALTER/DROP SCHEMA
   - [ ] CREATE/ALTER/DROP FUNCTION
   - [ ] CREATE/ALTER/DROP TRIGGER
@@ -310,7 +310,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - [x] **Subqueries** - EXISTS and COUNT fully executable, CALL planning complete ✅ Jan 2026
   - [x] EXISTS { } subquery ✅ Jan 2026 - Full execution
   - [x] COUNT { } subquery ✅ Jan 2026 - Full execution
-  - [x] CALL { } subquery (inline) ✅ Jan 2026 - Full execution complete
+  - [x] CALL { } subquery (inline) ✅ Jan 2026 - Uncorrelated execution complete (correlated WITH binding pending)
 
 - [ ] **Advanced Patterns**
   - [ ] Quantified path patterns (GQL)
