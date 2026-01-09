@@ -209,13 +209,13 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] degrees, radians
   - [x] random, setseed
 
-- [x] **Date/Time Functions** (Tier 1) - Mostly complete ✅ Jan 2026
+- [x] **Date/Time Functions** (Tier 1 & 2) - Complete ✅ Jan 2026
   - [x] now, current_timestamp, current_date, current_time
   - [x] date_part, extract, date_trunc
   - [x] to_timestamp, to_date, to_char
-  - [ ] age, date_add, date_subtract
-  - [ ] make_timestamp, make_date, make_time
-  - [ ] timezone, at time zone
+  - [x] age, date_add, date_subtract ✅ Complete (Jan 2026)
+  - [x] make_timestamp, make_date, make_time ✅ Complete (Jan 2026)
+  - [x] timezone ✅ Complete (Jan 2026)
 
 - [x] **Aggregate Functions** (Tier 1) - Core complete
   - [x] count, sum, avg, min, max ✅ Complete

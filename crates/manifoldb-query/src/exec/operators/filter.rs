@@ -1346,6 +1346,132 @@ fn evaluate_scalar_function(
             };
             format_datetime(datetime_str, format)
         }
+        ScalarFunction::Age => {
+            // AGE(timestamp2, timestamp1) or AGE(timestamp) - calculates from now
+            use chrono::Utc;
+            if args.is_empty() {
+                return Ok(Value::Null);
+            }
+
+            let (dt2, dt1) = if args.len() == 1 {
+                // Single argument: age from now
+                let ts = match args.first() {
+                    Some(Value::String(s)) => s,
+                    _ => return Ok(Value::Null),
+                };
+                let dt1 = match parse_naive_datetime(ts) {
+                    Ok(dt) => dt,
+                    Err(_) => return Ok(Value::Null),
+                };
+                (Utc::now().naive_utc(), dt1)
+            } else {
+                // Two arguments: age(timestamp2, timestamp1) = timestamp2 - timestamp1
+                let ts2 = match args.first() {
+                    Some(Value::String(s)) => s,
+                    _ => return Ok(Value::Null),
+                };
+                let ts1 = match args.get(1) {
+                    Some(Value::String(s)) => s,
+                    _ => return Ok(Value::Null),
+                };
+                let dt2 = match parse_naive_datetime(ts2) {
+                    Ok(dt) => dt,
+                    Err(_) => return Ok(Value::Null),
+                };
+                let dt1 = match parse_naive_datetime(ts1) {
+                    Ok(dt) => dt,
+                    Err(_) => return Ok(Value::Null),
+                };
+                (dt2, dt1)
+            };
+
+            // Calculate age as interval string
+            let interval_str = calculate_age_interval(dt2, dt1);
+            Ok(Value::String(interval_str))
+        }
+        ScalarFunction::DateAdd => {
+            // DATE_ADD(date, interval) - Add interval to date
+            if args.len() < 2 {
+                return Ok(Value::Null);
+            }
+            let datetime_str = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let interval_str = match args.get(1) {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            add_interval_to_datetime(datetime_str, interval_str, true)
+        }
+        ScalarFunction::DateSubtract => {
+            // DATE_SUBTRACT(date, interval) - Subtract interval from date
+            if args.len() < 2 {
+                return Ok(Value::Null);
+            }
+            let datetime_str = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let interval_str = match args.get(1) {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            add_interval_to_datetime(datetime_str, interval_str, false)
+        }
+        ScalarFunction::MakeTimestamp => {
+            // MAKE_TIMESTAMP(year, month, day, hour, minute, second)
+            // All 6 arguments are required
+            if args.len() < 6 {
+                return Ok(Value::Null);
+            }
+            let year = value_to_i64(args.first().unwrap_or(&Value::Null)).unwrap_or(0) as i32;
+            let month = value_to_i64(args.get(1).unwrap_or(&Value::Null)).unwrap_or(1) as u32;
+            let day = value_to_i64(args.get(2).unwrap_or(&Value::Null)).unwrap_or(1) as u32;
+            let hour = value_to_i64(args.get(3).unwrap_or(&Value::Null)).unwrap_or(0) as u32;
+            let minute = value_to_i64(args.get(4).unwrap_or(&Value::Null)).unwrap_or(0) as u32;
+            let second = value_to_f64(args.get(5).unwrap_or(&Value::Null)).unwrap_or(0.0);
+
+            make_timestamp_from_parts(year, month, day, hour, minute, second)
+        }
+        ScalarFunction::MakeDate => {
+            // MAKE_DATE(year, month, day)
+            if args.len() < 3 {
+                return Ok(Value::Null);
+            }
+            let year = value_to_i64(args.first().unwrap_or(&Value::Null)).unwrap_or(0) as i32;
+            let month = value_to_i64(args.get(1).unwrap_or(&Value::Null)).unwrap_or(1) as u32;
+            let day = value_to_i64(args.get(2).unwrap_or(&Value::Null)).unwrap_or(1) as u32;
+
+            make_date_from_parts(year, month, day)
+        }
+        ScalarFunction::MakeTime => {
+            // MAKE_TIME(hour, minute, second)
+            if args.len() < 3 {
+                return Ok(Value::Null);
+            }
+            let hour = value_to_i64(args.first().unwrap_or(&Value::Null)).unwrap_or(0) as u32;
+            let minute = value_to_i64(args.get(1).unwrap_or(&Value::Null)).unwrap_or(0) as u32;
+            let second = value_to_f64(args.get(2).unwrap_or(&Value::Null)).unwrap_or(0.0);
+
+            make_time_from_parts(hour, minute, second)
+        }
+        ScalarFunction::Timezone => {
+            // TIMEZONE(zone, timestamp) - Convert timestamp to timezone
+            // For now, we support basic UTC offset timezones like 'UTC', 'America/New_York', etc.
+            if args.len() < 2 {
+                return Ok(Value::Null);
+            }
+            let timezone = match args.first() {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            let datetime_str = match args.get(1) {
+                Some(Value::String(s)) => s,
+                _ => return Ok(Value::Null),
+            };
+            convert_timezone(datetime_str, timezone)
+        }
 
         // ========== Vector Functions ==========
         ScalarFunction::VectorDimension => {
@@ -1948,6 +2074,308 @@ fn pg_format_to_chrono(pg_format: &str) -> String {
         .replace("Day", "%A")
         .replace("Mon", "%b")
         .replace("Month", "%B")
+}
+
+// ========== Tier 2 Date/Time Helper Functions ==========
+
+/// Converts a Value to i64 if possible.
+fn value_to_i64(val: &Value) -> Option<i64> {
+    match val {
+        Value::Int(i) => Some(*i),
+        Value::Float(f) => Some(*f as i64),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Calculates age between two datetimes as an interval string.
+/// Returns a PostgreSQL-style interval like "4 years 2 mons 10 days".
+fn calculate_age_interval(dt2: chrono::NaiveDateTime, dt1: chrono::NaiveDateTime) -> String {
+    use chrono::Datelike;
+
+    // Calculate the difference
+    let (later, earlier, negative) = if dt2 >= dt1 { (dt2, dt1, false) } else { (dt1, dt2, true) };
+
+    // Calculate years, months, days
+    let mut years = later.year() - earlier.year();
+    let mut months = later.month() as i32 - earlier.month() as i32;
+    let mut days = later.day() as i32 - earlier.day() as i32;
+
+    // Adjust for day underflow
+    if days < 0 {
+        months -= 1;
+        // Add days from previous month
+        let prev_month = if later.month() == 1 { 12 } else { later.month() - 1 };
+        let prev_year = if later.month() == 1 { later.year() - 1 } else { later.year() };
+        let days_in_prev_month = days_in_month(prev_year, prev_month);
+        days += days_in_prev_month as i32;
+    }
+
+    // Adjust for month underflow
+    if months < 0 {
+        years -= 1;
+        months += 12;
+    }
+
+    // Calculate time difference
+    let time_diff = later.time() - earlier.time();
+    let total_seconds = time_diff.num_seconds();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    // Build the interval string
+    let mut parts = Vec::new();
+    if years != 0 {
+        parts.push(format!("{} year{}", years, if years == 1 { "" } else { "s" }));
+    }
+    if months != 0 {
+        parts.push(format!("{} mon{}", months, if months == 1 { "" } else { "s" }));
+    }
+    if days != 0 {
+        parts.push(format!("{} day{}", days, if days == 1 { "" } else { "s" }));
+    }
+    if hours != 0 || minutes != 0 || seconds != 0 {
+        parts.push(format!("{:02}:{:02}:{:02}", hours, minutes, seconds));
+    }
+
+    let interval = if parts.is_empty() { "00:00:00".to_string() } else { parts.join(" ") };
+
+    if negative {
+        format!("-{}", interval)
+    } else {
+        interval
+    }
+}
+
+/// Returns the number of days in a given month.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    use chrono::NaiveDate;
+    let next_month = if month == 12 { 1 } else { month + 1 };
+    let next_year = if month == 12 { year + 1 } else { year };
+    let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap_or_default();
+    let first_of_this = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
+    (first_of_next - first_of_this).num_days() as u32
+}
+
+/// Parses an interval string and adds/subtracts it from a datetime.
+/// Supports formats like: "1 year", "2 months", "3 days", "4 hours", "5 minutes", "6 seconds"
+/// Also supports compound: "1 year 2 months 3 days"
+fn add_interval_to_datetime(
+    datetime_str: &str,
+    interval_str: &str,
+    add: bool,
+) -> OperatorResult<Value> {
+    use chrono::{Datelike, NaiveDate, NaiveDateTime};
+
+    let dt = parse_naive_datetime(datetime_str)?;
+    let interval_str = interval_str.to_lowercase();
+
+    // Parse the interval components
+    let mut years: i32 = 0;
+    let mut months: i32 = 0;
+    let mut days: i64 = 0;
+    let mut hours: i64 = 0;
+    let mut minutes: i64 = 0;
+    let mut seconds: i64 = 0;
+
+    // Parse using simple word-by-word approach
+    let words: Vec<&str> = interval_str.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        if let Ok(n) = words[i].parse::<i64>() {
+            if i + 1 < words.len() {
+                let unit = words[i + 1];
+                match unit {
+                    u if u.starts_with("year") => years = n as i32,
+                    u if u.starts_with("mon") => months = n as i32,
+                    u if u.starts_with("day") => days = n,
+                    u if u.starts_with("hour") => hours = n,
+                    u if u.starts_with("min") => minutes = n,
+                    u if u.starts_with("sec") => seconds = n,
+                    _ => {}
+                }
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    // Apply the sign for subtraction
+    let sign: i32 = if add { 1 } else { -1 };
+    years *= sign;
+    months *= sign;
+    days *= sign as i64;
+    hours *= sign as i64;
+    minutes *= sign as i64;
+    seconds *= sign as i64;
+
+    // Add years and months (these require special handling)
+    let mut new_year = dt.year() + years;
+    let mut new_month = dt.month() as i32 + months;
+
+    // Handle month overflow/underflow
+    while new_month > 12 {
+        new_month -= 12;
+        new_year += 1;
+    }
+    while new_month < 1 {
+        new_month += 12;
+        new_year -= 1;
+    }
+
+    // Handle day clamping (e.g., Jan 31 + 1 month = Feb 28/29)
+    let days_in_new_month = days_in_month(new_year, new_month as u32);
+    let new_day = std::cmp::min(dt.day(), days_in_new_month);
+
+    let new_date =
+        NaiveDate::from_ymd_opt(new_year, new_month as u32, new_day).unwrap_or_else(|| dt.date());
+
+    let new_dt = NaiveDateTime::new(new_date, dt.time());
+
+    // Add days, hours, minutes, seconds using Duration
+    let duration = chrono::Duration::days(days)
+        + chrono::Duration::hours(hours)
+        + chrono::Duration::minutes(minutes)
+        + chrono::Duration::seconds(seconds);
+
+    let result = new_dt + duration;
+
+    Ok(Value::String(result.format("%Y-%m-%d %H:%M:%S").to_string()))
+}
+
+/// Creates a timestamp from individual components.
+fn make_timestamp_from_parts(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: f64,
+) -> OperatorResult<Value> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
+    let date = match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(d) => d,
+        None => return Ok(Value::Null),
+    };
+
+    let whole_secs = second.trunc() as u32;
+    let nanos = ((second.fract()) * 1_000_000_000.0) as u32;
+
+    let time = match NaiveTime::from_hms_nano_opt(hour, minute, whole_secs, nanos) {
+        Some(t) => t,
+        None => return Ok(Value::Null),
+    };
+
+    let dt = NaiveDateTime::new(date, time);
+    Ok(Value::String(dt.format("%Y-%m-%d %H:%M:%S%.6f").to_string()))
+}
+
+/// Creates a date from individual components.
+fn make_date_from_parts(year: i32, month: u32, day: u32) -> OperatorResult<Value> {
+    use chrono::NaiveDate;
+
+    match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(d) => Ok(Value::String(d.format("%Y-%m-%d").to_string())),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Creates a time from individual components.
+fn make_time_from_parts(hour: u32, minute: u32, second: f64) -> OperatorResult<Value> {
+    use chrono::NaiveTime;
+
+    let whole_secs = second.trunc() as u32;
+    let nanos = ((second.fract()) * 1_000_000_000.0) as u32;
+
+    match NaiveTime::from_hms_nano_opt(hour, minute, whole_secs, nanos) {
+        Some(t) => Ok(Value::String(t.format("%H:%M:%S%.6f").to_string())),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Converts a timestamp to a different timezone.
+/// Supports common timezone names and UTC offsets.
+fn convert_timezone(datetime_str: &str, timezone: &str) -> OperatorResult<Value> {
+    use chrono::{FixedOffset, TimeZone};
+
+    let dt = parse_naive_datetime(datetime_str)?;
+
+    // Parse timezone - support common formats
+    let offset = match timezone.to_uppercase().as_str() {
+        "UTC" | "GMT" => FixedOffset::east_opt(0),
+        // Common US timezones (standard time offsets)
+        "EST" => FixedOffset::west_opt(5 * 3600),
+        "EDT" => FixedOffset::west_opt(4 * 3600),
+        "CST" => FixedOffset::west_opt(6 * 3600),
+        "CDT" => FixedOffset::west_opt(5 * 3600),
+        "MST" => FixedOffset::west_opt(7 * 3600),
+        "MDT" => FixedOffset::west_opt(6 * 3600),
+        "PST" => FixedOffset::west_opt(8 * 3600),
+        "PDT" => FixedOffset::west_opt(7 * 3600),
+        // Common international timezones
+        "CET" => FixedOffset::east_opt(3600),
+        "CEST" => FixedOffset::east_opt(2 * 3600),
+        "JST" => FixedOffset::east_opt(9 * 3600),
+        "IST" => FixedOffset::east_opt(5 * 3600 + 30 * 60), // India Standard Time
+        _ => {
+            // Try to parse as offset like "+05:00" or "-08:00"
+            parse_timezone_offset(timezone)
+        }
+    };
+
+    match offset {
+        Some(tz) => {
+            // Assume input is UTC, convert to target timezone
+            let utc_dt = chrono::Utc.from_utc_datetime(&dt);
+            let local_dt = utc_dt.with_timezone(&tz);
+            Ok(Value::String(local_dt.format("%Y-%m-%d %H:%M:%S%:z").to_string()))
+        }
+        None => Ok(Value::Null),
+    }
+}
+
+/// Parses a timezone offset string like "+05:00" or "-08:00".
+fn parse_timezone_offset(s: &str) -> Option<chrono::FixedOffset> {
+    use chrono::FixedOffset;
+
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    let (sign, rest) = if s.starts_with('+') {
+        (1, &s[1..])
+    } else if s.starts_with('-') {
+        (-1, &s[1..])
+    } else {
+        (1, s)
+    };
+
+    // Try formats: "05:00", "0500", "05"
+    let (hours, minutes) = if rest.contains(':') {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() >= 2 {
+            (parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?)
+        } else {
+            return None;
+        }
+    } else if rest.len() == 4 {
+        // Format: "0500"
+        (rest[0..2].parse::<i32>().ok()?, rest[2..4].parse::<i32>().ok()?)
+    } else if rest.len() <= 2 {
+        // Format: "5" or "05"
+        (rest.parse::<i32>().ok()?, 0)
+    } else {
+        return None;
+    };
+
+    let total_seconds = sign * (hours * 3600 + minutes * 60);
+    FixedOffset::east_opt(total_seconds)
 }
 
 // ========== JSON Functions ==========
@@ -3642,6 +4070,230 @@ mod tests {
             vec![Value::from("2024-01-15 10:30:45"), Value::from("YYYY-MM-DD")],
         );
         assert_eq!(result, Value::String("2024-01-15".to_string()));
+    }
+
+    // ========== Tier 2 Date/Time Function Tests ==========
+
+    #[test]
+    fn test_age_two_args() {
+        use crate::plan::logical::ScalarFunction;
+
+        // age('2024-01-01', '2020-01-01') = 4 years
+        let result = eval_fn(
+            ScalarFunction::Age,
+            vec![Value::from("2024-01-01"), Value::from("2020-01-01")],
+        );
+        assert_eq!(result, Value::String("4 years".to_string()));
+
+        // age('2024-03-15', '2020-01-10') = 4 years 2 mons 5 days
+        let result = eval_fn(
+            ScalarFunction::Age,
+            vec![Value::from("2024-03-15"), Value::from("2020-01-10")],
+        );
+        assert_eq!(result, Value::String("4 years 2 mons 5 days".to_string()));
+
+        // age('2024-01-01 10:30:00', '2024-01-01 08:00:00') = 02:30:00
+        let result = eval_fn(
+            ScalarFunction::Age,
+            vec![Value::from("2024-01-01 10:30:00"), Value::from("2024-01-01 08:00:00")],
+        );
+        assert_eq!(result, Value::String("02:30:00".to_string()));
+
+        // Negative age (older than newer)
+        let result = eval_fn(
+            ScalarFunction::Age,
+            vec![Value::from("2020-01-01"), Value::from("2024-01-01")],
+        );
+        assert_eq!(result, Value::String("-4 years".to_string()));
+    }
+
+    #[test]
+    fn test_date_add() {
+        use crate::plan::logical::ScalarFunction;
+
+        // date_add('2024-01-01', '1 month')
+        let result = eval_fn(
+            ScalarFunction::DateAdd,
+            vec![Value::from("2024-01-01"), Value::from("1 month")],
+        );
+        assert_eq!(result, Value::String("2024-02-01 00:00:00".to_string()));
+
+        // date_add('2024-01-01', '1 year')
+        let result = eval_fn(
+            ScalarFunction::DateAdd,
+            vec![Value::from("2024-01-01"), Value::from("1 year")],
+        );
+        assert_eq!(result, Value::String("2025-01-01 00:00:00".to_string()));
+
+        // date_add('2024-01-01', '7 days')
+        let result = eval_fn(
+            ScalarFunction::DateAdd,
+            vec![Value::from("2024-01-01"), Value::from("7 days")],
+        );
+        assert_eq!(result, Value::String("2024-01-08 00:00:00".to_string()));
+
+        // date_add with compound interval
+        let result = eval_fn(
+            ScalarFunction::DateAdd,
+            vec![Value::from("2024-01-01 12:00:00"), Value::from("1 year 2 months 3 days")],
+        );
+        assert_eq!(result, Value::String("2025-03-04 12:00:00".to_string()));
+
+        // Adding hours
+        let result = eval_fn(
+            ScalarFunction::DateAdd,
+            vec![Value::from("2024-01-01 12:00:00"), Value::from("5 hours")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 17:00:00".to_string()));
+    }
+
+    #[test]
+    fn test_date_subtract() {
+        use crate::plan::logical::ScalarFunction;
+
+        // date_subtract('2024-02-01', '1 month')
+        let result = eval_fn(
+            ScalarFunction::DateSubtract,
+            vec![Value::from("2024-02-01"), Value::from("1 month")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 00:00:00".to_string()));
+
+        // date_subtract('2024-01-08', '7 days')
+        let result = eval_fn(
+            ScalarFunction::DateSubtract,
+            vec![Value::from("2024-01-08"), Value::from("7 days")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 00:00:00".to_string()));
+    }
+
+    #[test]
+    fn test_make_timestamp() {
+        use crate::plan::logical::ScalarFunction;
+
+        // make_timestamp(2024, 1, 15, 14, 30, 0)
+        let result = eval_fn(
+            ScalarFunction::MakeTimestamp,
+            vec![
+                Value::Int(2024),
+                Value::Int(1),
+                Value::Int(15),
+                Value::Int(14),
+                Value::Int(30),
+                Value::Int(0),
+            ],
+        );
+        assert_eq!(result, Value::String("2024-01-15 14:30:00.000000".to_string()));
+
+        // make_timestamp with fractional seconds
+        let result = eval_fn(
+            ScalarFunction::MakeTimestamp,
+            vec![
+                Value::Int(2024),
+                Value::Int(6),
+                Value::Int(15),
+                Value::Int(10),
+                Value::Int(30),
+                Value::Float(45.5),
+            ],
+        );
+        assert_eq!(result, Value::String("2024-06-15 10:30:45.500000".to_string()));
+
+        // Invalid date returns null
+        let result = eval_fn(
+            ScalarFunction::MakeTimestamp,
+            vec![
+                Value::Int(2024),
+                Value::Int(13), // Invalid month
+                Value::Int(1),
+                Value::Int(0),
+                Value::Int(0),
+                Value::Int(0),
+            ],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_make_date() {
+        use crate::plan::logical::ScalarFunction;
+
+        // make_date(2024, 1, 15)
+        let result = eval_fn(
+            ScalarFunction::MakeDate,
+            vec![Value::Int(2024), Value::Int(1), Value::Int(15)],
+        );
+        assert_eq!(result, Value::String("2024-01-15".to_string()));
+
+        // make_date(2024, 2, 29) - leap year
+        let result = eval_fn(
+            ScalarFunction::MakeDate,
+            vec![Value::Int(2024), Value::Int(2), Value::Int(29)],
+        );
+        assert_eq!(result, Value::String("2024-02-29".to_string()));
+
+        // make_date(2023, 2, 29) - not leap year, invalid
+        let result = eval_fn(
+            ScalarFunction::MakeDate,
+            vec![Value::Int(2023), Value::Int(2), Value::Int(29)],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_make_time() {
+        use crate::plan::logical::ScalarFunction;
+
+        // make_time(14, 30, 0)
+        let result =
+            eval_fn(ScalarFunction::MakeTime, vec![Value::Int(14), Value::Int(30), Value::Int(0)]);
+        assert_eq!(result, Value::String("14:30:00.000000".to_string()));
+
+        // make_time with fractional seconds
+        let result = eval_fn(
+            ScalarFunction::MakeTime,
+            vec![Value::Int(10), Value::Int(30), Value::Float(45.5)],
+        );
+        assert_eq!(result, Value::String("10:30:45.500000".to_string()));
+
+        // Invalid time returns null
+        let result = eval_fn(
+            ScalarFunction::MakeTime,
+            vec![Value::Int(25), Value::Int(0), Value::Int(0)], // Invalid hour
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_timezone() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Convert UTC to EST (-5 hours)
+        let result = eval_fn(
+            ScalarFunction::Timezone,
+            vec![Value::from("EST"), Value::from("2024-01-01 12:00:00")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 07:00:00-05:00".to_string()));
+
+        // Convert UTC to UTC (no change)
+        let result = eval_fn(
+            ScalarFunction::Timezone,
+            vec![Value::from("UTC"), Value::from("2024-01-01 12:00:00")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 12:00:00+00:00".to_string()));
+
+        // Convert using offset notation
+        let result = eval_fn(
+            ScalarFunction::Timezone,
+            vec![Value::from("+05:30"), Value::from("2024-01-01 12:00:00")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 17:30:00+05:30".to_string()));
+
+        // Convert to JST (Japan Standard Time, +9)
+        let result = eval_fn(
+            ScalarFunction::Timezone,
+            vec![Value::from("JST"), Value::from("2024-01-01 12:00:00")],
+        );
+        assert_eq!(result, Value::String("2024-01-01 21:00:00+09:00".to_string()));
     }
 
     #[test]

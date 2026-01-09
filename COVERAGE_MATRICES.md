@@ -539,7 +539,13 @@ These feature groups can be implemented independently:
 | to_timestamp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | to_date | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | to_char | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
-| age | | | | | | | Not impl |
+| age | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| date_add | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| date_subtract | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| make_timestamp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| make_date | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| make_time | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| timezone | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 
 ### JSON Functions
 

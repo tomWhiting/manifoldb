@@ -1954,6 +1954,13 @@ impl PlanBuilder {
                     "TO_TIMESTAMP" => Some(ScalarFunction::ToTimestamp),
                     "TO_DATE" => Some(ScalarFunction::ToDate),
                     "TO_CHAR" => Some(ScalarFunction::ToChar),
+                    "AGE" => Some(ScalarFunction::Age),
+                    "DATE_ADD" => Some(ScalarFunction::DateAdd),
+                    "DATE_SUBTRACT" => Some(ScalarFunction::DateSubtract),
+                    "MAKE_TIMESTAMP" => Some(ScalarFunction::MakeTimestamp),
+                    "MAKE_DATE" => Some(ScalarFunction::MakeDate),
+                    "MAKE_TIME" => Some(ScalarFunction::MakeTime),
+                    "TIMEZONE" => Some(ScalarFunction::Timezone),
                     // Vector functions
                     "VECTOR_DIMENSION" => Some(ScalarFunction::VectorDimension),
                     "VECTOR_NORM" => Some(ScalarFunction::VectorNorm),
