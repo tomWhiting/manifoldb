@@ -696,6 +696,121 @@ fn all_shortest_paths_no_path() {
     assert!(paths.is_empty());
 }
 
+/// Create a diamond graph for testing multiple shortest paths:
+///     B
+///    / \
+///   A   D
+///    \ /
+///     C
+/// All edges are directed from A to D
+fn create_diamond_graph(engine: &RedbEngine) -> (EntityId, EntityId, EntityId, EntityId) {
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let c = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+    let d = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id).with_label("Node")).unwrap();
+
+    // A -> B -> D (path 1)
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| Edge::new(id, a.id, b.id, "EDGE"))
+        .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, b.id, d.id, "EDGE", |id| Edge::new(id, b.id, d.id, "EDGE"))
+        .unwrap();
+    // A -> C -> D (path 2)
+    EdgeStore::create(&mut tx, &id_gen, a.id, c.id, "EDGE", |id| Edge::new(id, a.id, c.id, "EDGE"))
+        .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, c.id, d.id, "EDGE", |id| Edge::new(id, c.id, d.id, "EDGE"))
+        .unwrap();
+
+    tx.commit().unwrap();
+    (a.id, b.id, c.id, d.id)
+}
+
+#[test]
+fn all_shortest_paths_diamond_multiple_paths() {
+    // Test that allShortestPaths finds both paths in a diamond graph
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_diamond_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let paths = AllShortestPaths::new(a, d, Direction::Outgoing).find(&tx).unwrap();
+
+    // Should find 2 paths of length 2: A->B->D and A->C->D
+    assert_eq!(paths.len(), 2, "expected 2 shortest paths in diamond graph");
+    for path in &paths {
+        assert_eq!(path.length, 2, "all shortest paths should have length 2");
+        assert_eq!(path.nodes.first(), Some(&a), "paths should start at A");
+        assert_eq!(path.nodes.last(), Some(&d), "paths should end at D");
+    }
+
+    // Verify the two different middle nodes (B and C)
+    let middle_nodes: std::collections::HashSet<_> = paths.iter().map(|p| p.nodes[1]).collect();
+    assert!(middle_nodes.contains(&b), "one path should go through B");
+    assert!(middle_nodes.contains(&c), "one path should go through C");
+}
+
+#[test]
+fn all_shortest_paths_with_max_depth() {
+    let engine = create_test_engine();
+    let (a, _, _, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Linear graph A -> B -> C -> D has path length 3
+    // With max_depth=2, should find no path
+    let paths =
+        AllShortestPaths::new(a, d, Direction::Outgoing).with_max_depth(2).find(&tx).unwrap();
+    assert!(paths.is_empty(), "no path should be found with max_depth=2");
+
+    // With max_depth=3, should find the path
+    let paths =
+        AllShortestPaths::new(a, d, Direction::Outgoing).with_max_depth(3).find(&tx).unwrap();
+    assert_eq!(paths.len(), 1, "should find 1 path with max_depth=3");
+    assert_eq!(paths[0].length, 3);
+}
+
+#[test]
+fn all_shortest_paths_with_edge_type_filter() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_multi_type_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Without filter, should find path A -> B via both FRIEND and FOLLOWS edges
+    let all_paths = AllShortestPaths::new(a, b, Direction::Outgoing).find(&tx).unwrap();
+    // There are 2 edges from A to B (FRIEND and FOLLOWS), but they're the same length
+    // so we should get 2 paths
+    assert_eq!(all_paths.len(), 2, "should find 2 paths without filter");
+
+    // With FRIEND filter, should find only 1 path
+    let friend_paths = AllShortestPaths::new(a, b, Direction::Outgoing)
+        .with_edge_type("FRIEND")
+        .find(&tx)
+        .unwrap();
+    assert_eq!(friend_paths.len(), 1, "should find 1 path with FRIEND filter");
+}
+
+#[test]
+fn all_shortest_paths_bidirectional() {
+    let engine = create_test_engine();
+    let (a, b, _, _) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+
+    // Outgoing from A should find B
+    let outgoing = AllShortestPaths::new(a, b, Direction::Outgoing).find(&tx).unwrap();
+    assert_eq!(outgoing.len(), 1);
+
+    // Outgoing from B to A should find nothing (wrong direction)
+    let wrong_dir = AllShortestPaths::new(b, a, Direction::Outgoing).find(&tx).unwrap();
+    assert!(wrong_dir.is_empty());
+
+    // Both directions from B to A should find the path
+    let both = AllShortestPaths::new(b, a, Direction::Both).find(&tx).unwrap();
+    assert_eq!(both.len(), 1);
+}
+
 // ============================================================================
 // PathPattern tests
 // ============================================================================
