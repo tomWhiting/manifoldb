@@ -336,6 +336,171 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
             Ok(Value::Array(elements))
         }
 
+        // List predicate: all(variable IN list WHERE predicate)
+        // Returns true if ALL elements in the list satisfy the predicate
+        LogicalExpr::ListPredicateAll { variable, list_expr, predicate } => {
+            let list_value = evaluate_expr(list_expr, row)?;
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                other => vec![other],
+            };
+
+            // Empty list: all() returns true (vacuous truth)
+            if elements.is_empty() {
+                return Ok(Value::Bool(true));
+            }
+
+            for element in elements {
+                let temp_row = row.with_binding(variable.as_str(), element);
+                let result = evaluate_expr(predicate, &temp_row)?;
+                match result {
+                    Value::Bool(false) => return Ok(Value::Bool(false)),
+                    Value::Bool(true) => continue,
+                    Value::Null => return Ok(Value::Null), // NULL propagation
+                    _ => return Ok(Value::Bool(false)),    // Non-boolean treated as false
+                }
+            }
+            Ok(Value::Bool(true))
+        }
+
+        // List predicate: any(variable IN list WHERE predicate)
+        // Returns true if ANY element in the list satisfies the predicate
+        LogicalExpr::ListPredicateAny { variable, list_expr, predicate } => {
+            let list_value = evaluate_expr(list_expr, row)?;
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                other => vec![other],
+            };
+
+            // Empty list: any() returns false
+            if elements.is_empty() {
+                return Ok(Value::Bool(false));
+            }
+
+            let mut has_null = false;
+            for element in elements {
+                let temp_row = row.with_binding(variable.as_str(), element);
+                let result = evaluate_expr(predicate, &temp_row)?;
+                match result {
+                    Value::Bool(true) => return Ok(Value::Bool(true)),
+                    Value::Bool(false) => continue,
+                    Value::Null => has_null = true,
+                    _ => continue, // Non-boolean treated as false
+                }
+            }
+            // If we had any NULL and no true, return NULL
+            if has_null {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(false))
+            }
+        }
+
+        // List predicate: none(variable IN list WHERE predicate)
+        // Returns true if NO elements in the list satisfy the predicate
+        LogicalExpr::ListPredicateNone { variable, list_expr, predicate } => {
+            let list_value = evaluate_expr(list_expr, row)?;
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                other => vec![other],
+            };
+
+            // Empty list: none() returns true
+            if elements.is_empty() {
+                return Ok(Value::Bool(true));
+            }
+
+            let mut has_null = false;
+            for element in elements {
+                let temp_row = row.with_binding(variable.as_str(), element);
+                let result = evaluate_expr(predicate, &temp_row)?;
+                match result {
+                    Value::Bool(true) => return Ok(Value::Bool(false)),
+                    Value::Bool(false) => continue,
+                    Value::Null => has_null = true,
+                    _ => continue, // Non-boolean treated as false
+                }
+            }
+            // If we had any NULL and no true, return NULL
+            if has_null {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Bool(true))
+            }
+        }
+
+        // List predicate: single(variable IN list WHERE predicate)
+        // Returns true if EXACTLY ONE element in the list satisfies the predicate
+        LogicalExpr::ListPredicateSingle { variable, list_expr, predicate } => {
+            let list_value = evaluate_expr(list_expr, row)?;
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                other => vec![other],
+            };
+
+            // Empty list: single() returns false (need exactly one)
+            if elements.is_empty() {
+                return Ok(Value::Bool(false));
+            }
+
+            let mut count = 0;
+            let mut has_null = false;
+            for element in elements {
+                let temp_row = row.with_binding(variable.as_str(), element);
+                let result = evaluate_expr(predicate, &temp_row)?;
+                match result {
+                    Value::Bool(true) => {
+                        count += 1;
+                        if count > 1 {
+                            return Ok(Value::Bool(false)); // More than one match
+                        }
+                    }
+                    Value::Bool(false) => continue,
+                    Value::Null => has_null = true,
+                    _ => continue, // Non-boolean treated as false
+                }
+            }
+            // If count is exactly 1 and no NULLs, return true
+            // If count is 0 and we had NULLs, return NULL (unknown)
+            // If count is 1 and we had NULLs, return NULL (could be more matches)
+            if count == 1 && !has_null {
+                Ok(Value::Bool(true))
+            } else if count == 0 && !has_null {
+                Ok(Value::Bool(false))
+            } else {
+                // has_null is true, result is uncertain (could be 0 or more matches among NULLs)
+                Ok(Value::Null)
+            }
+        }
+
+        // Reduce: reduce(accumulator = initial, variable IN list | expression)
+        // Performs a fold operation over a list
+        LogicalExpr::ListReduce { accumulator, initial, variable, list_expr, expression } => {
+            let list_value = evaluate_expr(list_expr, row)?;
+            let elements = match list_value {
+                Value::Array(arr) => arr,
+                Value::Null => return Ok(Value::Null),
+                other => vec![other],
+            };
+
+            // Start with initial value
+            let mut acc_value = evaluate_expr(initial, row)?;
+
+            for element in elements {
+                // Create a temp row with both accumulator and variable bindings
+                let temp_row = row
+                    .with_binding(accumulator.as_str(), acc_value.clone())
+                    .with_binding(variable.as_str(), element);
+                acc_value = evaluate_expr(expression, &temp_row)?;
+            }
+
+            Ok(acc_value)
+        }
+
         // Map projection: node{.property1, .property2, key: expression, .*}
         LogicalExpr::MapProjection { source, items } => {
             // Evaluate the source expression to get the source entity's properties
@@ -3758,6 +3923,521 @@ mod tests {
 
         let result = evaluate_expr(&outer_comprehension, &row).unwrap();
         assert_eq!(result, Value::Array(vec![Value::Int(4), Value::Int(6), Value::Int(8)]));
+    }
+
+    // ========== List Predicate Function Tests ==========
+
+    #[test]
+    fn test_list_predicate_all_true() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: all(x IN [1, 2, 3] WHERE x > 0) -> true
+        let expr = LogicalExpr::ListPredicateAll {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_all_false() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: all(x IN [1, -2, 3] WHERE x > 0) -> false
+        let expr = LogicalExpr::ListPredicateAll {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(-2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_all_empty_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: all(x IN [] WHERE x > 0) -> true (vacuous truth)
+        let expr = LogicalExpr::ListPredicateAll {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_any_true() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: any(x IN [1, 2, 3] WHERE x > 2) -> true
+        let expr = LogicalExpr::ListPredicateAny {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_any_false() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: any(x IN [1, 2, 3] WHERE x > 5) -> false
+        let expr = LogicalExpr::ListPredicateAny {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(5)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_any_empty_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: any(x IN [] WHERE x > 0) -> false
+        let expr = LogicalExpr::ListPredicateAny {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_none_true() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: none(x IN [1, 2, 3] WHERE x < 0) -> true
+        let expr = LogicalExpr::ListPredicateNone {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Lt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_none_false() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: none(x IN [1, 2, 3] WHERE x > 2) -> false
+        let expr = LogicalExpr::ListPredicateNone {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_none_empty_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: none(x IN [] WHERE x > 0) -> true
+        let expr = LogicalExpr::ListPredicateNone {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_single_true() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: single(x IN [1, 2, 3] WHERE x = 2) -> true
+        let expr = LogicalExpr::ListPredicateSingle {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_list_predicate_single_false_multiple_matches() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: single(x IN [1, 2, 2] WHERE x = 2) -> false (two matches)
+        let expr = LogicalExpr::ListPredicateSingle {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(2),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_single_false_no_matches() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: single(x IN [1, 3, 5] WHERE x = 2) -> false (no matches)
+        let expr = LogicalExpr::ListPredicateSingle {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(3),
+                LogicalExpr::integer(5),
+            ])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_predicate_single_empty_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: single(x IN [] WHERE x = 2) -> false
+        let expr = LogicalExpr::ListPredicateSingle {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![])),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Eq,
+                right: Box::new(LogicalExpr::integer(2)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_list_reduce_sum() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: reduce(sum = 0, x IN [1, 2, 3] | sum + x) -> 6
+        let expr = LogicalExpr::ListReduce {
+            accumulator: "sum".to_string(),
+            initial: Box::new(LogicalExpr::integer(0)),
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(1),
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+            ])),
+            expression: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("sum")),
+                op: crate::ast::BinaryOp::Add,
+                right: Box::new(LogicalExpr::column("x")),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Int(6));
+    }
+
+    #[test]
+    fn test_list_reduce_product() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: reduce(product = 1, x IN [2, 3, 4] | product * x) -> 24
+        let expr = LogicalExpr::ListReduce {
+            accumulator: "product".to_string(),
+            initial: Box::new(LogicalExpr::integer(1)),
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::integer(2),
+                LogicalExpr::integer(3),
+                LogicalExpr::integer(4),
+            ])),
+            expression: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("product")),
+                op: crate::ast::BinaryOp::Mul,
+                right: Box::new(LogicalExpr::column("x")),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Int(24));
+    }
+
+    #[test]
+    fn test_list_reduce_empty_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: reduce(sum = 0, x IN [] | sum + x) -> 0 (initial value)
+        let expr = LogicalExpr::ListReduce {
+            accumulator: "sum".to_string(),
+            initial: Box::new(LogicalExpr::integer(0)),
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![])),
+            expression: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("sum")),
+                op: crate::ast::BinaryOp::Add,
+                right: Box::new(LogicalExpr::column("x")),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
+    #[test]
+    fn test_list_reduce_with_string_concat() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::{LogicalExpr, ScalarFunction};
+        use std::sync::Arc;
+
+        // Test: reduce(s = '', x IN ['a', 'b', 'c'] | concat(s, x)) -> 'abc'
+        let expr = LogicalExpr::ListReduce {
+            accumulator: "s".to_string(),
+            initial: Box::new(LogicalExpr::string("")),
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::ListLiteral(vec![
+                LogicalExpr::string("a"),
+                LogicalExpr::string("b"),
+                LogicalExpr::string("c"),
+            ])),
+            expression: Box::new(LogicalExpr::ScalarFunction {
+                func: ScalarFunction::Concat,
+                args: vec![LogicalExpr::column("s"), LogicalExpr::column("x")],
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::String("abc".to_string()));
+    }
+
+    #[test]
+    fn test_list_predicate_with_null_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: all(x IN null WHERE x > 0) -> null
+        let expr = LogicalExpr::ListPredicateAll {
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::null()),
+            predicate: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("x")),
+                op: crate::ast::BinaryOp::Gt,
+                right: Box::new(LogicalExpr::integer(0)),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_list_reduce_with_null_list() {
+        use crate::exec::row::{Row, Schema};
+        use crate::plan::logical::LogicalExpr;
+        use std::sync::Arc;
+
+        // Test: reduce(sum = 0, x IN null | sum + x) -> null
+        let expr = LogicalExpr::ListReduce {
+            accumulator: "sum".to_string(),
+            initial: Box::new(LogicalExpr::integer(0)),
+            variable: "x".to_string(),
+            list_expr: Box::new(LogicalExpr::null()),
+            expression: Box::new(LogicalExpr::BinaryOp {
+                left: Box::new(LogicalExpr::column("sum")),
+                op: crate::ast::BinaryOp::Add,
+                right: Box::new(LogicalExpr::column("x")),
+            }),
+        };
+
+        let schema = Arc::new(Schema::empty());
+        let row = Row::new(schema, vec![]);
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Null);
     }
 
     // ========== JSON Function Tests ==========
