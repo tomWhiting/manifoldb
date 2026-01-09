@@ -1818,6 +1818,68 @@ pub enum ScalarFunction {
     /// Removes null values from a JSONB document.
     JsonbStripNulls,
 
+    // JSON path and containment functions (PostgreSQL-compatible)
+    /// `#>` operator - Extract JSON sub-object at path as JSON.
+    /// Example: `data #> '{address,city}'` returns `"San Francisco"` as JSON.
+    JsonExtractPathOp,
+    /// `#>>` operator - Extract JSON sub-object at path as text.
+    /// Example: `data #>> '{address,city}'` returns `San Francisco` as text.
+    JsonExtractPathTextOp,
+    /// `?` operator - Does the JSON object contain the specified key?
+    /// Example: `data ? 'email'` returns true if 'email' key exists.
+    JsonContainsKey,
+    /// `?|` operator - Does the JSON object contain any of the specified keys?
+    /// Example: `data ?| array['a','b']` returns true if 'a' or 'b' key exists.
+    JsonContainsAnyKey,
+    /// `?&` operator - Does the JSON object contain all of the specified keys?
+    /// Example: `data ?& array['a','b']` returns true if both 'a' and 'b' keys exist.
+    JsonContainsAllKeys,
+
+    // JSON set-returning functions
+    /// `JSON_EACH(json)` - Expands JSON object to key/value pairs.
+    /// Returns rows of (key text, value json).
+    JsonEach,
+    /// `JSONB_EACH(jsonb)` - Expands JSONB object to key/value pairs.
+    /// Returns rows of (key text, value jsonb).
+    JsonbEach,
+    /// `JSON_EACH_TEXT(json)` - Expands JSON object to key/value pairs as text.
+    /// Returns rows of (key text, value text).
+    JsonEachText,
+    /// `JSONB_EACH_TEXT(jsonb)` - Expands JSONB object to key/value pairs as text.
+    /// Returns rows of (key text, value text).
+    JsonbEachText,
+    /// `JSON_ARRAY_ELEMENTS(json)` - Expands JSON array to set of elements.
+    /// Returns rows of (value json).
+    JsonArrayElements,
+    /// `JSONB_ARRAY_ELEMENTS(jsonb)` - Expands JSONB array to set of elements.
+    /// Returns rows of (value jsonb).
+    JsonbArrayElements,
+    /// `JSON_ARRAY_ELEMENTS_TEXT(json)` - Expands JSON array to set of text elements.
+    /// Returns rows of (value text).
+    JsonArrayElementsText,
+    /// `JSONB_ARRAY_ELEMENTS_TEXT(jsonb)` - Expands JSONB array to set of text elements.
+    /// Returns rows of (value text).
+    JsonbArrayElementsText,
+    /// `JSON_OBJECT_KEYS(json)` - Returns set of keys in the outermost JSON object.
+    JsonObjectKeys,
+    /// `JSONB_OBJECT_KEYS(jsonb)` - Returns set of keys in the outermost JSONB object.
+    JsonbObjectKeys,
+
+    // SQL/JSON path functions
+    /// `JSONB_PATH_EXISTS(target, path [, vars])` - Checks whether JSON path returns any item.
+    /// Example: `jsonb_path_exists(data, '$.items[*].price')` returns true if any items have price.
+    JsonbPathExists,
+    /// `JSONB_PATH_QUERY(target, path [, vars])` - Get all JSON items matching path.
+    /// Example: `jsonb_path_query(data, '$.items[*].price')` returns all prices.
+    /// Note: This is a set-returning function.
+    JsonbPathQuery,
+    /// `JSONB_PATH_QUERY_ARRAY(target, path [, vars])` - Get all JSON items as array.
+    /// Example: `jsonb_path_query_array(data, '$.items[*].price')` returns array of prices.
+    JsonbPathQueryArray,
+    /// `JSONB_PATH_QUERY_FIRST(target, path [, vars])` - Get first JSON item matching path.
+    /// Example: `jsonb_path_query_first(data, '$.items[*].price')` returns first price.
+    JsonbPathQueryFirst,
+
     // Cypher entity functions
     /// `TYPE(relationship)`.
     /// Returns the type (string) of a relationship.
@@ -2028,6 +2090,28 @@ impl fmt::Display for ScalarFunction {
             Self::JsonbSet => "JSONB_SET",
             Self::JsonbInsert => "JSONB_INSERT",
             Self::JsonbStripNulls => "JSONB_STRIP_NULLS",
+            // JSON path and containment functions
+            Self::JsonExtractPathOp => "#>",
+            Self::JsonExtractPathTextOp => "#>>",
+            Self::JsonContainsKey => "?",
+            Self::JsonContainsAnyKey => "?|",
+            Self::JsonContainsAllKeys => "?&",
+            // JSON set-returning functions
+            Self::JsonEach => "JSON_EACH",
+            Self::JsonbEach => "JSONB_EACH",
+            Self::JsonEachText => "JSON_EACH_TEXT",
+            Self::JsonbEachText => "JSONB_EACH_TEXT",
+            Self::JsonArrayElements => "JSON_ARRAY_ELEMENTS",
+            Self::JsonbArrayElements => "JSONB_ARRAY_ELEMENTS",
+            Self::JsonArrayElementsText => "JSON_ARRAY_ELEMENTS_TEXT",
+            Self::JsonbArrayElementsText => "JSONB_ARRAY_ELEMENTS_TEXT",
+            Self::JsonObjectKeys => "JSON_OBJECT_KEYS",
+            Self::JsonbObjectKeys => "JSONB_OBJECT_KEYS",
+            // SQL/JSON path functions
+            Self::JsonbPathExists => "JSONB_PATH_EXISTS",
+            Self::JsonbPathQuery => "JSONB_PATH_QUERY",
+            Self::JsonbPathQueryArray => "JSONB_PATH_QUERY_ARRAY",
+            Self::JsonbPathQueryFirst => "JSONB_PATH_QUERY_FIRST",
             // Cypher entity functions
             Self::Type => "TYPE",
             Self::Labels => "LABELS",

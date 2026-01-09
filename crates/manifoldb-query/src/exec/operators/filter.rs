@@ -2557,6 +2557,97 @@ fn evaluate_scalar_function(
             jsonb_strip_nulls(args)
         }
 
+        // ========== JSON Path Operators ==========
+        ScalarFunction::JsonExtractPathOp => {
+            // #> operator - Extract JSON sub-object at path as JSON
+            // data #> '{address,city}' equivalent to json_extract_path with array path
+            json_extract_path_op(args, false)
+        }
+
+        ScalarFunction::JsonExtractPathTextOp => {
+            // #>> operator - Extract JSON sub-object at path as text
+            // data #>> '{address,city}' equivalent to json_extract_path_text with array path
+            json_extract_path_op(args, true)
+        }
+
+        // ========== JSON Containment/Existence Operators ==========
+        ScalarFunction::JsonContainsKey => {
+            // ? operator - Does the JSON object contain the specified key?
+            // data ? 'email' returns true if 'email' key exists
+            json_contains_key(args)
+        }
+
+        ScalarFunction::JsonContainsAnyKey => {
+            // ?| operator - Does the JSON object contain any of the specified keys?
+            // data ?| array['a','b'] returns true if 'a' or 'b' key exists
+            json_contains_any_key(args)
+        }
+
+        ScalarFunction::JsonContainsAllKeys => {
+            // ?& operator - Does the JSON object contain all of the specified keys?
+            // data ?& array['a','b'] returns true if both 'a' and 'b' keys exist
+            json_contains_all_keys(args)
+        }
+
+        // ========== JSON Set-Returning Functions ==========
+        ScalarFunction::JsonEach | ScalarFunction::JsonbEach => {
+            // JSON_EACH(json) / JSONB_EACH(jsonb)
+            // Expands JSON object to key/value pairs.
+            // When used as scalar, returns array of [key, value] pairs.
+            json_each(args, false)
+        }
+
+        ScalarFunction::JsonEachText | ScalarFunction::JsonbEachText => {
+            // JSON_EACH_TEXT(json) / JSONB_EACH_TEXT(jsonb)
+            // Expands JSON object to key/value pairs as text.
+            json_each(args, true)
+        }
+
+        ScalarFunction::JsonArrayElements | ScalarFunction::JsonbArrayElements => {
+            // JSON_ARRAY_ELEMENTS(json) / JSONB_ARRAY_ELEMENTS(jsonb)
+            // Expands JSON array to set of elements.
+            // When used as scalar, returns the array elements as an array.
+            json_array_elements(args, false)
+        }
+
+        ScalarFunction::JsonArrayElementsText | ScalarFunction::JsonbArrayElementsText => {
+            // JSON_ARRAY_ELEMENTS_TEXT(json) / JSONB_ARRAY_ELEMENTS_TEXT(jsonb)
+            // Expands JSON array to set of text elements.
+            json_array_elements(args, true)
+        }
+
+        ScalarFunction::JsonObjectKeys | ScalarFunction::JsonbObjectKeys => {
+            // JSON_OBJECT_KEYS(json) / JSONB_OBJECT_KEYS(jsonb)
+            // Returns set of keys in the outermost JSON object.
+            json_object_keys(args)
+        }
+
+        // ========== SQL/JSON Path Functions ==========
+        ScalarFunction::JsonbPathExists => {
+            // JSONB_PATH_EXISTS(target, path [, vars])
+            // Checks whether JSON path returns any item.
+            jsonb_path_exists(args)
+        }
+
+        ScalarFunction::JsonbPathQuery => {
+            // JSONB_PATH_QUERY(target, path [, vars])
+            // Returns all JSON items matching path.
+            // As scalar, returns array of matches.
+            jsonb_path_query(args)
+        }
+
+        ScalarFunction::JsonbPathQueryArray => {
+            // JSONB_PATH_QUERY_ARRAY(target, path [, vars])
+            // Returns all JSON items as an array.
+            jsonb_path_query_array(args)
+        }
+
+        ScalarFunction::JsonbPathQueryFirst => {
+            // JSONB_PATH_QUERY_FIRST(target, path [, vars])
+            // Returns first JSON item matching path.
+            jsonb_path_query_first(args)
+        }
+
         // ========== Cypher Entity Functions ==========
         ScalarFunction::Type => {
             // TYPE(relationship)
@@ -3763,6 +3854,559 @@ fn strip_nulls_recursive(val: serde_json::Value) -> serde_json::Value {
         }
         other => other,
     }
+}
+
+// ========== JSON Path Operators (#>, #>>) ==========
+
+/// Extracts JSON value at path using the #> or #>> operator.
+/// The path is specified as an array (e.g., `'{address,city}'` becomes `["address", "city"]`).
+/// If `as_text` is true, returns the value as text (like #>>).
+fn json_extract_path_op(args: &[Value], as_text: bool) -> OperatorResult<Value> {
+    // First arg is the JSON document
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        Some(other) => {
+            let json = value_to_json(other);
+            let json_str = serde_json::to_string(&json).unwrap_or_default();
+            return json_extract_path_op_impl(&json_str, args.get(1), as_text);
+        }
+    };
+
+    json_extract_path_op_impl(json_str, args.get(1), as_text)
+}
+
+/// Implementation of JSON path extraction for #> and #>> operators.
+fn json_extract_path_op_impl(
+    json_str: &str,
+    path_arg: Option<&Value>,
+    as_text: bool,
+) -> OperatorResult<Value> {
+    // Parse the JSON document
+    let mut current = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    // Get path from the second argument (can be array or string like '{a,b}')
+    let path: Vec<String> = match path_arg {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                Value::Int(i) => Some(i.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(s)) => {
+            // Parse PostgreSQL-style path like '{address,city}'
+            parse_pg_path_string(s)
+        }
+        _ => return Ok(Value::Null),
+    };
+
+    // Navigate through the path
+    for key in &path {
+        current = match current {
+            serde_json::Value::Object(mut obj) => {
+                obj.remove(key).unwrap_or(serde_json::Value::Null)
+            }
+            serde_json::Value::Array(arr) => {
+                if let Ok(idx) = key.parse::<usize>() {
+                    arr.into_iter().nth(idx).unwrap_or(serde_json::Value::Null)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            _ => serde_json::Value::Null,
+        };
+
+        if current.is_null() {
+            return Ok(Value::Null);
+        }
+    }
+
+    // Return result
+    if as_text {
+        match current {
+            serde_json::Value::Null => Ok(Value::Null),
+            serde_json::Value::String(s) => Ok(Value::String(s)),
+            other => Ok(Value::String(other.to_string())),
+        }
+    } else {
+        match current {
+            serde_json::Value::Null => Ok(Value::Null),
+            other => Ok(Value::String(serde_json::to_string(&other).unwrap_or_default())),
+        }
+    }
+}
+
+/// Parses a PostgreSQL-style path string like '{address,city}' into a vector.
+fn parse_pg_path_string(s: &str) -> Vec<String> {
+    let trimmed = s.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        // Remove braces and split by comma
+        trimmed[1..trimmed.len() - 1].split(',').map(|part| part.trim().to_string()).collect()
+    } else {
+        // If it's a JSON array string, try parsing it
+        if let Some(serde_json::Value::Array(arr)) = parse_json(trimmed) {
+            arr.into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            // Single element path
+            vec![trimmed.to_string()]
+        }
+    }
+}
+
+// ========== JSON Containment/Existence Operators (?, ?|, ?&) ==========
+
+/// Checks if a JSON object contains a specific key (? operator).
+/// Returns true if the key exists at the top level of the JSON object.
+fn json_contains_key(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let key = match args.get(1) {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(serde_json::Value::Object(obj)) => obj,
+        Some(serde_json::Value::Array(arr)) => {
+            // For arrays, check if the key (as index) exists
+            if let Ok(idx) = key.parse::<usize>() {
+                return Ok(Value::Bool(idx < arr.len()));
+            }
+            // Check if any element equals the key (array contains element)
+            let key_json = serde_json::Value::String(key.clone());
+            return Ok(Value::Bool(arr.contains(&key_json)));
+        }
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    Ok(Value::Bool(json.contains_key(key)))
+}
+
+/// Checks if a JSON object contains any of the specified keys (?| operator).
+/// Returns true if at least one key exists at the top level.
+fn json_contains_any_key(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let keys: Vec<String> = match args.get(1) {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(s)) => {
+            // Parse as JSON array or PG array
+            if let Some(serde_json::Value::Array(arr)) = parse_json(s) {
+                arr.into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                parse_pg_path_string(s)
+            }
+        }
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(serde_json::Value::Object(obj)) => obj,
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    Ok(Value::Bool(keys.iter().any(|k| json.contains_key(k))))
+}
+
+/// Checks if a JSON object contains all of the specified keys (?& operator).
+/// Returns true if all keys exist at the top level.
+fn json_contains_all_keys(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let keys: Vec<String> = match args.get(1) {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(s)) => {
+            // Parse as JSON array or PG array
+            if let Some(serde_json::Value::Array(arr)) = parse_json(s) {
+                arr.into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                parse_pg_path_string(s)
+            }
+        }
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(serde_json::Value::Object(obj)) => obj,
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    // Empty key array - all keys trivially exist
+    if keys.is_empty() {
+        return Ok(Value::Bool(true));
+    }
+
+    Ok(Value::Bool(keys.iter().all(|k| json.contains_key(k))))
+}
+
+// ========== JSON Set-Returning Functions ==========
+
+/// Expands a JSON object into key/value pairs.
+/// When used as scalar, returns an array of [key, value] arrays.
+/// If `as_text` is true, values are converted to text.
+fn json_each(args: &[Value], as_text: bool) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let obj = match parse_json(json_str) {
+        Some(serde_json::Value::Object(obj)) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let pairs: Vec<Value> = obj
+        .into_iter()
+        .map(|(k, v)| {
+            let key = Value::String(k);
+            let val = if as_text {
+                // Convert value to text
+                match v {
+                    serde_json::Value::Null => Value::Null,
+                    serde_json::Value::String(s) => Value::String(s),
+                    other => Value::String(other.to_string()),
+                }
+            } else {
+                // Keep value as JSON string
+                Value::String(serde_json::to_string(&v).unwrap_or_default())
+            };
+            Value::Array(vec![key, val])
+        })
+        .collect();
+
+    Ok(Value::Array(pairs))
+}
+
+/// Expands a JSON array into its elements.
+/// When used as scalar, returns an array of elements.
+/// If `as_text` is true, elements are converted to text.
+fn json_array_elements(args: &[Value], as_text: bool) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let arr = match parse_json(json_str) {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => return Ok(Value::Null),
+    };
+
+    let elements: Vec<Value> = arr
+        .into_iter()
+        .map(|v| {
+            if as_text {
+                match v {
+                    serde_json::Value::Null => Value::Null,
+                    serde_json::Value::String(s) => Value::String(s),
+                    other => Value::String(other.to_string()),
+                }
+            } else {
+                Value::String(serde_json::to_string(&v).unwrap_or_default())
+            }
+        })
+        .collect();
+
+    Ok(Value::Array(elements))
+}
+
+/// Returns the keys of a JSON object as an array.
+fn json_object_keys(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let obj = match parse_json(json_str) {
+        Some(serde_json::Value::Object(obj)) => obj,
+        _ => return Ok(Value::Null),
+    };
+
+    let keys: Vec<Value> = obj.keys().map(|k| Value::String(k.clone())).collect();
+    Ok(Value::Array(keys))
+}
+
+// ========== SQL/JSON Path Functions ==========
+
+/// Checks whether a JSON path returns any item.
+/// Simple implementation supporting basic path syntax like '$.key', '$.array[*]', etc.
+fn jsonb_path_exists(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let path_str = match args.get(1) {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Bool(false)),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Bool(false)),
+    };
+
+    let results = evaluate_jsonpath(&json, path_str);
+    Ok(Value::Bool(!results.is_empty()))
+}
+
+/// Returns all JSON items matching the path.
+/// As scalar, returns an array of matching values.
+fn jsonb_path_query(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Array(vec![])),
+    };
+
+    let path_str = match args.get(1) {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Array(vec![])),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Array(vec![])),
+    };
+
+    let results = evaluate_jsonpath(&json, path_str);
+    let values: Vec<Value> = results
+        .into_iter()
+        .map(|v| Value::String(serde_json::to_string(&v).unwrap_or_default()))
+        .collect();
+
+    Ok(Value::Array(values))
+}
+
+/// Returns all JSON items as an array.
+fn jsonb_path_query_array(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::String("[]".to_string())),
+    };
+
+    let path_str = match args.get(1) {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::String("[]".to_string())),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::String("[]".to_string())),
+    };
+
+    let results = evaluate_jsonpath(&json, path_str);
+    let json_array = serde_json::Value::Array(results);
+    Ok(Value::String(serde_json::to_string(&json_array).unwrap_or_else(|_| "[]".to_string())))
+}
+
+/// Returns the first JSON item matching the path.
+fn jsonb_path_query_first(args: &[Value]) -> OperatorResult<Value> {
+    let json_str = match args.first() {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) | None => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let path_str = match args.get(1) {
+        Some(Value::String(s)) => s,
+        Some(Value::Null) => return Ok(Value::Null),
+        _ => return Ok(Value::Null),
+    };
+
+    let json = match parse_json(json_str) {
+        Some(v) => v,
+        None => return Ok(Value::Null),
+    };
+
+    let results = evaluate_jsonpath(&json, path_str);
+    match results.into_iter().next() {
+        Some(v) => Ok(Value::String(serde_json::to_string(&v).unwrap_or_default())),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Evaluates a simple JSON path expression.
+/// Supports basic syntax: $, $.key, $.key.subkey, $[index], $[*], $.array[*].property
+fn evaluate_jsonpath(json: &serde_json::Value, path: &str) -> Vec<serde_json::Value> {
+    let path = path.trim();
+
+    // Must start with $
+    if !path.starts_with('$') {
+        return vec![];
+    }
+
+    let path = &path[1..]; // Remove leading $
+
+    // Start with the root value
+    let mut current = vec![json.clone()];
+
+    // Parse and evaluate path segments
+    let mut chars = path.chars().peekable();
+
+    while chars.peek().is_some() {
+        // Skip leading dots
+        while chars.peek() == Some(&'.') {
+            chars.next();
+        }
+
+        if chars.peek().is_none() {
+            break;
+        }
+
+        // Check for array access
+        if chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+
+            // Collect index expression
+            let mut index_expr = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == ']' {
+                    chars.next();
+                    break;
+                }
+                index_expr.push(c);
+                chars.next();
+            }
+
+            current = evaluate_array_access(&current, &index_expr);
+        } else {
+            // Property access - collect property name
+            let mut prop_name = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == '.' || c == '[' {
+                    break;
+                }
+                prop_name.push(c);
+                chars.next();
+            }
+
+            if !prop_name.is_empty() {
+                current = evaluate_property_access(&current, &prop_name);
+            }
+        }
+
+        if current.is_empty() {
+            break;
+        }
+    }
+
+    current
+}
+
+/// Evaluates property access on a set of JSON values.
+fn evaluate_property_access(values: &[serde_json::Value], prop: &str) -> Vec<serde_json::Value> {
+    let mut results = Vec::new();
+
+    for val in values {
+        match val {
+            serde_json::Value::Object(obj) => {
+                if let Some(v) = obj.get(prop) {
+                    results.push(v.clone());
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                // Property access on array applies to each element
+                for item in arr {
+                    if let serde_json::Value::Object(obj) = item {
+                        if let Some(v) = obj.get(prop) {
+                            results.push(v.clone());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    results
+}
+
+/// Evaluates array access on a set of JSON values.
+fn evaluate_array_access(values: &[serde_json::Value], index_expr: &str) -> Vec<serde_json::Value> {
+    let mut results = Vec::new();
+    let index_expr = index_expr.trim();
+
+    for val in values {
+        if let serde_json::Value::Array(arr) = val {
+            if index_expr == "*" {
+                // Wildcard - return all elements
+                results.extend(arr.iter().cloned());
+            } else if let Ok(idx) = index_expr.parse::<usize>() {
+                // Numeric index
+                if let Some(v) = arr.get(idx) {
+                    results.push(v.clone());
+                }
+            } else if let Ok(idx) = index_expr.parse::<i64>() {
+                // Negative index (from end)
+                if idx < 0 {
+                    let positive_idx = arr.len() as i64 + idx;
+                    if positive_idx >= 0 {
+                        if let Some(v) = arr.get(positive_idx as usize) {
+                            results.push(v.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    results
 }
 
 // ========== Cypher Temporal Functions ==========
@@ -7557,6 +8201,457 @@ mod tests {
         let result =
             eval_fn(ScalarFunction::JsonExtractPath, vec![Value::from(json), Value::Int(1)]);
         assert_eq!(result, Value::String("\"b\"".to_string()));
+    }
+
+    // ========== JSON Path Operators (#>, #>>) Tests ==========
+
+    #[test]
+    fn test_json_extract_path_op() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Basic object path extraction
+        let json = r#"{"address":{"city":"San Francisco","zip":"94102"}}"#;
+
+        // #> operator - returns JSON
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathOp,
+            vec![Value::from(json), Value::from("{address,city}")],
+        );
+        assert_eq!(result, Value::String("\"San Francisco\"".to_string()));
+
+        // Nested path
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathOp,
+            vec![Value::from(json), Value::from("{address}")],
+        );
+        assert_eq!(result, Value::String(r#"{"city":"San Francisco","zip":"94102"}"#.to_string()));
+    }
+
+    #[test]
+    fn test_json_extract_path_text_op() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"address":{"city":"San Francisco"}}"#;
+
+        // #>> operator - returns text (no quotes for strings)
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathTextOp,
+            vec![Value::from(json), Value::from("{address,city}")],
+        );
+        assert_eq!(result, Value::String("San Francisco".to_string()));
+    }
+
+    #[test]
+    fn test_json_extract_path_op_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Array path extraction
+        let json = r#"{"items":[{"name":"apple"},{"name":"banana"}]}"#;
+
+        // Get second item name
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathOp,
+            vec![Value::from(json), Value::from("{items,1,name}")],
+        );
+        assert_eq!(result, Value::String("\"banana\"".to_string()));
+    }
+
+    #[test]
+    fn test_json_extract_path_op_with_array_arg() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"a":{"b":{"c":42}}}"#;
+
+        // Using Value::Array for path
+        let result = eval_fn(
+            ScalarFunction::JsonExtractPathOp,
+            vec![
+                Value::from(json),
+                Value::Array(vec![Value::from("a"), Value::from("b"), Value::from("c")]),
+            ],
+        );
+        assert_eq!(result, Value::String("42".to_string()));
+    }
+
+    // ========== JSON Containment/Existence (?, ?|, ?&) Tests ==========
+
+    #[test]
+    fn test_json_contains_key() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"name":"Alice","email":"alice@example.com"}"#;
+
+        // Key exists
+        let result =
+            eval_fn(ScalarFunction::JsonContainsKey, vec![Value::from(json), Value::from("email")]);
+        assert_eq!(result, Value::Bool(true));
+
+        // Key doesn't exist
+        let result =
+            eval_fn(ScalarFunction::JsonContainsKey, vec![Value::from(json), Value::from("phone")]);
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_json_contains_key_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Array containment
+        let json = r#"["apple","banana","cherry"]"#;
+
+        // String exists in array
+        let result = eval_fn(
+            ScalarFunction::JsonContainsKey,
+            vec![Value::from(json), Value::from("banana")],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        // Index exists
+        let result =
+            eval_fn(ScalarFunction::JsonContainsKey, vec![Value::from(json), Value::from("2")]);
+        assert_eq!(result, Value::Bool(true));
+
+        // Index out of bounds
+        let result =
+            eval_fn(ScalarFunction::JsonContainsKey, vec![Value::from(json), Value::from("5")]);
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_json_contains_any_key() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"name":"Alice","email":"alice@example.com"}"#;
+
+        // At least one key exists
+        let result = eval_fn(
+            ScalarFunction::JsonContainsAnyKey,
+            vec![Value::from(json), Value::Array(vec![Value::from("phone"), Value::from("email")])],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        // No keys exist
+        let result = eval_fn(
+            ScalarFunction::JsonContainsAnyKey,
+            vec![
+                Value::from(json),
+                Value::Array(vec![Value::from("phone"), Value::from("address")]),
+            ],
+        );
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_json_contains_all_keys() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"name":"Alice","email":"alice@example.com","age":30}"#;
+
+        // All keys exist
+        let result = eval_fn(
+            ScalarFunction::JsonContainsAllKeys,
+            vec![Value::from(json), Value::Array(vec![Value::from("name"), Value::from("email")])],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        // Not all keys exist
+        let result = eval_fn(
+            ScalarFunction::JsonContainsAllKeys,
+            vec![Value::from(json), Value::Array(vec![Value::from("name"), Value::from("phone")])],
+        );
+        assert_eq!(result, Value::Bool(false));
+
+        // Empty array - should return true
+        let result = eval_fn(
+            ScalarFunction::JsonContainsAllKeys,
+            vec![Value::from(json), Value::Array(vec![])],
+        );
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    // ========== JSON Set-Returning Functions Tests ==========
+
+    #[test]
+    fn test_json_each() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"a":1,"b":"hello"}"#;
+
+        // json_each returns array of [key, value] pairs (as JSON)
+        let result = eval_fn(ScalarFunction::JsonEach, vec![Value::from(json)]);
+        if let Value::Array(pairs) = result {
+            assert_eq!(pairs.len(), 2);
+            // Check structure (order may vary due to HashMap)
+            for pair in &pairs {
+                if let Value::Array(kv) = pair {
+                    assert_eq!(kv.len(), 2);
+                    assert!(matches!(&kv[0], Value::String(_)));
+                } else {
+                    panic!("Expected [key, value] array");
+                }
+            }
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_json_each_text() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"name":"Alice","count":42}"#;
+
+        // json_each_text returns values as text
+        let result = eval_fn(ScalarFunction::JsonEachText, vec![Value::from(json)]);
+        if let Value::Array(pairs) = result {
+            assert_eq!(pairs.len(), 2);
+            // Values should be text, not JSON
+            for pair in &pairs {
+                if let Value::Array(kv) = pair {
+                    if kv[0] == Value::String("name".to_string()) {
+                        assert_eq!(kv[1], Value::String("Alice".to_string()));
+                    } else if kv[0] == Value::String("count".to_string()) {
+                        assert_eq!(kv[1], Value::String("42".to_string()));
+                    }
+                }
+            }
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_json_array_elements() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"[1, "hello", {"x": 10}]"#;
+
+        let result = eval_fn(ScalarFunction::JsonArrayElements, vec![Value::from(json)]);
+        if let Value::Array(elements) = result {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], Value::String("1".to_string()));
+            assert_eq!(elements[1], Value::String("\"hello\"".to_string()));
+            // Check the third element contains "x" (it's a JSON object)
+            if let Value::String(s) = &elements[2] {
+                assert!(s.contains('x'));
+            } else {
+                panic!("Expected String containing JSON object");
+            }
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_json_array_elements_text() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"["apple", "banana", "cherry"]"#;
+
+        let result = eval_fn(ScalarFunction::JsonArrayElementsText, vec![Value::from(json)]);
+        if let Value::Array(elements) = result {
+            assert_eq!(elements.len(), 3);
+            // Values should be plain text (no quotes)
+            assert_eq!(elements[0], Value::String("apple".to_string()));
+            assert_eq!(elements[1], Value::String("banana".to_string()));
+            assert_eq!(elements[2], Value::String("cherry".to_string()));
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_json_object_keys() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"name":"Alice","age":30,"city":"NYC"}"#;
+
+        let result = eval_fn(ScalarFunction::JsonObjectKeys, vec![Value::from(json)]);
+        if let Value::Array(keys) = result {
+            assert_eq!(keys.len(), 3);
+            let key_strings: Vec<String> = keys
+                .into_iter()
+                .filter_map(|v| if let Value::String(s) = v { Some(s) } else { None })
+                .collect();
+            assert!(key_strings.contains(&"name".to_string()));
+            assert!(key_strings.contains(&"age".to_string()));
+            assert!(key_strings.contains(&"city".to_string()));
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_json_each_non_object() {
+        use crate::plan::logical::ScalarFunction;
+
+        // json_each on non-object returns null
+        let result = eval_fn(ScalarFunction::JsonEach, vec![Value::from("[1,2,3]")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_json_array_elements_non_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        // json_array_elements on non-array returns null
+        let result = eval_fn(ScalarFunction::JsonArrayElements, vec![Value::from(r#"{"a":1}"#)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    // ========== SQL/JSON Path Functions Tests ==========
+
+    #[test]
+    fn test_jsonb_path_exists() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"items":[{"price":10},{"price":20},{"price":30}]}"#;
+
+        // Path exists
+        let result = eval_fn(
+            ScalarFunction::JsonbPathExists,
+            vec![Value::from(json), Value::from("$.items")],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        // Nested path exists
+        let result = eval_fn(
+            ScalarFunction::JsonbPathExists,
+            vec![Value::from(json), Value::from("$.items[0].price")],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        // Path doesn't exist
+        let result = eval_fn(
+            ScalarFunction::JsonbPathExists,
+            vec![Value::from(json), Value::from("$.orders")],
+        );
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn test_jsonb_path_query() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"items":[{"name":"apple","price":1},{"name":"banana","price":2}]}"#;
+
+        // Query all prices
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQuery,
+            vec![Value::from(json), Value::from("$.items[*].price")],
+        );
+        if let Value::Array(prices) = result {
+            assert_eq!(prices.len(), 2);
+        } else {
+            panic!("Expected Array result");
+        }
+
+        // Query specific index
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQuery,
+            vec![Value::from(json), Value::from("$.items[0].name")],
+        );
+        if let Value::Array(names) = result {
+            assert_eq!(names.len(), 1);
+            assert_eq!(names[0], Value::String("\"apple\"".to_string()));
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_jsonb_path_query_array() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"data":[1,2,3,4,5]}"#;
+
+        // Returns all matches as a JSON array
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQueryArray,
+            vec![Value::from(json), Value::from("$.data[*]")],
+        );
+        if let Value::String(s) = result {
+            assert_eq!(s, "[1,2,3,4,5]");
+        } else {
+            panic!("Expected String result containing JSON array");
+        }
+    }
+
+    #[test]
+    fn test_jsonb_path_query_first() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"items":[{"id":1},{"id":2},{"id":3}]}"#;
+
+        // Returns only first match
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQueryFirst,
+            vec![Value::from(json), Value::from("$.items[*].id")],
+        );
+        assert_eq!(result, Value::String("1".to_string()));
+
+        // No match returns null
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQueryFirst,
+            vec![Value::from(json), Value::from("$.missing")],
+        );
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_jsonb_path_wildcard() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r"[10, 20, 30]";
+
+        // Wildcard on top-level array
+        let result =
+            eval_fn(ScalarFunction::JsonbPathQuery, vec![Value::from(json), Value::from("$[*]")]);
+        if let Value::Array(items) = result {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!("Expected Array result");
+        }
+    }
+
+    #[test]
+    fn test_jsonb_path_nested() {
+        use crate::plan::logical::ScalarFunction;
+
+        let json = r#"{"a":{"b":{"c":{"d":"deep"}}}}"#;
+
+        // Deep nested path
+        let result = eval_fn(
+            ScalarFunction::JsonbPathExists,
+            vec![Value::from(json), Value::from("$.a.b.c.d")],
+        );
+        assert_eq!(result, Value::Bool(true));
+
+        let result = eval_fn(
+            ScalarFunction::JsonbPathQueryFirst,
+            vec![Value::from(json), Value::from("$.a.b.c.d")],
+        );
+        assert_eq!(result, Value::String("\"deep\"".to_string()));
+    }
+
+    #[test]
+    fn test_json_functions_null_args() {
+        use crate::plan::logical::ScalarFunction;
+
+        // All functions should handle null gracefully
+        assert_eq!(
+            eval_fn(ScalarFunction::JsonExtractPathOp, vec![Value::Null, Value::from("{a}")]),
+            Value::Null
+        );
+        assert_eq!(
+            eval_fn(ScalarFunction::JsonContainsKey, vec![Value::Null, Value::from("key")]),
+            Value::Null
+        );
+        assert_eq!(
+            eval_fn(ScalarFunction::JsonbPathExists, vec![Value::Null, Value::from("$.a")]),
+            Value::Null
+        );
+        assert_eq!(eval_fn(ScalarFunction::JsonEach, vec![Value::Null]), Value::Null);
     }
 
     // ========== Map Projection Evaluation Tests ==========

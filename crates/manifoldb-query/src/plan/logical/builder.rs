@@ -2280,6 +2280,34 @@ impl PlanBuilder {
                     "JSONB_SET" => Some(ScalarFunction::JsonbSet),
                     "JSONB_INSERT" => Some(ScalarFunction::JsonbInsert),
                     "JSONB_STRIP_NULLS" => Some(ScalarFunction::JsonbStripNulls),
+                    // JSON path and containment functions (also available as operators)
+                    "JSON_EXTRACT_PATH_OP" => Some(ScalarFunction::JsonExtractPathOp),
+                    "JSON_EXTRACT_PATH_TEXT_OP" => Some(ScalarFunction::JsonExtractPathTextOp),
+                    "JSONB_CONTAINS_KEY" | "JSON_CONTAINS_KEY" => {
+                        Some(ScalarFunction::JsonContainsKey)
+                    }
+                    "JSONB_CONTAINS_ANY_KEY" | "JSON_CONTAINS_ANY_KEY" => {
+                        Some(ScalarFunction::JsonContainsAnyKey)
+                    }
+                    "JSONB_CONTAINS_ALL_KEYS" | "JSON_CONTAINS_ALL_KEYS" => {
+                        Some(ScalarFunction::JsonContainsAllKeys)
+                    }
+                    // JSON set-returning functions
+                    "JSON_EACH" => Some(ScalarFunction::JsonEach),
+                    "JSONB_EACH" => Some(ScalarFunction::JsonbEach),
+                    "JSON_EACH_TEXT" => Some(ScalarFunction::JsonEachText),
+                    "JSONB_EACH_TEXT" => Some(ScalarFunction::JsonbEachText),
+                    "JSON_ARRAY_ELEMENTS" => Some(ScalarFunction::JsonArrayElements),
+                    "JSONB_ARRAY_ELEMENTS" => Some(ScalarFunction::JsonbArrayElements),
+                    "JSON_ARRAY_ELEMENTS_TEXT" => Some(ScalarFunction::JsonArrayElementsText),
+                    "JSONB_ARRAY_ELEMENTS_TEXT" => Some(ScalarFunction::JsonbArrayElementsText),
+                    "JSON_OBJECT_KEYS" => Some(ScalarFunction::JsonObjectKeys),
+                    "JSONB_OBJECT_KEYS" => Some(ScalarFunction::JsonbObjectKeys),
+                    // SQL/JSON path functions
+                    "JSONB_PATH_EXISTS" => Some(ScalarFunction::JsonbPathExists),
+                    "JSONB_PATH_QUERY" => Some(ScalarFunction::JsonbPathQuery),
+                    "JSONB_PATH_QUERY_ARRAY" => Some(ScalarFunction::JsonbPathQueryArray),
+                    "JSONB_PATH_QUERY_FIRST" => Some(ScalarFunction::JsonbPathQueryFirst),
                     // Cypher entity functions
                     "TYPE" => Some(ScalarFunction::Type),
                     "LABELS" => Some(ScalarFunction::Labels),
