@@ -148,9 +148,9 @@ These feature groups can be implemented independently:
 | Comparison operators | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | BETWEEN | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | IN (list) | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| IN (subquery) | ✓ | ✓ | ✓ | | | | Needs exec |
-| EXISTS | ✓ | ✓ | ✓ | | | | Needs exec |
-| NOT EXISTS | ✓ | ✓ | ✓ | | | | Needs exec |
+| IN (subquery) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - NULL semantics |
+| EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| NOT EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | LIKE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | ILIKE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | SIMILAR TO | ✓ | ✓ | | | | | Parsed only |
