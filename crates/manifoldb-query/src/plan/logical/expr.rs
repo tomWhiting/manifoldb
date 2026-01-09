@@ -1742,6 +1742,39 @@ pub enum ScalarFunction {
     /// Returns NULL if the argument is NULL.
     Keys,
 
+    // Cypher path functions
+    /// `nodes(path)`.
+    /// Returns a list of all nodes in a path.
+    /// The path should be a map/object with `_nodes` containing an array of node IDs,
+    /// or an array of node values directly.
+    /// Returns NULL if the argument is NULL.
+    Nodes,
+    /// `relationships(path)`.
+    /// Returns a list of all relationships in a path.
+    /// The path should be a map/object with `_edges` or `_relationships` containing
+    /// an array of edge IDs, or an array of edge values directly.
+    /// Returns NULL if the argument is NULL.
+    Relationships,
+    /// `startNode(relationship)`.
+    /// Returns the start node of a relationship.
+    /// The relationship should be a map/object with `_source` or `_start` field
+    /// containing the source node ID.
+    /// Returns NULL if the argument is NULL.
+    StartNode,
+    /// `endNode(relationship)`.
+    /// Returns the end node of a relationship.
+    /// The relationship should be a map/object with `_target` or `_end` field
+    /// containing the target node ID.
+    /// Returns NULL if the argument is NULL.
+    EndNode,
+    /// `length(path)`.
+    /// Returns the length of a path (number of relationships).
+    /// The path should be a map/object with `_edges` or `_relationships`,
+    /// or an array representing edges.
+    /// For strings, this behaves like the LENGTH function.
+    /// Returns NULL if the argument is NULL.
+    PathLength,
+
     // Cypher type conversion functions
     /// `toBoolean(expression)`.
     ///
@@ -1891,6 +1924,12 @@ impl fmt::Display for ScalarFunction {
             Self::Id => "ID",
             Self::Properties => "PROPERTIES",
             Self::Keys => "KEYS",
+            // Cypher path functions
+            Self::Nodes => "nodes",
+            Self::Relationships => "relationships",
+            Self::StartNode => "startNode",
+            Self::EndNode => "endNode",
+            Self::PathLength => "length",
             // Cypher type conversion functions
             Self::ToBoolean => "toBoolean",
             Self::ToInteger => "toInteger",

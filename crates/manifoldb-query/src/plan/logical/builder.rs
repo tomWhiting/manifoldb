@@ -2000,6 +2000,13 @@ impl PlanBuilder {
                     "ID" => Some(ScalarFunction::Id),
                     "PROPERTIES" => Some(ScalarFunction::Properties),
                     "KEYS" => Some(ScalarFunction::Keys),
+                    // Cypher path functions
+                    "NODES" => Some(ScalarFunction::Nodes),
+                    "RELATIONSHIPS" | "RELS" => Some(ScalarFunction::Relationships),
+                    "STARTNODE" => Some(ScalarFunction::StartNode),
+                    "ENDNODE" => Some(ScalarFunction::EndNode),
+                    // Note: "LENGTH" is handled by ScalarFunction::Length for strings,
+                    // but for paths we need PathLength - context determines which
                     // Cypher type conversion functions
                     "TOBOOLEAN" => Some(ScalarFunction::ToBoolean),
                     "TOINTEGER" | "TOINT" => Some(ScalarFunction::ToInteger),

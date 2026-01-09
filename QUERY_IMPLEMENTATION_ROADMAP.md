@@ -327,14 +327,14 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 #### 3.3 Function Library
 **Goal:** Implement openCypher function library.
 
-- [x] **Scalar Functions** - Mostly complete ✅ Jan 2026
+- [x] **Scalar Functions** - Complete ✅ Jan 2026
   - [x] head, tail, last ✅ Jan 2026
   - [x] coalesce ✅ Complete
   - [x] size (for lists, strings) ✅ Jan 2026
-  - [ ] length (for paths)
+  - [x] length (for paths) ✅ Jan 2026
   - [x] type, labels, id, properties, keys ✅ Jan 2026
-  - [ ] nodes, relationships
-  - [ ] startNode, endNode
+  - [x] nodes, relationships ✅ Jan 2026
+  - [x] startNode, endNode ✅ Jan 2026
   - [x] toBoolean, toInteger, toFloat, toString ✅ Jan 2026
 
 - [x] **Aggregating Functions** - Complete ✅ Jan 2026

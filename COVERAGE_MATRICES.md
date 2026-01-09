@@ -617,9 +617,9 @@ These feature groups can be implemented independently:
 | **Path Functions** |
 | shortestPath() | ✓ | ✓ | | | | | Parsed only |
 | allShortestPaths() | ✓ | ✓ | | | | | Parsed only |
-| nodes(path) | ✓ | ✓ | | | | | |
-| relationships(path) | ✓ | ✓ | | | | | |
-| length(path) | ✓ | ✓ | | | | | |
+| nodes(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| relationships(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| length(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 
 ## 2.2 Writing Clauses
 
@@ -754,11 +754,11 @@ These feature groups can be implemented independently:
 | toFloat() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | toString() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | **Path Functions** |
-| startNode(r) | ✓ | ✓ | | | | | |
-| endNode(r) | ✓ | ✓ | | | | | |
-| length(path) | ✓ | ✓ | | | | | |
-| nodes(path) | ✓ | ✓ | | | | | |
-| relationships(path) | ✓ | ✓ | | | | | |
+| startNode(r) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| endNode(r) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| length(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| nodes(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| relationships(path) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 
 ## 2.9 Aggregating Functions
 

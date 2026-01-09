@@ -1898,6 +1898,33 @@ fn evaluate_scalar_function(
             }
         }
 
+        // ========== Cypher Path Functions ==========
+        ScalarFunction::Nodes => {
+            // nodes(path)
+            // Returns a list of all nodes in a path.
+            cypher_nodes(args)
+        }
+        ScalarFunction::Relationships => {
+            // relationships(path)
+            // Returns a list of all relationships/edges in a path.
+            cypher_relationships(args)
+        }
+        ScalarFunction::StartNode => {
+            // startNode(relationship)
+            // Returns the start node ID of a relationship.
+            cypher_start_node(args)
+        }
+        ScalarFunction::EndNode => {
+            // endNode(relationship)
+            // Returns the end node ID of a relationship.
+            cypher_end_node(args)
+        }
+        ScalarFunction::PathLength => {
+            // length(path)
+            // Returns the length of a path (number of relationships).
+            cypher_path_length(args)
+        }
+
         // Custom functions (not implemented)
         ScalarFunction::Custom(_) => Ok(Value::Null),
     }
@@ -3091,6 +3118,267 @@ fn cypher_keys(args: &[Value]) -> OperatorResult<Value> {
         _ => {
             // For other types, return empty list
             Ok(Value::Array(vec![]))
+        }
+    }
+}
+
+// ========== Cypher Path Functions ==========
+
+/// nodes(path) - Returns a list of all nodes in a path.
+///
+/// In Cypher, paths consist of alternating nodes and relationships.
+/// This function extracts all the nodes from a path.
+///
+/// Supports:
+/// - Arrays (assumed to be node IDs or node objects directly)
+/// - JSON objects with `_nodes` key containing an array of node IDs
+/// - JSON objects with `path_nodes` key (from internal path representation)
+fn cypher_nodes(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Array(nodes)) => {
+            // Already an array, return as-is
+            Ok(Value::Array(nodes.clone()))
+        }
+        Some(Value::String(s)) => {
+            // Try to parse as JSON object with _nodes or path_nodes key
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(ref obj) = json {
+                    // Try _nodes first
+                    if let Some(serde_json::Value::Array(nodes)) = obj.get("_nodes") {
+                        let node_values: Vec<Value> =
+                            nodes.iter().map(json_value_to_value).collect();
+                        return Ok(Value::Array(node_values));
+                    }
+                    // Try path_nodes (internal representation)
+                    if let Some(serde_json::Value::Array(nodes)) = obj.get("path_nodes") {
+                        let node_values: Vec<Value> =
+                            nodes.iter().map(json_value_to_value).collect();
+                        return Ok(Value::Array(node_values));
+                    }
+                }
+                // If it's a JSON array directly
+                if let serde_json::Value::Array(ref nodes) = json {
+                    let node_values: Vec<Value> = nodes.iter().map(json_value_to_value).collect();
+                    return Ok(Value::Array(node_values));
+                }
+            }
+            // Not a valid path representation
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// relationships(path) - Returns a list of all relationships in a path.
+///
+/// In Cypher, paths consist of alternating nodes and relationships.
+/// This function extracts all the relationships/edges from a path.
+///
+/// Supports:
+/// - Arrays (assumed to be edge IDs or edge objects directly)
+/// - JSON objects with `_edges`, `_relationships`, or `path_edges` key
+fn cypher_relationships(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Array(rels)) => {
+            // Already an array, return as-is
+            Ok(Value::Array(rels.clone()))
+        }
+        Some(Value::String(s)) => {
+            // Try to parse as JSON object with _edges, _relationships, or path_edges key
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(ref obj) = json {
+                    // Try _edges first
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("_edges") {
+                        let edge_values: Vec<Value> =
+                            edges.iter().map(json_value_to_value).collect();
+                        return Ok(Value::Array(edge_values));
+                    }
+                    // Try _relationships
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("_relationships") {
+                        let edge_values: Vec<Value> =
+                            edges.iter().map(json_value_to_value).collect();
+                        return Ok(Value::Array(edge_values));
+                    }
+                    // Try path_edges (internal representation)
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("path_edges") {
+                        let edge_values: Vec<Value> =
+                            edges.iter().map(json_value_to_value).collect();
+                        return Ok(Value::Array(edge_values));
+                    }
+                }
+                // If it's a JSON array directly
+                if let serde_json::Value::Array(ref edges) = json {
+                    let edge_values: Vec<Value> = edges.iter().map(json_value_to_value).collect();
+                    return Ok(Value::Array(edge_values));
+                }
+            }
+            // Not a valid path representation
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// startNode(relationship) - Returns the start node of a relationship.
+///
+/// In Cypher, relationships have a start (source) node and an end (target) node.
+/// This function extracts the start node ID from a relationship.
+///
+/// Supports:
+/// - JSON objects with `_source`, `_start`, `source`, or `start` field
+fn cypher_start_node(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::String(s)) => {
+            // Try to parse as JSON object with source node field
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    // Try _source first (internal representation)
+                    if let Some(source) = obj.get("_source") {
+                        return Ok(json_value_to_value(source));
+                    }
+                    // Try _start
+                    if let Some(start) = obj.get("_start") {
+                        return Ok(json_value_to_value(start));
+                    }
+                    // Try source (user-friendly name)
+                    if let Some(source) = obj.get("source") {
+                        return Ok(json_value_to_value(source));
+                    }
+                    // Try start
+                    if let Some(start) = obj.get("start") {
+                        return Ok(json_value_to_value(start));
+                    }
+                }
+            }
+            // Not a valid relationship representation
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// endNode(relationship) - Returns the end node of a relationship.
+///
+/// In Cypher, relationships have a start (source) node and an end (target) node.
+/// This function extracts the end node ID from a relationship.
+///
+/// Supports:
+/// - JSON objects with `_target`, `_end`, `target`, or `end` field
+fn cypher_end_node(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::String(s)) => {
+            // Try to parse as JSON object with target node field
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(obj) = json {
+                    // Try _target first (internal representation)
+                    if let Some(target) = obj.get("_target") {
+                        return Ok(json_value_to_value(target));
+                    }
+                    // Try _end
+                    if let Some(end) = obj.get("_end") {
+                        return Ok(json_value_to_value(end));
+                    }
+                    // Try target (user-friendly name)
+                    if let Some(target) = obj.get("target") {
+                        return Ok(json_value_to_value(target));
+                    }
+                    // Try end
+                    if let Some(end) = obj.get("end") {
+                        return Ok(json_value_to_value(end));
+                    }
+                }
+            }
+            // Not a valid relationship representation
+            Ok(Value::Null)
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// length(path) - Returns the length of a path (number of relationships).
+///
+/// In Cypher, the length of a path is the number of relationships it contains.
+/// This is always one less than the number of nodes in the path.
+///
+/// Supports:
+/// - Arrays (returns the length of the array, assuming it's edges)
+/// - JSON objects with `_edges`, `_relationships`, or `path_edges` key
+/// - For strings (non-JSON), this delegates to string LENGTH behavior
+fn cypher_path_length(args: &[Value]) -> OperatorResult<Value> {
+    match args.first() {
+        Some(Value::Array(arr)) => {
+            // If it's an array, return its length
+            Ok(Value::Int(arr.len() as i64))
+        }
+        Some(Value::String(s)) => {
+            // Try to parse as JSON object with edges/relationships
+            if let Some(json) = parse_json(s) {
+                if let serde_json::Value::Object(ref obj) = json {
+                    // Try _edges first
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("_edges") {
+                        return Ok(Value::Int(edges.len() as i64));
+                    }
+                    // Try _relationships
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("_relationships") {
+                        return Ok(Value::Int(edges.len() as i64));
+                    }
+                    // Try path_edges (internal representation)
+                    if let Some(serde_json::Value::Array(edges)) = obj.get("path_edges") {
+                        return Ok(Value::Int(edges.len() as i64));
+                    }
+                    // If we have _nodes, length is nodes - 1
+                    if let Some(serde_json::Value::Array(nodes)) = obj.get("_nodes") {
+                        if !nodes.is_empty() {
+                            return Ok(Value::Int((nodes.len() - 1) as i64));
+                        }
+                        return Ok(Value::Int(0));
+                    }
+                    // If we have path_nodes, length is nodes - 1
+                    if let Some(serde_json::Value::Array(nodes)) = obj.get("path_nodes") {
+                        if !nodes.is_empty() {
+                            return Ok(Value::Int((nodes.len() - 1) as i64));
+                        }
+                        return Ok(Value::Int(0));
+                    }
+                }
+                // If it's a JSON array directly (assumed to be edges)
+                if let serde_json::Value::Array(ref arr) = json {
+                    return Ok(Value::Int(arr.len() as i64));
+                }
+            }
+            // For non-JSON strings, return string length (same as LENGTH function)
+            Ok(Value::Int(s.chars().count() as i64))
+        }
+        Some(Value::Null) | None => Ok(Value::Null),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// Helper to convert serde_json::Value to manifoldb_core::Value
+fn json_value_to_value(json: &serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Value::Array(arr.iter().map(json_value_to_value).collect())
+        }
+        serde_json::Value::Object(_) => {
+            // Return the JSON object as a string
+            Value::String(json.to_string())
         }
     }
 }
@@ -6452,5 +6740,262 @@ mod tests {
         // toString() with no args = null
         let result = eval_fn(ScalarFunction::CypherToString, vec![]);
         assert_eq!(result, Value::Null);
+    }
+
+    // ========== Cypher Path Function Tests ==========
+
+    #[test]
+    fn test_cypher_nodes() {
+        use crate::plan::logical::ScalarFunction;
+
+        // nodes() on a JSON path object with _nodes key
+        let path = r#"{"_nodes": [1, 2, 3]}"#;
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+
+        // nodes() on a JSON path object with path_nodes key (internal format)
+        let path = r#"{"path_nodes": [10, 20, 30]}"#;
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]));
+
+        // nodes() on a JSON array directly
+        let path = r"[100, 200, 300]";
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(100), Value::Int(200), Value::Int(300)]));
+
+        // nodes() on an array value directly
+        let nodes = Value::Array(vec![Value::Int(1), Value::Int(2)]);
+        let result = eval_fn(ScalarFunction::Nodes, vec![nodes.clone()]);
+        assert_eq!(result, nodes);
+
+        // nodes() on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // nodes() with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Nodes, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // nodes() on invalid JSON returns NULL
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_relationships() {
+        use crate::plan::logical::ScalarFunction;
+
+        // relationships() on a JSON path object with _edges key
+        let path = r#"{"_edges": [101, 102]}"#;
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(101), Value::Int(102)]));
+
+        // relationships() on a JSON path object with _relationships key
+        let path = r#"{"_relationships": [201, 202, 203]}"#;
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(201), Value::Int(202), Value::Int(203)]));
+
+        // relationships() on a JSON path object with path_edges key (internal format)
+        let path = r#"{"path_edges": [301, 302]}"#;
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(301), Value::Int(302)]));
+
+        // relationships() on a JSON array directly
+        let path = r"[401, 402]";
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from(path)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(401), Value::Int(402)]));
+
+        // relationships() on an array value directly
+        let edges = Value::Array(vec![Value::Int(1), Value::Int(2)]);
+        let result = eval_fn(ScalarFunction::Relationships, vec![edges.clone()]);
+        assert_eq!(result, edges);
+
+        // relationships() on NULL returns NULL
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // relationships() with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::Relationships, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // relationships() on invalid JSON returns NULL
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_start_node() {
+        use crate::plan::logical::ScalarFunction;
+
+        // startNode() on a relationship with _source key
+        let rel = r#"{"_source": 1, "_target": 2, "_edge_type": "KNOWS"}"#;
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(1));
+
+        // startNode() on a relationship with _start key
+        let rel = r#"{"_start": 10, "_end": 20}"#;
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(10));
+
+        // startNode() on a relationship with source key (user-friendly)
+        let rel = r#"{"source": 100, "target": 200}"#;
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(100));
+
+        // startNode() on a relationship with start key (user-friendly)
+        let rel = r#"{"start": 1000, "end": 2000}"#;
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(1000));
+
+        // startNode() on NULL returns NULL
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // startNode() with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::StartNode, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // startNode() on invalid JSON returns NULL
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::Null);
+
+        // startNode() on JSON without source field returns NULL
+        let rel = r#"{"_edge_type": "KNOWS"}"#;
+        let result = eval_fn(ScalarFunction::StartNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_end_node() {
+        use crate::plan::logical::ScalarFunction;
+
+        // endNode() on a relationship with _target key
+        let rel = r#"{"_source": 1, "_target": 2, "_edge_type": "KNOWS"}"#;
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(2));
+
+        // endNode() on a relationship with _end key
+        let rel = r#"{"_start": 10, "_end": 20}"#;
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(20));
+
+        // endNode() on a relationship with target key (user-friendly)
+        let rel = r#"{"source": 100, "target": 200}"#;
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(200));
+
+        // endNode() on a relationship with end key (user-friendly)
+        let rel = r#"{"start": 1000, "end": 2000}"#;
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Int(2000));
+
+        // endNode() on NULL returns NULL
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // endNode() with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::EndNode, vec![]);
+        assert_eq!(result, Value::Null);
+
+        // endNode() on invalid JSON returns NULL
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from("not-json")]);
+        assert_eq!(result, Value::Null);
+
+        // endNode() on JSON without target field returns NULL
+        let rel = r#"{"_edge_type": "KNOWS"}"#;
+        let result = eval_fn(ScalarFunction::EndNode, vec![Value::from(rel)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_path_length() {
+        use crate::plan::logical::ScalarFunction;
+
+        // length() on a JSON path object with _edges key
+        let path = r#"{"_edges": [1, 2, 3]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(3));
+
+        // length() on a JSON path object with _relationships key
+        let path = r#"{"_relationships": [1, 2]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(2));
+
+        // length() on a JSON path object with path_edges key (internal format)
+        let path = r#"{"path_edges": [1, 2, 3, 4]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(4));
+
+        // length() on a JSON path object with _nodes key (length = nodes - 1)
+        let path = r#"{"_nodes": [1, 2, 3, 4]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(3)); // 4 nodes = 3 edges
+
+        // length() on a JSON path object with path_nodes key (internal format)
+        let path = r#"{"path_nodes": [1, 2]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(1)); // 2 nodes = 1 edge
+
+        // length() on a JSON path with single node (length = 0)
+        let path = r#"{"_nodes": [1]}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(0));
+
+        // length() on a JSON path with empty nodes (length = 0)
+        let path = r#"{"_nodes": []}"#;
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(0));
+
+        // length() on a JSON array directly (assumed to be edges)
+        let path = r"[1, 2, 3]";
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path)]);
+        assert_eq!(result, Value::Int(3));
+
+        // length() on an array value directly
+        let edges = Value::Array(vec![Value::Int(1), Value::Int(2)]);
+        let result = eval_fn(ScalarFunction::PathLength, vec![edges]);
+        assert_eq!(result, Value::Int(2));
+
+        // length() on a non-JSON string returns string length (like LENGTH function)
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from("hello")]);
+        assert_eq!(result, Value::Int(5));
+
+        // length() on NULL returns NULL
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+
+        // length() with no arguments returns NULL
+        let result = eval_fn(ScalarFunction::PathLength, vec![]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cypher_path_functions_with_complex_data() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Test with a more complex path structure (nested objects as node/edge data)
+        let path_with_nested =
+            r#"{"_nodes": [{"id": 1}, {"id": 2}], "_edges": [{"type": "KNOWS"}]}"#;
+        let result = eval_fn(ScalarFunction::Nodes, vec![Value::from(path_with_nested)]);
+        if let Value::Array(nodes) = result {
+            assert_eq!(nodes.len(), 2);
+            // Node objects are returned as JSON strings
+            assert!(matches!(nodes[0], Value::String(_)));
+            assert!(matches!(nodes[1], Value::String(_)));
+        } else {
+            panic!("Expected array result");
+        }
+
+        let result = eval_fn(ScalarFunction::Relationships, vec![Value::from(path_with_nested)]);
+        if let Value::Array(edges) = result {
+            assert_eq!(edges.len(), 1);
+            // Edge object is returned as JSON string
+            assert!(matches!(edges[0], Value::String(_)));
+        } else {
+            panic!("Expected array result");
+        }
+
+        let result = eval_fn(ScalarFunction::PathLength, vec![Value::from(path_with_nested)]);
+        assert_eq!(result, Value::Int(1));
     }
 }
