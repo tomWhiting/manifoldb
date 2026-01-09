@@ -52,7 +52,11 @@ These components are in place and can be extended:
 Window Functions
 ├── Depends on: Aggregate (exists)
 ├── Depends on: Sort (exists)
-└── New: Window logical node, WindowOp physical operator
+├── WindowOp physical operator: ✅ Complete
+├── Ranking functions (ROW_NUMBER, RANK, DENSE_RANK): ✅ Complete
+├── Value functions (LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE): ✅ Complete
+├── Frame clause (ROWS/RANGE BETWEEN): ✅ Complete
+└── Status: ✅ Core window functions complete (Jan 2026)
 
 Recursive CTEs
 ├── Depends on: Non-recursive CTEs (exists)
@@ -71,8 +75,11 @@ Cypher Writing Clauses
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
 ├── Procedure registry infrastructure: ✅ Complete
-├── PageRank/ShortestPath built-in procedures: ✅ Complete
-└── Status: ✅ Complete with tests (Jan 2026)
+├── PageRank/ShortestPath: ✅ Complete
+├── Centrality (betweenness, closeness, degree, eigenvector): ✅ Complete
+├── Community (labelPropagation, connectedComponents, stronglyConnected): ✅ Complete
+├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Complete
+└── Status: ✅ 13 procedures registered (Jan 2026)
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -96,8 +103,8 @@ These feature groups can be implemented independently:
 
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
-3. **Window Functions** - Isolated SQL feature
-4. **Graph Algorithms** - CALL/YIELD infrastructure
+3. **Window Functions** - ✅ Core complete (Jan 2026) - NTILE, aggregates as windows remaining
+4. **Graph Algorithms** - ✅ 13 procedures via CALL/YIELD (Jan 2026)
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---

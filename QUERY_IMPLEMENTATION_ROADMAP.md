@@ -34,6 +34,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Window Value Functions** - LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE
 - ✅ **Cypher List Comprehensions** - `[x IN list WHERE pred | expr]` with list functions (range, size, head, tail, last, reverse)
 - ✅ **Centrality Procedures** - algo.betweennessCentrality, algo.closenessCentrality, algo.degreeCentrality, algo.eigenvectorCentrality
+- ✅ **Community Detection Procedures** - algo.labelPropagation, algo.connectedComponents, algo.stronglyConnectedComponents
+- ✅ **Path Algorithm Procedures** - algo.dijkstra, algo.astar, algo.allShortestPaths, algo.sssp
+- ✅ **Window Frame Clause** - ROWS/RANGE BETWEEN with all bound types (UNBOUNDED PRECEDING/FOLLOWING, n PRECEDING/FOLLOWING, CURRENT ROW)
 
 ---
 
@@ -147,7 +150,8 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 
 - [ ] **Window Functions**
   - [ ] Named window definitions (WINDOW w AS ...)
-  - [ ] Full frame clause support (ROWS/RANGE/GROUPS)
+  - [x] Frame clause support (ROWS/RANGE BETWEEN) ✅ Jan 2026
+  - [ ] GROUPS frame type
   - [ ] Frame exclusion (EXCLUDE CURRENT ROW, etc.)
   - [ ] FILTER clause on window functions
 
@@ -260,7 +264,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 
 - [x] **WindowOp** - Window function evaluation ✅ Jan 2026
   - [x] Partition management
-  - [ ] Frame calculation
+  - [x] Frame calculation (ROWS/RANGE BETWEEN) ✅ Jan 2026
   - [x] Support ranking functions (row_number, rank, dense_rank)
 
 - [x] **RecursiveCTEOp** - Recursive CTE execution ✅ Jan 2026
@@ -418,9 +422,9 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Expose community algorithms as procedures.
 
 - [ ] `algo.louvain(config) YIELD node, community`
-- [ ] `algo.labelPropagation(config) YIELD node, community`
-- [ ] `algo.connectedComponents(config) YIELD node, component`
-- [ ] `algo.stronglyConnectedComponents(config) YIELD node, component`
+- [x] `algo.labelPropagation(config) YIELD node, community` ✅ Jan 2026
+- [x] `algo.connectedComponents(config) YIELD node, component` ✅ Jan 2026
+- [x] `algo.stronglyConnectedComponents(config) YIELD node, component` ✅ Jan 2026
 - [ ] `algo.triangleCount(config) YIELD node, triangles`
 - [ ] `algo.localClusteringCoefficient(config) YIELD node, coefficient`
 
