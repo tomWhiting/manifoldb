@@ -35,6 +35,7 @@ mod graph;
 mod node;
 mod procedure;
 mod relational;
+mod transaction;
 mod validate;
 mod vector;
 
@@ -59,6 +60,10 @@ pub use relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
     RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode,
     WindowNode,
+};
+pub use transaction::{
+    BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
+    SetTransactionNode,
 };
 pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
 pub use vector::{

@@ -1557,6 +1557,17 @@ fn execute_logical_plan<T: Transaction>(
             "Procedure calls should be executed through execute_physical_plan, not execute_logical_plan"
                 .to_string(),
         )),
+
+        // Transaction control statements don't return entities
+        LogicalPlan::BeginTransaction(_)
+        | LogicalPlan::Commit(_)
+        | LogicalPlan::Rollback(_)
+        | LogicalPlan::Savepoint(_)
+        | LogicalPlan::ReleaseSavepoint(_)
+        | LogicalPlan::SetTransaction(_) => {
+            // Transaction control is handled at the session level, not here
+            Ok(Vec::new())
+        }
     }
 }
 

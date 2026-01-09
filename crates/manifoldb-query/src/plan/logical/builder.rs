@@ -115,6 +115,57 @@ impl PlanBuilder {
             Statement::DeleteGraph(delete) => self.build_graph_delete(delete),
             Statement::Remove(remove) => self.build_graph_remove(remove),
             Statement::Foreach(foreach) => self.build_graph_foreach(foreach),
+            Statement::Transaction(txn) => self.build_transaction(txn),
+        }
+    }
+
+    /// Builds a logical plan from a transaction statement.
+    fn build_transaction(&self, stmt: &ast::TransactionStatement) -> PlanResult<LogicalPlan> {
+        use super::transaction::{
+            BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
+            SetTransactionNode,
+        };
+        use crate::ast::TransactionStatement;
+
+        match stmt {
+            TransactionStatement::Begin(begin) => {
+                let mut node = BeginTransactionNode::new();
+                if let Some(level) = begin.isolation_level {
+                    node = node.with_isolation_level(level);
+                }
+                if let Some(mode) = begin.access_mode {
+                    node = node.with_access_mode(mode);
+                }
+                if begin.deferred {
+                    node = node.deferred();
+                }
+                Ok(LogicalPlan::BeginTransaction(node))
+            }
+            TransactionStatement::Commit => Ok(LogicalPlan::Commit(CommitNode::new())),
+            TransactionStatement::Rollback(rollback) => {
+                let node = if let Some(ref sp) = rollback.to_savepoint {
+                    RollbackNode::to_savepoint(&sp.name)
+                } else {
+                    RollbackNode::new()
+                };
+                Ok(LogicalPlan::Rollback(node))
+            }
+            TransactionStatement::Savepoint(sp) => {
+                Ok(LogicalPlan::Savepoint(SavepointNode::new(&sp.name.name)))
+            }
+            TransactionStatement::ReleaseSavepoint(release) => {
+                Ok(LogicalPlan::ReleaseSavepoint(ReleaseSavepointNode::new(&release.name.name)))
+            }
+            TransactionStatement::SetTransaction(set_txn) => {
+                let mut node = SetTransactionNode::new();
+                if let Some(level) = set_txn.isolation_level {
+                    node = node.with_isolation_level(level);
+                }
+                if let Some(mode) = set_txn.access_mode {
+                    node = node.with_access_mode(mode);
+                }
+                Ok(LogicalPlan::SetTransaction(node))
+            }
         }
     }
 

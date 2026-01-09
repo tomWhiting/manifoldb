@@ -352,14 +352,14 @@ These feature groups can be implemented independently:
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| BEGIN | | | | | | | Not implemented |
-| START TRANSACTION | | | | | | | Not implemented |
-| COMMIT | | | | | | | Not implemented |
-| ROLLBACK | | | | | | | Not implemented |
-| SAVEPOINT | | | | | | | Not implemented |
-| RELEASE SAVEPOINT | | | | | | | Not implemented |
-| ROLLBACK TO SAVEPOINT | | | | | | | Not implemented |
-| SET TRANSACTION | | | | | | | Not implemented |
+| BEGIN | P | A | L | O | | T | Parsed through sqlparser, AST/logical/physical nodes implemented **†** |
+| START TRANSACTION | P | A | L | O | | T | Alias for BEGIN **†** |
+| COMMIT | P | A | L | O | | T | Parsed through sqlparser **†** |
+| ROLLBACK | P | A | L | O | | T | Parsed through sqlparser **†** |
+| SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
+| RELEASE SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
+| ROLLBACK TO SAVEPOINT | P | A | L | O | | T | Parsed through sqlparser **†** |
+| SET TRANSACTION | P | A | L | O | | T | Parsed through sqlparser **†** |
 
 ## 1.10 Utility Statements
 

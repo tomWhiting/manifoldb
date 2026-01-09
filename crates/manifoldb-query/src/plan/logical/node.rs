@@ -31,6 +31,10 @@ use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, RecursiveCTENode,
     ScanNode, SetOpNode, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
+use super::transaction::{
+    BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
+    SetTransactionNode,
+};
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
 /// A logical query plan.
@@ -342,6 +346,25 @@ pub enum LogicalPlan {
     // ========== Procedure Nodes ==========
     /// Procedure call (CALL/YIELD).
     ProcedureCall(Box<ProcedureCallNode>),
+
+    // ========== Transaction Nodes ==========
+    /// BEGIN / START TRANSACTION.
+    BeginTransaction(BeginTransactionNode),
+
+    /// COMMIT.
+    Commit(CommitNode),
+
+    /// ROLLBACK (optionally to a savepoint).
+    Rollback(RollbackNode),
+
+    /// SAVEPOINT <name>.
+    Savepoint(SavepointNode),
+
+    /// RELEASE SAVEPOINT <name>.
+    ReleaseSavepoint(ReleaseSavepointNode),
+
+    /// SET TRANSACTION.
+    SetTransaction(SetTransactionNode),
 }
 
 impl LogicalPlan {
@@ -566,6 +589,14 @@ impl LogicalPlan {
 
             // Procedure nodes (leaf - no inputs)
             Self::ProcedureCall(_) => vec![],
+
+            // Transaction nodes (leaf - no inputs, control flow only)
+            Self::BeginTransaction(_)
+            | Self::Commit(_)
+            | Self::Rollback(_)
+            | Self::Savepoint(_)
+            | Self::ReleaseSavepoint(_)
+            | Self::SetTransaction(_) => vec![],
         }
     }
 
@@ -631,6 +662,14 @@ impl LogicalPlan {
 
             // Procedure nodes (leaf - no inputs)
             Self::ProcedureCall(_) => vec![],
+
+            // Transaction nodes (leaf - no inputs, control flow only)
+            Self::BeginTransaction(_)
+            | Self::Commit(_)
+            | Self::Rollback(_)
+            | Self::Savepoint(_)
+            | Self::ReleaseSavepoint(_)
+            | Self::SetTransaction(_) => vec![],
         }
     }
 
@@ -685,6 +724,12 @@ impl LogicalPlan {
             Self::GraphRemove { .. } => "GraphRemove",
             Self::GraphForeach { .. } => "GraphForeach",
             Self::ProcedureCall(_) => "ProcedureCall",
+            Self::BeginTransaction(_) => "BeginTransaction",
+            Self::Commit(_) => "Commit",
+            Self::Rollback(_) => "Rollback",
+            Self::Savepoint(_) => "Savepoint",
+            Self::ReleaseSavepoint(_) => "ReleaseSavepoint",
+            Self::SetTransaction(_) => "SetTransaction",
         }
     }
 
@@ -1066,6 +1111,43 @@ impl DisplayTree<'_> {
                             write!(f, " AS {alias}")?;
                         }
                     }
+                }
+            }
+            // Transaction nodes
+            LogicalPlan::BeginTransaction(node) => {
+                write!(f, "BeginTransaction")?;
+                if let Some(level) = &node.isolation_level {
+                    write!(f, " ISOLATION LEVEL {level}")?;
+                }
+                if let Some(mode) = &node.access_mode {
+                    write!(f, " {mode}")?;
+                }
+                if node.deferred {
+                    write!(f, " DEFERRED")?;
+                }
+            }
+            LogicalPlan::Commit(_) => {
+                write!(f, "Commit")?;
+            }
+            LogicalPlan::Rollback(node) => {
+                write!(f, "Rollback")?;
+                if let Some(sp) = &node.to_savepoint {
+                    write!(f, " TO SAVEPOINT {sp}")?;
+                }
+            }
+            LogicalPlan::Savepoint(node) => {
+                write!(f, "Savepoint: {}", node.name)?;
+            }
+            LogicalPlan::ReleaseSavepoint(node) => {
+                write!(f, "ReleaseSavepoint: {}", node.name)?;
+            }
+            LogicalPlan::SetTransaction(node) => {
+                write!(f, "SetTransaction")?;
+                if let Some(level) = &node.isolation_level {
+                    write!(f, " ISOLATION LEVEL {level}")?;
+                }
+                if let Some(mode) = &node.access_mode {
+                    write!(f, " {mode}")?;
                 }
             }
         }

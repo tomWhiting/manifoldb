@@ -301,6 +301,17 @@ impl PredicatePushdown {
                 let optimized_input = self.push_down(*input, predicates);
                 LogicalPlan::GraphForeach { node, input: Box::new(optimized_input) }
             }
+
+            // Transaction control statements - no predicate pushdown applicable
+            LogicalPlan::BeginTransaction(_)
+            | LogicalPlan::Commit(_)
+            | LogicalPlan::Rollback(_)
+            | LogicalPlan::Savepoint(_)
+            | LogicalPlan::ReleaseSavepoint(_)
+            | LogicalPlan::SetTransaction(_) => {
+                // Transaction statements have no inputs, just apply any predicates as a filter
+                self.apply_predicates(plan, predicates)
+            }
         }
     }
 

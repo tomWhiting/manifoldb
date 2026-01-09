@@ -56,6 +56,300 @@ pub enum Statement {
     Foreach(Box<ForeachStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
+    /// Transaction control statements.
+    Transaction(TransactionStatement),
+}
+
+// ============================================================================
+// Transaction Statements
+// ============================================================================
+
+/// A transaction control statement.
+///
+/// Supports SQL transaction control statements for managing ACID transactions:
+///
+/// - `BEGIN` / `START TRANSACTION` - Start a new transaction
+/// - `COMMIT` - Commit the current transaction
+/// - `ROLLBACK` - Roll back the current transaction
+/// - `SAVEPOINT` - Create a named savepoint
+/// - `RELEASE SAVEPOINT` - Remove a savepoint
+/// - `ROLLBACK TO SAVEPOINT` - Roll back to a named savepoint
+///
+/// # Examples
+///
+/// Basic transaction:
+/// ```sql
+/// BEGIN;
+/// INSERT INTO users VALUES (1, 'Alice');
+/// COMMIT;
+/// ```
+///
+/// Using savepoints:
+/// ```sql
+/// BEGIN;
+/// INSERT INTO users VALUES (1, 'Alice');
+/// SAVEPOINT sp1;
+/// INSERT INTO users VALUES (2, 'Bob');
+/// ROLLBACK TO SAVEPOINT sp1;  -- Undoes Bob insert
+/// COMMIT;  -- Only Alice committed
+/// ```
+///
+/// Transaction with options:
+/// ```sql
+/// BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+/// SET TRANSACTION READ ONLY;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionStatement {
+    /// BEGIN or START TRANSACTION.
+    Begin(BeginTransaction),
+    /// COMMIT.
+    Commit,
+    /// ROLLBACK.
+    Rollback(RollbackTransaction),
+    /// SAVEPOINT <name>.
+    Savepoint(SavepointStatement),
+    /// RELEASE SAVEPOINT <name>.
+    ReleaseSavepoint(ReleaseSavepointStatement),
+    /// SET TRANSACTION.
+    SetTransaction(SetTransactionStatement),
+}
+
+/// A BEGIN or START TRANSACTION statement.
+///
+/// Starts a new transaction with optional configuration.
+///
+/// # Examples
+///
+/// ```sql
+/// BEGIN;
+/// START TRANSACTION;
+/// BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+/// BEGIN TRANSACTION READ ONLY;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BeginTransaction {
+    /// Whether the TRANSACTION keyword was used.
+    pub has_transaction_keyword: bool,
+    /// Transaction isolation level.
+    pub isolation_level: Option<IsolationLevel>,
+    /// Transaction access mode.
+    pub access_mode: Option<TransactionAccessMode>,
+    /// Whether this is a deferred transaction (for database-level locking).
+    pub deferred: bool,
+}
+
+impl BeginTransaction {
+    /// Creates a new BEGIN statement with default options.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the isolation level.
+    #[must_use]
+    pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
+        self.isolation_level = Some(level);
+        self
+    }
+
+    /// Sets the access mode to READ ONLY.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.access_mode = Some(TransactionAccessMode::ReadOnly);
+        self
+    }
+
+    /// Sets the access mode to READ WRITE.
+    #[must_use]
+    pub fn read_write(mut self) -> Self {
+        self.access_mode = Some(TransactionAccessMode::ReadWrite);
+        self
+    }
+
+    /// Sets the deferred flag.
+    #[must_use]
+    pub fn deferred(mut self) -> Self {
+        self.deferred = true;
+        self
+    }
+}
+
+/// A ROLLBACK statement.
+///
+/// # Examples
+///
+/// ```sql
+/// ROLLBACK;
+/// ROLLBACK TO SAVEPOINT sp1;
+/// ROLLBACK TRANSACTION TO SAVEPOINT sp1;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RollbackTransaction {
+    /// Whether the TRANSACTION keyword was used.
+    pub has_transaction_keyword: bool,
+    /// Optional savepoint name to roll back to.
+    pub to_savepoint: Option<Identifier>,
+}
+
+impl RollbackTransaction {
+    /// Creates a ROLLBACK statement that rolls back the entire transaction.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a ROLLBACK TO SAVEPOINT statement.
+    #[must_use]
+    pub fn to_savepoint(name: impl Into<Identifier>) -> Self {
+        Self { has_transaction_keyword: false, to_savepoint: Some(name.into()) }
+    }
+}
+
+/// A SAVEPOINT statement.
+///
+/// Creates a savepoint within the current transaction that can be
+/// rolled back to later without affecting previous work.
+///
+/// # Examples
+///
+/// ```sql
+/// SAVEPOINT my_savepoint;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavepointStatement {
+    /// The savepoint name.
+    pub name: Identifier,
+}
+
+impl SavepointStatement {
+    /// Creates a new SAVEPOINT statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// A RELEASE SAVEPOINT statement.
+///
+/// Removes a savepoint without affecting the transaction state.
+/// After releasing, the savepoint can no longer be rolled back to.
+///
+/// # Examples
+///
+/// ```sql
+/// RELEASE SAVEPOINT my_savepoint;
+/// RELEASE my_savepoint;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseSavepointStatement {
+    /// The savepoint name to release.
+    pub name: Identifier,
+}
+
+impl ReleaseSavepointStatement {
+    /// Creates a new RELEASE SAVEPOINT statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// A SET TRANSACTION statement.
+///
+/// Changes the characteristics of the current transaction.
+///
+/// # Examples
+///
+/// ```sql
+/// SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+/// SET TRANSACTION READ ONLY;
+/// SET TRANSACTION READ WRITE, ISOLATION LEVEL REPEATABLE READ;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SetTransactionStatement {
+    /// Transaction isolation level.
+    pub isolation_level: Option<IsolationLevel>,
+    /// Transaction access mode.
+    pub access_mode: Option<TransactionAccessMode>,
+}
+
+impl SetTransactionStatement {
+    /// Creates a new SET TRANSACTION statement.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the isolation level.
+    #[must_use]
+    pub fn with_isolation_level(mut self, level: IsolationLevel) -> Self {
+        self.isolation_level = Some(level);
+        self
+    }
+
+    /// Sets the access mode.
+    #[must_use]
+    pub fn with_access_mode(mut self, mode: TransactionAccessMode) -> Self {
+        self.access_mode = Some(mode);
+        self
+    }
+}
+
+/// Transaction isolation levels.
+///
+/// Controls the visibility of changes made by other concurrent transactions.
+///
+/// # Isolation Levels
+///
+/// - **READ UNCOMMITTED**: Allows dirty reads (reading uncommitted data).
+/// - **READ COMMITTED**: Only sees committed data (PostgreSQL default).
+/// - **REPEATABLE READ**: Snapshot isolation - same query returns same results.
+/// - **SERIALIZABLE**: Strongest isolation - transactions execute as if serial.
+///
+/// Note: redb provides serializable isolation by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsolationLevel {
+    /// READ UNCOMMITTED - allows dirty reads.
+    ReadUncommitted,
+    /// READ COMMITTED - default for many databases.
+    ReadCommitted,
+    /// REPEATABLE READ - snapshot isolation.
+    RepeatableRead,
+    /// SERIALIZABLE - full serializable isolation (redb default).
+    #[default]
+    Serializable,
+}
+
+impl std::fmt::Display for IsolationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadUncommitted => write!(f, "READ UNCOMMITTED"),
+            Self::ReadCommitted => write!(f, "READ COMMITTED"),
+            Self::RepeatableRead => write!(f, "REPEATABLE READ"),
+            Self::Serializable => write!(f, "SERIALIZABLE"),
+        }
+    }
+}
+
+/// Transaction access mode.
+///
+/// Controls whether the transaction can modify data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionAccessMode {
+    /// READ ONLY - transaction cannot modify data.
+    ReadOnly,
+    /// READ WRITE - transaction can read and modify data (default).
+    ReadWrite,
+}
+
+impl std::fmt::Display for TransactionAccessMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadOnly => write!(f, "READ ONLY"),
+            Self::ReadWrite => write!(f, "READ WRITE"),
+        }
+    }
 }
 
 /// A Common Table Expression (CTE) defined in a WITH clause.

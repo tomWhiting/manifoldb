@@ -20,10 +20,12 @@ use std::fmt;
 use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
-    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
-    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, ExpandDirection, ExpandLength,
-    GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode,
-    GraphSetNode, JoinType, LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
+    AlterTableNode, BeginTransactionNode, CommitNode, CreateCollectionNode, CreateIndexNode,
+    CreateTableNode, CreateViewNode, DropCollectionNode, DropIndexNode, DropTableNode,
+    DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode,
+    GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr,
+    ProcedureCallNode, ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType,
+    SetTransactionNode, SortOrder,
 };
 
 use super::cost::Cost;
@@ -376,6 +378,25 @@ pub enum PhysicalPlan {
     // ========== Procedure Operations ==========
     /// Procedure call (CALL/YIELD).
     ProcedureCall(Box<ProcedureCallNode>),
+
+    // ========== Transaction Control Operations ==========
+    /// BEGIN / START TRANSACTION.
+    BeginTransaction(BeginTransactionNode),
+
+    /// COMMIT.
+    Commit(CommitNode),
+
+    /// ROLLBACK (optionally to a savepoint).
+    Rollback(RollbackNode),
+
+    /// SAVEPOINT <name>.
+    Savepoint(SavepointNode),
+
+    /// RELEASE SAVEPOINT <name>.
+    ReleaseSavepoint(ReleaseSavepointNode),
+
+    /// SET TRANSACTION.
+    SetTransaction(SetTransactionNode),
 }
 
 // ============================================================================
@@ -1927,7 +1948,14 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
-            | Self::ProcedureCall(_) => vec![],
+            | Self::ProcedureCall(_)
+            // Transaction control nodes (leaf - no inputs)
+            | Self::BeginTransaction(_)
+            | Self::Commit(_)
+            | Self::Rollback(_)
+            | Self::Savepoint(_)
+            | Self::ReleaseSavepoint(_)
+            | Self::SetTransaction(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1993,7 +2021,14 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
-            | Self::ProcedureCall(_) => vec![],
+            | Self::ProcedureCall(_)
+            // Transaction control nodes (leaf - no inputs)
+            | Self::BeginTransaction(_)
+            | Self::Commit(_)
+            | Self::Rollback(_)
+            | Self::Savepoint(_)
+            | Self::ReleaseSavepoint(_)
+            | Self::SetTransaction(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -2058,6 +2093,12 @@ impl PhysicalPlan {
                 | Self::CreateView(_)
                 | Self::DropView(_)
                 | Self::ProcedureCall(_)
+                | Self::BeginTransaction(_)
+                | Self::Commit(_)
+                | Self::Rollback(_)
+                | Self::Savepoint(_)
+                | Self::ReleaseSavepoint(_)
+                | Self::SetTransaction(_)
         )
     }
 
@@ -2110,6 +2151,12 @@ impl PhysicalPlan {
             Self::GraphRemove { .. } => "GraphRemove",
             Self::GraphForeach { .. } => "GraphForeach",
             Self::ProcedureCall(_) => "ProcedureCall",
+            Self::BeginTransaction(_) => "BeginTransaction",
+            Self::Commit(_) => "Commit",
+            Self::Rollback(_) => "Rollback",
+            Self::Savepoint(_) => "Savepoint",
+            Self::ReleaseSavepoint(_) => "ReleaseSavepoint",
+            Self::SetTransaction(_) => "SetTransaction",
         }
     }
 
@@ -2156,7 +2203,14 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
-            | Self::ProcedureCall(_) => Cost::zero(),
+            | Self::ProcedureCall(_)
+            // Transaction control operations have zero cost
+            | Self::BeginTransaction(_)
+            | Self::Commit(_)
+            | Self::Rollback(_)
+            | Self::Savepoint(_)
+            | Self::ReleaseSavepoint(_)
+            | Self::SetTransaction(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. }
             | Self::GraphMerge { .. }
@@ -2662,6 +2716,43 @@ impl DisplayTree<'_> {
                             write!(f, " AS {alias}")?;
                         }
                     }
+                }
+            }
+            // Transaction control nodes
+            PhysicalPlan::BeginTransaction(node) => {
+                write!(f, "BeginTransaction")?;
+                if let Some(level) = &node.isolation_level {
+                    write!(f, " ISOLATION LEVEL {level}")?;
+                }
+                if let Some(mode) = &node.access_mode {
+                    write!(f, " {mode}")?;
+                }
+                if node.deferred {
+                    write!(f, " DEFERRED")?;
+                }
+            }
+            PhysicalPlan::Commit(_) => {
+                write!(f, "Commit")?;
+            }
+            PhysicalPlan::Rollback(node) => {
+                write!(f, "Rollback")?;
+                if let Some(sp) = &node.to_savepoint {
+                    write!(f, " TO SAVEPOINT {sp}")?;
+                }
+            }
+            PhysicalPlan::Savepoint(node) => {
+                write!(f, "Savepoint: {}", node.name)?;
+            }
+            PhysicalPlan::ReleaseSavepoint(node) => {
+                write!(f, "ReleaseSavepoint: {}", node.name)?;
+            }
+            PhysicalPlan::SetTransaction(node) => {
+                write!(f, "SetTransaction")?;
+                if let Some(level) = &node.isolation_level {
+                    write!(f, " ISOLATION LEVEL {level}")?;
+                }
+                if let Some(mode) = &node.access_mode {
+                    write!(f, " {mode}")?;
                 }
             }
         }
