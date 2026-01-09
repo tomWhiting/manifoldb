@@ -152,6 +152,15 @@ impl WindowOp {
             | WindowFunction::NthValue { .. } => {
                 self.compute_frame_value(&rows, &indices, expr, &mut window_values);
             }
+            WindowFunction::Ntile { n } => {
+                self.compute_ntile(&rows, &indices, expr, *n, &mut window_values);
+            }
+            WindowFunction::PercentRank => {
+                self.compute_percent_rank(&rows, &indices, expr, &mut window_values);
+            }
+            WindowFunction::CumeDist => {
+                self.compute_cume_dist(&rows, &indices, expr, &mut window_values);
+            }
             WindowFunction::Aggregate(agg_func) => {
                 self.compute_aggregate_window(&rows, &indices, expr, *agg_func, &mut window_values);
             }
@@ -569,6 +578,188 @@ impl WindowOp {
             Value::Int(i)
         } else {
             Value::Null
+        }
+    }
+
+    /// Computes NTILE(n) window function.
+    ///
+    /// Divides rows in each partition into n buckets numbered 1 to n.
+    /// If the number of rows doesn't divide evenly, earlier buckets get one extra row.
+    fn compute_ntile(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        n: u64,
+        window_values: &mut [Value],
+    ) {
+        if n == 0 {
+            // NTILE(0) returns NULL for all rows
+            for &idx in indices {
+                window_values[idx] = Value::Null;
+            }
+            return;
+        }
+
+        // Build partition boundaries
+        let partition_ranges = self.build_partition_ranges(rows, indices, expr);
+
+        for (sorted_pos, &idx) in indices.iter().enumerate() {
+            let (partition_start, partition_end) = partition_ranges[sorted_pos];
+            let partition_size = partition_end - partition_start;
+
+            if partition_size == 0 {
+                window_values[idx] = Value::Null;
+                continue;
+            }
+
+            // Position within the partition (0-indexed)
+            let pos_in_partition = sorted_pos - partition_start;
+
+            // Calculate bucket assignment
+            // If partition_size = 10 and n = 4:
+            // - base_size = 10 / 4 = 2
+            // - remainder = 10 % 4 = 2
+            // - First 2 buckets get 3 rows each, last 2 get 2 rows each
+            // - Rows 0,1,2 -> bucket 1; rows 3,4,5 -> bucket 2; rows 6,7 -> bucket 3; rows 8,9 -> bucket 4
+            let n_usize = n as usize;
+            let buckets = n_usize.min(partition_size); // Can't have more buckets than rows
+            let base_size = partition_size / buckets;
+            let remainder = partition_size % buckets;
+
+            // Calculate bucket for this row
+            // Buckets 0..remainder have (base_size + 1) rows
+            // Buckets remainder..n have base_size rows
+            let bucket = if pos_in_partition < remainder * (base_size + 1) {
+                pos_in_partition / (base_size + 1)
+            } else {
+                let adjusted_pos = pos_in_partition - remainder * (base_size + 1);
+                remainder + adjusted_pos / base_size
+            };
+
+            // NTILE returns 1-indexed bucket numbers
+            window_values[idx] = Value::Int((bucket + 1) as i64);
+        }
+    }
+
+    /// Computes PERCENT_RANK() window function.
+    ///
+    /// Formula: (rank - 1) / (total_rows - 1)
+    /// Returns 0 for the first row in each partition.
+    /// Returns 0 if there's only one row in the partition.
+    fn compute_percent_rank(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        window_values: &mut [Value],
+    ) {
+        // Build partition boundaries
+        let partition_ranges = self.build_partition_ranges(rows, indices, expr);
+
+        let mut current_partition_key: Option<Vec<Value>> = None;
+        let mut rank = 0i64;
+        let mut row_number = 0i64;
+        let mut prev_order_key: Option<Vec<Value>> = None;
+
+        for (sorted_pos, &idx) in indices.iter().enumerate() {
+            let (partition_start, partition_end) = partition_ranges[sorted_pos];
+            let partition_size = partition_end - partition_start;
+
+            // Get partition key for current row
+            let partition_key: Vec<Value> = expr
+                .partition_by
+                .iter()
+                .map(|e| evaluate_expr(e, &rows[idx]).unwrap_or(Value::Null))
+                .collect();
+
+            // Get order key for current row
+            let order_key: Vec<Value> = expr
+                .order_by
+                .iter()
+                .map(|s| evaluate_expr(&s.expr, &rows[idx]).unwrap_or(Value::Null))
+                .collect();
+
+            // Check if partition changed
+            let partition_changed = current_partition_key.as_ref() != Some(&partition_key);
+            if partition_changed {
+                current_partition_key = Some(partition_key);
+                row_number = 0;
+                rank = 0;
+                prev_order_key = None;
+            }
+
+            // Check if order key changed (for RANK calculation)
+            let order_key_changed = prev_order_key.as_ref() != Some(&order_key);
+
+            // Increment counters
+            row_number += 1;
+
+            if order_key_changed {
+                rank = row_number;
+            }
+
+            // Calculate percent_rank
+            let value = if partition_size <= 1 {
+                // Single row in partition: percent_rank is 0
+                0.0
+            } else {
+                // (rank - 1) / (total_rows - 1)
+                (rank - 1) as f64 / (partition_size - 1) as f64
+            };
+
+            window_values[idx] = Value::Float(value);
+            prev_order_key = Some(order_key);
+        }
+    }
+
+    /// Computes CUME_DIST() window function.
+    ///
+    /// Formula: rows_up_to_current / total_rows
+    /// Returns the fraction of rows with values <= current row's value.
+    fn compute_cume_dist(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        window_values: &mut [Value],
+    ) {
+        // Build partition boundaries
+        let partition_ranges = self.build_partition_ranges(rows, indices, expr);
+
+        let mut current_partition_key: Option<Vec<Value>> = None;
+
+        for (sorted_pos, &idx) in indices.iter().enumerate() {
+            let (partition_start, partition_end) = partition_ranges[sorted_pos];
+            let partition_size = partition_end - partition_start;
+
+            // Get partition key for current row
+            let partition_key: Vec<Value> = expr
+                .partition_by
+                .iter()
+                .map(|e| evaluate_expr(e, &rows[idx]).unwrap_or(Value::Null))
+                .collect();
+
+            // Check if partition changed
+            let partition_changed = current_partition_key.as_ref() != Some(&partition_key);
+            if partition_changed {
+                current_partition_key = Some(partition_key);
+            }
+
+            // Count rows with values <= current (peers included)
+            // This is equivalent to finding the last row with the same order key
+            // CUME_DIST includes all peer rows
+            let peers_end = self.find_peers_end(rows, indices, expr, sorted_pos, partition_end);
+            let rows_up_to_and_including_peers = peers_end - partition_start;
+
+            // Calculate cume_dist
+            let value = if partition_size == 0 {
+                1.0
+            } else {
+                rows_up_to_and_including_peers as f64 / partition_size as f64
+            };
+
+            window_values[idx] = Value::Float(value);
         }
     }
 
@@ -2618,6 +2809,539 @@ mod tests {
         for avg in avgs {
             assert!((avg - 25.0).abs() < 0.001);
         }
+
+        op.close().unwrap();
+    }
+
+    // ========== NTILE Tests ==========
+
+    #[test]
+    fn ntile_basic() {
+        // NTILE(4) over 4 rows should give each row a different bucket
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::Ntile { n: 4 },
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "quartile",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Int(q))) =
+                (row.get_by_name("name"), row.get_by_name("quartile"))
+            {
+                results.insert(name.clone(), *q);
+            }
+        }
+
+        // Each row gets a different bucket: Alice=1, Bob=2, Carol=3, Dave=4
+        assert_eq!(results.get("Alice"), Some(&1));
+        assert_eq!(results.get("Bob"), Some(&2));
+        assert_eq!(results.get("Carol"), Some(&3));
+        assert_eq!(results.get("Dave"), Some(&4));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn ntile_uneven_distribution() {
+        // NTILE(3) over 4 rows: first bucket gets 2 rows, rest get 1 each
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::Ntile { n: 3 },
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "tile",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Int(t))) =
+                (row.get_by_name("name"), row.get_by_name("tile"))
+            {
+                results.insert(name.clone(), *t);
+            }
+        }
+
+        // 4 rows / 3 tiles: first tile gets 2 rows (Alice, Bob), rest get 1 each
+        assert_eq!(results.get("Alice"), Some(&1));
+        assert_eq!(results.get("Bob"), Some(&1));
+        assert_eq!(results.get("Carol"), Some(&2));
+        assert_eq!(results.get("Dave"), Some(&3));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn ntile_with_partition() {
+        // NTILE(2) with partition by department
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "dept".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::from("Sales"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::from("Sales"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::from("IT"), Value::Int(95)],
+                vec![Value::from("Dave"), Value::from("IT"), Value::Int(80)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::Ntile { n: 2 },
+            vec![LogicalExpr::column("dept")],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "half",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Int(h))) =
+                (row.get_by_name("name"), row.get_by_name("half"))
+            {
+                results.insert(name.clone(), *h);
+            }
+        }
+
+        // Sales: Alice=1, Bob=2
+        // IT: Carol=1, Dave=2
+        assert_eq!(results.get("Alice"), Some(&1));
+        assert_eq!(results.get("Bob"), Some(&2));
+        assert_eq!(results.get("Carol"), Some(&1));
+        assert_eq!(results.get("Dave"), Some(&2));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn ntile_more_buckets_than_rows() {
+        // NTILE(10) over 4 rows: each row gets its own bucket 1-4
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::Ntile { n: 10 },
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "bucket",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Int(b))) =
+                (row.get_by_name("name"), row.get_by_name("bucket"))
+            {
+                results.insert(name.clone(), *b);
+            }
+        }
+
+        // Can't have more buckets than rows, so each row gets buckets 1-4
+        assert_eq!(results.get("Alice"), Some(&1));
+        assert_eq!(results.get("Bob"), Some(&2));
+        assert_eq!(results.get("Carol"), Some(&3));
+        assert_eq!(results.get("Dave"), Some(&4));
+
+        op.close().unwrap();
+    }
+
+    // ========== PERCENT_RANK Tests ==========
+
+    #[test]
+    fn percent_rank_basic() {
+        // PERCENT_RANK() over 4 rows: (rank-1)/(n-1) = 0, 1/3, 2/3, 1
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::PercentRank,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "pct_rank",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(pr))) =
+                (row.get_by_name("name"), row.get_by_name("pct_rank"))
+            {
+                results.insert(name.clone(), *pr);
+            }
+        }
+
+        // Alice: rank=1, (1-1)/(4-1) = 0/3 = 0.0
+        // Bob: rank=2, (2-1)/(4-1) = 1/3 ≈ 0.333
+        // Carol: rank=3, (3-1)/(4-1) = 2/3 ≈ 0.667
+        // Dave: rank=4, (4-1)/(4-1) = 3/3 = 1.0
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.0).abs() < 0.001);
+        assert!((bob - 0.333).abs() < 0.01);
+        assert!((carol - 0.667).abs() < 0.01);
+        assert!((dave - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn percent_rank_with_ties() {
+        // PERCENT_RANK() with ties in scores
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(90)], // tie with Bob
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::PercentRank,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "pct_rank",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(pr))) =
+                (row.get_by_name("name"), row.get_by_name("pct_rank"))
+            {
+                results.insert(name.clone(), *pr);
+            }
+        }
+
+        // Alice: rank=1, (1-1)/(4-1) = 0.0
+        // Bob, Carol: rank=2 (tie), (2-1)/(4-1) = 1/3 ≈ 0.333
+        // Dave: rank=4, (4-1)/(4-1) = 1.0
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.0).abs() < 0.001);
+        assert!((bob - 0.333).abs() < 0.01);
+        assert!((carol - 0.333).abs() < 0.01); // Same as Bob
+        assert!((dave - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn percent_rank_single_row() {
+        // PERCENT_RANK() with single row should be 0
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![vec![Value::from("Alice"), Value::Int(100)]],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::PercentRank,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "pct_rank",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut pct_rank = None;
+        while let Some(row) = op.next().unwrap() {
+            if let Some(Value::Float(pr)) = row.get_by_name("pct_rank") {
+                pct_rank = Some(*pr);
+            }
+        }
+
+        // Single row: (1-1)/(1-1) = 0/0, should return 0 by convention
+        assert!((pct_rank.unwrap() - 0.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn percent_rank_with_partition() {
+        // PERCENT_RANK() with partition by department
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "dept".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::from("Sales"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::from("Sales"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::from("IT"), Value::Int(95)],
+                vec![Value::from("Dave"), Value::from("IT"), Value::Int(80)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::PercentRank,
+            vec![LogicalExpr::column("dept")],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "pct_rank",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(pr))) =
+                (row.get_by_name("name"), row.get_by_name("pct_rank"))
+            {
+                results.insert(name.clone(), *pr);
+            }
+        }
+
+        // Sales partition (2 rows): Alice=0, Bob=1
+        // IT partition (2 rows): Carol=0, Dave=1
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.0).abs() < 0.001);
+        assert!((bob - 1.0).abs() < 0.001);
+        assert!((carol - 0.0).abs() < 0.001);
+        assert!((dave - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    // ========== CUME_DIST Tests ==========
+
+    #[test]
+    fn cume_dist_basic() {
+        // CUME_DIST() over 4 rows: 1/4, 2/4, 3/4, 4/4
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(80)],
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::CumeDist,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "cume",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(cd))) =
+                (row.get_by_name("name"), row.get_by_name("cume"))
+            {
+                results.insert(name.clone(), *cd);
+            }
+        }
+
+        // Alice: 1/4 = 0.25
+        // Bob: 2/4 = 0.5
+        // Carol: 3/4 = 0.75
+        // Dave: 4/4 = 1.0
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.25).abs() < 0.001);
+        assert!((bob - 0.5).abs() < 0.001);
+        assert!((carol - 0.75).abs() < 0.001);
+        assert!((dave - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn cume_dist_with_ties() {
+        // CUME_DIST() with ties in scores - ties get the same value (end of peer group)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::Int(90)], // tie with Bob
+                vec![Value::from("Dave"), Value::Int(70)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::CumeDist,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "cume",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(cd))) =
+                (row.get_by_name("name"), row.get_by_name("cume"))
+            {
+                results.insert(name.clone(), *cd);
+            }
+        }
+
+        // Alice: 1/4 = 0.25
+        // Bob, Carol (tied): 3/4 = 0.75 (includes all rows with score <= current)
+        // Dave: 4/4 = 1.0
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.25).abs() < 0.001);
+        assert!((bob - 0.75).abs() < 0.001); // All 3 rows with score >= 90
+        assert!((carol - 0.75).abs() < 0.001); // Same as Bob
+        assert!((dave - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn cume_dist_single_row() {
+        // CUME_DIST() with single row should be 1.0
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "score".to_string()],
+            vec![vec![Value::from("Alice"), Value::Int(100)]],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::CumeDist,
+            vec![],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "cume",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut cume_dist = None;
+        while let Some(row) = op.next().unwrap() {
+            if let Some(Value::Float(cd)) = row.get_by_name("cume") {
+                cume_dist = Some(*cd);
+            }
+        }
+
+        // Single row: 1/1 = 1.0
+        assert!((cume_dist.unwrap() - 1.0).abs() < 0.001);
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn cume_dist_with_partition() {
+        // CUME_DIST() with partition by department
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string(), "dept".to_string(), "score".to_string()],
+            vec![
+                vec![Value::from("Alice"), Value::from("Sales"), Value::Int(100)],
+                vec![Value::from("Bob"), Value::from("Sales"), Value::Int(90)],
+                vec![Value::from("Carol"), Value::from("IT"), Value::Int(95)],
+                vec![Value::from("Dave"), Value::from("IT"), Value::Int(80)],
+            ],
+        ));
+
+        let window_expr = WindowFunctionExpr::new(
+            WindowFunction::CumeDist,
+            vec![LogicalExpr::column("dept")],
+            vec![SortOrder::desc(LogicalExpr::column("score"))],
+            "cume",
+        );
+        let mut op = WindowOp::new(vec![window_expr], input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut results: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        while let Some(row) = op.next().unwrap() {
+            if let (Some(Value::String(name)), Some(Value::Float(cd))) =
+                (row.get_by_name("name"), row.get_by_name("cume"))
+            {
+                results.insert(name.clone(), *cd);
+            }
+        }
+
+        // Sales partition (2 rows): Alice=0.5, Bob=1.0
+        // IT partition (2 rows): Carol=0.5, Dave=1.0
+        let alice = *results.get("Alice").unwrap();
+        let bob = *results.get("Bob").unwrap();
+        let carol = *results.get("Carol").unwrap();
+        let dave = *results.get("Dave").unwrap();
+
+        assert!((alice - 0.5).abs() < 0.001);
+        assert!((bob - 1.0).abs() < 0.001);
+        assert!((carol - 0.5).abs() < 0.001);
+        assert!((dave - 1.0).abs() < 0.001);
 
         op.close().unwrap();
     }

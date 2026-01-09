@@ -693,8 +693,55 @@ impl PlanBuilder {
                 })
             }
 
+            // Distribution/ranking functions
+            "NTILE" => {
+                let n = self.get_window_ntile_arg(&func.args)?;
+                Ok(LogicalExpr::WindowFunction {
+                    func: WindowFunction::Ntile { n },
+                    arg: None,
+                    default_value: None,
+                    partition_by,
+                    order_by,
+                    frame: over.frame.clone(),
+                })
+            }
+            "PERCENT_RANK" => Ok(LogicalExpr::WindowFunction {
+                func: WindowFunction::PercentRank,
+                arg: None,
+                default_value: None,
+                partition_by,
+                order_by,
+                frame: over.frame.clone(),
+            }),
+            "CUME_DIST" => Ok(LogicalExpr::WindowFunction {
+                func: WindowFunction::CumeDist,
+                arg: None,
+                default_value: None,
+                partition_by,
+                order_by,
+                frame: over.frame.clone(),
+            }),
+
             _ => Err(PlanError::Unsupported(format!("window function: {name}"))),
         }
+    }
+
+    /// Gets the n argument for NTILE.
+    fn get_window_ntile_arg(&self, args: &[Expr]) -> PlanResult<u64> {
+        if args.is_empty() {
+            return Err(PlanError::Unsupported(
+                "NTILE requires one argument (number of buckets)".to_string(),
+            ));
+        }
+        if let Expr::Literal(ast::Literal::Integer(n)) = &args[0] {
+            if *n > 0 {
+                return Ok(*n as u64);
+            }
+            return Err(PlanError::Unsupported(
+                "NTILE argument must be a positive integer".to_string(),
+            ));
+        }
+        Err(PlanError::Unsupported("NTILE argument must be a positive integer literal".to_string()))
     }
 
     /// Gets the first argument for a window function.

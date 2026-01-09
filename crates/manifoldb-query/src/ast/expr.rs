@@ -337,6 +337,24 @@ pub enum WindowFunction {
         /// The 1-indexed position (n) in the frame.
         n: u64,
     },
+    /// NTILE(n) - divides rows into n buckets (1 to n).
+    ///
+    /// The buckets are as equal in size as possible. If the number of rows
+    /// doesn't divide evenly, earlier buckets get one extra row.
+    Ntile {
+        /// The number of buckets to divide rows into.
+        n: u64,
+    },
+    /// PERCENT_RANK() - relative rank as percentage (0 to 1).
+    ///
+    /// Formula: (rank - 1) / (total_rows - 1)
+    /// Returns 0 for the first row in each partition.
+    PercentRank,
+    /// CUME_DIST() - cumulative distribution (fraction of rows ≤ current).
+    ///
+    /// Formula: rows_up_to_current / total_rows
+    /// Returns a value between 0 and 1 (exclusive of 0, inclusive of 1).
+    CumeDist,
     /// Aggregate functions used as window functions.
     /// Example: `SUM(amount) OVER (ORDER BY date)` for running totals.
     Aggregate(AggregateWindowFunction),
@@ -371,6 +389,9 @@ impl std::fmt::Display for WindowFunction {
             Self::FirstValue => write!(f, "FIRST_VALUE"),
             Self::LastValue => write!(f, "LAST_VALUE"),
             Self::NthValue { n } => write!(f, "NTH_VALUE({n})"),
+            Self::Ntile { n } => write!(f, "NTILE({n})"),
+            Self::PercentRank => write!(f, "PERCENT_RANK"),
+            Self::CumeDist => write!(f, "CUME_DIST"),
             Self::Aggregate(agg) => write!(f, "{agg}"),
         }
     }

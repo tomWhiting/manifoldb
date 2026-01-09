@@ -105,7 +105,7 @@ These feature groups can be implemented independently:
 
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
-3. **Window Functions** - ✅ Complete (Jan 2026) - only NTILE remaining
+3. **Window Functions** - ✅ Complete (Jan 2026) - all ranking/distribution functions implemented
 4. **Graph Algorithms** - ✅ 13 procedures via CALL/YIELD (Jan 2026)
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
@@ -227,9 +227,9 @@ These feature groups can be implemented independently:
 | row_number() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | dense_rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
-| ntile(n) | ✓ | ✓ | | | | | Needs impl |
-| percent_rank() | | | | | | | Not implemented |
-| cume_dist() | | | | | | | Not implemented |
+| ntile(n) | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| percent_rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| cume_dist() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | **Value Functions** |
 | lag() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | lead() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
