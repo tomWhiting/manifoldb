@@ -309,8 +309,7 @@ impl SortMergeAggregateOp {
     fn update_accumulators(&mut self, row: &Row) -> OperatorResult<()> {
         for (i, agg_expr) in self.aggregates.iter().enumerate() {
             if let LogicalExpr::AggregateFunction { func, args, .. } = agg_expr {
-                let is_wildcard =
-                    args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                let is_wildcard = args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
                 let arg_values: Vec<Value> =
                     args.iter().map(|a| evaluate_expr(a, row)).collect::<Result<_, _>>()?;
                 self.accumulators[i].update(func, &arg_values, is_wildcard);
