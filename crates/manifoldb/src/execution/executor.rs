@@ -205,8 +205,8 @@ pub fn execute_graph_dml<T: Transaction + Send + Sync + 'static>(
     params: &[Value],
     max_rows_in_memory: usize,
 ) -> Result<(ResultSet, DatabaseTransaction<T>)> {
-    use super::DatabaseGraphMutator;
-    use manifoldb_query::exec::graph_accessor::GraphMutator;
+    use super::{DatabaseGraphAccessor, DatabaseGraphMutator};
+    use manifoldb_query::exec::graph_accessor::{GraphAccessor, GraphMutator};
 
     // Parse SQL using ExtendedParser to support Cypher syntax
     let stmt = ExtendedParser::parse_single(sql)?;
@@ -230,9 +230,13 @@ pub fn execute_graph_dml<T: Transaction + Send + Sync + 'static>(
     // Create a graph mutator wrapping the transaction
     let mutator = DatabaseGraphMutator::new(tx);
 
-    // Create execution context with parameters, row limit, and graph mutator
+    // Create a graph accessor sharing the same transaction for MATCH + CREATE patterns
+    let accessor = DatabaseGraphAccessor::from_arc(mutator.transaction_arc());
+
+    // Create execution context with parameters, row limit, graph mutator, and graph accessor
     let mut ctx = create_context_with_limit(params, max_rows_in_memory);
     ctx = ctx.with_graph_mutator(Arc::new(mutator.clone()) as Arc<dyn GraphMutator>);
+    ctx = ctx.with_graph(Arc::new(accessor) as Arc<dyn GraphAccessor>);
 
     // Execute the physical plan using the query executor
     let result = execute_graph_physical_plan(&physical_plan, &ctx)?;

@@ -136,7 +136,32 @@ pub fn evaluate_expr_with_graph(
             // This supports both regular queries and joins with aliased tables
             let value = if let Some(qual) = qualifier {
                 let qualified_name = format!("{}.{}", qual, name);
-                row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name))
+                let direct_value =
+                    row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name));
+
+                // If we have a graph accessor and didn't find the qualified name directly,
+                // check if the qualifier refers to an entity ID column and look up the property
+                // from the graph. This enables MATCH (n:Label {prop: value}) patterns where
+                // the row only contains entity IDs and properties must be fetched from storage.
+                if direct_value.is_none() {
+                    if let Some(graph) = graph {
+                        // Check if there's a column with just the qualifier name that contains an entity ID
+                        if let Some(entity_value) = row.get_by_name(qual) {
+                            if let Value::Int(id) = entity_value {
+                                let entity_id = EntityId::new(*id as u64);
+                                // Try to get the property from the graph
+                                if let Ok(Some(properties)) = graph.get_entity_properties(entity_id)
+                                {
+                                    if let Some(prop_value) = properties.get(name) {
+                                        return Ok(prop_value.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                direct_value
             } else {
                 // For unqualified names, also try finding a match that ends with ".name"
                 row.get_by_name(name).or_else(|| {
@@ -154,13 +179,13 @@ pub fn evaluate_expr_with_graph(
         }
 
         LogicalExpr::BinaryOp { left, op, right } => {
-            let left_val = evaluate_expr(left, row)?;
-            let right_val = evaluate_expr(right, row)?;
+            let left_val = evaluate_expr_with_graph(left, row, graph)?;
+            let right_val = evaluate_expr_with_graph(right, row, graph)?;
             evaluate_binary_op(&left_val, op, &right_val)
         }
 
         LogicalExpr::UnaryOp { op, operand } => {
-            let val = evaluate_expr(operand, row)?;
+            let val = evaluate_expr_with_graph(operand, row, graph)?;
             evaluate_unary_op(op, &val)
         }
 
@@ -7694,6 +7719,52 @@ mod tests {
             _config: &crate::exec::graph_accessor::PathFindConfig,
         ) -> crate::exec::graph_accessor::GraphAccessResult<
             Vec<crate::exec::graph_accessor::PathMatchResult>,
+        > {
+            Ok(vec![])
+        }
+
+        fn shortest_path(
+            &self,
+            _source: EntityId,
+            _target: EntityId,
+            _config: &crate::exec::graph_accessor::ShortestPathConfig,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Vec<crate::exec::graph_accessor::ShortestPathResult>,
+        > {
+            Ok(vec![])
+        }
+
+        fn get_entity_properties(
+            &self,
+            _entity_id: EntityId,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Option<std::collections::HashMap<String, manifoldb_core::Value>>,
+        > {
+            Ok(Some(std::collections::HashMap::new()))
+        }
+
+        fn get_edge_properties(
+            &self,
+            _edge_id: manifoldb_core::EdgeId,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Option<std::collections::HashMap<String, manifoldb_core::Value>>,
+        > {
+            Ok(Some(std::collections::HashMap::new()))
+        }
+
+        fn entity_has_labels(
+            &self,
+            _entity_id: EntityId,
+            _labels: &[String],
+        ) -> crate::exec::graph_accessor::GraphAccessResult<bool> {
+            Ok(true)
+        }
+
+        fn scan_nodes(
+            &self,
+            _label: Option<&str>,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Vec<crate::exec::graph_accessor::NodeScanResult>,
         > {
             Ok(vec![])
         }

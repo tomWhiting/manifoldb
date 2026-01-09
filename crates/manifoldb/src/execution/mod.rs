@@ -14,7 +14,7 @@ pub use executor::{
     execute_graph_dml, execute_prepared_query, execute_prepared_statement, execute_query,
     execute_query_with_catalog, execute_query_with_limit, execute_statement, is_cypher_dml,
 };
-pub use graph_accessor::DatabaseGraphMutator;
+pub use graph_accessor::{DatabaseGraphAccessor, DatabaseGraphMutator};
 pub use index_maintenance::EntityIndexMaintenance;
 pub use scan::{CollectionContext, StorageScan};
 pub use table_extractor::extract_tables_from_sql;

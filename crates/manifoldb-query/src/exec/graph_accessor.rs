@@ -4,8 +4,32 @@
 //! graph traversal operations for use in query execution. The trait
 //! is object-safe and can be stored in the execution context.
 
-use manifoldb_core::{EdgeId, EdgeType, EntityId};
+use std::collections::HashMap;
+
+use manifoldb_core::{EdgeId, EdgeType, Entity, EntityId, Value};
 use manifoldb_graph::traversal::{Direction, PathPattern, PathStep, PatternMatch, StepFilter};
+
+/// Result of scanning nodes by label.
+#[derive(Debug, Clone)]
+pub struct NodeScanResult {
+    /// The entity ID.
+    pub id: EntityId,
+    /// The labels on this entity.
+    pub labels: Vec<String>,
+    /// The properties of this entity.
+    pub properties: HashMap<String, Value>,
+}
+
+impl NodeScanResult {
+    /// Create a new node scan result from an entity.
+    pub fn from_entity(entity: &Entity) -> Self {
+        Self {
+            id: entity.id,
+            labels: entity.labels.iter().map(|l| l.as_str().to_string()).collect(),
+            properties: entity.properties.clone(),
+        }
+    }
+}
 
 /// Result of a neighbor expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +307,36 @@ pub trait GraphAccessor: Send + Sync {
         target: EntityId,
         config: &ShortestPathConfig,
     ) -> GraphAccessResult<Vec<ShortestPathResult>>;
+
+    /// Get the properties of an entity (node) by its ID.
+    ///
+    /// Returns the entity's properties as a map, or None if the entity doesn't exist.
+    /// This is used for property filtering in MATCH patterns.
+    fn get_entity_properties(
+        &self,
+        entity_id: EntityId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>>;
+
+    /// Get the properties of an edge by its ID.
+    ///
+    /// Returns the edge's properties as a map, or None if the edge doesn't exist.
+    /// This is used for property filtering in MATCH patterns.
+    fn get_edge_properties(
+        &self,
+        edge_id: EdgeId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>>;
+
+    /// Check if an entity has all the specified labels.
+    ///
+    /// Returns true only if the entity exists and has ALL the specified labels.
+    fn entity_has_labels(&self, entity_id: EntityId, labels: &[String]) -> GraphAccessResult<bool>;
+
+    /// Scan all nodes with a given label.
+    ///
+    /// Returns all nodes (entities) that have the specified label.
+    /// If label is None, returns all nodes.
+    /// This is used for MATCH (n:Label) patterns.
+    fn scan_nodes(&self, label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>>;
 }
 
 /// A null implementation of `GraphAccessor` that returns no results.
@@ -343,6 +397,32 @@ impl GraphAccessor for NullGraphAccessor {
         _target: EntityId,
         _config: &ShortestPathConfig,
     ) -> GraphAccessResult<Vec<ShortestPathResult>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_entity_properties(
+        &self,
+        _entity_id: EntityId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_edge_properties(
+        &self,
+        _edge_id: EdgeId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn entity_has_labels(
+        &self,
+        _entity_id: EntityId,
+        _labels: &[String],
+    ) -> GraphAccessResult<bool> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn scan_nodes(&self, _label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -522,14 +602,49 @@ where
                 .map_err(|e| GraphAccessError::Internal(e.to_string()))
         }
     }
+
+    fn get_entity_properties(
+        &self,
+        _entity_id: EntityId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        // TransactionGraphAccessor uses the low-level storage Transaction trait,
+        // which doesn't have direct entity property access.
+        // This requires the higher-level DatabaseTransaction which is in the manifoldb crate.
+        // For now, return empty properties - the actual implementation will be in
+        // the manifoldb crate's graph accessor implementation.
+        Ok(Some(HashMap::new()))
+    }
+
+    fn get_edge_properties(
+        &self,
+        _edge_id: EdgeId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        // Same limitation as get_entity_properties
+        Ok(Some(HashMap::new()))
+    }
+
+    fn entity_has_labels(
+        &self,
+        _entity_id: EntityId,
+        labels: &[String],
+    ) -> GraphAccessResult<bool> {
+        // Without entity access, we can only return true if no labels required
+        Ok(labels.is_empty())
+    }
+
+    fn scan_nodes(&self, _label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>> {
+        // TransactionGraphAccessor uses the low-level storage Transaction trait,
+        // which doesn't have direct entity iteration.
+        // The actual implementation will be in the manifoldb crate's graph accessor.
+        Ok(vec![])
+    }
 }
 
 // ============================================================================
 // Graph Mutation Support
 // ============================================================================
 
-use manifoldb_core::{Edge, Entity, Label, Value};
-use std::collections::HashMap;
+use manifoldb_core::{Edge, Label};
 
 /// Specification for creating a node.
 #[derive(Debug, Clone)]

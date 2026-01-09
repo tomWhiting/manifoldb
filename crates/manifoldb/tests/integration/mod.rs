@@ -18,6 +18,7 @@ pub mod graph;
 pub mod graph_vector_search;
 pub mod index_maintenance;
 pub mod index_query;
+pub mod match_filter;
 pub mod prepared;
 pub mod recovery;
 pub mod scale;

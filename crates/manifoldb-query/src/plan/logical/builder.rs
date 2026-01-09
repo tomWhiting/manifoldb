@@ -20,15 +20,16 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, AlterTableStatement, CallStatement, CreateCollectionStatement, CreateGraphStatement,
-    CreateIndexStatement, CreateNodeRef, CreatePattern, CreateTableStatement, CreateViewStatement,
-    DeleteGraphStatement, DeleteStatement, DropCollectionStatement, DropIndexStatement,
-    DropTableStatement, DropViewStatement, Expr, ForeachAction as AstForeachAction,
-    ForeachStatement, GraphPattern, InsertSource, InsertStatement, JoinClause, JoinCondition,
-    JoinType as AstJoinType, MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern,
-    PathPattern, RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement,
-    SetAction as AstSetAction, SetGraphStatement, SetOperation, SetOperator, Statement, TableRef,
-    UpdateStatement, WindowFunction, YieldItem,
+    self, AlterTableStatement, BinaryOp, CallStatement, CreateCollectionStatement,
+    CreateGraphStatement, CreateIndexStatement, CreateNodeRef, CreatePattern, CreateTableStatement,
+    CreateViewStatement, DeleteGraphStatement, DeleteStatement, DropCollectionStatement,
+    DropIndexStatement, DropTableStatement, DropViewStatement, Expr,
+    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
+    InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
+    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, PropertyCondition,
+    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
+    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
+    WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -1042,6 +1043,45 @@ impl PlanBuilder {
         Ok(LogicalPlan::ShortestPath { node: Box::new(sp_node), input: Box::new(input) })
     }
 
+    /// Converts a list of property conditions to a logical expression filter.
+    ///
+    /// For a node/edge with variable `var` and properties `{name: 'Alice', age: 30}`,
+    /// this creates: `var.name = 'Alice' AND var.age = 30`.
+    fn properties_to_filter(
+        &mut self,
+        properties: &[PropertyCondition],
+        var_name: &str,
+    ) -> PlanResult<LogicalExpr> {
+        let mut conditions: Vec<LogicalExpr> = Vec::new();
+
+        for prop in properties {
+            // Build: var.property = value
+            let column = LogicalExpr::Column {
+                qualifier: Some(var_name.to_string()),
+                name: prop.name.name.clone(),
+            };
+            let value = self.build_expr(&prop.value)?;
+            let condition = LogicalExpr::BinaryOp {
+                left: Box::new(column),
+                op: BinaryOp::Eq,
+                right: Box::new(value),
+            };
+            conditions.push(condition);
+        }
+
+        // Combine with AND
+        let filter = conditions
+            .into_iter()
+            .reduce(|acc, cond| LogicalExpr::BinaryOp {
+                left: Box::new(acc),
+                op: BinaryOp::And,
+                right: Box::new(cond),
+            })
+            .unwrap_or_else(|| LogicalExpr::boolean(true));
+
+        Ok(filter)
+    }
+
     /// Builds a path pattern.
     fn build_path_pattern(
         &mut self,
@@ -1057,6 +1097,46 @@ impl PlanBuilder {
             .as_ref()
             .map(|v| v.name.clone())
             .unwrap_or_else(|| self.next_alias("node"));
+
+        // For standalone node patterns (no edges), we need to create a scan
+        // of all matching nodes.
+        if path.steps.is_empty() {
+            // Get the label(s) from the start node - we'll scan by the first label
+            if !path.start.labels.is_empty() {
+                let label = path.start.labels[0].name.clone();
+                let node_scan =
+                    LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
+
+                // If the input is an empty Values node, just use the scan directly.
+                // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
+                plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
+                {
+                    node_scan
+                } else {
+                    plan.cross_join(node_scan)
+                };
+            }
+
+            // Add property filter if specified
+            if !path.start.properties.is_empty() {
+                let start_filter = self.properties_to_filter(&path.start.properties, &start_var)?;
+                plan = LogicalPlan::Filter {
+                    node: FilterNode::new(start_filter),
+                    input: Box::new(plan),
+                };
+            }
+
+            return Ok(plan);
+        }
+
+        // Handle start node property filtering for patterns with edges
+        // The start node scan is handled by the first Expand which takes
+        // the input as its source. The property filter is applied after expansion.
+        if !path.start.properties.is_empty() {
+            let start_filter = self.properties_to_filter(&path.start.properties, &start_var)?;
+            plan =
+                LogicalPlan::Filter { node: FilterNode::new(start_filter), input: Box::new(plan) };
+        }
 
         // Build expand nodes for each step
         let mut current_var = start_var;
@@ -1083,8 +1163,9 @@ impl PlanBuilder {
             }
 
             // Add edge variable
-            if let Some(var) = &edge.variable {
-                expand = expand.with_edge_var(&var.name);
+            let edge_var_name = edge.variable.as_ref().map(|v| v.name.clone());
+            if let Some(ref var) = edge_var_name {
+                expand = expand.with_edge_var(var);
             }
 
             // Add variable length
@@ -1094,6 +1175,20 @@ impl PlanBuilder {
             if !node.labels.is_empty() {
                 expand =
                     expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
+            }
+
+            // Add node property filter
+            if !node.properties.is_empty() {
+                let node_filter = self.properties_to_filter(&node.properties, &dst_var)?;
+                expand = expand.with_node_filter(node_filter);
+            }
+
+            // Add edge property filter
+            if !edge.properties.is_empty() {
+                // For edge properties, we need a variable to reference
+                let edge_var = edge_var_name.clone().unwrap_or_else(|| self.next_alias("edge"));
+                let edge_filter = self.properties_to_filter(&edge.properties, &edge_var)?;
+                expand = expand.with_edge_filter(edge_filter);
             }
 
             plan = LogicalPlan::Expand { node: Box::new(expand), input: Box::new(plan) };

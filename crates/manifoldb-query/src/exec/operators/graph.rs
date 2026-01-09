@@ -15,8 +15,9 @@ use crate::exec::graph_accessor::{
     ShortestPathConfig, ShortestPathResult,
 };
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
+use crate::exec::operators::filter::evaluate_expr;
 use crate::exec::row::{Row, Schema};
-use crate::plan::logical::{ExpandDirection, ExpandLength};
+use crate::plan::logical::{ExpandDirection, ExpandLength, LogicalExpr};
 use crate::plan::physical::GraphExpandExecNode;
 
 /// Graph expand operator.
@@ -103,7 +104,7 @@ impl GraphExpandOp {
         let direction = Self::to_graph_direction(&self.node.direction);
         let edge_types = self.get_edge_types();
 
-        match &self.node.length {
+        let expanded: Vec<ExpandedNode> = match &self.node.length {
             ExpandLength::Single => {
                 // Single hop expansion
                 let results = if let Some(ref types) = edge_types {
@@ -112,31 +113,147 @@ impl GraphExpandOp {
                     graph.neighbors(source_id, direction)?
                 };
 
-                Ok(results
+                results
                     .into_iter()
                     .map(|r| ExpandedNode { entity_id: r.node, edge_id: Some(r.edge_id), depth: 1 })
-                    .collect())
+                    .collect()
             }
             ExpandLength::Exact(n) => {
                 // Exact depth: use expand_all with min=max=n
                 let results =
                     graph.expand_all(source_id, direction, *n, Some(*n), edge_types.as_deref())?;
 
-                Ok(results
+                results
                     .into_iter()
                     .map(|r| ExpandedNode { entity_id: r.node, edge_id: r.edge_id, depth: r.depth })
-                    .collect())
+                    .collect()
             }
             ExpandLength::Range { min, max } => {
                 // Variable length expansion
                 let results =
                     graph.expand_all(source_id, direction, *min, *max, edge_types.as_deref())?;
 
-                Ok(results
+                results
                     .into_iter()
                     .map(|r| ExpandedNode { entity_id: r.node, edge_id: r.edge_id, depth: r.depth })
-                    .collect())
+                    .collect()
             }
+        };
+
+        // Apply node label filter if specified
+        let expanded = if self.node.node_labels.is_empty() {
+            expanded
+        } else {
+            expanded
+                .into_iter()
+                .filter(|e| {
+                    graph.entity_has_labels(e.entity_id, &self.node.node_labels).unwrap_or(false)
+                })
+                .collect()
+        };
+
+        // Apply node property filter if specified
+        let expanded = if let Some(ref filter) = self.node.node_filter {
+            expanded
+                .into_iter()
+                .filter(|e| self.evaluate_node_filter(e.entity_id, filter).unwrap_or(false))
+                .collect()
+        } else {
+            expanded
+        };
+
+        // Apply edge property filter if specified
+        let expanded = if let Some(ref filter) = self.node.edge_filter {
+            expanded
+                .into_iter()
+                .filter(|e| {
+                    e.edge_id
+                        .map(|eid| self.evaluate_edge_filter(eid, filter).unwrap_or(false))
+                        .unwrap_or(false)
+                })
+                .collect()
+        } else {
+            expanded
+        };
+
+        Ok(expanded)
+    }
+
+    /// Evaluates a node property filter predicate against an entity.
+    fn evaluate_node_filter(
+        &self,
+        entity_id: EntityId,
+        filter: &LogicalExpr,
+    ) -> Result<bool, GraphAccessError> {
+        let graph = self.graph.as_ref().ok_or(GraphAccessError::NoStorage)?;
+
+        // Get the entity's properties
+        let props = graph.get_entity_properties(entity_id)?;
+        let props = match props {
+            Some(p) => p,
+            None => return Ok(false), // Entity doesn't exist
+        };
+
+        // Build a row with the node properties for filter evaluation
+        // The filter references properties using the destination variable name
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+
+        for (key, value) in props {
+            // Add both qualified (n.prop) and unqualified (prop) column names
+            columns.push(format!("{}.{}", self.node.dst_var, key));
+            values.push(value);
+        }
+
+        let schema = Arc::new(Schema::new(columns));
+        let row = Row::new(schema, values);
+
+        // Evaluate the filter expression
+        match evaluate_expr(filter, &row) {
+            Ok(Value::Bool(b)) => Ok(b),
+            Ok(Value::Null) => Ok(false),
+            Ok(_) => Ok(false),
+            Err(_) => Ok(false), // If filter evaluation fails, exclude the node
+        }
+    }
+
+    /// Evaluates an edge property filter predicate against an edge.
+    fn evaluate_edge_filter(
+        &self,
+        edge_id: manifoldb_core::EdgeId,
+        filter: &LogicalExpr,
+    ) -> Result<bool, GraphAccessError> {
+        let graph = self.graph.as_ref().ok_or(GraphAccessError::NoStorage)?;
+
+        // Get the edge's properties
+        let props = graph.get_edge_properties(edge_id)?;
+        let props = match props {
+            Some(p) => p,
+            None => return Ok(false), // Edge doesn't exist
+        };
+
+        // Build a row with the edge properties for filter evaluation
+        // The filter references properties using the edge variable name
+        let edge_var = self.node.edge_var.as_deref().unwrap_or("_edge");
+
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+
+        for (key, value) in props {
+            // Add both qualified (r.prop) and unqualified (prop) column names
+            columns.push(format!("{}.{}", edge_var, key));
+            values.push(value);
+        }
+
+        let schema = Arc::new(Schema::new(columns));
+        let row = Row::new(schema, values);
+
+        // Evaluate the filter expression
+        match evaluate_expr(filter, &row) {
+            Ok(Value::Bool(b)) => Ok(b),
+            Ok(Value::Null) => Ok(false),
+            Ok(_) => Ok(false),
+            Err(_) => Ok(false), // If filter evaluation fails, exclude the edge
         }
     }
 

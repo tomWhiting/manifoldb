@@ -632,6 +632,7 @@ These feature groups can be implemented independently:
 | CREATE node | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | CREATE relationship | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | CREATE with properties | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| MATCH + CREATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Match nodes then create relationships |
 | **MERGE** |
 | MERGE node | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | MERGE relationship | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |

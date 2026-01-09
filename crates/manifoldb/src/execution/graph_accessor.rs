@@ -6,13 +6,14 @@
 //! This approach uses the `DatabaseTransaction`'s own edge storage and indexing,
 //! ensuring compatibility with the edge key format used by `put_edge`/`get_edge`.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use manifoldb_core::{Edge, EdgeType, EntityId, Value};
+use manifoldb_core::{Edge, EdgeType, Entity, EntityId, Value};
+use manifoldb_query::exec::operators::filter::evaluate_expr;
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::ResultSet;
-use manifoldb_query::plan::logical::{ExpandDirection, ExpandLength, ExpandNode};
+use manifoldb_query::plan::logical::{ExpandDirection, ExpandLength, ExpandNode, LogicalExpr};
 use manifoldb_storage::Transaction;
 
 use crate::error::{Error, Result};
@@ -54,16 +55,47 @@ pub fn execute_expand_operation<T: Transaction>(
 
                 for (neighbor_id, edge) in neighbors {
                     // Apply node label filter if specified
-                    if !expand.node_labels.is_empty() {
-                        if let Some(entity) =
-                            tx.get_entity(neighbor_id).map_err(Error::Transaction)?
-                        {
-                            let has_label =
-                                expand.node_labels.iter().any(|label| entity.has_label(label));
-                            if !has_label {
+                    let entity = if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
+                        match tx.get_entity(neighbor_id).map_err(Error::Transaction)? {
+                            Some(e) => {
+                                // Check labels
+                                if !expand.node_labels.is_empty() {
+                                    let has_label =
+                                        expand.node_labels.iter().any(|label| e.has_label(label));
+                                    if !has_label {
+                                        continue;
+                                    }
+                                }
+                                Some(e)
+                            }
+                            None => continue,
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Apply node property filter if specified
+                    if let Some(ref filter) = expand.node_filter {
+                        // Get entity if we don't have it yet
+                        let entity_for_filter = match &entity {
+                            Some(e) => Some(e),
+                            None => {
+                                // This shouldn't happen since we already checked node_filter.is_some()
+                                // but handle it gracefully
                                 continue;
                             }
-                        } else {
+                        };
+                        if let Some(e) = entity_for_filter {
+                            if !evaluate_entity_filter(e, filter, &expand.dst_var) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Apply edge property filter if specified
+                    if let Some(ref filter) = expand.edge_filter {
+                        let edge_var = expand.edge_var.as_deref().unwrap_or("_edge");
+                        if !evaluate_edge_filter(&edge, filter, edge_var) {
                             continue;
                         }
                     }
@@ -99,15 +131,25 @@ pub fn execute_expand_operation<T: Transaction>(
                 )?;
 
                 for (neighbor_id, _depth) in traversal_results {
-                    // Apply node label filter if specified
-                    if !expand.node_labels.is_empty() {
+                    // Apply node label filter and property filter if specified
+                    if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
                         if let Some(entity) =
                             tx.get_entity(neighbor_id).map_err(Error::Transaction)?
                         {
-                            let has_label =
-                                expand.node_labels.iter().any(|label| entity.has_label(label));
-                            if !has_label {
-                                continue;
+                            // Check labels
+                            if !expand.node_labels.is_empty() {
+                                let has_label =
+                                    expand.node_labels.iter().any(|label| entity.has_label(label));
+                                if !has_label {
+                                    continue;
+                                }
+                            }
+
+                            // Check property filter
+                            if let Some(ref filter) = expand.node_filter {
+                                if !evaluate_entity_filter(&entity, filter, &expand.dst_var) {
+                                    continue;
+                                }
                             }
                         } else {
                             continue;
@@ -224,6 +266,60 @@ fn execute_variable_length_expansion<T: Transaction>(
     Ok(results)
 }
 
+/// Evaluates a property filter predicate against an entity.
+///
+/// Builds a row containing the entity's properties and evaluates
+/// the filter expression against it.
+fn evaluate_entity_filter(entity: &Entity, filter: &LogicalExpr, var_name: &str) -> bool {
+    // Build a row with the entity's properties
+    let mut columns = Vec::new();
+    let mut values = Vec::new();
+
+    for (key, value) in &entity.properties {
+        // Add qualified column name (e.g., "n.name")
+        columns.push(format!("{}.{}", var_name, key));
+        values.push(value.clone());
+    }
+
+    let schema = Arc::new(Schema::new(columns));
+    let row = Row::new(schema, values);
+
+    // Evaluate the filter expression
+    match evaluate_expr(filter, &row) {
+        Ok(Value::Bool(b)) => b,
+        Ok(Value::Null) => false,
+        Ok(_) => false,
+        Err(_) => false, // If filter evaluation fails, exclude the entity
+    }
+}
+
+/// Evaluates a property filter predicate against an edge.
+///
+/// Builds a row containing the edge's properties and evaluates
+/// the filter expression against it.
+fn evaluate_edge_filter(edge: &Edge, filter: &LogicalExpr, var_name: &str) -> bool {
+    // Build a row with the edge's properties
+    let mut columns = Vec::new();
+    let mut values = Vec::new();
+
+    for (key, value) in &edge.properties {
+        // Add qualified column name (e.g., "r.since")
+        columns.push(format!("{}.{}", var_name, key));
+        values.push(value.clone());
+    }
+
+    let schema = Arc::new(Schema::new(columns));
+    let row = Row::new(schema, values);
+
+    // Evaluate the filter expression
+    match evaluate_expr(filter, &row) {
+        Ok(Value::Bool(b)) => b,
+        Ok(Value::Null) => false,
+        Ok(_) => false,
+        Err(_) => false, // If filter evaluation fails, exclude the edge
+    }
+}
+
 /// Extract entity IDs and their corresponding rows from a ResultSet.
 ///
 /// This function looks for an ID column (matching the source variable pattern)
@@ -262,8 +358,11 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
 // Graph Mutator Implementation for DatabaseTransaction
 // ============================================================================
 
+use manifoldb_graph::traversal::Direction;
 use manifoldb_query::exec::graph_accessor::{
-    CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphMutator,
+    CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphAccessor,
+    GraphMutator, NeighborResult, NodeScanResult, PathFindConfig, PathMatchResult,
+    ShortestPathConfig, ShortestPathResult, TraversalResult,
 };
 
 /// A `GraphMutator` implementation that wraps a `DatabaseTransaction`.
@@ -370,6 +469,260 @@ where
             .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
 
         Ok(edge)
+    }
+}
+
+// ============================================================================
+// Graph Accessor Implementation for DatabaseTransaction
+// ============================================================================
+
+/// A `GraphAccessor` implementation that wraps a `DatabaseTransaction`.
+///
+/// This allows MATCH operations to read from the database's entity and edge storage.
+/// The transaction is shared with `DatabaseGraphMutator` for MATCH + CREATE patterns.
+pub struct DatabaseGraphAccessor<T: Transaction> {
+    tx: std::sync::Arc<std::sync::RwLock<Option<DatabaseTransaction<T>>>>,
+}
+
+impl<T: Transaction> DatabaseGraphAccessor<T> {
+    /// Create a new accessor sharing a transaction arc (typically from a DatabaseGraphMutator).
+    pub fn from_arc(tx: std::sync::Arc<std::sync::RwLock<Option<DatabaseTransaction<T>>>>) -> Self {
+        Self { tx }
+    }
+}
+
+impl<T: Transaction> Clone for DatabaseGraphAccessor<T> {
+    fn clone(&self) -> Self {
+        Self { tx: self.tx.clone() }
+    }
+}
+
+impl<T> GraphAccessor for DatabaseGraphAccessor<T>
+where
+    T: Transaction + Send + Sync,
+{
+    fn neighbors(
+        &self,
+        node: EntityId,
+        direction: Direction,
+    ) -> GraphAccessResult<Vec<NeighborResult>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        let mut results = Vec::new();
+
+        if matches!(direction, Direction::Outgoing | Direction::Both) {
+            let edges = tx
+                .get_outgoing_edges(node)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+            for edge in edges {
+                results.push(NeighborResult::new(edge.target, edge.id, Direction::Outgoing));
+            }
+        }
+
+        if matches!(direction, Direction::Incoming | Direction::Both) {
+            let edges = tx
+                .get_incoming_edges(node)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+            for edge in edges {
+                results.push(NeighborResult::new(edge.source, edge.id, Direction::Incoming));
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn neighbors_by_type(
+        &self,
+        node: EntityId,
+        direction: Direction,
+        edge_type: &EdgeType,
+    ) -> GraphAccessResult<Vec<NeighborResult>> {
+        self.neighbors_by_types(node, direction, std::slice::from_ref(edge_type))
+    }
+
+    fn neighbors_by_types(
+        &self,
+        node: EntityId,
+        direction: Direction,
+        edge_types: &[EdgeType],
+    ) -> GraphAccessResult<Vec<NeighborResult>> {
+        let all_neighbors = self.neighbors(node, direction)?;
+        if edge_types.is_empty() {
+            return Ok(all_neighbors);
+        }
+
+        // Filter by edge types - we need to get the edge to check its type
+        // For efficiency we'd need an index, but for now just filter all neighbors
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        let filtered: Vec<NeighborResult> = all_neighbors
+            .into_iter()
+            .filter(|n| {
+                if let Ok(Some(edge)) = tx.get_edge(n.edge_id) {
+                    edge_types.iter().any(|et| et.as_str() == edge.edge_type.as_str())
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    fn expand_all(
+        &self,
+        node: EntityId,
+        direction: Direction,
+        min_depth: usize,
+        max_depth: Option<usize>,
+        edge_types: Option<&[EdgeType]>,
+    ) -> GraphAccessResult<Vec<TraversalResult>> {
+        // Simple BFS implementation
+        let mut visited: HashSet<EntityId> = HashSet::new();
+        let mut results: Vec<TraversalResult> = Vec::new();
+        let mut queue: VecDeque<(EntityId, usize)> = VecDeque::new();
+
+        visited.insert(node);
+        queue.push_back((node, 0));
+
+        if min_depth == 0 {
+            results.push(TraversalResult::new(node, None, 0));
+        }
+
+        while let Some((current, depth)) = queue.pop_front() {
+            let should_expand = max_depth.map_or(true, |max| depth < max);
+            if !should_expand {
+                continue;
+            }
+
+            let neighbors = if let Some(types) = edge_types {
+                self.neighbors_by_types(current, direction, types)?
+            } else {
+                self.neighbors(current, direction)?
+            };
+
+            for neighbor in neighbors {
+                if visited.contains(&neighbor.node) {
+                    continue;
+                }
+
+                visited.insert(neighbor.node);
+                let next_depth = depth + 1;
+
+                queue.push_back((neighbor.node, next_depth));
+
+                if next_depth >= min_depth {
+                    results.push(TraversalResult::new(
+                        neighbor.node,
+                        Some(neighbor.edge_id),
+                        next_depth,
+                    ));
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn find_paths(
+        &self,
+        _start: EntityId,
+        _config: &PathFindConfig,
+    ) -> GraphAccessResult<Vec<PathMatchResult>> {
+        // Not implemented for graph DML context
+        Ok(vec![])
+    }
+
+    fn shortest_path(
+        &self,
+        _source: EntityId,
+        _target: EntityId,
+        _config: &ShortestPathConfig,
+    ) -> GraphAccessResult<Vec<ShortestPathResult>> {
+        // Not implemented for graph DML context
+        Ok(vec![])
+    }
+
+    fn get_entity_properties(
+        &self,
+        entity_id: EntityId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        match tx.get_entity(entity_id) {
+            Ok(Some(entity)) => Ok(Some(entity.properties.clone())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(GraphAccessError::Internal(e.to_string())),
+        }
+    }
+
+    fn get_edge_properties(
+        &self,
+        edge_id: manifoldb_core::EdgeId,
+    ) -> GraphAccessResult<Option<HashMap<String, Value>>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        match tx.get_edge(edge_id) {
+            Ok(Some(edge)) => Ok(Some(edge.properties.clone())),
+            Ok(None) => Ok(None),
+            Err(e) => Err(GraphAccessError::Internal(e.to_string())),
+        }
+    }
+
+    fn entity_has_labels(&self, entity_id: EntityId, labels: &[String]) -> GraphAccessResult<bool> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        match tx.get_entity(entity_id) {
+            Ok(Some(entity)) => Ok(labels.iter().all(|l| entity.has_label(l))),
+            Ok(None) => Ok(false),
+            Err(e) => Err(GraphAccessError::Internal(e.to_string())),
+        }
+    }
+
+    fn scan_nodes(&self, label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        // Use iter_entities to get all entities with the given label
+        let entities =
+            tx.iter_entities(label).map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        Ok(entities.iter().map(NodeScanResult::from_entity).collect())
     }
 }
 

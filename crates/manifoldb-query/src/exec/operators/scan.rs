@@ -54,8 +54,36 @@ impl FullScanOp {
 }
 
 impl Operator for FullScanOp {
-    fn open(&mut self, _ctx: &ExecutionContext) -> OperatorResult<()> {
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
         self.current_row = 0;
+
+        // If we have no data yet, try to load data from graph storage
+        // This handles MATCH (n:Label) patterns where the scan table name is a label
+        if self.data.is_empty() {
+            // Try to use the graph accessor to scan nodes by label
+            let graph = ctx.graph();
+            match graph.scan_nodes(Some(&self.node.table_name)) {
+                Ok(nodes) => {
+                    // Get the alias from the node configuration, or use table name
+                    let alias = self.node.alias.as_deref().unwrap_or(&self.node.table_name);
+
+                    // Build rows from the scanned nodes
+                    // For MATCH patterns, we typically need the entity ID under the alias
+                    self.data = nodes
+                        .into_iter()
+                        .map(|node| vec![Value::Int(node.id.as_u64() as i64)])
+                        .collect();
+
+                    // Update schema to use the alias
+                    self.base = OperatorBase::new(Arc::new(Schema::new(vec![alias.to_string()])));
+                }
+                Err(_) => {
+                    // If scan_nodes returns an error (e.g., NoStorage), we keep the empty data
+                    // This is expected for contexts without graph storage
+                }
+            }
+        }
+
         self.base.set_open();
         Ok(())
     }
