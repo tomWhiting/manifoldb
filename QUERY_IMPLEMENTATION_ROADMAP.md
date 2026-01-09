@@ -132,7 +132,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] Window function expressions with frame specs ✅ Jan 2026
   - [x] List comprehensions `[x IN list WHERE ... | expr]` ✅ Jan 2026
   - [x] Map projections `node{.prop1, .prop2}` ✅ Jan 2026
-  - [ ] Pattern expressions (for EXISTS subqueries)
+  - [x] Pattern expressions (for EXISTS subqueries) ✅ Jan 2026
   - [ ] Temporal literals and operations
   - [ ] Spatial point literals
 - [ ] Implement expression type inference
