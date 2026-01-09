@@ -2155,6 +2155,59 @@ impl PlanBuilder {
                 Ok(LogicalExpr::ListLiteral(elements))
             }
 
+            Expr::ListPredicateAll { variable, list_expr, predicate } => {
+                let list = self.build_expr(list_expr)?;
+                let pred = self.build_expr(predicate)?;
+                Ok(LogicalExpr::ListPredicateAll {
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    predicate: Box::new(pred),
+                })
+            }
+
+            Expr::ListPredicateAny { variable, list_expr, predicate } => {
+                let list = self.build_expr(list_expr)?;
+                let pred = self.build_expr(predicate)?;
+                Ok(LogicalExpr::ListPredicateAny {
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    predicate: Box::new(pred),
+                })
+            }
+
+            Expr::ListPredicateNone { variable, list_expr, predicate } => {
+                let list = self.build_expr(list_expr)?;
+                let pred = self.build_expr(predicate)?;
+                Ok(LogicalExpr::ListPredicateNone {
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    predicate: Box::new(pred),
+                })
+            }
+
+            Expr::ListPredicateSingle { variable, list_expr, predicate } => {
+                let list = self.build_expr(list_expr)?;
+                let pred = self.build_expr(predicate)?;
+                Ok(LogicalExpr::ListPredicateSingle {
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    predicate: Box::new(pred),
+                })
+            }
+
+            Expr::ListReduce { accumulator, initial, variable, list_expr, expression } => {
+                let init = self.build_expr(initial)?;
+                let list = self.build_expr(list_expr)?;
+                let expr = self.build_expr(expression)?;
+                Ok(LogicalExpr::ListReduce {
+                    accumulator: accumulator.name.clone(),
+                    initial: Box::new(init),
+                    variable: variable.name.clone(),
+                    list_expr: Box::new(list),
+                    expression: Box::new(expr),
+                })
+            }
+
             Expr::MapProjection { source, items } => {
                 let source_expr = self.build_expr(source)?;
                 let logical_items = items

@@ -210,6 +210,92 @@ pub enum LogicalExpr {
     /// A list literal expression: `[expr1, expr2, ...]`.
     ListLiteral(Vec<LogicalExpr>),
 
+    /// Cypher list predicate function: `all(variable IN list WHERE predicate)`.
+    ///
+    /// Returns true if ALL elements in the list satisfy the predicate.
+    ///
+    /// Examples:
+    /// - `all(x IN [1, 2, 3] WHERE x > 0)` → true
+    /// - `all(x IN [1, -2, 3] WHERE x > 0)` → false
+    ListPredicateAll {
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Predicate expression to evaluate for each element.
+        predicate: Box<LogicalExpr>,
+    },
+
+    /// Cypher list predicate function: `any(variable IN list WHERE predicate)`.
+    ///
+    /// Returns true if ANY element in the list satisfies the predicate.
+    ///
+    /// Examples:
+    /// - `any(x IN [1, 2, 3] WHERE x > 2)` → true
+    /// - `any(x IN [1, 2, 3] WHERE x > 5)` → false
+    ListPredicateAny {
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Predicate expression to evaluate for each element.
+        predicate: Box<LogicalExpr>,
+    },
+
+    /// Cypher list predicate function: `none(variable IN list WHERE predicate)`.
+    ///
+    /// Returns true if NO elements in the list satisfy the predicate.
+    ///
+    /// Examples:
+    /// - `none(x IN [1, 2, 3] WHERE x < 0)` → true
+    /// - `none(x IN [1, 2, 3] WHERE x > 2)` → false
+    ListPredicateNone {
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Predicate expression to evaluate for each element.
+        predicate: Box<LogicalExpr>,
+    },
+
+    /// Cypher list predicate function: `single(variable IN list WHERE predicate)`.
+    ///
+    /// Returns true if EXACTLY ONE element in the list satisfies the predicate.
+    ///
+    /// Examples:
+    /// - `single(x IN [1, 2, 3] WHERE x = 2)` → true
+    /// - `single(x IN [1, 2, 2] WHERE x = 2)` → false (two matches)
+    /// - `single(x IN [1, 3, 5] WHERE x = 2)` → false (no matches)
+    ListPredicateSingle {
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Predicate expression to evaluate for each element.
+        predicate: Box<LogicalExpr>,
+    },
+
+    /// Cypher reduce function: `reduce(accumulator = initial, variable IN list | expression)`.
+    ///
+    /// Performs a fold/reduce operation over a list, accumulating a result.
+    ///
+    /// Examples:
+    /// - `reduce(sum = 0, x IN [1, 2, 3] | sum + x)` → 6
+    /// - `reduce(product = 1, x IN [2, 3, 4] | product * x)` → 24
+    /// - `reduce(s = '', x IN ['a', 'b', 'c'] | s + x)` → 'abc'
+    ListReduce {
+        /// Accumulator variable name.
+        accumulator: String,
+        /// Initial value for the accumulator.
+        initial: Box<LogicalExpr>,
+        /// Variable name for iteration.
+        variable: String,
+        /// List expression to iterate over.
+        list_expr: Box<LogicalExpr>,
+        /// Expression to compute new accumulator value (can reference both accumulator and variable).
+        expression: Box<LogicalExpr>,
+    },
+
     /// Cypher map projection expression.
     ///
     /// Syntax: `node{.property1, .property2, key: expression, .*}`
@@ -1207,6 +1293,24 @@ impl fmt::Display for LogicalExpr {
                     write!(f, "{expr}")?;
                 }
                 write!(f, "]")
+            }
+            Self::ListPredicateAll { variable, list_expr, predicate } => {
+                write!(f, "all({variable} IN {list_expr} WHERE {predicate})")
+            }
+            Self::ListPredicateAny { variable, list_expr, predicate } => {
+                write!(f, "any({variable} IN {list_expr} WHERE {predicate})")
+            }
+            Self::ListPredicateNone { variable, list_expr, predicate } => {
+                write!(f, "none({variable} IN {list_expr} WHERE {predicate})")
+            }
+            Self::ListPredicateSingle { variable, list_expr, predicate } => {
+                write!(f, "single({variable} IN {list_expr} WHERE {predicate})")
+            }
+            Self::ListReduce { accumulator, initial, variable, list_expr, expression } => {
+                write!(
+                    f,
+                    "reduce({accumulator} = {initial}, {variable} IN {list_expr} | {expression})"
+                )
             }
             Self::MapProjection { source, items } => {
                 write!(f, "{source}{{")?;

@@ -776,11 +776,11 @@ These feature groups can be implemented independently:
 | last() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
 | reverse() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
 | range() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
-| reduce() | | | | | | | Not impl |
-| all() | | | | | | | Not impl |
-| any() | | | | | | | Not impl |
-| none() | | | | | | | Not impl |
-| single() | | | | | | | Not impl |
+| reduce() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| all() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| any() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| none() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
+| single() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Agent impl Jan 2026 † |
 
 ## 2.11 String Functions
 

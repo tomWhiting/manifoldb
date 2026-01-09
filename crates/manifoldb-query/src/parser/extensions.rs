@@ -2656,6 +2656,22 @@ impl ExtendedParser {
             }
         }
 
+        // Check for list predicate functions: all(), any(), none(), single()
+        // Syntax: all(variable IN list WHERE predicate)
+        if upper.starts_with("ALL(")
+            || upper.starts_with("ANY(")
+            || upper.starts_with("NONE(")
+            || upper.starts_with("SINGLE(")
+        {
+            return Self::parse_list_predicate_function(input);
+        }
+
+        // Check for reduce function
+        // Syntax: reduce(accumulator = initial, variable IN list | expression)
+        if upper.starts_with("REDUCE(") {
+            return Self::parse_reduce_function(input);
+        }
+
         // Check for map projection: identifier{...}
         if let Some(brace_pos) = Self::find_top_level_operator(input, "{") {
             // Make sure it ends with a matching brace
@@ -2843,6 +2859,227 @@ impl ExtendedParser {
         }
 
         Ok(Expr::ListLiteral(elements))
+    }
+
+    /// Parses a list predicate function: all(), any(), none(), single().
+    ///
+    /// Syntax: `function(variable IN list WHERE predicate)`
+    ///
+    /// Examples:
+    /// - `all(x IN [1, 2, 3] WHERE x > 0)` → true if all elements satisfy predicate
+    /// - `any(x IN [1, 2, 3] WHERE x > 2)` → true if any element satisfies predicate
+    /// - `none(x IN [1, 2, 3] WHERE x < 0)` → true if no elements satisfy predicate
+    /// - `single(x IN [1, 2, 3] WHERE x = 2)` → true if exactly one element satisfies
+    fn parse_list_predicate_function(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        // Determine which function this is and get the content inside parentheses
+        let (func_name, inner) = if upper.starts_with("ALL(") {
+            ("ALL", &input[4..])
+        } else if upper.starts_with("ANY(") {
+            ("ANY", &input[4..])
+        } else if upper.starts_with("NONE(") {
+            ("NONE", &input[5..])
+        } else if upper.starts_with("SINGLE(") {
+            ("SINGLE", &input[7..])
+        } else {
+            return Err(ParseError::InvalidPattern(
+                "expected list predicate function: all, any, none, or single".to_string(),
+            ));
+        };
+
+        // Inner should start after '(' and end before ')'
+        if !inner.ends_with(')') {
+            return Err(ParseError::InvalidPattern(format!(
+                "{}() function must end with closing parenthesis",
+                func_name
+            )));
+        }
+
+        let content = inner[..inner.len() - 1].trim();
+
+        // Find " IN " keyword
+        let in_pos = Self::find_top_level_keyword(content, " IN ").ok_or_else(|| {
+            ParseError::InvalidPattern(format!(
+                "{}() requires 'variable IN list' syntax",
+                func_name
+            ))
+        })?;
+
+        // Parse variable name
+        let variable_str = content[..in_pos].trim();
+        if variable_str.is_empty() || !variable_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            return Err(ParseError::InvalidPattern(format!(
+                "{}() requires a valid variable name before IN",
+                func_name
+            )));
+        }
+
+        let after_in = content[in_pos + 4..].trim();
+
+        // Find WHERE keyword
+        let where_pos = Self::find_top_level_keyword(after_in, " WHERE ").ok_or_else(|| {
+            ParseError::InvalidPattern(format!("{}() requires 'WHERE predicate' clause", func_name))
+        })?;
+
+        // Parse list expression
+        let list_str = after_in[..where_pos].trim();
+        if list_str.is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "{}() requires a list expression after IN",
+                func_name
+            )));
+        }
+        let list_expr = Self::parse_simple_expression(list_str)?;
+
+        // Parse predicate
+        let predicate_str = after_in[where_pos + 7..].trim();
+        if predicate_str.is_empty() {
+            return Err(ParseError::InvalidPattern(format!(
+                "{}() requires a predicate expression after WHERE",
+                func_name
+            )));
+        }
+        let predicate = Self::parse_simple_expression(predicate_str)?;
+
+        // Create the appropriate expression variant based on function name
+        let variable = Identifier::new(variable_str);
+        match func_name {
+            "ALL" => Ok(Expr::ListPredicateAll {
+                variable,
+                list_expr: Box::new(list_expr),
+                predicate: Box::new(predicate),
+            }),
+            "ANY" => Ok(Expr::ListPredicateAny {
+                variable,
+                list_expr: Box::new(list_expr),
+                predicate: Box::new(predicate),
+            }),
+            "NONE" => Ok(Expr::ListPredicateNone {
+                variable,
+                list_expr: Box::new(list_expr),
+                predicate: Box::new(predicate),
+            }),
+            "SINGLE" => Ok(Expr::ListPredicateSingle {
+                variable,
+                list_expr: Box::new(list_expr),
+                predicate: Box::new(predicate),
+            }),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Parses a reduce function.
+    ///
+    /// Syntax: `reduce(accumulator = initial, variable IN list | expression)`
+    ///
+    /// Examples:
+    /// - `reduce(sum = 0, x IN [1, 2, 3] | sum + x)` → 6
+    /// - `reduce(product = 1, x IN [2, 3, 4] | product * x)` → 24
+    /// - `reduce(s = '', x IN ['a', 'b', 'c'] | s + x)` → 'abc'
+    fn parse_reduce_function(input: &str) -> ParseResult<Expr> {
+        let input = input.trim();
+        let upper = input.to_uppercase();
+
+        if !upper.starts_with("REDUCE(") {
+            return Err(ParseError::InvalidPattern("expected reduce() function".to_string()));
+        }
+
+        // Get content inside parentheses
+        let inner = &input[7..];
+        if !inner.ends_with(')') {
+            return Err(ParseError::InvalidPattern(
+                "reduce() function must end with closing parenthesis".to_string(),
+            ));
+        }
+
+        let content = inner[..inner.len() - 1].trim();
+
+        // Find the first comma at top level (separates accumulator = initial from rest)
+        let comma_pos = Self::find_top_level_operator(content, ",").ok_or_else(|| {
+            ParseError::InvalidPattern(
+                "reduce() requires 'accumulator = initial, variable IN list | expression' syntax"
+                    .to_string(),
+            )
+        })?;
+
+        // Parse accumulator = initial
+        let accum_part = content[..comma_pos].trim();
+        let eq_pos = Self::find_top_level_operator(accum_part, "=").ok_or_else(|| {
+            ParseError::InvalidPattern(
+                "reduce() requires 'accumulator = initial' before comma".to_string(),
+            )
+        })?;
+
+        let accumulator_str = accum_part[..eq_pos].trim();
+        if accumulator_str.is_empty()
+            || !accumulator_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            return Err(ParseError::InvalidPattern(
+                "reduce() requires a valid accumulator variable name".to_string(),
+            ));
+        }
+
+        let initial_str = accum_part[eq_pos + 1..].trim();
+        if initial_str.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "reduce() requires an initial value after '='".to_string(),
+            ));
+        }
+        let initial = Self::parse_simple_expression(initial_str)?;
+
+        // Parse variable IN list | expression
+        let rest = content[comma_pos + 1..].trim();
+
+        // Find " IN " keyword
+        let in_pos = Self::find_top_level_keyword(rest, " IN ").ok_or_else(|| {
+            ParseError::InvalidPattern(
+                "reduce() requires 'variable IN list' after comma".to_string(),
+            )
+        })?;
+
+        let variable_str = rest[..in_pos].trim();
+        if variable_str.is_empty() || !variable_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            return Err(ParseError::InvalidPattern(
+                "reduce() requires a valid variable name before IN".to_string(),
+            ));
+        }
+
+        let after_in = rest[in_pos + 4..].trim();
+
+        // Find | operator
+        let pipe_pos = Self::find_top_level_operator(after_in, "|").ok_or_else(|| {
+            ParseError::InvalidPattern("reduce() requires '| expression' after list".to_string())
+        })?;
+
+        // Parse list expression
+        let list_str = after_in[..pipe_pos].trim();
+        if list_str.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "reduce() requires a list expression after IN".to_string(),
+            ));
+        }
+        let list_expr = Self::parse_simple_expression(list_str)?;
+
+        // Parse expression
+        let expr_str = after_in[pipe_pos + 1..].trim();
+        if expr_str.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "reduce() requires an expression after '|'".to_string(),
+            ));
+        }
+        let expression = Self::parse_simple_expression(expr_str)?;
+
+        Ok(Expr::ListReduce {
+            accumulator: Identifier::new(accumulator_str),
+            initial: Box::new(initial),
+            variable: Identifier::new(variable_str),
+            list_expr: Box::new(list_expr),
+            expression: Box::new(expression),
+        })
     }
 
     /// Parses a pattern comprehension expression.
@@ -6403,6 +6640,127 @@ mod tests {
             }
             _ => panic!("Expected ListLiteral"),
         }
+    }
+
+    // ========== List Predicate Function Tests ==========
+
+    #[test]
+    fn parse_list_predicate_all() {
+        // all(x IN [1, 2, 3] WHERE x > 0)
+        let result =
+            ExtendedParser::parse_simple_expression("all(x IN [1, 2, 3] WHERE x > 0)").unwrap();
+        match result {
+            Expr::ListPredicateAll { variable, list_expr, predicate } => {
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::ListLiteral(_)));
+                assert!(matches!(*predicate, Expr::BinaryOp { .. }));
+            }
+            _ => panic!("Expected ListPredicateAll, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_predicate_any() {
+        // any(x IN numbers WHERE x > 5)
+        let result =
+            ExtendedParser::parse_simple_expression("any(x IN numbers WHERE x > 5)").unwrap();
+        match result {
+            Expr::ListPredicateAny { variable, list_expr, predicate } => {
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::Column(_)));
+                assert!(matches!(*predicate, Expr::BinaryOp { .. }));
+            }
+            _ => panic!("Expected ListPredicateAny, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_predicate_none() {
+        // none(x IN [1, 2, 3] WHERE x < 0)
+        let result =
+            ExtendedParser::parse_simple_expression("none(x IN [1, 2, 3] WHERE x < 0)").unwrap();
+        match result {
+            Expr::ListPredicateNone { variable, list_expr, predicate } => {
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::ListLiteral(_)));
+                assert!(matches!(*predicate, Expr::BinaryOp { .. }));
+            }
+            _ => panic!("Expected ListPredicateNone, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_predicate_single() {
+        // single(x IN [1, 2, 3] WHERE x = 2)
+        let result =
+            ExtendedParser::parse_simple_expression("single(x IN [1, 2, 3] WHERE x = 2)").unwrap();
+        match result {
+            Expr::ListPredicateSingle { variable, list_expr, predicate } => {
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::ListLiteral(_)));
+                assert!(matches!(*predicate, Expr::BinaryOp { .. }));
+            }
+            _ => panic!("Expected ListPredicateSingle, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_reduce() {
+        // reduce(sum = 0, x IN [1, 2, 3] | x)
+        // Note: Simple parser doesn't handle arithmetic expressions like `sum + x`,
+        // so we test with a simple variable reference. Full expressions would go
+        // through the SQL parser in complete queries.
+        let result =
+            ExtendedParser::parse_simple_expression("reduce(sum = 0, x IN [1, 2, 3] | x)").unwrap();
+        match result {
+            Expr::ListReduce { accumulator, initial, variable, list_expr, .. } => {
+                assert_eq!(accumulator.name, "sum");
+                assert!(matches!(*initial, Expr::Literal(_)));
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::ListLiteral(_)));
+            }
+            _ => panic!("Expected ListReduce, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_reduce_with_string_initial() {
+        // reduce(s = '', x IN ['a', 'b'] | x)
+        let result =
+            ExtendedParser::parse_simple_expression("reduce(s = '', x IN ['a', 'b'] | x)").unwrap();
+        match result {
+            Expr::ListReduce { accumulator, initial, variable, list_expr, .. } => {
+                assert_eq!(accumulator.name, "s");
+                assert!(matches!(*initial, Expr::Literal(_)));
+                assert_eq!(variable.name, "x");
+                assert!(matches!(*list_expr, Expr::ListLiteral(_)));
+            }
+            _ => panic!("Expected ListReduce, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn parse_list_predicate_case_insensitive() {
+        // ALL, Any, NONE, Single should all work
+        let all_result =
+            ExtendedParser::parse_simple_expression("ALL(x IN [1] WHERE x > 0)").unwrap();
+        assert!(matches!(all_result, Expr::ListPredicateAll { .. }));
+
+        let any_result =
+            ExtendedParser::parse_simple_expression("Any(x IN [1] WHERE x > 0)").unwrap();
+        assert!(matches!(any_result, Expr::ListPredicateAny { .. }));
+
+        let none_result =
+            ExtendedParser::parse_simple_expression("NONE(x IN [1] WHERE x > 0)").unwrap();
+        assert!(matches!(none_result, Expr::ListPredicateNone { .. }));
+
+        let single_result =
+            ExtendedParser::parse_simple_expression("Single(x IN [1] WHERE x > 0)").unwrap();
+        assert!(matches!(single_result, Expr::ListPredicateSingle { .. }));
+
+        let reduce_result =
+            ExtendedParser::parse_simple_expression("REDUCE(s = 0, x IN [1] | s + x)").unwrap();
+        assert!(matches!(reduce_result, Expr::ListReduce { .. }));
     }
 
     // ========== Map Projection Tests ==========
