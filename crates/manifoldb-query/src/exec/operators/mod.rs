@@ -43,7 +43,8 @@ pub mod window;
 pub use aggregate::{HashAggregateOp, SortMergeAggregateOp};
 pub use analytics::{
     BetweennessCentralityOp, BetweennessCentralityOpConfig, CommunityDetectionOp,
-    CommunityDetectionOpConfig, PageRankOp, PageRankOpConfig,
+    CommunityDetectionOpConfig, LocalClusteringCoefficientOp, LocalClusteringCoefficientOpConfig,
+    PageRankOp, PageRankOpConfig, TriangleCountOp, TriangleCountOpConfig,
 };
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};

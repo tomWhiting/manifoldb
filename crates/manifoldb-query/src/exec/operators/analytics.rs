@@ -29,7 +29,7 @@ use std::sync::Arc;
 use manifoldb_core::{EntityId, Value};
 use manifoldb_graph::analytics::{
     BetweennessCentrality, BetweennessCentralityConfig, CommunityDetection,
-    CommunityDetectionConfig, PageRank, PageRankConfig,
+    CommunityDetectionConfig, PageRank, PageRankConfig, TriangleCount, TriangleCountConfig,
 };
 use manifoldb_graph::traversal::Direction;
 use manifoldb_storage::Transaction;
@@ -637,6 +637,377 @@ where
     }
 }
 
+/// Configuration for Triangle Count operator.
+#[derive(Debug, Clone)]
+pub struct TriangleCountOpConfig {
+    /// Whether to include clustering coefficients in output.
+    /// Default: true
+    pub include_coefficients: bool,
+}
+
+impl Default for TriangleCountOpConfig {
+    fn default() -> Self {
+        Self { include_coefficients: true }
+    }
+}
+
+impl TriangleCountOpConfig {
+    /// Create a new configuration with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set whether to include clustering coefficients.
+    pub const fn with_include_coefficients(mut self, include: bool) -> Self {
+        self.include_coefficients = include;
+        self
+    }
+
+    fn to_triangle_config(&self) -> TriangleCountConfig {
+        TriangleCountConfig::new()
+    }
+}
+
+/// Triangle Count operator.
+///
+/// This operator computes triangle counts and clustering coefficients for all
+/// nodes in the graph and produces rows with (node_id, triangles, coefficient) tuples.
+///
+/// # Output Schema
+///
+/// - `node`: The entity ID (as integer)
+/// - `triangles`: Number of triangles the node participates in (as integer)
+/// - `coefficient`: Local clustering coefficient (as float) - only if include_coefficients is true
+pub struct TriangleCountOp<T> {
+    /// Operator base with schema and state.
+    base: OperatorBase,
+    /// Configuration for triangle count.
+    config: TriangleCountOpConfig,
+    /// Transaction for graph access.
+    tx: Option<T>,
+    /// Results iterator.
+    results: Option<std::vec::IntoIter<(EntityId, usize, f64)>>,
+    /// Optional input operator.
+    input: Option<BoxedOperator>,
+    /// Column index for node input.
+    input_node_column: Option<usize>,
+}
+
+impl<T> TriangleCountOp<T> {
+    /// Create a new Triangle Count operator.
+    pub fn new(config: TriangleCountOpConfig) -> Self {
+        let schema = if config.include_coefficients {
+            Arc::new(Schema::new(vec![
+                "node".to_string(),
+                "triangles".to_string(),
+                "coefficient".to_string(),
+            ]))
+        } else {
+            Arc::new(Schema::new(vec!["node".to_string(), "triangles".to_string()]))
+        };
+        Self {
+            base: OperatorBase::new(schema),
+            config,
+            tx: None,
+            results: None,
+            input: None,
+            input_node_column: None,
+        }
+    }
+
+    /// Create with an input operator.
+    pub fn with_input(
+        config: TriangleCountOpConfig,
+        input: BoxedOperator,
+        node_column: usize,
+    ) -> Self {
+        let schema = if config.include_coefficients {
+            Arc::new(Schema::new(vec![
+                "node".to_string(),
+                "triangles".to_string(),
+                "coefficient".to_string(),
+            ]))
+        } else {
+            Arc::new(Schema::new(vec!["node".to_string(), "triangles".to_string()]))
+        };
+        Self {
+            base: OperatorBase::new(schema),
+            config,
+            tx: None,
+            results: None,
+            input: Some(input),
+            input_node_column: Some(node_column),
+        }
+    }
+
+    /// Set the transaction to use.
+    pub fn with_tx(mut self, tx: T) -> Self {
+        self.tx = Some(tx);
+        self
+    }
+}
+
+impl<T> Operator for TriangleCountOp<T>
+where
+    T: Transaction + Send,
+{
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        if let Some(ref mut input) = self.input {
+            input.open(ctx)?;
+        }
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        if self.results.is_none() {
+            let tx = self.tx.as_ref().ok_or_else(|| {
+                ParseError::InvalidGraphOp("TriangleCount requires transaction access".to_string())
+            })?;
+
+            let tc_config = self.config.to_triangle_config();
+
+            let result = if let Some(ref mut input) = self.input {
+                let column = self.input_node_column.unwrap_or(0);
+                let mut nodes = Vec::new();
+
+                while let Some(row) = input.next()? {
+                    if let Some(Value::Int(id)) = row.get(column) {
+                        nodes.push(EntityId::new(*id as u64));
+                    }
+                }
+
+                TriangleCount::compute_for_nodes(tx, &nodes, &tc_config)
+                    .map_err(|e| ParseError::InvalidGraphOp(format!("TriangleCount error: {e}")))?
+            } else {
+                TriangleCount::compute(tx, &tc_config)
+                    .map_err(|e| ParseError::InvalidGraphOp(format!("TriangleCount error: {e}")))?
+            };
+
+            // Combine triangles and coefficients into sorted list
+            let mut pairs: Vec<_> = result
+                .node_triangles
+                .iter()
+                .map(|(&id, &triangles)| {
+                    let coefficient = result.coefficients.get(&id).copied().unwrap_or(0.0);
+                    (id, triangles, coefficient)
+                })
+                .collect();
+            // Sort by triangles descending
+            pairs.sort_by(|a, b| b.1.cmp(&a.1));
+            self.results = Some(pairs.into_iter());
+        }
+
+        if let Some(ref mut iter) = self.results {
+            if let Some((node, triangles, coefficient)) = iter.next() {
+                let row = if self.config.include_coefficients {
+                    Row::new(
+                        self.base.schema(),
+                        vec![
+                            Value::Int(node.as_u64() as i64),
+                            Value::Int(triangles as i64),
+                            Value::Float(coefficient),
+                        ],
+                    )
+                } else {
+                    Row::new(
+                        self.base.schema(),
+                        vec![Value::Int(node.as_u64() as i64), Value::Int(triangles as i64)],
+                    )
+                };
+                self.base.inc_rows_produced();
+                return Ok(Some(row));
+            }
+        }
+
+        self.base.set_finished();
+        Ok(None)
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        if let Some(ref mut input) = self.input {
+            input.close()?;
+        }
+        self.results = None;
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "TriangleCountOp"
+    }
+}
+
+/// Configuration for Local Clustering Coefficient operator.
+#[derive(Debug, Clone, Default)]
+pub struct LocalClusteringCoefficientOpConfig {
+    // No additional config needed beyond what TriangleCount provides
+}
+
+impl LocalClusteringCoefficientOpConfig {
+    /// Create a new configuration with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn to_triangle_config(&self) -> TriangleCountConfig {
+        TriangleCountConfig::new()
+    }
+}
+
+/// Local Clustering Coefficient operator.
+///
+/// This operator computes local clustering coefficients for all nodes in the graph
+/// and produces rows with (node_id, coefficient) pairs.
+///
+/// # Output Schema
+///
+/// - `node`: The entity ID (as integer)
+/// - `coefficient`: Local clustering coefficient (as float)
+pub struct LocalClusteringCoefficientOp<T> {
+    /// Operator base with schema and state.
+    base: OperatorBase,
+    /// Configuration.
+    config: LocalClusteringCoefficientOpConfig,
+    /// Transaction for graph access.
+    tx: Option<T>,
+    /// Results iterator.
+    results: Option<std::vec::IntoIter<(EntityId, f64)>>,
+    /// Optional input operator.
+    input: Option<BoxedOperator>,
+    /// Column index for node input.
+    input_node_column: Option<usize>,
+}
+
+impl<T> LocalClusteringCoefficientOp<T> {
+    /// Create a new Local Clustering Coefficient operator.
+    pub fn new(config: LocalClusteringCoefficientOpConfig) -> Self {
+        let schema = Arc::new(Schema::new(vec!["node".to_string(), "coefficient".to_string()]));
+        Self {
+            base: OperatorBase::new(schema),
+            config,
+            tx: None,
+            results: None,
+            input: None,
+            input_node_column: None,
+        }
+    }
+
+    /// Create with an input operator.
+    pub fn with_input(
+        config: LocalClusteringCoefficientOpConfig,
+        input: BoxedOperator,
+        node_column: usize,
+    ) -> Self {
+        let schema = Arc::new(Schema::new(vec!["node".to_string(), "coefficient".to_string()]));
+        Self {
+            base: OperatorBase::new(schema),
+            config,
+            tx: None,
+            results: None,
+            input: Some(input),
+            input_node_column: Some(node_column),
+        }
+    }
+
+    /// Set the transaction to use.
+    pub fn with_tx(mut self, tx: T) -> Self {
+        self.tx = Some(tx);
+        self
+    }
+}
+
+impl<T> Operator for LocalClusteringCoefficientOp<T>
+where
+    T: Transaction + Send,
+{
+    fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
+        if let Some(ref mut input) = self.input {
+            input.open(ctx)?;
+        }
+        self.base.set_open();
+        Ok(())
+    }
+
+    fn next(&mut self) -> OperatorResult<Option<Row>> {
+        if self.results.is_none() {
+            let tx = self.tx.as_ref().ok_or_else(|| {
+                ParseError::InvalidGraphOp(
+                    "LocalClusteringCoefficient requires transaction access".to_string(),
+                )
+            })?;
+
+            let tc_config = self.config.to_triangle_config();
+
+            let result = if let Some(ref mut input) = self.input {
+                let column = self.input_node_column.unwrap_or(0);
+                let mut nodes = Vec::new();
+
+                while let Some(row) = input.next()? {
+                    if let Some(Value::Int(id)) = row.get(column) {
+                        nodes.push(EntityId::new(*id as u64));
+                    }
+                }
+
+                TriangleCount::compute_for_nodes(tx, &nodes, &tc_config).map_err(|e| {
+                    ParseError::InvalidGraphOp(format!("LocalClusteringCoefficient error: {e}"))
+                })?
+            } else {
+                TriangleCount::compute(tx, &tc_config).map_err(|e| {
+                    ParseError::InvalidGraphOp(format!("LocalClusteringCoefficient error: {e}"))
+                })?
+            };
+
+            // Sort by coefficient descending
+            let sorted = result.sorted_by_coefficient();
+            self.results = Some(sorted.into_iter());
+        }
+
+        if let Some(ref mut iter) = self.results {
+            if let Some((node, coefficient)) = iter.next() {
+                let row = Row::new(
+                    self.base.schema(),
+                    vec![Value::Int(node.as_u64() as i64), Value::Float(coefficient)],
+                );
+                self.base.inc_rows_produced();
+                return Ok(Some(row));
+            }
+        }
+
+        self.base.set_finished();
+        Ok(None)
+    }
+
+    fn close(&mut self) -> OperatorResult<()> {
+        if let Some(ref mut input) = self.input {
+            input.close()?;
+        }
+        self.results = None;
+        self.base.set_closed();
+        Ok(())
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        self.base.schema()
+    }
+
+    fn state(&self) -> OperatorState {
+        self.base.state()
+    }
+
+    fn name(&self) -> &'static str {
+        "LocalClusteringCoefficientOp"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,5 +1059,17 @@ mod tests {
         assert_eq!(config.max_iterations, 50);
         assert_eq!(config.direction, Direction::Outgoing);
         assert_eq!(config.seed, Some(42));
+    }
+
+    #[test]
+    fn triangle_count_config_defaults() {
+        let config = TriangleCountOpConfig::default();
+        assert!(config.include_coefficients);
+    }
+
+    #[test]
+    fn triangle_count_config_builder() {
+        let config = TriangleCountOpConfig::new().with_include_coefficients(false);
+        assert!(!config.include_coefficients);
     }
 }
