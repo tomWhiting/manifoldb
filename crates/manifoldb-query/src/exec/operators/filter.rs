@@ -274,6 +274,9 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
 
             Ok(Value::Float(combined_score))
         }
+
+        // Window functions should be evaluated by the window operator, not at filter level
+        LogicalExpr::WindowFunction { .. } => Ok(Value::Null),
     }
 }
 

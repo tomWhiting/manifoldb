@@ -16,7 +16,7 @@ pub mod vector;
 pub use expr::{
     BinaryOp, CaseExpr, Expr, FunctionCall, HybridCombinationMethod, HybridSearchComponent,
     Identifier, Literal, OrderByExpr, ParameterRef, QualifiedName, UnaryOp, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowSpec,
+    WindowFrameBound, WindowFrameUnits, WindowFunction, WindowSpec,
 };
 pub use pattern::{
     EdgeDirection, EdgeLength, EdgePattern, GraphPattern, NodePattern, PathPattern,

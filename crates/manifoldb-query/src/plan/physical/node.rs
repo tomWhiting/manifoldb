@@ -18,6 +18,7 @@
 use std::fmt;
 
 use crate::ast::DistanceMetric;
+use crate::ast::WindowFunction;
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
     DropTableNode, ExpandDirection, ExpandLength, JoinType, LogicalExpr, SetOpType, SortOrder,
@@ -98,6 +99,14 @@ pub enum PhysicalPlan {
         on_columns: Option<Vec<LogicalExpr>>,
         /// Estimated cost.
         cost: Cost,
+        /// Input plan.
+        input: Box<PhysicalPlan>,
+    },
+
+    /// Window operator for ROW_NUMBER, RANK, DENSE_RANK.
+    Window {
+        /// Window configuration.
+        node: Box<WindowExecNode>,
         /// Input plan.
         input: Box<PhysicalPlan>,
     },
@@ -678,6 +687,62 @@ impl LimitExecNode {
     #[must_use]
     pub const fn limit_offset(limit: usize, offset: usize) -> Self {
         Self { limit: Some(limit), offset: Some(offset) }
+    }
+}
+
+// ============================================================================
+// Window Node Types
+// ============================================================================
+
+/// A single window function expression with its output alias.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowFunctionExpr {
+    /// The window function type (ROW_NUMBER, RANK, DENSE_RANK).
+    pub func: WindowFunction,
+    /// Partition by expressions.
+    pub partition_by: Vec<LogicalExpr>,
+    /// Order by expressions.
+    pub order_by: Vec<SortOrder>,
+    /// Output column alias.
+    pub alias: String,
+}
+
+impl WindowFunctionExpr {
+    /// Creates a new window function expression.
+    #[must_use]
+    pub fn new(
+        func: WindowFunction,
+        partition_by: Vec<LogicalExpr>,
+        order_by: Vec<SortOrder>,
+        alias: impl Into<String>,
+    ) -> Self {
+        Self { func, partition_by, order_by, alias: alias.into() }
+    }
+}
+
+/// Window execution node.
+///
+/// Computes window functions (ROW_NUMBER, RANK, DENSE_RANK) over input rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowExecNode {
+    /// Window function expressions.
+    pub window_exprs: Vec<WindowFunctionExpr>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl WindowExecNode {
+    /// Creates a new window execution node.
+    #[must_use]
+    pub fn new(window_exprs: Vec<WindowFunctionExpr>) -> Self {
+        Self { window_exprs, cost: Cost::default() }
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
     }
 }
 
@@ -1566,6 +1631,7 @@ impl PhysicalPlan {
             | Self::Sort { input, .. }
             | Self::Limit { input, .. }
             | Self::HashDistinct { input, .. }
+            | Self::Window { input, .. }
             | Self::HashAggregate { input, .. }
             | Self::SortMergeAggregate { input, .. }
             | Self::Unwind { input, .. }
@@ -1615,6 +1681,7 @@ impl PhysicalPlan {
             | Self::Sort { input, .. }
             | Self::Limit { input, .. }
             | Self::HashDistinct { input, .. }
+            | Self::Window { input, .. }
             | Self::HashAggregate { input, .. }
             | Self::SortMergeAggregate { input, .. }
             | Self::Unwind { input, .. }
@@ -1672,6 +1739,7 @@ impl PhysicalPlan {
             Self::Sort { .. } => "Sort",
             Self::Limit { .. } => "Limit",
             Self::HashDistinct { .. } => "HashDistinct",
+            Self::Window { .. } => "Window",
             Self::HashAggregate { .. } => "HashAggregate",
             Self::SortMergeAggregate { .. } => "SortMergeAggregate",
             Self::NestedLoopJoin { .. } => "NestedLoopJoin",
@@ -1711,6 +1779,7 @@ impl PhysicalPlan {
             Self::Sort { node, .. } => node.cost,
             Self::Limit { .. } => Cost::zero(),
             Self::HashDistinct { cost, .. } => *cost,
+            Self::Window { node, .. } => node.cost,
             Self::HashAggregate { node, .. } => node.cost,
             Self::SortMergeAggregate { node, .. } => node.cost,
             Self::NestedLoopJoin { node, .. } => node.cost,
@@ -1878,6 +1947,38 @@ impl DisplayTree<'_> {
                     }
                 }
                 write!(f, " (cost: {:.2})", cost.value())?;
+            }
+            PhysicalPlan::Window { node, .. } => {
+                write!(f, "Window: ")?;
+                for (i, expr) in node.window_exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}() OVER (", expr.func)?;
+                    if !expr.partition_by.is_empty() {
+                        write!(f, "PARTITION BY ")?;
+                        for (j, p) in expr.partition_by.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{p}")?;
+                        }
+                        if !expr.order_by.is_empty() {
+                            write!(f, " ")?;
+                        }
+                    }
+                    if !expr.order_by.is_empty() {
+                        write!(f, "ORDER BY ")?;
+                        for (j, o) in expr.order_by.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{o}")?;
+                        }
+                    }
+                    write!(f, ") AS {}", expr.alias)?;
+                }
+                write!(f, " (cost: {:.2})", node.cost.value())?;
             }
             PhysicalPlan::HashAggregate { node, .. } => {
                 write!(f, "HashAggregate: ")?;

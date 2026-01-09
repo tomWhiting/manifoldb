@@ -50,7 +50,7 @@ pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathSte
 pub use node::LogicalPlan;
 pub use relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode,
-    SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode,
+    SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
 pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
 pub use vector::{

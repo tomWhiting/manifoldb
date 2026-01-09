@@ -22,6 +22,7 @@ use super::operators::{
     unwind::UnwindOp,
     values::{EmptyOp, ValuesOp},
     vector::{BruteForceSearchOp, HnswSearchOp, HybridSearchOp},
+    window::WindowOp,
 };
 use super::result::{QueryResult, ResultSet, ResultSetBuilder};
 use super::row::{Row, Schema};
@@ -201,6 +202,11 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
             let input_op = build_operator_tree(input)?;
             let group_by = on_columns.clone().unwrap_or_default();
             Ok(Box::new(HashAggregateOp::new(group_by, vec![], None, input_op)))
+        }
+
+        PhysicalPlan::Window { node, input } => {
+            let input_op = build_operator_tree(input)?;
+            Ok(Box::new(WindowOp::new(node.window_exprs.clone(), input_op)))
         }
 
         PhysicalPlan::HashAggregate { node, input } => {

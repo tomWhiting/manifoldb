@@ -15,7 +15,7 @@
 
 use std::fmt;
 
-use crate::ast::{BinaryOp, DataType, Literal, QualifiedName, UnaryOp};
+use crate::ast::{BinaryOp, DataType, Literal, QualifiedName, UnaryOp, WindowFunction};
 
 /// An expression in a logical plan.
 ///
@@ -157,6 +157,19 @@ pub enum LogicalExpr {
         components: Vec<HybridExprComponent>,
         /// Combination method (WeightedSum, RRF).
         method: HybridCombinationMethod,
+    },
+
+    /// Window function expression.
+    ///
+    /// Used for ranking functions like ROW_NUMBER(), RANK(), DENSE_RANK().
+    /// Example: `ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)`
+    WindowFunction {
+        /// The window function type.
+        func: WindowFunction,
+        /// Partition by expressions (creates separate numbering per partition).
+        partition_by: Vec<LogicalExpr>,
+        /// Order by expressions (determines ranking order).
+        order_by: Vec<SortOrder>,
     },
 }
 
@@ -469,6 +482,26 @@ impl LogicalExpr {
         }
     }
 
+    // ========== Window Functions ==========
+
+    /// Creates a ROW_NUMBER window function.
+    #[must_use]
+    pub fn row_number(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
+        Self::WindowFunction { func: WindowFunction::RowNumber, partition_by, order_by }
+    }
+
+    /// Creates a RANK window function.
+    #[must_use]
+    pub fn rank(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
+        Self::WindowFunction { func: WindowFunction::Rank, partition_by, order_by }
+    }
+
+    /// Creates a DENSE_RANK window function.
+    #[must_use]
+    pub fn dense_rank(partition_by: Vec<Self>, order_by: Vec<SortOrder>) -> Self {
+        Self::WindowFunction { func: WindowFunction::DenseRank, partition_by, order_by }
+    }
+
     // ========== Utility Methods ==========
 
     /// Returns the alias if this is an aliased expression.
@@ -516,6 +549,43 @@ impl LogicalExpr {
             }
             Self::HybridSearch { components, .. } => {
                 components.iter().any(|c| c.distance_expr.contains_aggregate())
+            }
+            Self::WindowFunction { partition_by, order_by, .. } => {
+                partition_by.iter().any(Self::contains_aggregate)
+                    || order_by.iter().any(|s| s.expr.contains_aggregate())
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns true if this expression contains a window function.
+    #[must_use]
+    pub fn contains_window_function(&self) -> bool {
+        match self {
+            Self::WindowFunction { .. } => true,
+            Self::BinaryOp { left, right, .. } => {
+                left.contains_window_function() || right.contains_window_function()
+            }
+            Self::UnaryOp { operand, .. } => operand.contains_window_function(),
+            Self::ScalarFunction { args, .. } => args.iter().any(Self::contains_window_function),
+            Self::Cast { expr, .. } | Self::Alias { expr, .. } => expr.contains_window_function(),
+            Self::Case { operand, when_clauses, else_result } => {
+                operand.as_ref().is_some_and(|e| e.contains_window_function())
+                    || when_clauses
+                        .iter()
+                        .any(|(w, t)| w.contains_window_function() || t.contains_window_function())
+                    || else_result.as_ref().is_some_and(|e| e.contains_window_function())
+            }
+            Self::InList { expr, list, .. } => {
+                expr.contains_window_function() || list.iter().any(Self::contains_window_function)
+            }
+            Self::Between { expr, low, high, .. } => {
+                expr.contains_window_function()
+                    || low.contains_window_function()
+                    || high.contains_window_function()
+            }
+            Self::HybridSearch { components, .. } => {
+                components.iter().any(|c| c.distance_expr.contains_window_function())
             }
             _ => false,
         }
@@ -641,6 +711,31 @@ impl fmt::Display for LogicalExpr {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}, {}", comp.distance_expr, comp.weight)?;
+                }
+                write!(f, ")")
+            }
+            Self::WindowFunction { func, partition_by, order_by } => {
+                write!(f, "{func}() OVER (")?;
+                if !partition_by.is_empty() {
+                    write!(f, "PARTITION BY ")?;
+                    for (i, expr) in partition_by.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{expr}")?;
+                    }
+                    if !order_by.is_empty() {
+                        write!(f, " ")?;
+                    }
+                }
+                if !order_by.is_empty() {
+                    write!(f, "ORDER BY ")?;
+                    for (i, sort) in order_by.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{sort}")?;
+                    }
                 }
                 write!(f, ")")
             }

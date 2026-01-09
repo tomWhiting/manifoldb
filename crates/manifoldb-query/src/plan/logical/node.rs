@@ -25,7 +25,7 @@ use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SortNode, UnionNode, UnwindNode, ValuesNode,
+    SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
@@ -97,6 +97,14 @@ pub enum LogicalPlan {
     Distinct {
         /// The distinct node.
         node: DistinctNode,
+        /// The input plan.
+        input: Box<LogicalPlan>,
+    },
+
+    /// Window functions (ROW_NUMBER, RANK, DENSE_RANK, etc.).
+    Window {
+        /// The window node.
+        node: WindowNode,
         /// The input plan.
         input: Box<LogicalPlan>,
     },
@@ -324,6 +332,12 @@ impl LogicalPlan {
         Self::Distinct { node: DistinctNode::all(), input: Box::new(self) }
     }
 
+    /// Adds a window operation to this plan.
+    #[must_use]
+    pub fn window(self, window_exprs: Vec<(LogicalExpr, String)>) -> Self {
+        Self::Window { node: WindowNode::new(window_exprs), input: Box::new(self) }
+    }
+
     /// Adds an alias to this plan.
     #[must_use]
     pub fn alias(self, name: impl Into<String>) -> Self {
@@ -406,6 +420,7 @@ impl LogicalPlan {
             | Self::Sort { input, .. }
             | Self::Limit { input, .. }
             | Self::Distinct { input, .. }
+            | Self::Window { input, .. }
             | Self::Alias { input, .. }
             | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
@@ -450,6 +465,7 @@ impl LogicalPlan {
             | Self::Sort { input, .. }
             | Self::Limit { input, .. }
             | Self::Distinct { input, .. }
+            | Self::Window { input, .. }
             | Self::Alias { input, .. }
             | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
@@ -499,6 +515,7 @@ impl LogicalPlan {
             Self::Sort { .. } => "Sort",
             Self::Limit { .. } => "Limit",
             Self::Distinct { .. } => "Distinct",
+            Self::Window { .. } => "Window",
             Self::Alias { .. } => "Alias",
             Self::Unwind { .. } => "Unwind",
             Self::Join { .. } => "Join",
@@ -639,6 +656,15 @@ impl DisplayTree<'_> {
                         }
                         write!(f, "{col}")?;
                     }
+                }
+            }
+            LogicalPlan::Window { node, .. } => {
+                write!(f, "Window: ")?;
+                for (i, (expr, alias)) in node.window_exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{expr} AS {alias}")?;
                 }
             }
             LogicalPlan::Alias { alias, .. } => {

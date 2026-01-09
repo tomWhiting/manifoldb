@@ -29,6 +29,7 @@ pub mod sort;
 pub mod unwind;
 pub mod values;
 pub mod vector;
+pub mod window;
 
 // Re-exports for convenience
 pub use aggregate::{HashAggregateOp, SortMergeAggregateOp};
@@ -47,3 +48,4 @@ pub use sort::SortOp;
 pub use unwind::UnwindOp;
 pub use values::{EmptyOp, ValuesOp};
 pub use vector::{BruteForceSearchOp, HnswSearchOp};
+pub use window::WindowOp;

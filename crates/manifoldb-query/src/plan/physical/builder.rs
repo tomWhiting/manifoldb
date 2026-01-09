@@ -16,7 +16,7 @@ use super::node::{
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
     HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
     LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, SortExecNode, UnwindExecNode,
+    ProjectExecNode, SortExecNode, UnwindExecNode, WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
@@ -355,6 +355,7 @@ impl PhysicalPlanner {
             LogicalPlan::Sort { node, input } => self.plan_sort(node, input),
             LogicalPlan::Limit { node, input } => self.plan_limit(node, input),
             LogicalPlan::Distinct { node, input } => self.plan_distinct(node, input),
+            LogicalPlan::Window { node, input } => self.plan_window(node, input),
             LogicalPlan::Alias { input, .. } => {
                 // Alias is logical-only, just plan the input
                 self.plan(input)
@@ -903,6 +904,44 @@ impl PhysicalPlanner {
 
         PhysicalPlan::Unwind {
             node: UnwindExecNode::new(node.list_expr.clone(), &node.alias).with_cost(cost),
+            input: Box::new(input_plan),
+        }
+    }
+
+    fn plan_window(
+        &self,
+        node: &crate::plan::logical::WindowNode,
+        input: &LogicalPlan,
+    ) -> PhysicalPlan {
+        let input_plan = self.plan(input);
+        let input_rows = input_plan.cost().cardinality();
+
+        // Convert logical window expressions to physical
+        let window_exprs: Vec<WindowFunctionExpr> = node
+            .window_exprs
+            .iter()
+            .filter_map(|(expr, alias)| {
+                if let LogicalExpr::WindowFunction { func, partition_by, order_by } = expr {
+                    Some(WindowFunctionExpr::new(
+                        *func,
+                        partition_by.clone(),
+                        order_by.clone(),
+                        alias.clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Window function cost: O(n log n) for sorting + O(n) for computation
+        let cost = Cost::new(
+            (input_rows as f64) * (input_rows as f64).log2() + (input_rows as f64),
+            input_rows,
+        );
+
+        PhysicalPlan::Window {
+            node: Box::new(WindowExecNode::new(window_exprs).with_cost(cost)),
             input: Box::new(input_plan),
         }
     }

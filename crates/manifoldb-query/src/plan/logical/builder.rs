@@ -24,7 +24,7 @@ use crate::ast::{
     DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
     InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
     MatchStatement, PathPattern, SelectItem, SelectStatement, SetOperation, SetOperator, Statement,
-    TableRef, UpdateStatement,
+    TableRef, UpdateStatement, WindowFunction,
 };
 
 use super::ddl::{
@@ -40,7 +40,7 @@ use super::graph::{ExpandDirection, ExpandLength, ExpandNode};
 use super::node::LogicalPlan;
 use super::relational::{
     AggregateNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SetOpType, SortNode, ValuesNode,
+    SetOpType, SortNode, ValuesNode, WindowNode,
 };
 use super::validate::{PlanError, PlanResult};
 
@@ -148,6 +148,13 @@ impl PlanBuilder {
                 plan =
                     LogicalPlan::Filter { node: FilterNode::new(predicate), input: Box::new(plan) };
             }
+        }
+
+        // Handle window functions
+        let window_exprs = self.collect_window_exprs(&select.projection)?;
+        if !window_exprs.is_empty() {
+            plan =
+                LogicalPlan::Window { node: WindowNode::new(window_exprs), input: Box::new(plan) };
         }
 
         // Add projection
@@ -398,6 +405,102 @@ impl PlanBuilder {
             Expr::UnaryOp { operand, .. } => self.expr_has_aggregate(operand),
             _ => false,
         }
+    }
+
+    /// Collects window expressions from the projection.
+    ///
+    /// Window functions are identified by having an OVER clause (the `over` field in `FunctionCall`).
+    /// Returns a list of (window_expr, alias) pairs.
+    fn collect_window_exprs(
+        &mut self,
+        projection: &[SelectItem],
+    ) -> PlanResult<Vec<(LogicalExpr, String)>> {
+        let mut window_exprs = Vec::new();
+        let mut window_counter = 0;
+
+        for item in projection {
+            if let SelectItem::Expr { expr, alias } = item {
+                self.collect_window_from_expr(expr, alias, &mut window_exprs, &mut window_counter)?;
+            }
+        }
+
+        Ok(window_exprs)
+    }
+
+    /// Recursively collects window expressions from an AST expression.
+    fn collect_window_from_expr(
+        &mut self,
+        expr: &Expr,
+        alias: &Option<ast::Identifier>,
+        window_exprs: &mut Vec<(LogicalExpr, String)>,
+        counter: &mut usize,
+    ) -> PlanResult<()> {
+        match expr {
+            Expr::Function(func) if func.over.is_some() => {
+                // This is a window function
+                let window_expr = self.build_window_function(func)?;
+                let col_alias = alias.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| {
+                    *counter += 1;
+                    format!("window_{counter}")
+                });
+                window_exprs.push((window_expr, col_alias));
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                self.collect_window_from_expr(left, &None, window_exprs, counter)?;
+                self.collect_window_from_expr(right, &None, window_exprs, counter)?;
+            }
+            Expr::UnaryOp { operand, .. } => {
+                self.collect_window_from_expr(operand, &None, window_exprs, counter)?;
+            }
+            Expr::Case(case) => {
+                if let Some(op) = &case.operand {
+                    self.collect_window_from_expr(op, &None, window_exprs, counter)?;
+                }
+                for (when, then) in &case.when_clauses {
+                    self.collect_window_from_expr(when, &None, window_exprs, counter)?;
+                    self.collect_window_from_expr(then, &None, window_exprs, counter)?;
+                }
+                if let Some(else_result) = &case.else_result {
+                    self.collect_window_from_expr(else_result, &None, window_exprs, counter)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Builds a window function expression from an AST function with OVER clause.
+    fn build_window_function(&mut self, func: &ast::FunctionCall) -> PlanResult<LogicalExpr> {
+        let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
+
+        // Parse the window function type
+        let window_func = match name.as_str() {
+            "ROW_NUMBER" => WindowFunction::RowNumber,
+            "RANK" => WindowFunction::Rank,
+            "DENSE_RANK" => WindowFunction::DenseRank,
+            _ => return Err(PlanError::Unsupported(format!("window function: {name}"))),
+        };
+
+        // Parse the OVER clause
+        let over = func.over.as_ref().ok_or_else(|| {
+            PlanError::Unsupported("window function missing OVER clause".to_string())
+        })?;
+
+        // Build partition by expressions
+        let partition_by: Vec<LogicalExpr> =
+            over.partition_by.iter().map(|e| self.build_expr(e)).collect::<PlanResult<Vec<_>>>()?;
+
+        // Build order by expressions
+        let order_by: Vec<SortOrder> = over
+            .order_by
+            .iter()
+            .map(|o| {
+                let expr = self.build_expr(&o.expr)?;
+                Ok(SortOrder { expr, ascending: o.asc, nulls_first: o.nulls_first })
+            })
+            .collect::<PlanResult<Vec<_>>>()?;
+
+        Ok(LogicalExpr::WindowFunction { func: window_func, partition_by, order_by })
     }
 
     /// Builds projection expressions.
@@ -879,6 +982,11 @@ impl PlanBuilder {
             Expr::Function(func) => {
                 let name =
                     func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
+
+                // Check if it's a window function (has OVER clause)
+                if func.over.is_some() {
+                    return self.build_window_function(func);
+                }
 
                 // Check if it's an aggregate function
                 if let Some(agg_func) = self.parse_aggregate_function(&name) {
@@ -1362,5 +1470,66 @@ mod tests {
         let output = format!("{}", plan.display_tree());
         assert!(output.contains("Filter")); // from base CTE's WHERE clause
         assert!(output.contains("Project")); // from doubled CTE's projection
+    }
+
+    // ========================================================================
+    // Window Function Tests
+    // ========================================================================
+
+    #[test]
+    fn window_row_number_simple() {
+        let plan = build_query(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM employees",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    #[test]
+    fn window_row_number_with_partition() {
+        let plan = build_query(
+            "SELECT name, dept, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS dept_rank FROM employees",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    #[test]
+    fn window_rank_function() {
+        let plan =
+            build_query("SELECT name, RANK() OVER (ORDER BY score DESC) AS rank FROM scores")
+                .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    #[test]
+    fn window_dense_rank_function() {
+        let plan = build_query(
+            "SELECT name, DENSE_RANK() OVER (ORDER BY score DESC) AS drank FROM scores",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
+    }
+
+    #[test]
+    fn window_multiple_functions() {
+        let plan = build_query(
+            "SELECT name,
+                    ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn,
+                    RANK() OVER (ORDER BY salary DESC) AS rank
+             FROM employees",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Window"));
     }
 }

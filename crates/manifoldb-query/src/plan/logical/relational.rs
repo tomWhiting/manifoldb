@@ -359,6 +359,31 @@ impl UnionNode {
     }
 }
 
+/// A window node.
+///
+/// Represents window functions (ROW_NUMBER, RANK, DENSE_RANK, etc.).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowNode {
+    /// Window expressions paired with their output column names.
+    /// Each element is (window_expr, column_alias).
+    pub window_exprs: Vec<(LogicalExpr, String)>,
+}
+
+impl WindowNode {
+    /// Creates a new window node.
+    #[must_use]
+    pub const fn new(window_exprs: Vec<(LogicalExpr, String)>) -> Self {
+        Self { window_exprs }
+    }
+
+    /// Adds a window expression with an alias.
+    #[must_use]
+    pub fn add_window_expr(mut self, expr: LogicalExpr, alias: impl Into<String>) -> Self {
+        self.window_exprs.push((expr, alias.into()));
+        self
+    }
+}
+
 /// A values node.
 ///
 /// Represents inline row data (VALUES clause).
