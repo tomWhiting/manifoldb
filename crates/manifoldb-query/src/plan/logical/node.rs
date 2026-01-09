@@ -23,6 +23,7 @@ use super::ddl::{
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, GraphCreateNode, GraphMergeNode, PathScanNode};
+use super::procedure::ProcedureCallNode;
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, RecursiveCTENode,
     ScanNode, SetOpNode, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
@@ -282,6 +283,10 @@ pub enum LogicalPlan {
         /// Optional input plan (from MATCH clause).
         input: Option<Box<LogicalPlan>>,
     },
+
+    // ========== Procedure Nodes ==========
+    /// Procedure call (CALL/YIELD).
+    ProcedureCall(Box<ProcedureCallNode>),
 }
 
 impl LogicalPlan {
@@ -309,6 +314,12 @@ impl LogicalPlan {
     #[must_use]
     pub fn values(rows: Vec<Vec<LogicalExpr>>) -> Self {
         Self::Values(ValuesNode::new(rows))
+    }
+
+    /// Creates a procedure call node.
+    #[must_use]
+    pub fn procedure_call(node: ProcedureCallNode) -> Self {
+        Self::ProcedureCall(Box::new(node))
     }
 
     // ========== Builder Methods ==========
@@ -487,6 +498,9 @@ impl LogicalPlan {
             Self::GraphCreate { input: Some(input), .. }
             | Self::GraphMerge { input: Some(input), .. } => vec![input.as_ref()],
             Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
+
+            // Procedure nodes (leaf - no inputs)
+            Self::ProcedureCall(_) => vec![],
         }
     }
 
@@ -539,6 +553,9 @@ impl LogicalPlan {
             Self::GraphCreate { input: Some(input), .. }
             | Self::GraphMerge { input: Some(input), .. } => vec![input.as_mut()],
             Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
+
+            // Procedure nodes (leaf - no inputs)
+            Self::ProcedureCall(_) => vec![],
         }
     }
 
@@ -584,6 +601,7 @@ impl LogicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
+            Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
 
@@ -884,6 +902,31 @@ impl DisplayTree<'_> {
                     }
                 };
                 write!(f, "GraphMerge: {pattern_desc}")?;
+            }
+            LogicalPlan::ProcedureCall(node) => {
+                write!(f, "ProcedureCall: {}", node.procedure_name)?;
+                if !node.arguments.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in node.arguments.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                if !node.yield_columns.is_empty() {
+                    write!(f, " YIELD ")?;
+                    for (i, col) in node.yield_columns.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", col.name)?;
+                        if let Some(alias) = &col.alias {
+                            write!(f, " AS {alias}")?;
+                        }
+                    }
+                }
             }
         }
         Ok(())

@@ -20,12 +20,12 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement, CreateNodeRef,
-    CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
+    self, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
+    CreateNodeRef, CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
     DropIndexStatement, DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement,
     JoinClause, JoinCondition, JoinType as AstJoinType, MatchStatement, MergeGraphStatement,
     MergePattern, PathPattern, SelectItem, SelectStatement, SetAction as AstSetAction,
-    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction,
+    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -42,6 +42,7 @@ use super::graph::{
     GraphMergeNode, GraphSetAction, MergePatternSpec,
 };
 use super::node::LogicalPlan;
+use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
     AggregateNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode, SetOpNode,
     SetOpType, SortNode, ValuesNode, WindowNode,
@@ -102,6 +103,7 @@ impl PlanBuilder {
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
             Statement::Create(create) => self.build_graph_create(create),
             Statement::Merge(merge) => self.build_graph_merge(merge),
+            Statement::Call(call) => self.build_call(call),
         }
     }
 
@@ -1215,6 +1217,45 @@ impl PlanBuilder {
             }
         }
         Ok(result)
+    }
+
+    /// Builds a CALL statement plan.
+    fn build_call(&mut self, call: &CallStatement) -> PlanResult<LogicalPlan> {
+        // Build the procedure name (qualified name to string)
+        let procedure_name =
+            call.procedure_name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        // Build the arguments
+        let arguments: Vec<LogicalExpr> = call
+            .arguments
+            .iter()
+            .map(|arg| self.build_expr(arg))
+            .collect::<PlanResult<Vec<_>>>()?;
+
+        // Build yield columns
+        let yield_columns: Vec<YieldColumn> = call
+            .yield_items
+            .iter()
+            .filter_map(|item| match item {
+                YieldItem::Wildcard => None, // Wildcard means "yield all" which is represented by empty vec
+                YieldItem::Column { name, alias } => Some(if let Some(a) = alias {
+                    YieldColumn::with_alias(&name.name, &a.name)
+                } else {
+                    YieldColumn::new(&name.name)
+                }),
+            })
+            .collect();
+
+        // Build optional filter
+        let filter = call.where_clause.as_ref().map(|cond| self.build_expr(cond)).transpose()?;
+
+        let mut node = ProcedureCallNode::new(procedure_name, arguments).with_yields(yield_columns);
+
+        if let Some(f) = filter {
+            node = node.with_filter(f);
+        }
+
+        Ok(LogicalPlan::procedure_call(node))
     }
 
     /// Builds a logical expression from an AST expression.

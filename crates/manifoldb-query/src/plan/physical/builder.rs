@@ -412,6 +412,7 @@ impl PhysicalPlanner {
                 let input_plan = input.as_ref().map(|i| Box::new(self.plan(i)));
                 PhysicalPlan::GraphMerge { node: node.clone(), input: input_plan }
             }
+            LogicalPlan::ProcedureCall(node) => PhysicalPlan::ProcedureCall(node.clone()),
         }
     }
 

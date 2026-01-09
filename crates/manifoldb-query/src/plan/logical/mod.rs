@@ -33,6 +33,7 @@ mod ddl;
 mod expr;
 mod graph;
 mod node;
+mod procedure;
 mod relational;
 mod validate;
 mod vector;
@@ -51,6 +52,7 @@ pub use graph::{
     GraphMergeNode, GraphSetAction, MergePatternSpec, PathScanNode, PathStep,
 };
 pub use node::LogicalPlan;
+pub use procedure::{ProcedureCallNode, YieldColumn};
 pub use relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
     RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode,

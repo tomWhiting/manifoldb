@@ -22,7 +22,7 @@ use crate::ast::WindowFunction;
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
     DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphMergeNode, JoinType,
-    LogicalExpr, SetOpType, SortOrder,
+    LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -322,6 +322,10 @@ pub enum PhysicalPlan {
         /// Optional input plan (from MATCH clause).
         input: Option<Box<PhysicalPlan>>,
     },
+
+    // ========== Procedure Operations ==========
+    /// Procedure call (CALL/YIELD).
+    ProcedureCall(Box<ProcedureCallNode>),
 }
 
 // ============================================================================
@@ -1704,7 +1708,8 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1761,7 +1766,8 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => vec![],
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => vec![],
 
             // Unary nodes
             Self::Filter { input, .. }
@@ -1817,6 +1823,7 @@ impl PhysicalPlan {
                 | Self::DropIndex(_)
                 | Self::CreateCollection(_)
                 | Self::DropCollection(_)
+                | Self::ProcedureCall(_)
         )
     }
 
@@ -1860,6 +1867,7 @@ impl PhysicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
+            Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
 
@@ -1895,13 +1903,14 @@ impl PhysicalPlan {
             Self::Insert { cost, .. } => *cost,
             Self::Update { cost, .. } => *cost,
             Self::Delete { cost, .. } => *cost,
-            // DDL operations have zero query cost
+            // DDL and procedure operations have zero query cost
             Self::CreateTable(_)
             | Self::DropTable(_)
             | Self::CreateIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
-            | Self::DropCollection(_) => Cost::zero(),
+            | Self::DropCollection(_)
+            | Self::ProcedureCall(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. } | Self::GraphMerge { .. } => Cost::default(),
         }
@@ -2309,6 +2318,31 @@ impl DisplayTree<'_> {
                 }
                 if !node.returning.is_empty() {
                     write!(f, " RETURN {} items", node.returning.len())?;
+                }
+            }
+            PhysicalPlan::ProcedureCall(node) => {
+                write!(f, "ProcedureCall: {}", node.procedure_name)?;
+                if !node.arguments.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in node.arguments.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                if !node.yield_columns.is_empty() {
+                    write!(f, " YIELD ")?;
+                    for (i, col) in node.yield_columns.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", col.name)?;
+                        if let Some(alias) = &col.alias {
+                            write!(f, " AS {alias}")?;
+                        }
+                    }
                 }
             }
         }
