@@ -63,9 +63,10 @@ Recursive CTEs
 Cypher Writing Clauses
 ├── CREATE: ✅ GraphCreate logical node + operator complete
 ├── MERGE: ✅ GraphMerge node + operator complete
-├── SET: Depends on MERGE (for ON CREATE/MATCH), new GraphSet node
-├── DELETE: Independent, new GraphDelete node + operator
-└── REMOVE: Similar to SET, new GraphRemove node
+├── SET: ✅ GraphSet logical node + physical plan complete (Jan 2026)
+├── DELETE: ✅ GraphDelete logical node + physical plan complete (Jan 2026)
+├── REMOVE: ✅ GraphRemove logical node + physical plan complete (Jan 2026)
+└── Status: ✅ Parsing + planning complete, execution TBD
 
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
@@ -589,15 +590,15 @@ These feature groups can be implemented independently:
 | ON CREATE SET | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | ON MATCH SET | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **SET** |
-| SET property | | | | | | | Not implemented |
+| SET property | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | SET properties (+=) | | | | | | | Not implemented |
-| SET label | | | | | | | Not implemented |
+| SET label | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **REMOVE** |
-| REMOVE property | | | | | | | Not implemented |
-| REMOVE label | | | | | | | Not implemented |
+| REMOVE property | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| REMOVE label | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **DELETE** |
-| DELETE | | | | | | | Not implemented |
-| DETACH DELETE | | | | | | | Not implemented |
+| DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| DETACH DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **FOREACH** |
 | FOREACH | | | | | | | Not implemented |
 
