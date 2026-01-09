@@ -839,9 +839,9 @@ These feature groups can be implemented independently:
 | Algorithm | Via CALL | Operator | Tested | Notes |
 |-----------|----------|----------|--------|-------|
 | Louvain | | ✓ | | Has operator |
-| Label Propagation | | | | In graph crate |
-| Connected Components | | | | In graph crate |
-| Strongly Connected Components | | | | In graph crate |
+| Label Propagation | ✓ | | ✓ | `algo.labelPropagation()` |
+| Connected Components | ✓ | | ✓ | `algo.connectedComponents()` |
+| Strongly Connected Components | ✓ | | ✓ | `algo.stronglyConnectedComponents()` |
 | Triangle Count | | | | Needs impl |
 | Local Clustering Coefficient | | | | Needs impl |
 

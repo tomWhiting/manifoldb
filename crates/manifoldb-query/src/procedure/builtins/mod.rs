@@ -10,12 +10,20 @@
 //! - `algo.degreeCentrality` - Measures node connection counts
 //! - `algo.eigenvectorCentrality` - Measures influence in networks
 //!
+//! ## Community Detection
+//!
+//! - `algo.labelPropagation` - Detects communities using Label Propagation
+//! - `algo.connectedComponents` - Finds weakly or strongly connected components
+//! - `algo.stronglyConnectedComponents` - Finds strongly connected components
+//!
 //! ## Path Finding
 //!
 //! - `algo.shortestPath` - Finds the shortest path between two nodes
 
 mod betweenness;
 mod closeness;
+mod community;
+mod connected;
 mod degree;
 mod eigenvector;
 mod pagerank;
@@ -23,6 +31,11 @@ mod shortest_path;
 
 pub use betweenness::{execute_betweenness_with_tx, BetweennessCentralityProcedure};
 pub use closeness::{execute_closeness_with_tx, ClosenessCentralityProcedure};
+pub use community::{execute_label_propagation_with_tx, LabelPropagationProcedure};
+pub use connected::{
+    execute_connected_components_with_tx, execute_strongly_connected_with_tx,
+    ConnectedComponentsProcedure, StronglyConnectedComponentsProcedure,
+};
 pub use degree::{execute_degree_with_tx, DegreeCentralityProcedure};
 pub use eigenvector::{execute_eigenvector_with_tx, EigenvectorCentralityProcedure};
 pub use pagerank::{execute_pagerank_with_tx, PageRankProcedure};
@@ -41,6 +54,11 @@ pub fn register_builtins(registry: &mut ProcedureRegistry) {
     registry.register(Arc::new(ClosenessCentralityProcedure));
     registry.register(Arc::new(DegreeCentralityProcedure));
     registry.register(Arc::new(EigenvectorCentralityProcedure));
+
+    // Community detection
+    registry.register(Arc::new(LabelPropagationProcedure));
+    registry.register(Arc::new(ConnectedComponentsProcedure));
+    registry.register(Arc::new(StronglyConnectedComponentsProcedure));
 
     // Path finding
     registry.register(Arc::new(ShortestPathProcedure));

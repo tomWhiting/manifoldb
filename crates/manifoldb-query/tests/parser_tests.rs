@@ -2251,9 +2251,14 @@ mod builtin_procedures {
         assert!(registry.contains("algo.degreeCentrality"));
         assert!(registry.contains("algo.eigenvectorCentrality"));
 
+        // Community detection
+        assert!(registry.contains("algo.labelPropagation"));
+        assert!(registry.contains("algo.connectedComponents"));
+        assert!(registry.contains("algo.stronglyConnectedComponents"));
+
         // Path finding
         assert!(registry.contains("algo.shortestPath"));
 
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 9);
     }
 }
