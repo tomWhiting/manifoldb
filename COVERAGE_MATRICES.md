@@ -186,9 +186,9 @@ These feature groups can be implemented independently:
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
 | **Window Specification** |
-| OVER () | ✓ | ✓ | | | | | Needs logical/physical |
-| PARTITION BY | ✓ | ✓ | | | | | Needs logical/physical |
-| ORDER BY in OVER | ✓ | ✓ | | | | | Needs logical/physical |
+| OVER () | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
+| PARTITION BY | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
+| ORDER BY in OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | Named windows | | | | | | | Not implemented |
 | **Frame Clause** |
 | ROWS | ✓ | ✓ | | | | | Needs logical/physical |
@@ -203,9 +203,9 @@ These feature groups can be implemented independently:
 | EXCLUDE GROUP | | | | | | | Not implemented |
 | EXCLUDE TIES | | | | | | | Not implemented |
 | **Ranking Functions** |
-| row_number() | ✓ | ✓ | | | | | Needs impl |
-| rank() | ✓ | ✓ | | | | | Needs impl |
-| dense_rank() | ✓ | ✓ | | | | | Needs impl |
+| row_number() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
+| rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
+| dense_rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | ntile(n) | ✓ | ✓ | | | | | Needs impl |
 | percent_rank() | | | | | | | Not implemented |
 | cume_dist() | | | | | | | Not implemented |
@@ -613,7 +613,7 @@ These feature groups can be implemented independently:
 | WITH ORDER BY | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | WITH aggregation | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | **UNWIND** |
-| Basic UNWIND | ✓ | ✓ | ✓ | | | | Needs exec |
+| Basic UNWIND | ✓ | ✓ | ✓ | ✓† | ✓† | ✓† | Agent impl |
 | **ORDER BY** |
 | Single column | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Multiple columns | ✓ | ✓ | ✓ | ✓ | ✓ | | |
