@@ -2527,3 +2527,190 @@ mod shortest_path_patterns {
         }
     }
 }
+
+// ============================================================================
+// Utility Statements Tests
+// ============================================================================
+
+mod utility_statements {
+    use super::*;
+    use manifoldb_query::ast::{CopyDirection, CopyFormat, CopyTarget, UtilityStatement};
+
+    // EXPLAIN ANALYZE tests
+    #[test]
+    fn parse_explain_analyze_basic() {
+        let stmt = parse_single_statement("EXPLAIN ANALYZE SELECT * FROM users").unwrap();
+        match stmt {
+            Statement::ExplainAnalyze(ea) => {
+                // Should have defaults: timing=true, costs=true
+                assert!(ea.timing);
+                assert!(ea.costs);
+                // Check inner statement is a SELECT
+                assert!(matches!(ea.statement, Statement::Select(_)));
+            }
+            _ => panic!("expected EXPLAIN ANALYZE"),
+        }
+    }
+
+    // ANALYZE TABLE tests (note: sqlparser's ANALYZE requires TABLE keyword in some dialects)
+    #[test]
+    fn parse_analyze_table() {
+        let stmt = parse_single_statement("ANALYZE TABLE users").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Analyze(analyze) = *util {
+                    assert!(analyze.table.is_some());
+                    assert_eq!(analyze.table.unwrap().to_string(), "users");
+                } else {
+                    panic!("expected ANALYZE");
+                }
+            }
+            _ => panic!("expected ANALYZE utility statement"),
+        }
+    }
+
+    // COPY tests
+    #[test]
+    fn parse_copy_to_file() {
+        let stmt = parse_single_statement("COPY users TO '/tmp/users.csv'").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Copy(copy) = *util {
+                    assert!(matches!(copy.direction, CopyDirection::To(_)));
+                    assert!(matches!(copy.target, CopyTarget::Table { .. }));
+                } else {
+                    panic!("expected COPY");
+                }
+            }
+            _ => panic!("expected COPY utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_copy_from_file() {
+        let stmt = parse_single_statement("COPY users FROM '/tmp/users.csv'").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Copy(copy) = *util {
+                    assert!(matches!(copy.direction, CopyDirection::From(_)));
+                } else {
+                    panic!("expected COPY");
+                }
+            }
+            _ => panic!("expected COPY utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_copy_with_csv_format() {
+        let stmt =
+            parse_single_statement("COPY users TO '/tmp/users.csv' WITH (FORMAT CSV)").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Copy(copy) = *util {
+                    assert_eq!(copy.options.format, CopyFormat::Csv);
+                } else {
+                    panic!("expected COPY");
+                }
+            }
+            _ => panic!("expected COPY utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_copy_with_header() {
+        let stmt =
+            parse_single_statement("COPY users TO '/tmp/users.csv' WITH (FORMAT CSV, HEADER)")
+                .unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Copy(copy) = *util {
+                    assert!(copy.options.header);
+                } else {
+                    panic!("expected COPY");
+                }
+            }
+            _ => panic!("expected COPY utility statement"),
+        }
+    }
+
+    // SET tests
+    #[test]
+    fn parse_set_variable() {
+        let stmt = parse_single_statement("SET search_path TO public").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Set(set_stmt) = *util {
+                    assert_eq!(set_stmt.name.name, "search_path");
+                    assert!(set_stmt.value.is_some());
+                } else {
+                    panic!("expected SET");
+                }
+            }
+            _ => panic!("expected SET utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_set_variable_equals() {
+        let stmt = parse_single_statement("SET timezone = 'UTC'").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Set(set_stmt) = *util {
+                    assert_eq!(set_stmt.name.name, "timezone");
+                    assert!(set_stmt.value.is_some());
+                } else {
+                    panic!("expected SET");
+                }
+            }
+            _ => panic!("expected SET utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_set_local() {
+        let stmt = parse_single_statement("SET LOCAL timezone = 'UTC'").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Set(set_stmt) = *util {
+                    assert!(set_stmt.local);
+                } else {
+                    panic!("expected SET");
+                }
+            }
+            _ => panic!("expected SET utility statement"),
+        }
+    }
+
+    // SHOW tests
+    #[test]
+    fn parse_show_variable() {
+        let stmt = parse_single_statement("SHOW search_path").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Show(show_stmt) = *util {
+                    assert!(show_stmt.name.is_some());
+                    assert_eq!(show_stmt.name.unwrap().name, "search_path");
+                } else {
+                    panic!("expected SHOW");
+                }
+            }
+            _ => panic!("expected SHOW utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_show_all() {
+        let stmt = parse_single_statement("SHOW ALL").unwrap();
+        match stmt {
+            Statement::Utility(util) => {
+                if let UtilityStatement::Show(show_stmt) = *util {
+                    assert!(show_stmt.name.is_none());
+                } else {
+                    panic!("expected SHOW");
+                }
+            }
+            _ => panic!("expected SHOW utility statement"),
+        }
+    }
+}

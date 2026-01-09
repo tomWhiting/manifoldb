@@ -36,6 +36,7 @@ mod node;
 mod procedure;
 mod relational;
 mod transaction;
+pub mod utility;
 mod validate;
 mod vector;
 
@@ -64,6 +65,10 @@ pub use relational::{
 pub use transaction::{
     BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
     SetTransactionNode,
+};
+pub use utility::{
+    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ExplainFormat, ResetNode, SetSessionNode, ShowNode,
+    VacuumNode,
 };
 pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
 pub use vector::{

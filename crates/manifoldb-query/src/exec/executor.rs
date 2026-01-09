@@ -480,6 +480,38 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         | PhysicalPlan::Savepoint(_)
         | PhysicalPlan::ReleaseSavepoint(_)
         | PhysicalPlan::SetTransaction(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+
+        // Utility statements are handled at a higher level (session/connection),
+        // not as standard operators. They return placeholder empty results.
+        // EXPLAIN ANALYZE would need special handling to actually execute and collect stats.
+        PhysicalPlan::ExplainAnalyze(_) => {
+            // Returns execution plan with statistics (placeholder)
+            Ok(Box::new(EmptyOp::with_columns(vec!["QUERY PLAN".to_string()])))
+        }
+        PhysicalPlan::Vacuum(_) => {
+            // VACUUM is a maintenance operation, returns empty
+            Ok(Box::new(EmptyOp::with_columns(vec![])))
+        }
+        PhysicalPlan::Analyze(_) => {
+            // ANALYZE collects statistics, returns empty
+            Ok(Box::new(EmptyOp::with_columns(vec![])))
+        }
+        PhysicalPlan::Copy(_) => {
+            // COPY returns row count info (placeholder)
+            Ok(Box::new(EmptyOp::with_columns(vec!["rows_affected".to_string()])))
+        }
+        PhysicalPlan::SetSession(_) => {
+            // SET returns confirmation
+            Ok(Box::new(EmptyOp::with_columns(vec!["SET".to_string()])))
+        }
+        PhysicalPlan::Show(_) => {
+            // SHOW returns variable name and value
+            Ok(Box::new(EmptyOp::with_columns(vec!["name".to_string(), "setting".to_string()])))
+        }
+        PhysicalPlan::Reset(_) => {
+            // RESET returns confirmation
+            Ok(Box::new(EmptyOp::with_columns(vec!["RESET".to_string()])))
+        }
     }
 }
 

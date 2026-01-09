@@ -322,6 +322,29 @@ impl PredicatePushdown {
                 // The subquery is independent, so we don't push predicates into it
                 LogicalPlan::CallSubquery { node, subquery, input: Box::new(optimized_input) }
             }
+
+            // Utility statements - no predicate pushdown applicable for most
+            LogicalPlan::ExplainAnalyze(node) => {
+                // Push predicates into the inner plan
+                let optimized_input = self.push_down(*node.input, predicates);
+                LogicalPlan::ExplainAnalyze(super::super::logical::utility::ExplainAnalyzeNode {
+                    input: Box::new(optimized_input),
+                    buffers: node.buffers,
+                    timing: node.timing,
+                    format: node.format,
+                    verbose: node.verbose,
+                    costs: node.costs,
+                })
+            }
+            LogicalPlan::Vacuum(_)
+            | LogicalPlan::Analyze(_)
+            | LogicalPlan::Copy(_)
+            | LogicalPlan::SetSession(_)
+            | LogicalPlan::Show(_)
+            | LogicalPlan::Reset(_) => {
+                // Utility statements have no inputs, just apply any predicates as a filter
+                self.apply_predicates(plan, predicates)
+            }
         }
     }
 
