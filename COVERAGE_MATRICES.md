@@ -614,7 +614,7 @@ These feature groups can be implemented independently:
 | **WHERE** |
 | Basic predicates | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Pattern predicates | ✓ | ✓ | | | | | |
-| EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
+| EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
 | CALL { } subquery | ✓ | ✓ | ✓ | ✓ | | | P, A, L, T |
 | **Path Functions** |
