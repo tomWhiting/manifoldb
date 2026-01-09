@@ -646,6 +646,73 @@ pub enum Expr {
         /// The projection expression (after `|`). This is evaluated for each pattern match.
         projection_expr: Box<Expr>,
     },
+
+    /// Cypher EXISTS { } subquery expression.
+    ///
+    /// Returns a boolean indicating whether the pattern matches any results.
+    /// This is a correlated subquery that is evaluated for each row in the outer query.
+    ///
+    /// Syntax: `EXISTS { pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `EXISTS { (p)-[:FRIEND]->(:Person {name: 'Alice'}) }` - checks if pattern exists
+    /// - `EXISTS { (p)-[:KNOWS]->(other) WHERE other.age > 30 }` - with filter
+    /// - `EXISTS { MATCH (p)-[:FRIEND]->(f) WHERE f.name = 'Bob' }` - full MATCH syntax
+    ExistsSubquery {
+        /// The graph pattern to check for existence.
+        pattern: Box<super::pattern::PathPattern>,
+        /// Optional WHERE filter predicate.
+        filter_predicate: Option<Box<Expr>>,
+    },
+
+    /// Cypher COUNT { } subquery expression.
+    ///
+    /// Returns the count of pattern matches. This is a correlated subquery
+    /// that is evaluated for each row in the outer query.
+    ///
+    /// Syntax: `COUNT { pattern [WHERE predicate] }`
+    ///
+    /// Examples:
+    /// - `COUNT { (p)-[:FRIEND]->() }` - count number of friends
+    /// - `COUNT { (p)-[:KNOWS]->(other) WHERE other.age > 30 }` - count with filter
+    CountSubquery {
+        /// The graph pattern to count matches.
+        pattern: Box<super::pattern::PathPattern>,
+        /// Optional WHERE filter predicate.
+        filter_predicate: Option<Box<Expr>>,
+    },
+
+    /// Cypher CALL { } inline subquery expression.
+    ///
+    /// Executes a subquery for each row with explicit variable import via WITH.
+    /// The subquery can access variables from the outer query through the WITH clause.
+    ///
+    /// Syntax:
+    /// ```cypher
+    /// CALL {
+    ///   WITH outer_var
+    ///   MATCH (outer_var)-[:REL]->(other)
+    ///   RETURN count(other) AS cnt
+    /// }
+    /// ```
+    ///
+    /// Examples:
+    /// - Correlated subquery with aggregation:
+    ///   ```cypher
+    ///   MATCH (p:Person)
+    ///   CALL {
+    ///     WITH p
+    ///     MATCH (p)-[:FRIEND]->(f)
+    ///     RETURN count(f) AS friendCount
+    ///   }
+    ///   RETURN p.name, friendCount
+    ///   ```
+    CallSubquery {
+        /// Variables imported from outer query (in WITH clause).
+        imported_variables: Vec<Identifier>,
+        /// The inner statements (typically MATCH/RETURN).
+        inner_statements: Vec<super::statement::Statement>,
+    },
 }
 
 /// An item in a map projection.
