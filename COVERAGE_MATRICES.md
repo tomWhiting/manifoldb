@@ -724,11 +724,11 @@ These feature groups can be implemented independently:
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
 | **Type/Property** |
-| type(r) | ✓ | ✓ | | | | | |
-| labels(n) | ✓ | ✓ | | | | | |
-| id(n) | ✓ | ✓ | | | | | |
-| properties(n) | ✓ | ✓ | | | | | |
-| keys(map) | ✓ | ✓ | | | | | |
+| type(r) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| labels(n) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| id(n) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| properties(n) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| keys(map) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | **List Functions** |
 | range() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | size() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
@@ -950,7 +950,7 @@ These feature groups can be implemented independently:
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
 | Expressions | 10 | 5 | 0 | 5 |
-| Scalar Functions | 20 | 5 | 10 | 5 |
+| Scalar Functions | 20 | 10 | 5 | 5 |
 | Aggregating Functions | 12 | 6 | 2 | 4 |
 | List Functions | 12 | 8 | 0 | 4 |
 | String Functions | 10 | 6 | 2 | 2 |

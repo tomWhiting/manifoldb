@@ -1962,6 +1962,12 @@ impl PlanBuilder {
                     "JSONB_SET" => Some(ScalarFunction::JsonbSet),
                     "JSONB_INSERT" => Some(ScalarFunction::JsonbInsert),
                     "JSONB_STRIP_NULLS" => Some(ScalarFunction::JsonbStripNulls),
+                    // Cypher entity functions
+                    "TYPE" => Some(ScalarFunction::Type),
+                    "LABELS" => Some(ScalarFunction::Labels),
+                    "ID" => Some(ScalarFunction::Id),
+                    "PROPERTIES" => Some(ScalarFunction::Properties),
+                    "KEYS" => Some(ScalarFunction::Keys),
                     _ => None,
                 };
 
