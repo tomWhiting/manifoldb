@@ -112,7 +112,7 @@ pub trait CollectionVectorProvider: Send + Sync {
     ) -> Result<Vec<SearchResult>, VectorError>;
 }
 
-use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
+use super::graph_accessor::{GraphAccessor, GraphMutator, NullGraphAccessor, NullGraphMutator};
 
 /// Execution context for a query.
 ///
@@ -122,6 +122,7 @@ use super::graph_accessor::{GraphAccessor, NullGraphAccessor};
 /// - Execution statistics
 /// - Runtime configuration
 /// - Graph storage access (for graph traversal queries)
+/// - Graph mutation access (for CREATE, MERGE, etc.)
 /// - Vector index access (optional)
 /// - Collection vector storage access (for named vectors)
 pub struct ExecutionContext {
@@ -135,6 +136,8 @@ pub struct ExecutionContext {
     config: ExecutionConfig,
     /// Graph accessor for graph traversal operations.
     graph: Arc<dyn GraphAccessor>,
+    /// Graph mutator for graph write operations.
+    graph_mutator: Arc<dyn GraphMutator>,
     /// Optional vector index provider for HNSW searches (entity-property based).
     vector_index_provider: Option<Arc<dyn VectorIndexProvider>>,
     /// Optional collection vector provider for named vector storage.
@@ -153,6 +156,7 @@ impl ExecutionContext {
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
+            graph_mutator: Arc::new(NullGraphMutator),
             vector_index_provider: None,
             collection_vector_provider: None,
         }
@@ -167,6 +171,7 @@ impl ExecutionContext {
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
             graph: Arc::new(NullGraphAccessor),
+            graph_mutator: Arc::new(NullGraphMutator),
             vector_index_provider: None,
             collection_vector_provider: None,
         }
@@ -194,6 +199,29 @@ impl ExecutionContext {
     #[must_use]
     pub fn graph_arc(&self) -> Arc<dyn GraphAccessor> {
         Arc::clone(&self.graph)
+    }
+
+    /// Sets the graph mutator for graph write operations.
+    ///
+    /// This enables the query executor to perform CREATE, MERGE, SET, DELETE, etc.
+    #[must_use]
+    pub fn with_graph_mutator(mut self, mutator: Arc<dyn GraphMutator>) -> Self {
+        self.graph_mutator = mutator;
+        self
+    }
+
+    /// Returns a reference to the graph mutator.
+    #[inline]
+    #[must_use]
+    pub fn graph_mutator(&self) -> &dyn GraphMutator {
+        self.graph_mutator.as_ref()
+    }
+
+    /// Returns the graph mutator as an Arc.
+    #[inline]
+    #[must_use]
+    pub fn graph_mutator_arc(&self) -> Arc<dyn GraphMutator> {
+        Arc::clone(&self.graph_mutator)
     }
 
     /// Creates a context with a vector index provider.

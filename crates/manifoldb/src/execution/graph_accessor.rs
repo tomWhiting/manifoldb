@@ -258,6 +258,121 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
         .collect()
 }
 
+// ============================================================================
+// Graph Mutator Implementation for DatabaseTransaction
+// ============================================================================
+
+use manifoldb_query::exec::graph_accessor::{
+    CreateEdgeRequest, CreateNodeRequest, GraphAccessError, GraphAccessResult, GraphMutator,
+};
+
+/// A `GraphMutator` implementation that wraps a `DatabaseTransaction`.
+///
+/// This allows CREATE operations to use the database's entity and edge storage
+/// directly, using the proper transaction semantics.
+///
+/// The transaction is stored in an `Option` inside an `RwLock`, allowing
+/// it to be "taken" out after execution completes (for commit/rollback).
+pub struct DatabaseGraphMutator<T: Transaction> {
+    tx: std::sync::Arc<std::sync::RwLock<Option<DatabaseTransaction<T>>>>,
+}
+
+impl<T: Transaction> DatabaseGraphMutator<T> {
+    /// Create a new mutator wrapping a database transaction.
+    pub fn new(tx: DatabaseTransaction<T>) -> Self {
+        Self { tx: std::sync::Arc::new(std::sync::RwLock::new(Some(tx))) }
+    }
+
+    /// Get a reference to the inner Arc for sharing with the context.
+    ///
+    /// This allows multiple references to exist while still being able to
+    /// take the transaction out at the end.
+    pub fn transaction_arc(
+        &self,
+    ) -> std::sync::Arc<std::sync::RwLock<Option<DatabaseTransaction<T>>>> {
+        self.tx.clone()
+    }
+
+    /// Take the underlying transaction out of the mutator.
+    ///
+    /// This is used to commit or rollback the transaction after CREATE operations.
+    /// Returns `None` if the transaction was already taken.
+    pub fn take_transaction(&self) -> Option<DatabaseTransaction<T>> {
+        self.tx.write().ok()?.take()
+    }
+}
+
+impl<T: Transaction> Clone for DatabaseGraphMutator<T> {
+    fn clone(&self) -> Self {
+        Self { tx: self.tx.clone() }
+    }
+}
+
+impl<T> GraphMutator for DatabaseGraphMutator<T>
+where
+    T: Transaction + Send + Sync,
+{
+    fn create_node(
+        &self,
+        request: &CreateNodeRequest,
+    ) -> GraphAccessResult<manifoldb_core::Entity> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Use DatabaseTransaction's create_entity method
+        let mut entity = tx
+            .create_entity()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to create entity: {e}")))?;
+
+        // Add labels
+        for label in &request.labels {
+            entity = entity.with_label(label.as_str());
+        }
+
+        // Add properties
+        for (key, value) in &request.properties {
+            entity = entity.with_property(key.clone(), value.clone());
+        }
+
+        // Save the entity
+        tx.put_entity(&entity)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to save entity: {e}")))?;
+
+        Ok(entity)
+    }
+
+    fn create_edge(&self, request: &CreateEdgeRequest) -> GraphAccessResult<Edge> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Use DatabaseTransaction's create_edge method
+        let mut edge = tx
+            .create_edge(request.source, request.target, request.edge_type.clone())
+            .map_err(|e| GraphAccessError::Internal(format!("failed to create edge: {e}")))?;
+
+        // Add properties
+        for (key, value) in &request.properties {
+            edge = edge.with_property(key.clone(), value.clone());
+        }
+
+        // Save the edge
+        tx.put_edge(&edge)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
+
+        Ok(edge)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

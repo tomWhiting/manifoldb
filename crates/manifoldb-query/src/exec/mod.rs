@@ -44,7 +44,7 @@ pub use context::{
     CancellationToken, CollectionVectorProvider, ExecutionConfig, ExecutionContext,
     VectorIndexProvider,
 };
-pub use executor::{execute_plan, Executor};
+pub use executor::{build_operator_tree, execute_plan, Executor};
 pub use graph_accessor::{
     GraphAccessError, GraphAccessResult, GraphAccessor, NeighborResult, NullGraphAccessor,
     PathFindConfig, PathMatchResult, PathStepConfig, TransactionGraphAccessor, TraversalResult,

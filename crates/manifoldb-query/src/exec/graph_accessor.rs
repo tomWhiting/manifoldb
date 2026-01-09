@@ -375,6 +375,167 @@ where
     }
 }
 
+// ============================================================================
+// Graph Mutation Support
+// ============================================================================
+
+use manifoldb_core::{Edge, Entity, Label, Value};
+use std::collections::HashMap;
+
+/// Specification for creating a node.
+#[derive(Debug, Clone)]
+pub struct CreateNodeRequest {
+    /// Labels to assign to the node.
+    pub labels: Vec<Label>,
+    /// Properties to set on the node.
+    pub properties: HashMap<String, Value>,
+}
+
+impl CreateNodeRequest {
+    /// Create a new empty node request.
+    pub fn new() -> Self {
+        Self { labels: Vec::new(), properties: HashMap::new() }
+    }
+
+    /// Add a label.
+    pub fn with_label(mut self, label: impl Into<Label>) -> Self {
+        self.labels.push(label.into());
+        self
+    }
+
+    /// Add a property.
+    pub fn with_property(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.properties.insert(key.into(), value);
+        self
+    }
+}
+
+impl Default for CreateNodeRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Specification for creating an edge.
+#[derive(Debug, Clone)]
+pub struct CreateEdgeRequest {
+    /// The source entity ID.
+    pub source: EntityId,
+    /// The target entity ID.
+    pub target: EntityId,
+    /// The edge type.
+    pub edge_type: EdgeType,
+    /// Properties to set on the edge.
+    pub properties: HashMap<String, Value>,
+}
+
+impl CreateEdgeRequest {
+    /// Create a new edge request.
+    pub fn new(source: EntityId, target: EntityId, edge_type: impl Into<EdgeType>) -> Self {
+        Self { source, target, edge_type: edge_type.into(), properties: HashMap::new() }
+    }
+
+    /// Add a property.
+    pub fn with_property(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.properties.insert(key.into(), value);
+        self
+    }
+}
+
+/// A trait for mutating the graph during query execution.
+///
+/// This trait provides write operations for Cypher CREATE, MERGE, SET, DELETE, etc.
+/// It is separate from `GraphAccessor` because write operations require mutable access.
+pub trait GraphMutator: Send + Sync {
+    /// Create a new node in the graph.
+    ///
+    /// Returns the created entity with its generated ID.
+    fn create_node(&self, request: &CreateNodeRequest) -> GraphAccessResult<Entity>;
+
+    /// Create a new edge in the graph.
+    ///
+    /// Returns the created edge with its generated ID.
+    fn create_edge(&self, request: &CreateEdgeRequest) -> GraphAccessResult<Edge>;
+}
+
+/// A null implementation of `GraphMutator` that always returns an error.
+///
+/// Used when no graph storage is configured for writes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullGraphMutator;
+
+impl GraphMutator for NullGraphMutator {
+    fn create_node(&self, _request: &CreateNodeRequest) -> GraphAccessResult<Entity> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn create_edge(&self, _request: &CreateEdgeRequest) -> GraphAccessResult<Edge> {
+        Err(GraphAccessError::NoStorage)
+    }
+}
+
+/// A concrete implementation of `GraphMutator` backed by a mutable storage transaction.
+///
+/// This wraps a transaction reference and delegates to the actual graph storage code.
+/// Uses interior mutability via `RwLock` for thread-safe mutation.
+pub struct TransactionGraphMutator<T> {
+    tx: std::sync::RwLock<T>,
+    id_gen: std::sync::Arc<manifoldb_graph::store::IdGenerator>,
+}
+
+impl<T> TransactionGraphMutator<T> {
+    /// Create a new mutator wrapping a transaction.
+    pub fn new(tx: T, id_gen: std::sync::Arc<manifoldb_graph::store::IdGenerator>) -> Self {
+        Self { tx: std::sync::RwLock::new(tx), id_gen }
+    }
+}
+
+impl<T> GraphMutator for TransactionGraphMutator<T>
+where
+    T: manifoldb_storage::Transaction + Send + Sync,
+{
+    fn create_node(&self, request: &CreateNodeRequest) -> GraphAccessResult<Entity> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        manifoldb_graph::store::NodeStore::create(&mut *tx, &self.id_gen, |id| {
+            let mut entity = Entity::new(id);
+            for label in &request.labels {
+                entity = entity.with_label(label.clone());
+            }
+            for (key, value) in &request.properties {
+                entity = entity.with_property(key.clone(), value.clone());
+            }
+            entity
+        })
+        .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+
+    fn create_edge(&self, request: &CreateEdgeRequest) -> GraphAccessResult<Edge> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        manifoldb_graph::store::EdgeStore::create(
+            &mut *tx,
+            &self.id_gen,
+            request.source,
+            request.target,
+            request.edge_type.clone(),
+            |id| {
+                let mut edge =
+                    Edge::new(id, request.source, request.target, request.edge_type.clone());
+                for (key, value) in &request.properties {
+                    edge = edge.with_property(key.clone(), value.clone());
+                }
+                edge
+            },
+        )
+        .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

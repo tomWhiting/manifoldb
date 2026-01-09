@@ -525,6 +525,12 @@ impl Database {
         // Extract cache hint and clean SQL
         let (hint, clean_sql) = extract_cache_hint(sql);
 
+        // Check if this is a Cypher DML statement (CREATE, MERGE, etc.)
+        // These require a write transaction
+        if crate::execution::is_cypher_dml(&clean_sql) {
+            return self.execute_cypher_dml(&clean_sql, params);
+        }
+
         // Determine if we should use caching
         let use_cache = match hint {
             CacheHint::Cache => true,
@@ -575,6 +581,50 @@ impl Database {
             Err(e) => {
                 // Record failed query
                 self.inner.db_metrics.record_query(start.elapsed(), false);
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute a Cypher DML statement (CREATE, MERGE, etc.) that requires a write transaction.
+    ///
+    /// This is called internally when query() or query_with_params() detects a Cypher DML statement.
+    fn execute_cypher_dml(
+        &self,
+        sql: &str,
+        params: &[manifoldb_core::Value],
+    ) -> Result<QueryResult> {
+        let start = Instant::now();
+
+        // Start a write transaction
+        let tx = self.begin()?;
+        self.inner.db_metrics.transactions.record_start();
+
+        // Execute the Cypher DML
+        let result = crate::execution::execute_graph_dml(
+            tx,
+            sql,
+            params,
+            self.inner.config.max_rows_in_memory,
+        );
+
+        match result {
+            Ok((result_set, tx)) => {
+                // Commit the transaction
+                let commit_start = Instant::now();
+                tx.commit().map_err(Error::Transaction)?;
+                self.inner.db_metrics.record_commit(commit_start.elapsed());
+
+                // Record successful query
+                self.inner.db_metrics.record_query(start.elapsed(), true);
+
+                // Convert the ResultSet to our QueryResult
+                Ok(QueryResult::from_result_set(result_set))
+            }
+            Err(e) => {
+                // Record failed query and rollback
+                self.inner.db_metrics.record_query(start.elapsed(), false);
+                self.inner.db_metrics.record_rollback();
                 Err(e)
             }
         }
