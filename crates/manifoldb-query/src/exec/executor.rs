@@ -15,6 +15,7 @@ use super::operators::{
     graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
     graph_create::GraphCreateOp,
     graph_delete::GraphDeleteOp,
+    graph_foreach::GraphForeachOp,
     graph_merge::GraphMergeOp,
     graph_remove::GraphRemoveOp,
     graph_set::GraphSetOp,
@@ -176,12 +177,29 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         PhysicalPlan::IndexRangeScan(node) => Ok(Box::new(IndexRangeScanOp::new((**node).clone()))),
 
         PhysicalPlan::Values { rows, .. } => {
-            // Convert LogicalExpr rows to Value rows
-            // For now, use empty schema - actual evaluation would happen here
-            let schema = Arc::new(Schema::new(
-                (0..rows.first().map_or(0, |r| r.len())).map(|i| format!("col_{i}")).collect(),
-            ));
-            Ok(Box::new(ValuesOp::new(schema, Vec::new())))
+            use super::operators::filter::evaluate_expr;
+            use manifoldb_core::Value;
+
+            // Create schema based on number of columns in the first row
+            let num_cols = rows.first().map_or(0, |r| r.len());
+            let schema = Arc::new(Schema::new((0..num_cols).map(|i| format!("col_{i}")).collect()));
+
+            // Create an empty row for evaluating constant expressions
+            let empty_schema = Arc::new(Schema::empty());
+            let empty_row = Row::new(empty_schema, vec![]);
+
+            // Convert LogicalExpr rows to Value rows by evaluating each expression
+            let value_rows: Vec<Vec<Value>> = rows
+                .iter()
+                .map(|row_exprs| {
+                    row_exprs
+                        .iter()
+                        .map(|expr| evaluate_expr(expr, &empty_row))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Box::new(ValuesOp::new(schema, value_rows)))
         }
 
         PhysicalPlan::Empty { columns } => Ok(Box::new(EmptyOp::with_columns(columns.clone()))),
@@ -433,9 +451,11 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
             Ok(Box::new(GraphMergeOp::new((**node).clone(), input_op)))
         }
 
-        // Placeholder implementations for other graph mutations
-        // TODO: Implement GraphForeachOp
-        PhysicalPlan::GraphForeach { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        // Graph FOREACH operations
+        PhysicalPlan::GraphForeach { node, input } => {
+            let input_op = build_operator_tree(input)?;
+            Ok(Box::new(GraphForeachOp::new((**node).clone(), input_op)))
+        }
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
         PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
