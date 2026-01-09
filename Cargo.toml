@@ -52,6 +52,10 @@ tokio = { version = "1", features = ["full"] }
 # Query parsing
 sqlparser = "0.52"
 
+# Date/time and regex
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+regex = "1"
+
 # Testing
 proptest = "1"
 criterion = "0.5"

@@ -72,6 +72,10 @@ pub enum ParseError {
         /// The configured maximum rows allowed.
         limit: usize,
     },
+
+    /// Runtime execution error.
+    #[error("execution error: {0}")]
+    Execution(String),
 }
 
 impl From<sqlparser::parser::ParserError> for ParseError {
