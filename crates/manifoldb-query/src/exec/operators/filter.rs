@@ -7,13 +7,15 @@ use manifoldb_graph::traversal::Direction;
 
 use crate::ast::{BinaryOp, Literal, UnaryOp};
 use crate::exec::context::ExecutionContext;
+use crate::exec::executor::build_operator_tree;
 use crate::exec::graph_accessor::GraphAccessor;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
 use crate::plan::logical::{
     ExpandDirection, ExpandLength, ExpandNode, HybridCombinationMethod, LogicalExpr,
-    LogicalMapProjectionItem,
+    LogicalMapProjectionItem, LogicalPlan,
 };
+use crate::plan::physical::PhysicalPlanner;
 
 /// Filter operator.
 ///
@@ -28,6 +30,8 @@ pub struct FilterOp {
     input: BoxedOperator,
     /// Graph accessor for EXISTS/COUNT subqueries.
     graph: Option<Arc<dyn GraphAccessor>>,
+    /// Execution context for SQL subquery execution.
+    ctx: Option<ExecutionContext>,
 }
 
 impl FilterOp {
@@ -35,7 +39,7 @@ impl FilterOp {
     #[must_use]
     pub fn new(predicate: LogicalExpr, input: BoxedOperator) -> Self {
         let schema = input.schema();
-        Self { base: OperatorBase::new(schema), predicate, input, graph: None }
+        Self { base: OperatorBase::new(schema), predicate, input, graph: None, ctx: None }
     }
 
     /// Returns the predicate.
@@ -46,7 +50,8 @@ impl FilterOp {
 
     /// Evaluates the predicate against a row.
     fn evaluate_predicate(&self, row: &Row) -> OperatorResult<bool> {
-        let value = evaluate_expr_with_graph(&self.predicate, row, self.graph.as_deref())?;
+        let value =
+            evaluate_expr_with_subquery(&self.predicate, row, self.graph.as_deref(), &self.ctx)?;
         match value {
             Value::Bool(b) => Ok(b),
             Value::Null => Ok(false), // NULL is treated as false
@@ -60,6 +65,9 @@ impl Operator for FilterOp {
         self.input.open(ctx)?;
         // Capture the graph accessor for EXISTS/COUNT subquery evaluation
         self.graph = Some(ctx.graph_arc());
+        // Clone the execution context for SQL subquery execution
+        // Note: We create a new context with the same graph accessor
+        self.ctx = Some(ExecutionContext::new().with_graph(ctx.graph_arc()));
         self.base.set_open();
         Ok(())
     }
@@ -85,6 +93,7 @@ impl Operator for FilterOp {
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
         self.graph = None; // Release graph accessor reference
+        self.ctx = None; // Release execution context
         self.base.set_closed();
         Ok(())
     }
@@ -111,6 +120,73 @@ impl Operator for FilterOp {
 /// - Unresolved parameters return NULL (should be resolved before reaching filter)
 pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
     evaluate_expr_with_graph(expr, row, None)
+}
+
+/// Evaluates a logical expression with support for SQL subqueries.
+///
+/// This function extends `evaluate_expr_with_graph` by also supporting
+/// SQL EXISTS and IN subquery execution through the provided execution context.
+///
+/// # Arguments
+///
+/// * `expr` - The logical expression to evaluate
+/// * `row` - The current row providing variable bindings
+/// * `graph` - Optional graph accessor for Cypher pattern subqueries
+/// * `ctx` - Optional execution context for SQL subquery execution
+///
+/// # NULL semantics
+///
+/// - EXISTS returns boolean (never NULL)
+/// - IN with NULL in the value being checked returns NULL if not found
+/// - NOT IN with NULL values in the subquery has special semantics (UNKNOWN)
+pub fn evaluate_expr_with_subquery(
+    expr: &LogicalExpr,
+    row: &Row,
+    graph: Option<&dyn GraphAccessor>,
+    ctx: &Option<ExecutionContext>,
+) -> OperatorResult<Value> {
+    match expr {
+        // SQL EXISTS subquery
+        LogicalExpr::Exists { subquery, negated } => {
+            let result = evaluate_sql_exists_subquery(subquery, row, ctx)?;
+            let exists = match result {
+                Value::Bool(b) => b,
+                _ => false,
+            };
+            Ok(Value::Bool(if *negated { !exists } else { exists }))
+        }
+
+        // SQL IN subquery
+        LogicalExpr::InSubquery { expr, subquery, negated } => {
+            let val = evaluate_expr_with_subquery(expr, row, graph, ctx)?;
+
+            // NULL value handling: NULL IN (...) is NULL, NULL NOT IN (...) is NULL
+            if matches!(val, Value::Null) {
+                return Ok(Value::Null);
+            }
+
+            evaluate_sql_in_subquery(&val, subquery, *negated, row, ctx)
+        }
+
+        // SQL scalar subquery (returns single value)
+        LogicalExpr::Subquery(subquery) => evaluate_sql_scalar_subquery(subquery, row, ctx),
+
+        // For UnaryOp, we need special handling to properly propagate NOT over EXISTS/IN
+        LogicalExpr::UnaryOp { op, operand } => {
+            let val = evaluate_expr_with_subquery(operand, row, graph, ctx)?;
+            evaluate_unary_op(op, &val)
+        }
+
+        // Binary operations need subquery support in their operands
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let left_val = evaluate_expr_with_subquery(left, row, graph, ctx)?;
+            let right_val = evaluate_expr_with_subquery(right, row, graph, ctx)?;
+            evaluate_binary_op(&left_val, op, &right_val)
+        }
+
+        // Delegate to the graph-aware evaluator for all other expressions
+        _ => evaluate_expr_with_graph(expr, row, graph),
+    }
 }
 
 /// Evaluates a logical expression against a row with optional graph access.
@@ -1029,6 +1105,183 @@ fn execute_count_pattern(
     }
 
     Ok(total_count)
+}
+
+// ===========================================================================
+// SQL Subquery Execution Functions
+// ===========================================================================
+
+/// Executes an SQL EXISTS subquery.
+///
+/// EXISTS returns TRUE if the subquery returns at least one row, FALSE otherwise.
+/// For correlated subqueries, the outer row values are available through variable binding.
+///
+/// # Arguments
+///
+/// * `subquery` - The logical plan representing the subquery
+/// * `outer_row` - The current outer row (for correlated subqueries)
+/// * `ctx` - Optional execution context (required for subquery execution)
+///
+/// # Returns
+///
+/// `Value::Bool(true)` if subquery returns any rows, `Value::Bool(false)` otherwise.
+fn evaluate_sql_exists_subquery(
+    subquery: &LogicalPlan,
+    _outer_row: &Row,
+    ctx: &Option<ExecutionContext>,
+) -> OperatorResult<Value> {
+    // Without an execution context, we cannot execute subqueries
+    let Some(ctx) = ctx else {
+        return Ok(Value::Bool(false));
+    };
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let mut op = build_operator_tree(&physical_plan)?;
+    op.open(ctx)?;
+
+    // For EXISTS, we only need to check if there's at least one row
+    let has_row = op.next()?.is_some();
+    op.close()?;
+
+    Ok(Value::Bool(has_row))
+}
+
+/// Executes an SQL IN subquery.
+///
+/// IN returns TRUE if the value matches any value in the subquery result set.
+/// NOT IN returns TRUE if the value does NOT match any value in the result set.
+///
+/// # NULL Semantics (SQL Standard)
+///
+/// - `val IN (...)`: TRUE if val equals any subquery value, FALSE if val doesn't equal
+///   any and no NULLs exist in results, NULL (UNKNOWN) if val doesn't equal any but
+///   NULLs exist in results.
+/// - `val NOT IN (...)`: FALSE if val equals any subquery value, TRUE if val doesn't
+///   equal any and no NULLs exist in results, NULL (UNKNOWN) if val doesn't equal any
+///   but NULLs exist in results.
+///
+/// # Arguments
+///
+/// * `val` - The value to search for
+/// * `subquery` - The logical plan representing the subquery
+/// * `negated` - Whether this is NOT IN (true) or IN (false)
+/// * `outer_row` - The current outer row (for correlated subqueries)
+/// * `ctx` - Optional execution context (required for subquery execution)
+fn evaluate_sql_in_subquery(
+    val: &Value,
+    subquery: &LogicalPlan,
+    negated: bool,
+    _outer_row: &Row,
+    ctx: &Option<ExecutionContext>,
+) -> OperatorResult<Value> {
+    // Without an execution context, we cannot execute subqueries
+    let Some(ctx) = ctx else {
+        return Ok(Value::Null);
+    };
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let mut op = build_operator_tree(&physical_plan)?;
+    op.open(ctx)?;
+
+    // Collect subquery results (first column only for IN)
+    let mut found = false;
+    let mut has_null = false;
+
+    while let Some(row) = op.next()? {
+        // Get the first column value
+        let subquery_val = row.get(0).cloned().unwrap_or(Value::Null);
+
+        // Track if we see any NULLs
+        if matches!(subquery_val, Value::Null) {
+            has_null = true;
+            continue;
+        }
+
+        // Check for equality
+        if values_equal(val, &subquery_val) {
+            found = true;
+            break; // Found a match, can stop early
+        }
+    }
+
+    op.close()?;
+
+    // Apply SQL NULL semantics for IN/NOT IN
+    if negated {
+        // NOT IN semantics
+        if found {
+            // Value was found - NOT IN returns FALSE
+            Ok(Value::Bool(false))
+        } else if has_null {
+            // Value not found but NULLs exist - return NULL (UNKNOWN)
+            Ok(Value::Null)
+        } else {
+            // Value not found and no NULLs - NOT IN returns TRUE
+            Ok(Value::Bool(true))
+        }
+    } else {
+        // IN semantics
+        if found {
+            // Value was found - IN returns TRUE
+            Ok(Value::Bool(true))
+        } else if has_null {
+            // Value not found but NULLs exist - return NULL (UNKNOWN)
+            Ok(Value::Null)
+        } else {
+            // Value not found and no NULLs - IN returns FALSE
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+/// Executes an SQL scalar subquery.
+///
+/// A scalar subquery must return exactly one row with one column.
+/// If it returns no rows, the result is NULL.
+/// If it returns more than one row, this is an error (but we return NULL for now).
+///
+/// # Arguments
+///
+/// * `subquery` - The logical plan representing the subquery
+/// * `outer_row` - The current outer row (for correlated subqueries)
+/// * `ctx` - Optional execution context (required for subquery execution)
+fn evaluate_sql_scalar_subquery(
+    subquery: &LogicalPlan,
+    _outer_row: &Row,
+    ctx: &Option<ExecutionContext>,
+) -> OperatorResult<Value> {
+    // Without an execution context, we cannot execute subqueries
+    let Some(ctx) = ctx else {
+        return Ok(Value::Null);
+    };
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let mut op = build_operator_tree(&physical_plan)?;
+    op.open(ctx)?;
+
+    // Get the first row
+    let result = if let Some(row) = op.next()? {
+        // Get the first column value
+        row.get(0).cloned().unwrap_or(Value::Null)
+    } else {
+        // No rows - return NULL
+        Value::Null
+    };
+
+    op.close()?;
+    Ok(result)
 }
 
 /// Converts `ExpandDirection` to `manifoldb_graph::traversal::Direction`.
@@ -9748,5 +10001,332 @@ mod tests {
             ],
         );
         assert_eq!(result, Value::Null);
+    }
+
+    // =============================================================================
+    // SQL Subquery Tests
+    // =============================================================================
+
+    mod sql_subquery_tests {
+        use super::*;
+
+        /// Creates a LogicalPlan that returns the given values.
+        fn make_values_plan(values: Vec<Value>) -> LogicalPlan {
+            LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: values.into_iter().map(|v| vec![value_to_logical_expr(&v)]).collect(),
+                column_names: Some(vec!["col".to_string()]),
+            })
+        }
+
+        /// Converts a Value to a LogicalExpr literal
+        fn value_to_logical_expr(value: &Value) -> LogicalExpr {
+            match value {
+                Value::Null => LogicalExpr::Literal(crate::ast::Literal::Null),
+                Value::Bool(b) => LogicalExpr::Literal(crate::ast::Literal::Boolean(*b)),
+                Value::Int(i) => LogicalExpr::Literal(crate::ast::Literal::Integer(*i)),
+                Value::Float(f) => LogicalExpr::Literal(crate::ast::Literal::Float(*f)),
+                Value::String(s) => LogicalExpr::Literal(crate::ast::Literal::String(s.clone())),
+                _ => LogicalExpr::Literal(crate::ast::Literal::Null),
+            }
+        }
+
+        #[test]
+        fn test_exists_with_rows() {
+            // EXISTS (SELECT 1) where subquery returns rows should be TRUE
+            let subquery = make_values_plan(vec![Value::Int(1)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_exists_subquery(&subquery, &empty_row, &ctx).unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_exists_without_rows() {
+            // EXISTS (SELECT ...) where subquery returns no rows should be FALSE
+            let subquery = LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![], // Empty - no rows
+                column_names: Some(vec!["col".to_string()]),
+            });
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_exists_subquery(&subquery, &empty_row, &ctx).unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_exists_without_context() {
+            // EXISTS without execution context should return FALSE
+            let subquery = make_values_plan(vec![Value::Int(1)]);
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_exists_subquery(&subquery, &empty_row, &None).unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_not_exists_with_rows() {
+            // NOT EXISTS where subquery returns rows should be FALSE
+            let subquery = Box::new(make_values_plan(vec![Value::Int(1)]));
+            let expr = LogicalExpr::Exists { subquery, negated: true };
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_expr_with_subquery(&expr, &empty_row, None, &ctx).unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_not_exists_without_rows() {
+            // NOT EXISTS where subquery returns no rows should be TRUE
+            let subquery = Box::new(LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![], // Empty - no rows
+                column_names: Some(vec!["col".to_string()]),
+            }));
+            let expr = LogicalExpr::Exists { subquery, negated: true };
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_expr_with_subquery(&expr, &empty_row, None, &ctx).unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_in_subquery_found() {
+            // 2 IN (1, 2, 3) should be TRUE
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(2), &subquery, false, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_in_subquery_not_found() {
+            // 5 IN (1, 2, 3) should be FALSE
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, false, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_not_in_subquery_found() {
+            // 2 NOT IN (1, 2, 3) should be FALSE
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(2), &subquery, true, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_not_in_subquery_not_found() {
+            // 5 NOT IN (1, 2, 3) should be TRUE
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, true, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_in_subquery_with_nulls_not_found() {
+            // 5 IN (1, NULL, 3) where 5 is not found - should be NULL (UNKNOWN)
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Null, Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, false, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Null);
+        }
+
+        #[test]
+        fn test_in_subquery_with_nulls_found() {
+            // 2 IN (1, NULL, 2) where 2 is found - should be TRUE (NULL doesn't matter)
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Null, Value::Int(2)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(2), &subquery, false, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_not_in_subquery_with_nulls_not_found() {
+            // 5 NOT IN (1, NULL, 3) where 5 is not found but NULLs exist - should be NULL
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Null, Value::Int(3)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, true, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Null);
+        }
+
+        #[test]
+        fn test_null_value_in_subquery() {
+            // NULL IN (1, 2, 3) should be NULL
+            let subquery = make_values_plan(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+            let subquery_box = Box::new(subquery);
+
+            let expr = LogicalExpr::InSubquery {
+                expr: Box::new(LogicalExpr::Literal(crate::ast::Literal::Null)),
+                subquery: subquery_box,
+                negated: false,
+            };
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_expr_with_subquery(&expr, &empty_row, None, &ctx).unwrap();
+            assert_eq!(result, Value::Null);
+        }
+
+        #[test]
+        fn test_scalar_subquery_returns_value() {
+            // Scalar subquery that returns a single value
+            let subquery = make_values_plan(vec![Value::Int(42)]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_scalar_subquery(&subquery, &empty_row, &ctx).unwrap();
+            assert_eq!(result, Value::Int(42));
+        }
+
+        #[test]
+        fn test_scalar_subquery_empty() {
+            // Scalar subquery that returns no rows - should be NULL
+            let subquery = LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![],
+                column_names: Some(vec!["col".to_string()]),
+            });
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_scalar_subquery(&subquery, &empty_row, &ctx).unwrap();
+            assert_eq!(result, Value::Null);
+        }
+
+        #[test]
+        fn test_in_subquery_empty() {
+            // 5 IN (empty) should be FALSE
+            let subquery = LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![],
+                column_names: Some(vec!["col".to_string()]),
+            });
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, false, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(false));
+        }
+
+        #[test]
+        fn test_not_in_subquery_empty() {
+            // 5 NOT IN (empty) should be TRUE
+            let subquery = LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![],
+                column_names: Some(vec!["col".to_string()]),
+            });
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result =
+                evaluate_sql_in_subquery(&Value::Int(5), &subquery, true, &empty_row, &ctx)
+                    .unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_in_subquery_string_values() {
+            // 'Bob' IN ('Alice', 'Bob', 'Carol') should be TRUE
+            let subquery = make_values_plan(vec![
+                Value::String("Alice".to_string()),
+                Value::String("Bob".to_string()),
+                Value::String("Carol".to_string()),
+            ]);
+            let ctx = Some(ExecutionContext::new());
+            let empty_row = Row::new(Arc::new(Schema::empty()), vec![]);
+
+            let result = evaluate_sql_in_subquery(
+                &Value::String("Bob".to_string()),
+                &subquery,
+                false,
+                &empty_row,
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(result, Value::Bool(true));
+        }
+
+        #[test]
+        fn test_filter_with_exists_subquery() {
+            // Test FilterOp with an EXISTS predicate
+            let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+                vec!["id".to_string()],
+                vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+            ));
+
+            // EXISTS (SELECT 1) - always true, should pass all rows
+            let subquery = Box::new(make_values_plan(vec![Value::Int(1)]));
+            let predicate = LogicalExpr::Exists { subquery, negated: false };
+
+            let mut filter = FilterOp::new(predicate, input);
+            let ctx = ExecutionContext::new();
+            filter.open(&ctx).unwrap();
+
+            // Both rows should pass
+            assert!(filter.next().unwrap().is_some());
+            assert!(filter.next().unwrap().is_some());
+            assert!(filter.next().unwrap().is_none());
+            filter.close().unwrap();
+        }
+
+        #[test]
+        fn test_filter_with_not_exists_empty_subquery() {
+            // Test FilterOp with a NOT EXISTS predicate on empty subquery
+            let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+                vec!["id".to_string()],
+                vec![vec![Value::Int(1)], vec![Value::Int(2)]],
+            ));
+
+            // NOT EXISTS (SELECT ...) where subquery is empty - always true
+            let subquery = Box::new(LogicalPlan::Values(crate::plan::logical::ValuesNode {
+                rows: vec![],
+                column_names: Some(vec!["col".to_string()]),
+            }));
+            let predicate = LogicalExpr::Exists { subquery, negated: true };
+
+            let mut filter = FilterOp::new(predicate, input);
+            let ctx = ExecutionContext::new();
+            filter.open(&ctx).unwrap();
+
+            // Both rows should pass (NOT EXISTS on empty is TRUE)
+            assert!(filter.next().unwrap().is_some());
+            assert!(filter.next().unwrap().is_some());
+            assert!(filter.next().unwrap().is_none());
+            filter.close().unwrap();
+        }
     }
 }
