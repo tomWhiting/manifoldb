@@ -24,9 +24,10 @@ use crate::ast::{
     CreateNodeRef, CreatePattern, CreateTableStatement, DeleteGraphStatement, DeleteStatement,
     DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
     InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
-    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, RemoveGraphStatement,
-    RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction, SetGraphStatement,
-    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
+    MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern, PathPattern,
+    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
+    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
+    WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -35,8 +36,8 @@ use super::ddl::{
 };
 
 use super::expr::{
-    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
-    SortOrder,
+    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr,
+    LogicalMapProjectionItem, ScalarFunction, SortOrder,
 };
 use super::graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
@@ -1669,6 +1670,32 @@ impl PlanBuilder {
                 let elements =
                     exprs.iter().map(|e| self.build_expr(e)).collect::<PlanResult<Vec<_>>>()?;
                 Ok(LogicalExpr::ListLiteral(elements))
+            }
+
+            Expr::MapProjection { source, items } => {
+                let source_expr = self.build_expr(source)?;
+                let logical_items = items
+                    .iter()
+                    .map(|item| match item {
+                        MapProjectionItem::Property(ident) => {
+                            Ok(LogicalMapProjectionItem::Property(ident.name.clone()))
+                        }
+                        MapProjectionItem::Computed { key, value } => {
+                            let value_expr = self.build_expr(value)?;
+                            Ok(LogicalMapProjectionItem::Computed {
+                                key: key.name.clone(),
+                                value: Box::new(value_expr),
+                            })
+                        }
+                        MapProjectionItem::AllProperties => {
+                            Ok(LogicalMapProjectionItem::AllProperties)
+                        }
+                    })
+                    .collect::<PlanResult<Vec<_>>>()?;
+                Ok(LogicalExpr::MapProjection {
+                    source: Box::new(source_expr),
+                    items: logical_items,
+                })
             }
         }
     }

@@ -44,8 +44,8 @@ pub use ddl::{
     DropTableNode,
 };
 pub use expr::{
-    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
-    SortOrder,
+    AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr,
+    LogicalMapProjectionItem, ScalarFunction, SortOrder,
 };
 pub use graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,

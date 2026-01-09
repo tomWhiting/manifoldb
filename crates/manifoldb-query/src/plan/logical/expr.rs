@@ -209,6 +209,37 @@ pub enum LogicalExpr {
 
     /// A list literal expression: `[expr1, expr2, ...]`.
     ListLiteral(Vec<LogicalExpr>),
+
+    /// Cypher map projection expression.
+    ///
+    /// Syntax: `node{.property1, .property2, key: expression, .*}`
+    ///
+    /// Examples:
+    /// - Extract specific properties: `p{.name, .age}`
+    /// - Add computed property: `p{.name, fullName: p.firstName + ' ' + p.lastName}`
+    /// - All properties with override: `p{.*, age: p.birthYear - 2024}`
+    MapProjection {
+        /// Source expression (typically a column reference to a node or relationship).
+        source: Box<LogicalExpr>,
+        /// List of projection items.
+        items: Vec<LogicalMapProjectionItem>,
+    },
+}
+
+/// An item in a logical map projection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalMapProjectionItem {
+    /// Property selector: `.propertyName` - copies property from source.
+    Property(String),
+    /// Computed value: `key: expression` - adds a new key with computed value.
+    Computed {
+        /// The key name.
+        key: String,
+        /// The value expression.
+        value: Box<LogicalExpr>,
+    },
+    /// All properties: `.*` - includes all properties from the source.
+    AllProperties,
 }
 
 /// A component of a hybrid vector search expression.
@@ -991,6 +1022,22 @@ impl fmt::Display for LogicalExpr {
                     write!(f, "{expr}")?;
                 }
                 write!(f, "]")
+            }
+            Self::MapProjection { source, items } => {
+                write!(f, "{source}{{")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match item {
+                        LogicalMapProjectionItem::Property(name) => write!(f, ".{name}")?,
+                        LogicalMapProjectionItem::Computed { key, value } => {
+                            write!(f, "{key}: {value}")?
+                        }
+                        LogicalMapProjectionItem::AllProperties => write!(f, ".*")?,
+                    }
+                }
+                write!(f, "}}")
             }
         }
     }

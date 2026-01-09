@@ -8,7 +8,7 @@ use crate::ast::{BinaryOp, Literal, UnaryOp};
 use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::row::{Row, Schema};
-use crate::plan::logical::{HybridCombinationMethod, LogicalExpr};
+use crate::plan::logical::{HybridCombinationMethod, LogicalExpr, LogicalMapProjectionItem};
 
 /// Filter operator.
 ///
@@ -334,6 +334,83 @@ pub fn evaluate_expr(expr: &LogicalExpr, row: &Row) -> OperatorResult<Value> {
             let elements: Vec<Value> =
                 exprs.iter().map(|e| evaluate_expr(e, row)).collect::<OperatorResult<Vec<_>>>()?;
             Ok(Value::Array(elements))
+        }
+
+        // Map projection: node{.property1, .property2, key: expression, .*}
+        LogicalExpr::MapProjection { source, items } => {
+            // Evaluate the source expression to get the source entity's properties
+            let source_value = evaluate_expr(source, row)?;
+
+            // The source should be an entity (map-like structure) or we extract properties
+            // from the row using the source as a prefix/qualifier.
+            // We'll build the result map based on the projection items.
+            let mut result_properties: Vec<(String, Value)> = Vec::new();
+
+            // If source is a column reference, we get the prefix for property lookup
+            let source_prefix = if let LogicalExpr::Column { qualifier, name } = source.as_ref() {
+                if let Some(q) = qualifier {
+                    format!("{q}.{name}")
+                } else {
+                    name.clone()
+                }
+            } else {
+                String::new()
+            };
+
+            for item in items {
+                match item {
+                    LogicalMapProjectionItem::Property(prop_name) => {
+                        // Extract property from source: try qualified name first, then direct
+                        let prop_key = if source_prefix.is_empty() {
+                            prop_name.clone()
+                        } else {
+                            format!("{source_prefix}.{prop_name}")
+                        };
+                        let value = row
+                            .get_by_name(&prop_key)
+                            .or_else(|| row.get_by_name(prop_name))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        result_properties.push((prop_name.clone(), value));
+                    }
+                    LogicalMapProjectionItem::Computed { key, value } => {
+                        // Evaluate the expression for the computed value
+                        let computed_value = evaluate_expr(value, row)?;
+                        result_properties.push((key.clone(), computed_value));
+                    }
+                    LogicalMapProjectionItem::AllProperties => {
+                        // Include all properties from the source
+                        // If we have a source prefix, include all columns that start with it
+                        // Otherwise, just include the source value if it's map-like
+                        if !source_prefix.is_empty() {
+                            let prefix_with_dot = format!("{source_prefix}.");
+                            for col_name in row.schema().columns() {
+                                if col_name.starts_with(&prefix_with_dot) {
+                                    let prop_name =
+                                        col_name.strip_prefix(&prefix_with_dot).unwrap_or(col_name);
+                                    if let Some(val) = row.get_by_name(col_name) {
+                                        result_properties
+                                            .push((prop_name.to_string(), val.clone()));
+                                    }
+                                }
+                            }
+                        } else if let Value::Array(arr) = &source_value {
+                            // If source is an array of key-value pairs, extract them
+                            for (i, val) in arr.iter().enumerate() {
+                                result_properties.push((i.to_string(), val.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Return as an Array of pairs (since we don't have a Map value type)
+            // Each pair is [key, value] represented as a nested array
+            let pairs: Vec<Value> = result_properties
+                .into_iter()
+                .map(|(k, v)| Value::Array(vec![Value::String(k), v]))
+                .collect();
+            Ok(Value::Array(pairs))
         }
     }
 }
@@ -2675,5 +2752,140 @@ mod tests {
 
         let result = evaluate_expr(&outer_comprehension, &row).unwrap();
         assert_eq!(result, Value::Array(vec![Value::Int(4), Value::Int(6), Value::Int(8)]));
+    }
+
+    // ========== Map Projection Evaluation Tests ==========
+
+    #[test]
+    fn evaluate_map_projection_single_property() {
+        // Test: p{.name} where p has name="Alice" and age=30
+        let schema = Arc::new(Schema::new(vec!["p.name".to_string(), "p.age".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::from("Alice"), Value::Int(30)]);
+
+        let expr = LogicalExpr::MapProjection {
+            source: Box::new(LogicalExpr::column("p")),
+            items: vec![LogicalMapProjectionItem::Property("name".to_string())],
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        // Result should be an array of [key, value] pairs
+        match result {
+            Value::Array(pairs) => {
+                assert_eq!(pairs.len(), 1);
+                // First pair should be ["name", "Alice"]
+                if let Value::Array(pair) = &pairs[0] {
+                    assert_eq!(pair[0], Value::String("name".to_string()));
+                    assert_eq!(pair[1], Value::String("Alice".to_string()));
+                } else {
+                    panic!("Expected array pair");
+                }
+            }
+            _ => panic!("Expected Array result, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn evaluate_map_projection_multiple_properties() {
+        // Test: p{.name, .age}
+        let schema = Arc::new(Schema::new(vec!["p.name".to_string(), "p.age".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::from("Bob"), Value::Int(25)]);
+
+        let expr = LogicalExpr::MapProjection {
+            source: Box::new(LogicalExpr::column("p")),
+            items: vec![
+                LogicalMapProjectionItem::Property("name".to_string()),
+                LogicalMapProjectionItem::Property("age".to_string()),
+            ],
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        match result {
+            Value::Array(pairs) => {
+                assert_eq!(pairs.len(), 2);
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn evaluate_map_projection_computed_value() {
+        // Test: p{.name, doubled: p.age * 2} is challenging because we need arithmetic
+        // Let's use a simpler computed value: p{computed: 42}
+        let schema = Arc::new(Schema::new(vec!["p.name".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::from("Alice")]);
+
+        let expr = LogicalExpr::MapProjection {
+            source: Box::new(LogicalExpr::column("p")),
+            items: vec![
+                LogicalMapProjectionItem::Property("name".to_string()),
+                LogicalMapProjectionItem::Computed {
+                    key: "computed".to_string(),
+                    value: Box::new(LogicalExpr::integer(42)),
+                },
+            ],
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        match result {
+            Value::Array(pairs) => {
+                assert_eq!(pairs.len(), 2);
+                // Second pair should be ["computed", 42]
+                if let Value::Array(pair) = &pairs[1] {
+                    assert_eq!(pair[0], Value::String("computed".to_string()));
+                    assert_eq!(pair[1], Value::Int(42));
+                } else {
+                    panic!("Expected array pair");
+                }
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn evaluate_map_projection_all_properties() {
+        // Test: p{.*} - should include all properties with the p. prefix
+        let schema = Arc::new(Schema::new(vec![
+            "p.name".to_string(),
+            "p.age".to_string(),
+            "other".to_string(), // Should not be included
+        ]));
+        let row = Row::new(
+            Arc::clone(&schema),
+            vec![Value::from("Carol"), Value::Int(35), Value::from("ignored")],
+        );
+
+        let expr = LogicalExpr::MapProjection {
+            source: Box::new(LogicalExpr::column("p")),
+            items: vec![LogicalMapProjectionItem::AllProperties],
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        match result {
+            Value::Array(pairs) => {
+                // Should have 2 pairs: name and age (not "other")
+                assert_eq!(pairs.len(), 2);
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn evaluate_map_projection_empty() {
+        // Test: p{} - empty projection
+        let schema = Arc::new(Schema::new(vec!["p.name".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::from("Alice")]);
+
+        let expr = LogicalExpr::MapProjection {
+            source: Box::new(LogicalExpr::column("p")),
+            items: vec![],
+        };
+
+        let result = evaluate_expr(&expr, &row).unwrap();
+        match result {
+            Value::Array(pairs) => {
+                assert!(pairs.is_empty());
+            }
+            _ => panic!("Expected empty Array result"),
+        }
     }
 }
