@@ -887,7 +887,7 @@ These feature groups can be implemented independently:
 
 | Algorithm | Via CALL | Operator | Tested | Notes |
 |-----------|----------|----------|--------|-------|
-| Louvain | | ✓ | | Has operator |
+| Louvain | ✓ | ✓ | ✓ | `algo.louvain()` |
 | Label Propagation | ✓ | | ✓ | `algo.labelPropagation()` |
 | Connected Components | ✓ | | ✓ | `algo.connectedComponents()` |
 | Strongly Connected Components | ✓ | | ✓ | `algo.stronglyConnectedComponents()` |

@@ -17,6 +17,7 @@
 //!
 //! ## Community Detection
 //!
+//! - `algo.louvain` - Detects communities using Louvain algorithm (modularity optimization)
 //! - `algo.labelPropagation` - Detects communities using Label Propagation
 //! - `algo.connectedComponents` - Finds weakly or strongly connected components
 //! - `algo.stronglyConnectedComponents` - Finds strongly connected components
@@ -40,6 +41,7 @@ mod degree;
 mod dfs;
 mod dijkstra;
 mod eigenvector;
+mod louvain;
 mod pagerank;
 mod shortest_path;
 mod sssp;
@@ -58,6 +60,7 @@ pub use degree::{execute_degree_with_tx, DegreeCentralityProcedure};
 pub use dfs::{execute_dfs_with_tx, DfsProcedure};
 pub use dijkstra::{execute_dijkstra_with_tx, DijkstraProcedure};
 pub use eigenvector::{execute_eigenvector_with_tx, EigenvectorCentralityProcedure};
+pub use louvain::{execute_louvain_with_tx, LouvainProcedure};
 pub use pagerank::{execute_pagerank_with_tx, PageRankProcedure};
 pub use shortest_path::{execute_shortest_path_with_tx, ShortestPathProcedure};
 pub use sssp::{execute_sssp_with_tx, SSSPProcedure};
@@ -81,6 +84,7 @@ pub fn register_builtins(registry: &mut ProcedureRegistry) {
     registry.register(Arc::new(EigenvectorCentralityProcedure));
 
     // Community detection
+    registry.register(Arc::new(LouvainProcedure));
     registry.register(Arc::new(LabelPropagationProcedure));
     registry.register(Arc::new(ConnectedComponentsProcedure));
     registry.register(Arc::new(StronglyConnectedComponentsProcedure));

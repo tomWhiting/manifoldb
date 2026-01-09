@@ -16,6 +16,7 @@
 //! ## Community Detection
 //!
 //! - [`CommunityDetection`] - Label Propagation for community detection
+//! - [`LouvainCommunityDetection`] - Louvain modularity optimization algorithm
 //! - [`ConnectedComponents`] - Weakly and strongly connected components
 //!
 //! # Example
@@ -49,6 +50,7 @@ mod community;
 mod connected;
 mod degree;
 mod eigenvector;
+mod louvain;
 mod pagerank;
 
 pub use centrality::{BetweennessCentrality, BetweennessCentralityConfig, CentralityResult};
@@ -59,4 +61,5 @@ pub use degree::{DegreeCentrality, DegreeCentralityConfig, DegreeCentralityResul
 pub use eigenvector::{
     EigenvectorCentrality, EigenvectorCentralityConfig, EigenvectorCentralityResult,
 };
+pub use louvain::{LouvainCommunityDetection, LouvainConfig, LouvainResult};
 pub use pagerank::{PageRank, PageRankConfig, PageRankResult};
