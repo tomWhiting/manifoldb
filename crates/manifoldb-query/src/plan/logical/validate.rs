@@ -208,6 +208,22 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::RecursiveCTE { node, initial, recursive } => {
+            validate_plan(initial)?;
+            validate_plan(recursive)?;
+            if node.name.is_empty() {
+                return Err(PlanError::UnknownTable("recursive CTE name is empty".to_string()));
+            }
+            // Max iterations check - if specified, must be > 0
+            if let Some(max) = node.max_iterations {
+                if max == 0 {
+                    return Err(PlanError::InvalidLimit(
+                        "recursive CTE max_iterations must be > 0".to_string(),
+                    ));
+                }
+            }
+        }
+
         LogicalPlan::Expand { node, input } => {
             validate_plan(input)?;
             if node.src_var.is_empty() {

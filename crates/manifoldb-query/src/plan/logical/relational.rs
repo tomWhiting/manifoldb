@@ -430,6 +430,63 @@ impl UnwindNode {
     }
 }
 
+/// A recursive CTE node.
+///
+/// Represents a recursive Common Table Expression that iteratively builds
+/// a result set by repeatedly executing a recursive query until a fixed
+/// point is reached.
+///
+/// # Structure
+///
+/// A recursive CTE has two parts:
+/// - **Initial query**: Executed once to seed the result set (base case)
+/// - **Recursive query**: Executed repeatedly, referencing the CTE itself,
+///   until no new rows are produced
+///
+/// # Example SQL
+///
+/// ```sql
+/// WITH RECURSIVE hierarchy AS (
+///     -- Initial query (base case)
+///     SELECT id, name, manager_id, 1 as level
+///     FROM employees WHERE manager_id IS NULL
+///     UNION ALL
+///     -- Recursive query
+///     SELECT e.id, e.name, e.manager_id, h.level + 1
+///     FROM employees e
+///     JOIN hierarchy h ON e.manager_id = h.id
+/// )
+/// SELECT * FROM hierarchy;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecursiveCTENode {
+    /// The name of the CTE.
+    pub name: String,
+    /// Column names for the CTE result.
+    pub columns: Vec<String>,
+    /// Whether to use UNION ALL (true) or UNION (false) semantics.
+    /// UNION ALL keeps all rows, UNION deduplicates.
+    pub union_all: bool,
+    /// Maximum number of iterations allowed (safety limit).
+    /// None means use system default (typically 1000).
+    pub max_iterations: Option<usize>,
+}
+
+impl RecursiveCTENode {
+    /// Creates a new recursive CTE node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, columns: Vec<String>, union_all: bool) -> Self {
+        Self { name: name.into(), columns, union_all, max_iterations: None }
+    }
+
+    /// Sets the maximum number of iterations.
+    #[must_use]
+    pub const fn with_max_iterations(mut self, max: usize) -> Self {
+        self.max_iterations = Some(max);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

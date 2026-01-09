@@ -16,6 +16,7 @@ use super::operators::{
     join::{HashJoinOp, MergeJoinOp, NestedLoopJoinOp},
     limit::LimitOp,
     project::ProjectOp,
+    recursive_cte::RecursiveCTEOp,
     scan::{FullScanOp, IndexRangeScanOp, IndexScanOp},
     set_ops::{SetOpOp, UnionOp},
     sort::SortOp,
@@ -232,6 +233,19 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         PhysicalPlan::Unwind { node, input } => {
             let input_op = build_operator_tree(input)?;
             Ok(Box::new(UnwindOp::new(node.list_expr.clone(), &node.alias, input_op)))
+        }
+
+        PhysicalPlan::RecursiveCTE { node, initial, recursive } => {
+            let initial_op = build_operator_tree(initial)?;
+            let recursive_op = build_operator_tree(recursive)?;
+            Ok(Box::new(RecursiveCTEOp::new(
+                &node.name,
+                node.columns.clone(),
+                node.union_all,
+                node.max_iterations,
+                initial_op,
+                recursive_op,
+            )))
         }
 
         // Join operators

@@ -1537,18 +1537,52 @@ mod cte {
     }
 
     #[test]
-    fn recursive_cte_not_supported() {
-        // WITH RECURSIVE should return an error
+    fn recursive_cte_parses_successfully() {
+        // WITH RECURSIVE is now supported
         let result = parse_single_statement(
-            "WITH RECURSIVE cte AS (SELECT 1 UNION ALL SELECT n + 1 FROM cte WHERE n < 10)
+            "WITH RECURSIVE cte AS (SELECT 1 as n UNION ALL SELECT n + 1 FROM cte WHERE n < 10)
              SELECT * FROM cte",
         );
 
-        assert!(result.is_err());
-        if let Err(ParseError::Unsupported(msg)) = result {
-            assert!(msg.contains("RECURSIVE"));
-        } else {
-            panic!("expected Unsupported error for RECURSIVE");
+        assert!(result.is_ok());
+        let stmt = result.unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+                let cte = &select.with_clauses[0];
+                assert_eq!(cte.name.name, "cte");
+                assert!(cte.recursive, "CTE should be marked as recursive");
+            }
+            _ => panic!("expected SELECT statement"),
+        }
+    }
+
+    #[test]
+    fn recursive_cte_with_columns() {
+        // WITH RECURSIVE with explicit column list
+        let result = parse_single_statement(
+            "WITH RECURSIVE hierarchy(id, parent_id, level) AS (
+                SELECT id, parent_id, 1 FROM nodes WHERE parent_id IS NULL
+                UNION ALL
+                SELECT n.id, n.parent_id, h.level + 1 FROM nodes n JOIN hierarchy h ON n.parent_id = h.id
+             )
+             SELECT * FROM hierarchy",
+        );
+
+        assert!(result.is_ok());
+        let stmt = result.unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.with_clauses.len(), 1);
+                let cte = &select.with_clauses[0];
+                assert_eq!(cte.name.name, "hierarchy");
+                assert!(cte.recursive);
+                assert_eq!(cte.columns.len(), 3);
+                assert_eq!(cte.columns[0].name, "id");
+                assert_eq!(cte.columns[1].name, "parent_id");
+                assert_eq!(cte.columns[2].name, "level");
+            }
+            _ => panic!("expected SELECT statement"),
         }
     }
 }

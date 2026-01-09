@@ -24,8 +24,8 @@ use super::ddl::{
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
-    AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
+    AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, RecursiveCTENode,
+    ScanNode, SetOpNode, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
@@ -153,6 +153,21 @@ pub enum LogicalPlan {
         node: UnionNode,
         /// The input plans.
         inputs: Vec<LogicalPlan>,
+    },
+
+    // ========== Recursive Nodes ==========
+    /// Recursive CTE (WITH RECURSIVE).
+    ///
+    /// Iteratively executes the recursive query until a fixed point is reached.
+    /// The initial query seeds the result, and the recursive query is executed
+    /// repeatedly using the working table until no new rows are produced.
+    RecursiveCTE {
+        /// The recursive CTE node metadata.
+        node: RecursiveCTENode,
+        /// The initial (base case) query.
+        initial: Box<LogicalPlan>,
+        /// The recursive query (references the CTE).
+        recursive: Box<LogicalPlan>,
     },
 
     // ========== Graph Nodes ==========
@@ -431,7 +446,9 @@ impl LogicalPlan {
             | Self::Insert { input, .. } => vec![input.as_ref()],
 
             // Binary nodes
-            Self::Join { left, right, .. } | Self::SetOp { left, right, .. } => {
+            Self::Join { left, right, .. }
+            | Self::SetOp { left, right, .. }
+            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
                 vec![left.as_ref(), right.as_ref()]
             }
 
@@ -476,7 +493,9 @@ impl LogicalPlan {
             | Self::Insert { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
-            Self::Join { left, right, .. } | Self::SetOp { left, right, .. } => {
+            Self::Join { left, right, .. }
+            | Self::SetOp { left, right, .. }
+            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
                 vec![left.as_mut(), right.as_mut()]
             }
 
@@ -521,6 +540,7 @@ impl LogicalPlan {
             Self::Join { .. } => "Join",
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
+            Self::RecursiveCTE { .. } => "RecursiveCTE",
             Self::Expand { .. } => "Expand",
             Self::PathScan { .. } => "PathScan",
             Self::AnnSearch { .. } => "AnnSearch",
@@ -687,6 +707,16 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::Union { node, inputs, .. } => {
                 write!(f, "Union{}: {} inputs", if node.all { " All" } else { "" }, inputs.len())?;
+            }
+            LogicalPlan::RecursiveCTE { node, .. } => {
+                write!(f, "RecursiveCTE: {}", node.name)?;
+                if !node.columns.is_empty() {
+                    write!(f, " ({})", node.columns.join(", "))?;
+                }
+                write!(f, " {}", if node.union_all { "UNION ALL" } else { "UNION" })?;
+                if let Some(max) = node.max_iterations {
+                    write!(f, " [max_iter: {max}]")?;
+                }
             }
             LogicalPlan::Expand { node, .. } => {
                 write!(f, "Expand: ({}){}({})", node.src_var, node.direction, node.dst_var)?;

@@ -56,7 +56,9 @@ Window Functions
 
 Recursive CTEs
 ├── Depends on: Non-recursive CTEs (exists)
-└── New: RecursiveCTE logical node, working table execution
+├── RecursiveCTE logical plan node: ✅ Complete
+├── RecursiveCTEOp physical operator: ✅ Complete
+└── Status: ✅ Complete with tests (Jan 2026)
 
 Cypher Writing Clauses
 ├── CREATE: New GraphCreate logical node + operator
@@ -174,7 +176,7 @@ These feature groups can be implemented independently:
 | Multiple CTEs | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | Column aliases | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | CTE reference in main | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| WITH RECURSIVE | | | | | | | Explicitly rejected |
+| WITH RECURSIVE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete† |
 | SEARCH DEPTH FIRST | | | | | | | Not implemented |
 | SEARCH BREADTH FIRST | | | | | | | Not implemented |
 | CYCLE detection | | | | | | | Not implemented |

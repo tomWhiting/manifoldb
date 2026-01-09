@@ -16,11 +16,12 @@ use super::node::{
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
     HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
     LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, SortExecNode, UnwindExecNode, WindowExecNode, WindowFunctionExpr,
+    ProjectExecNode, RecursiveCTEExecNode, SortExecNode, UnwindExecNode, WindowExecNode,
+    WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
-    LogicalPlan, PathScanNode, ScanNode, ScoreCombinationMethod, UnwindNode,
+    LogicalPlan, PathScanNode, RecursiveCTENode, ScanNode, ScoreCombinationMethod, UnwindNode,
 };
 use crate::plan::optimize::{AccessType, IndexCandidate, IndexSelector};
 
@@ -368,6 +369,11 @@ impl PhysicalPlanner {
 
             // N-ary nodes
             LogicalPlan::Union { node, inputs } => self.plan_union(node, inputs),
+
+            // Recursive nodes
+            LogicalPlan::RecursiveCTE { node, initial, recursive } => {
+                self.plan_recursive_cte(node, initial, recursive)
+            }
 
             // Graph nodes
             LogicalPlan::Expand { node, input } => self.plan_expand(node, input),
@@ -905,6 +911,46 @@ impl PhysicalPlanner {
         PhysicalPlan::Unwind {
             node: UnwindExecNode::new(node.list_expr.clone(), &node.alias).with_cost(cost),
             input: Box::new(input_plan),
+        }
+    }
+
+    fn plan_recursive_cte(
+        &self,
+        node: &RecursiveCTENode,
+        initial: &LogicalPlan,
+        recursive: &LogicalPlan,
+    ) -> PhysicalPlan {
+        let initial_plan = self.plan(initial);
+        let recursive_plan = self.plan(recursive);
+
+        let initial_rows = initial_plan.cost().cardinality();
+
+        // Estimate output: assume recursive query produces decreasing rows per iteration
+        // This is a rough estimate - actual rows depend on data characteristics
+        // Estimate average depth of ~5 iterations for hierarchical queries
+        let avg_iterations = 5;
+        let output_rows = initial_rows * avg_iterations;
+
+        // Cost: initial execution + (iterations * recursive execution)
+        // Plus overhead for working table management
+        let cost = Cost::new(
+            initial_plan.cost().value()
+                + (avg_iterations as f64 * recursive_plan.cost().value())
+                + (output_rows as f64 * 0.1), // working table overhead
+            output_rows,
+        );
+
+        let max_iterations =
+            node.max_iterations.unwrap_or(RecursiveCTEExecNode::DEFAULT_MAX_ITERATIONS);
+
+        PhysicalPlan::RecursiveCTE {
+            node: Box::new(
+                RecursiveCTEExecNode::new(&node.name, node.columns.clone(), node.union_all)
+                    .with_max_iterations(max_iterations)
+                    .with_cost(cost),
+            ),
+            initial: Box::new(initial_plan),
+            recursive: Box::new(recursive_plan),
         }
     }
 

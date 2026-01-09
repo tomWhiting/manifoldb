@@ -133,6 +133,20 @@ impl PredicatePushdown {
                 LogicalPlan::Union { node, inputs: optimized_inputs }
             }
 
+            // For RecursiveCTE, predicates cannot be pushed through because:
+            // 1. The recursive query iterates until a fixed point
+            // 2. Predicates on the result should filter the final result, not intermediate steps
+            LogicalPlan::RecursiveCTE { node, initial, recursive } => {
+                let optimized_initial = self.push_down(*initial, Vec::new());
+                let optimized_recursive = self.push_down(*recursive, Vec::new());
+                let result = LogicalPlan::RecursiveCTE {
+                    node,
+                    initial: Box::new(optimized_initial),
+                    recursive: Box::new(optimized_recursive),
+                };
+                self.apply_predicates(result, predicates)
+            }
+
             // For graph and vector operations, apply predicates above
             LogicalPlan::Expand { node, input } => {
                 let optimized_input = self.push_down(*input, Vec::new());

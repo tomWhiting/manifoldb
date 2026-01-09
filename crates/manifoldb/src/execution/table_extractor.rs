@@ -118,6 +118,11 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             collect_tables_from_plan(right, tables);
         }
 
+        LogicalPlan::RecursiveCTE { initial, recursive, .. } => {
+            collect_tables_from_plan(initial, tables);
+            collect_tables_from_plan(recursive, tables);
+        }
+
         LogicalPlan::Union { inputs, .. } => {
             for input in inputs {
                 collect_tables_from_plan(input, tables);

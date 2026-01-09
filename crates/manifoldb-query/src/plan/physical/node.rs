@@ -190,6 +190,19 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
 
+    // ========== Recursive Operation ==========
+    /// Recursive CTE operator (WITH RECURSIVE).
+    ///
+    /// Iteratively executes the recursive query until a fixed point is reached.
+    RecursiveCTE {
+        /// Recursive CTE configuration.
+        node: Box<RecursiveCTEExecNode>,
+        /// The initial (base case) query plan.
+        initial: Box<PhysicalPlan>,
+        /// The recursive query plan.
+        recursive: Box<PhysicalPlan>,
+    },
+
     // ========== Vector Operations ==========
     /// HNSW-based approximate nearest neighbor search (boxed node - 184 bytes unboxed).
     HnswSearch {
@@ -1601,6 +1614,56 @@ impl UnwindExecNode {
     }
 }
 
+/// Recursive CTE execution node.
+///
+/// Represents a recursive Common Table Expression that iteratively executes
+/// until a fixed point is reached.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecursiveCTEExecNode {
+    /// The name of the CTE.
+    pub name: String,
+    /// Column names for the CTE result.
+    pub columns: Vec<String>,
+    /// Whether to use UNION ALL (true) or UNION (false) semantics.
+    /// UNION ALL keeps all rows, UNION deduplicates.
+    pub union_all: bool,
+    /// Maximum number of iterations allowed (safety limit).
+    pub max_iterations: usize,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl RecursiveCTEExecNode {
+    /// Default maximum iterations if not specified.
+    pub const DEFAULT_MAX_ITERATIONS: usize = 1000;
+
+    /// Creates a new recursive CTE execution node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, columns: Vec<String>, union_all: bool) -> Self {
+        Self {
+            name: name.into(),
+            columns,
+            union_all,
+            max_iterations: Self::DEFAULT_MAX_ITERATIONS,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Sets the maximum number of iterations.
+    #[must_use]
+    pub const fn with_max_iterations(mut self, max: usize) -> Self {
+        self.max_iterations = max;
+        self
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+}
+
 // ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
@@ -1643,7 +1706,9 @@ impl PhysicalPlan {
             | Self::Insert { input, .. } => vec![input.as_ref()],
 
             // Binary nodes
-            Self::NestedLoopJoin { left, right, .. } | Self::SetOp { left, right, .. } => {
+            Self::NestedLoopJoin { left, right, .. }
+            | Self::SetOp { left, right, .. }
+            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
                 vec![left.as_ref(), right.as_ref()]
             }
 
@@ -1693,7 +1758,9 @@ impl PhysicalPlan {
             | Self::Insert { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
-            Self::NestedLoopJoin { left, right, .. } | Self::SetOp { left, right, .. } => {
+            Self::NestedLoopJoin { left, right, .. }
+            | Self::SetOp { left, right, .. }
+            | Self::RecursiveCTE { initial: left, recursive: right, .. } => {
                 vec![left.as_mut(), right.as_mut()]
             }
 
@@ -1748,6 +1815,7 @@ impl PhysicalPlan {
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
             Self::Unwind { .. } => "Unwind",
+            Self::RecursiveCTE { .. } => "RecursiveCTE",
             Self::HnswSearch { .. } => "HnswSearch",
             Self::BruteForceSearch { .. } => "BruteForceSearch",
             Self::HybridSearch { .. } => "HybridSearch",
@@ -1788,6 +1856,7 @@ impl PhysicalPlan {
             Self::SetOp { cost, .. } => *cost,
             Self::Union { cost, .. } => *cost,
             Self::Unwind { node, .. } => node.cost,
+            Self::RecursiveCTE { node, .. } => node.cost,
             Self::HnswSearch { node, .. } => node.cost,
             Self::BruteForceSearch { node, .. } => node.cost,
             Self::HybridSearch { node, .. } => node.cost,
@@ -2060,6 +2129,15 @@ impl DisplayTree<'_> {
                     node.alias,
                     node.cost.value()
                 )?;
+            }
+            PhysicalPlan::RecursiveCTE { node, .. } => {
+                write!(f, "RecursiveCTE: {}", node.name)?;
+                if !node.columns.is_empty() {
+                    write!(f, " ({})", node.columns.join(", "))?;
+                }
+                write!(f, " {}", if node.union_all { "UNION ALL" } else { "UNION" })?;
+                write!(f, " [max_iter: {}]", node.max_iterations)?;
+                write!(f, " (cost: {:.2})", node.cost.value())?;
             }
             PhysicalPlan::HnswSearch { node, .. } => {
                 write!(

@@ -188,10 +188,7 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
 
 /// Converts a sqlparser WITH clause to our `WithClause` list.
 fn convert_with_clause(with: sp::With) -> ParseResult<Vec<WithClause>> {
-    // Recursive CTEs are not supported yet
-    if with.recursive {
-        return Err(ParseError::Unsupported("WITH RECURSIVE".to_string()));
-    }
+    let recursive = with.recursive;
 
     with.cte_tables
         .into_iter()
@@ -201,7 +198,7 @@ fn convert_with_clause(with: sp::With) -> ParseResult<Vec<WithClause>> {
                 cte.alias.columns.into_iter().map(convert_ident).collect();
             let query = convert_query(*cte.query)?;
 
-            Ok(WithClause { name, columns, query: Box::new(query) })
+            Ok(WithClause { name, columns, query: Box::new(query), recursive })
         })
         .collect()
 }

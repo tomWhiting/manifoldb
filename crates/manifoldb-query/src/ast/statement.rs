@@ -43,13 +43,29 @@ pub enum Statement {
 /// CTEs allow defining named subqueries that can be referenced multiple times
 /// in the main query, similar to temporary views.
 ///
-/// # Example
+/// # Examples
 ///
+/// Non-recursive CTE:
 /// ```sql
 /// WITH active_users AS (
 ///     SELECT * FROM users WHERE status = 'active'
 /// )
 /// SELECT * FROM active_users WHERE age > 21;
+/// ```
+///
+/// Recursive CTE:
+/// ```sql
+/// WITH RECURSIVE hierarchy AS (
+///     -- Base case
+///     SELECT id, name, manager_id, 1 as level
+///     FROM employees WHERE manager_id IS NULL
+///     UNION ALL
+///     -- Recursive case
+///     SELECT e.id, e.name, e.manager_id, h.level + 1
+///     FROM employees e
+///     JOIN hierarchy h ON e.manager_id = h.id
+/// )
+/// SELECT * FROM hierarchy;
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct WithClause {
@@ -59,13 +75,15 @@ pub struct WithClause {
     pub columns: Vec<Identifier>,
     /// The subquery that defines the CTE.
     pub query: Box<SelectStatement>,
+    /// Whether this is a recursive CTE (WITH RECURSIVE).
+    pub recursive: bool,
 }
 
 impl WithClause {
-    /// Creates a new CTE with the given name and query.
+    /// Creates a new non-recursive CTE with the given name and query.
     #[must_use]
     pub fn new(name: impl Into<Identifier>, query: SelectStatement) -> Self {
-        Self { name: name.into(), columns: vec![], query: Box::new(query) }
+        Self { name: name.into(), columns: vec![], query: Box::new(query), recursive: false }
     }
 
     /// Creates a new CTE with column aliases.
@@ -75,7 +93,26 @@ impl WithClause {
         columns: Vec<Identifier>,
         query: SelectStatement,
     ) -> Self {
-        Self { name: name.into(), columns, query: Box::new(query) }
+        Self { name: name.into(), columns, query: Box::new(query), recursive: false }
+    }
+
+    /// Creates a new recursive CTE with the given name and query.
+    ///
+    /// The query should contain a UNION or UNION ALL combining the base case
+    /// and the recursive case that references this CTE by name.
+    #[must_use]
+    pub fn recursive(name: impl Into<Identifier>, query: SelectStatement) -> Self {
+        Self { name: name.into(), columns: vec![], query: Box::new(query), recursive: true }
+    }
+
+    /// Creates a new recursive CTE with column aliases.
+    #[must_use]
+    pub fn recursive_with_columns(
+        name: impl Into<Identifier>,
+        columns: Vec<Identifier>,
+        query: SelectStatement,
+    ) -> Self {
+        Self { name: name.into(), columns, query: Box::new(query), recursive: true }
     }
 }
 

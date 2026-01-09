@@ -49,8 +49,9 @@ pub use expr::{
 pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
 pub use node::LogicalPlan;
 pub use relational::{
-    AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode,
-    SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
+    AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
+    RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode,
+    WindowNode,
 };
 pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
 pub use vector::{
