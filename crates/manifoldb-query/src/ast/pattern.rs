@@ -15,24 +15,33 @@ use std::fmt;
 
 /// A complete graph pattern (used in MATCH clauses).
 ///
-/// A graph pattern consists of one or more path patterns that may share nodes.
+/// A graph pattern consists of one or more path patterns that may share nodes,
+/// and optionally shortest path patterns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphPattern {
     /// The path patterns in this graph pattern.
     pub paths: Vec<PathPattern>,
+    /// Shortest path patterns (from `shortestPath()` or `allShortestPaths()` functions).
+    pub shortest_paths: Vec<ShortestPathPattern>,
 }
 
 impl GraphPattern {
     /// Creates a new graph pattern with a single path.
     #[must_use]
     pub fn single(path: PathPattern) -> Self {
-        Self { paths: vec![path] }
+        Self { paths: vec![path], shortest_paths: vec![] }
     }
 
     /// Creates a new graph pattern with multiple paths.
     #[must_use]
-    pub const fn new(paths: Vec<PathPattern>) -> Self {
-        Self { paths }
+    pub fn new(paths: Vec<PathPattern>) -> Self {
+        Self { paths, shortest_paths: vec![] }
+    }
+
+    /// Creates a graph pattern with a shortest path.
+    #[must_use]
+    pub fn shortest_path(sp: ShortestPathPattern) -> Self {
+        Self { paths: vec![], shortest_paths: vec![sp] }
     }
 }
 
@@ -50,32 +59,41 @@ impl fmt::Display for GraphPattern {
 
 /// A path pattern: a sequence of nodes connected by edges.
 ///
-/// Example: `(a)-[r:FOLLOWS]->(b)-[:LIKES]->(c)`
+/// Example: `(a)-[r:FOLLOWS]->(b)-[:LIKES]->(c)` or `p = (a)-[r]->(b)`
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathPattern {
     /// The starting node.
     pub start: NodePattern,
     /// Sequence of (edge, node) pairs forming the path.
     pub steps: Vec<(EdgePattern, NodePattern)>,
+    /// Optional path variable name (e.g., `p` in `p = (a)-[r]->(b)`).
+    pub variable: Option<Identifier>,
 }
 
 impl PathPattern {
     /// Creates a path pattern with just a starting node.
     #[must_use]
-    pub const fn node(node: NodePattern) -> Self {
-        Self { start: node, steps: vec![] }
+    pub fn node(node: NodePattern) -> Self {
+        Self { start: node, steps: vec![], variable: None }
     }
 
     /// Creates a path pattern with a node, edge, and another node.
     #[must_use]
     pub fn chain(start: NodePattern, edge: EdgePattern, end: NodePattern) -> Self {
-        Self { start, steps: vec![(edge, end)] }
+        Self { start, steps: vec![(edge, end)], variable: None }
     }
 
     /// Extends this path with another step.
     #[must_use]
     pub fn then(mut self, edge: EdgePattern, node: NodePattern) -> Self {
         self.steps.push((edge, node));
+        self
+    }
+
+    /// Sets the path variable name.
+    #[must_use]
+    pub fn with_variable(mut self, name: impl Into<String>) -> Self {
+        self.variable = Some(Identifier::new(name));
         self
     }
 }
@@ -388,6 +406,7 @@ impl fmt::Display for PropertyCondition {
 /// SHORTEST PATH (a)-[*]->(b)              -- unweighted BFS
 /// SHORTEST PATH (a)-[*]->(b) WEIGHTED BY cost  -- weighted Dijkstra
 /// ALL SHORTEST PATHS (a)-[*]->(b)         -- all equal-length shortest paths
+/// p = shortestPath((a)-[*..10]->(b))      -- Cypher-style function syntax
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShortestPathPattern {
@@ -397,19 +416,28 @@ pub struct ShortestPathPattern {
     pub find_all: bool,
     /// Optional weight specification for weighted shortest path.
     pub weight: Option<WeightSpec>,
+    /// Optional path variable name (e.g., `p` in `p = shortestPath(...)`).
+    pub path_variable: Option<String>,
 }
 
 impl ShortestPathPattern {
     /// Creates a new shortest path pattern.
     #[must_use]
     pub fn new(path: PathPattern) -> Self {
-        Self { path, find_all: false, weight: None }
+        Self { path, find_all: false, weight: None, path_variable: None }
     }
 
     /// Creates a pattern that finds all shortest paths.
     #[must_use]
     pub fn all(path: PathPattern) -> Self {
-        Self { path, find_all: true, weight: None }
+        Self { path, find_all: true, weight: None, path_variable: None }
+    }
+
+    /// Sets the path variable name.
+    #[must_use]
+    pub fn with_path_variable(mut self, name: impl Into<String>) -> Self {
+        self.path_variable = Some(name.into());
+        self
     }
 
     /// Adds a weight specification (makes it use Dijkstra's algorithm).

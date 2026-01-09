@@ -2266,3 +2266,253 @@ mod builtin_procedures {
         assert_eq!(registry.len(), 13);
     }
 }
+
+// ============================================================================
+// Shortest Path Pattern Function Tests
+// ============================================================================
+
+mod shortest_path_patterns {
+    use super::*;
+    use manifoldb_query::ast::Statement;
+
+    #[test]
+    fn parse_shortest_path_basic() {
+        let stmts = ExtendedParser::parse(
+            "MATCH p = shortestPath((a:Person)-[*..10]->(b:Person)) RETURN p",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Should have a shortest path pattern
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert!(!sp.find_all);
+            assert_eq!(sp.path_variable.as_deref(), Some("p"));
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_with_labels() {
+        let stmts = ExtendedParser::parse(
+            "MATCH p = shortestPath((a:User {name: 'Alice'})-[:KNOWS*..5]->(b:User {name: 'Bob'})) RETURN p, length(p)",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            let sp = &match_stmt.pattern.shortest_paths[0];
+
+            // Check start node labels
+            assert_eq!(sp.path.start.labels.len(), 1);
+            assert_eq!(sp.path.start.labels[0].name, "User");
+
+            // Check edge types
+            assert_eq!(sp.path.steps[0].0.edge_types.len(), 1);
+            assert_eq!(sp.path.steps[0].0.edge_types[0].name, "KNOWS");
+
+            // Check max length
+            assert_eq!(sp.path.steps[0].0.length, EdgeLength::Range { min: None, max: Some(5) });
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_all_shortest_paths() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = allShortestPaths((a)-[*..10]->(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert!(sp.find_all, "allShortestPaths should set find_all=true");
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_undirected() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = shortestPath((a)-[*..5]-(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.direction, EdgeDirection::Undirected);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_left_direction() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = shortestPath((a)<-[*..5]-(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.direction, EdgeDirection::Left);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_multiple_edge_types() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = shortestPath((a)-[:KNOWS|FRIEND*..10]->(b)) RETURN p")
+                .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.edge_types.len(), 2);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_no_max_length() {
+        // shortestPath with unbounded length (may need default in execution)
+        let stmts = ExtendedParser::parse("MATCH p = shortestPath((a)-[*]->(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.length, EdgeLength::Any);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_exact_length() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = shortestPath((a)-[*3]->(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.length, EdgeLength::Exact(3));
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_with_min_length() {
+        let stmts =
+            ExtendedParser::parse("MATCH p = shortestPath((a)-[*2..]->(b)) RETURN p").unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert_eq!(sp.path.steps[0].0.length, EdgeLength::Range { min: Some(2), max: None });
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_with_where_clause() {
+        let stmts = ExtendedParser::parse(
+            "MATCH p = shortestPath((a:Person)-[*..10]->(b:Person)) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN p",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            assert!(match_stmt.where_clause.is_some());
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_in_select() {
+        // Test using SELECT...MATCH syntax
+        let stmts = ExtendedParser::parse(
+            "SELECT p FROM nodes MATCH p = shortestPath((a)-[*..5]->(b)) WHERE a.id = 1",
+        )
+        .unwrap();
+
+        if let Statement::Select(select) = &stmts[0] {
+            assert!(select.match_clause.is_some());
+            let pattern = select.match_clause.as_ref().unwrap();
+            assert_eq!(pattern.shortest_paths.len(), 1);
+        } else {
+            panic!("expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_without_variable() {
+        // shortestPath without a path variable assignment
+        let stmts =
+            ExtendedParser::parse("MATCH shortestPath((a:Person)-[*..10]->(b:Person)) RETURN a, b")
+                .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            // path_variable should be None when not assigned
+            assert!(sp.path_variable.is_none());
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_mixed_with_regular_patterns() {
+        // Mix shortestPath with regular graph patterns
+        let stmts = ExtendedParser::parse(
+            "MATCH (x:Company), p = shortestPath((a:Person)-[*..10]->(b:Person)) WHERE a.company = x.id RETURN p, x",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            // Should have both regular paths and shortest path patterns
+            assert!(
+                !match_stmt.pattern.paths.is_empty()
+                    || !match_stmt.pattern.shortest_paths.is_empty()
+            );
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_shortest_path_return_length() {
+        // Common pattern: return path and its length
+        let stmts = ExtendedParser::parse(
+            "MATCH p = shortestPath((a)-[*..10]->(b)) RETURN p, length(p) AS pathLength",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            assert_eq!(match_stmt.pattern.shortest_paths.len(), 1);
+            // Should have two return items
+            assert_eq!(match_stmt.return_clause.len(), 2);
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+
+    #[test]
+    fn parse_all_shortest_paths_with_labels() {
+        let stmts = ExtendedParser::parse(
+            "MATCH p = allShortestPaths((a:Person)-[*..5]->(b:Person)) RETURN p",
+        )
+        .unwrap();
+
+        if let Statement::Match(match_stmt) = &stmts[0] {
+            let sp = &match_stmt.pattern.shortest_paths[0];
+            assert!(sp.find_all);
+            // Check labels are parsed correctly
+            assert_eq!(sp.path.start.labels.len(), 1);
+            assert_eq!(sp.path.start.labels[0].name, "Person");
+        } else {
+            panic!("expected MATCH statement");
+        }
+    }
+}

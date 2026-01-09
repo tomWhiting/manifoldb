@@ -247,6 +247,14 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
 
+    /// Shortest path execution (boxed node - 120 bytes unboxed).
+    ShortestPath {
+        /// Shortest path configuration.
+        node: Box<ShortestPathExecNode>,
+        /// Input plan (provides source/target nodes).
+        input: Box<PhysicalPlan>,
+    },
+
     // ========== DML Operations ==========
     /// Insert operation.
     Insert {
@@ -1705,6 +1713,112 @@ impl GraphPathScanExecNode {
     }
 }
 
+/// Shortest path execution node.
+///
+/// Executes shortest path algorithms (BFS for unweighted, Dijkstra for weighted)
+/// to find paths between source and target nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShortestPathExecNode {
+    /// Variable name for the path result.
+    pub path_variable: Option<String>,
+    /// The source node variable.
+    pub src_var: String,
+    /// The target node variable.
+    pub dst_var: String,
+    /// Direction of the path.
+    pub direction: ExpandDirection,
+    /// Edge type filters.
+    pub edge_types: Vec<String>,
+    /// Maximum path length.
+    pub max_length: Option<usize>,
+    /// Minimum path length.
+    pub min_length: usize,
+    /// Whether to find all shortest paths.
+    pub find_all: bool,
+    /// Source node labels filter.
+    pub src_labels: Vec<String>,
+    /// Target node labels filter.
+    pub dst_labels: Vec<String>,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl ShortestPathExecNode {
+    /// Creates a new shortest path execution node.
+    #[must_use]
+    pub fn new(src_var: impl Into<String>, dst_var: impl Into<String>) -> Self {
+        Self {
+            path_variable: None,
+            src_var: src_var.into(),
+            dst_var: dst_var.into(),
+            direction: ExpandDirection::Both,
+            edge_types: vec![],
+            max_length: None,
+            min_length: 1,
+            find_all: false,
+            src_labels: vec![],
+            dst_labels: vec![],
+            cost: Cost::default(),
+        }
+    }
+
+    /// Sets the path variable.
+    #[must_use]
+    pub fn with_path_variable(mut self, var: impl Into<String>) -> Self {
+        self.path_variable = Some(var.into());
+        self
+    }
+
+    /// Sets the direction.
+    #[must_use]
+    pub const fn with_direction(mut self, direction: ExpandDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    /// Sets edge type filters.
+    #[must_use]
+    pub fn with_edge_types(mut self, types: Vec<String>) -> Self {
+        self.edge_types = types;
+        self
+    }
+
+    /// Sets the maximum path length.
+    #[must_use]
+    pub fn with_max_length(mut self, max: usize) -> Self {
+        self.max_length = Some(max);
+        self
+    }
+
+    /// Sets whether to find all shortest paths.
+    #[must_use]
+    pub const fn with_find_all(mut self, find_all: bool) -> Self {
+        self.find_all = find_all;
+        self
+    }
+
+    /// Sets source node labels filter.
+    #[must_use]
+    pub fn with_src_labels(mut self, labels: Vec<String>) -> Self {
+        self.src_labels = labels;
+        self
+    }
+
+    /// Sets target node labels filter.
+    #[must_use]
+    pub fn with_dst_labels(mut self, labels: Vec<String>) -> Self {
+        self.dst_labels = labels;
+        self
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+}
+
 // ============================================================================
 // Unwind Node Type
 // ============================================================================
@@ -1830,6 +1944,7 @@ impl PhysicalPlan {
             | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
+            | Self::ShortestPath { input, .. }
             | Self::Insert { input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
@@ -1895,6 +2010,7 @@ impl PhysicalPlan {
             | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
+            | Self::ShortestPath { input, .. }
             | Self::Insert { input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
@@ -1974,6 +2090,7 @@ impl PhysicalPlan {
             Self::HybridSearch { .. } => "HybridSearch",
             Self::GraphExpand { .. } => "GraphExpand",
             Self::GraphPathScan { .. } => "GraphPathScan",
+            Self::ShortestPath { .. } => "ShortestPath",
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
@@ -2025,6 +2142,7 @@ impl PhysicalPlan {
             Self::HybridSearch { node, .. } => node.cost,
             Self::GraphExpand { node, .. } => node.cost,
             Self::GraphPathScan { node, .. } => node.cost,
+            Self::ShortestPath { node, .. } => node.cost,
             Self::Insert { cost, .. } => *cost,
             Self::Update { cost, .. } => *cost,
             Self::Delete { cost, .. } => *cost,
@@ -2371,6 +2489,18 @@ impl DisplayTree<'_> {
                     f,
                     "GraphPathScan: {} steps (cost: {:.2})",
                     node.steps.len(),
+                    node.cost.value()
+                )?;
+            }
+            PhysicalPlan::ShortestPath { node, .. } => {
+                let func = if node.find_all { "allShortestPaths" } else { "shortestPath" };
+                write!(
+                    f,
+                    "{}: ({}){}({}) (cost: {:.2})",
+                    func,
+                    node.src_var,
+                    node.direction,
+                    node.dst_var,
                     node.cost.value()
                 )?;
             }

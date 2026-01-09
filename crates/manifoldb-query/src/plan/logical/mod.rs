@@ -51,6 +51,7 @@ pub use graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
     GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
     GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, PathScanNode, PathStep,
+    ShortestPathNode, ShortestPathWeight,
 };
 pub use node::LogicalPlan;
 pub use procedure::{ProcedureCallNode, YieldColumn};

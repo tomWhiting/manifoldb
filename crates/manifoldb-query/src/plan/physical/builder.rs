@@ -16,12 +16,13 @@ use super::node::{
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
     HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
     LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, RecursiveCTEExecNode, SortExecNode, UnwindExecNode, WindowExecNode,
-    WindowFunctionExpr,
+    ProjectExecNode, RecursiveCTEExecNode, ShortestPathExecNode, SortExecNode, UnwindExecNode,
+    WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
-    LogicalPlan, PathScanNode, RecursiveCTENode, ScanNode, ScoreCombinationMethod, UnwindNode,
+    LogicalPlan, PathScanNode, RecursiveCTENode, ScanNode, ScoreCombinationMethod,
+    ShortestPathNode, UnwindNode,
 };
 use crate::plan::optimize::{AccessType, IndexCandidate, IndexSelector};
 
@@ -378,6 +379,7 @@ impl PhysicalPlanner {
             // Graph nodes
             LogicalPlan::Expand { node, input } => self.plan_expand(node, input),
             LogicalPlan::PathScan { node, input } => self.plan_path_scan(node, input),
+            LogicalPlan::ShortestPath { node, input } => self.plan_shortest_path(node, input),
 
             // Vector nodes
             LogicalPlan::AnnSearch { node, input } => self.plan_ann_search(node, input),
@@ -1200,6 +1202,44 @@ impl PhysicalPlanner {
         }
 
         PhysicalPlan::GraphPathScan { node: Box::new(exec_node), input: Box::new(input_plan) }
+    }
+
+    fn plan_shortest_path(&self, node: &ShortestPathNode, input: &LogicalPlan) -> PhysicalPlan {
+        let input_plan = self.plan(input);
+
+        // Estimate cost based on graph traversal
+        // For BFS: O(V + E) where V is vertices and E is edges reachable within max_length
+        // For all paths: multiply by expected number of paths
+        let avg_degree: f64 = 10.0;
+        let max_depth: f64 = node.max_length.unwrap_or(10) as f64;
+        let base_cost = avg_degree.powf(max_depth.min(5.0)); // Cap exponential growth
+
+        let cost = if node.find_all {
+            // All shortest paths is more expensive - estimate multiple paths returned
+            let estimated_paths = (base_cost * 2.0).ceil() as usize;
+            Cost::new(base_cost * 2.0, estimated_paths)
+        } else {
+            // Single shortest path - returns one path
+            Cost::new(base_cost, 1)
+        };
+
+        let mut exec_node = ShortestPathExecNode::new(&node.src_var, &node.dst_var)
+            .with_direction(node.direction)
+            .with_edge_types(node.edge_types.clone())
+            .with_find_all(node.find_all)
+            .with_src_labels(node.src_labels.clone())
+            .with_dst_labels(node.dst_labels.clone())
+            .with_cost(cost);
+
+        if let Some(var) = &node.path_variable {
+            exec_node = exec_node.with_path_variable(var);
+        }
+
+        if let Some(max) = node.max_length {
+            exec_node = exec_node.with_max_length(max);
+        }
+
+        PhysicalPlan::ShortestPath { node: Box::new(exec_node), input: Box::new(input_plan) }
     }
 
     fn plan_ann_search(&self, node: &AnnSearchNode, input: &LogicalPlan) -> PhysicalPlan {

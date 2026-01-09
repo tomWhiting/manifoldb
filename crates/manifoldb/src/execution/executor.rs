@@ -1491,6 +1491,11 @@ fn execute_logical_plan<T: Transaction>(
             "Graph path scan queries not yet supported in entity execution".to_string(),
         )),
 
+        LogicalPlan::ShortestPath { .. } => Err(Error::Execution(
+            "Shortest path queries should be executed through execute_physical_plan, not execute_logical_plan"
+                .to_string(),
+        )),
+
         LogicalPlan::AnnSearch { input, .. } => {
             // ANN search in entity context: just execute the input
             // The actual k-NN sorting is handled at the physical plan level

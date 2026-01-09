@@ -160,6 +160,13 @@ impl PredicatePushdown {
                 self.apply_predicates(result, predicates)
             }
 
+            LogicalPlan::ShortestPath { node, input } => {
+                // Cannot push predicates through shortest path - need full graph access
+                let optimized_input = self.push_down(*input, Vec::new());
+                let result = LogicalPlan::ShortestPath { node, input: Box::new(optimized_input) };
+                self.apply_predicates(result, predicates)
+            }
+
             LogicalPlan::AnnSearch { node, input } => {
                 // For ANN search, some filters can be pushed into the search
                 let (pushable, remaining) = self.partition_predicates(&predicates, |p| {
