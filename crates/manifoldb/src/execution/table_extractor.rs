@@ -158,6 +158,16 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::GraphForeach { input, .. } => {
             collect_tables_from_plan(input, tables);
         }
+
+        // Transaction control statements don't reference tables
+        LogicalPlan::BeginTransaction(_)
+        | LogicalPlan::Commit(_)
+        | LogicalPlan::Rollback(_)
+        | LogicalPlan::Savepoint(_)
+        | LogicalPlan::ReleaseSavepoint(_)
+        | LogicalPlan::SetTransaction(_) => {
+            // Transaction statements don't reference tables
+        }
     }
 }
 

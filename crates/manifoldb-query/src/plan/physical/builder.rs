@@ -434,6 +434,14 @@ impl PhysicalPlanner {
                 PhysicalPlan::GraphForeach { node: node.clone(), input: input_plan }
             }
             LogicalPlan::ProcedureCall(node) => PhysicalPlan::ProcedureCall(node.clone()),
+
+            // Transaction control nodes - pass through directly
+            LogicalPlan::BeginTransaction(node) => PhysicalPlan::BeginTransaction(node.clone()),
+            LogicalPlan::Commit(node) => PhysicalPlan::Commit(node.clone()),
+            LogicalPlan::Rollback(node) => PhysicalPlan::Rollback(node.clone()),
+            LogicalPlan::Savepoint(node) => PhysicalPlan::Savepoint(node.clone()),
+            LogicalPlan::ReleaseSavepoint(node) => PhysicalPlan::ReleaseSavepoint(node.clone()),
+            LogicalPlan::SetTransaction(node) => PhysicalPlan::SetTransaction(node.clone()),
         }
     }
 

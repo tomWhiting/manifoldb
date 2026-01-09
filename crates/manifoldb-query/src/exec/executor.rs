@@ -411,6 +411,15 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
         PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+
+        // Transaction control operations are handled at the session/connection level,
+        // not as operators. They return an empty result set.
+        PhysicalPlan::BeginTransaction(_)
+        | PhysicalPlan::Commit(_)
+        | PhysicalPlan::Rollback(_)
+        | PhysicalPlan::Savepoint(_)
+        | PhysicalPlan::ReleaseSavepoint(_)
+        | PhysicalPlan::SetTransaction(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
     }
 }
 

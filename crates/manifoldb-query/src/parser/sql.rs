@@ -8,14 +8,16 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
-    AlterColumnAction, AlterTableAction, AlterTableStatement, Assignment, BinaryOp, CallStatement,
-    CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CreateIndexStatement,
-    CreateTableStatement, CreateViewStatement, DataType, DeleteStatement, DropIndexStatement,
-    DropTableStatement, DropViewStatement, Expr, FunctionCall, Identifier, IndexColumn,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, Literal, OnConflict,
-    OrderByExpr, ParameterRef, QualifiedName, SelectItem, SelectStatement, SetOperation,
-    SetOperator, Statement, TableAlias, TableConstraint, TableRef, UnaryOp, UpdateStatement,
-    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    AlterColumnAction, AlterTableAction, AlterTableStatement, Assignment, BeginTransaction,
+    BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget,
+    CreateIndexStatement, CreateTableStatement, CreateViewStatement, DataType, DeleteStatement,
+    DropIndexStatement, DropTableStatement, DropViewStatement, Expr, FunctionCall, Identifier,
+    IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause, JoinCondition,
+    JoinType, Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName,
+    ReleaseSavepointStatement, RollbackTransaction, SavepointStatement, SelectItem,
+    SelectStatement, SetOperation, SetOperator, SetTransactionStatement, Statement, TableAlias,
+    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, UnaryOp,
+    UpdateStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -124,6 +126,34 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         sp::Statement::Call(function) => {
             let call_stmt = convert_call(function)?;
             Ok(Statement::Call(Box::new(call_stmt)))
+        }
+        // Transaction control statements
+        sp::Statement::StartTransaction { modes, begin, .. } => {
+            let txn_stmt = convert_start_transaction(modes, begin)?;
+            Ok(Statement::Transaction(txn_stmt))
+        }
+        sp::Statement::Commit { chain: _ } => {
+            Ok(Statement::Transaction(TransactionStatement::Commit))
+        }
+        sp::Statement::Rollback { chain: _, savepoint } => {
+            let txn_stmt = convert_rollback(savepoint)?;
+            Ok(Statement::Transaction(txn_stmt))
+        }
+        sp::Statement::Savepoint { name } => {
+            let txn_stmt = TransactionStatement::Savepoint(SavepointStatement::new(
+                Identifier::new(name.value),
+            ));
+            Ok(Statement::Transaction(txn_stmt))
+        }
+        sp::Statement::ReleaseSavepoint { name } => {
+            let txn_stmt = TransactionStatement::ReleaseSavepoint(ReleaseSavepointStatement::new(
+                Identifier::new(name.value),
+            ));
+            Ok(Statement::Transaction(txn_stmt))
+        }
+        sp::Statement::SetTransaction { modes, snapshot, session } => {
+            let txn_stmt = convert_set_transaction(modes, snapshot, session)?;
+            Ok(Statement::Transaction(txn_stmt))
         }
         _ => Err(ParseError::Unsupported(format!("statement type: {stmt:?}"))),
     }
@@ -1236,6 +1266,91 @@ fn convert_ident(ident: sp::Ident) -> Identifier {
     Identifier { name: ident.value, quote_style: ident.quote_style }
 }
 
+// ============================================================================
+// Transaction Statement Conversions
+// ============================================================================
+
+/// Converts a START TRANSACTION or BEGIN statement.
+fn convert_start_transaction(
+    modes: Vec<sp::TransactionMode>,
+    begin: bool,
+) -> ParseResult<TransactionStatement> {
+    let mut isolation_level = None;
+    let mut access_mode = None;
+
+    for mode in modes {
+        match mode {
+            sp::TransactionMode::IsolationLevel(level) => {
+                isolation_level = Some(convert_isolation_level(level)?);
+            }
+            sp::TransactionMode::AccessMode(mode) => {
+                access_mode = Some(convert_access_mode(mode));
+            }
+        }
+    }
+
+    let begin_stmt = BeginTransaction {
+        has_transaction_keyword: !begin, // BEGIN doesn't have TRANSACTION keyword by default
+        isolation_level,
+        access_mode,
+        deferred: false,
+    };
+
+    Ok(TransactionStatement::Begin(begin_stmt))
+}
+
+/// Converts a ROLLBACK statement.
+fn convert_rollback(savepoint: Option<sp::Ident>) -> ParseResult<TransactionStatement> {
+    let rollback = RollbackTransaction {
+        has_transaction_keyword: false,
+        to_savepoint: savepoint.map(|s| Identifier::new(s.value)),
+    };
+    Ok(TransactionStatement::Rollback(rollback))
+}
+
+/// Converts a SET TRANSACTION statement.
+fn convert_set_transaction(
+    modes: Vec<sp::TransactionMode>,
+    _snapshot: Option<sp::Value>,
+    _session: bool,
+) -> ParseResult<TransactionStatement> {
+    let mut isolation_level = None;
+    let mut access_mode = None;
+
+    for mode in modes {
+        match mode {
+            sp::TransactionMode::IsolationLevel(level) => {
+                isolation_level = Some(convert_isolation_level(level)?);
+            }
+            sp::TransactionMode::AccessMode(mode) => {
+                access_mode = Some(convert_access_mode(mode));
+            }
+        }
+    }
+
+    let set_stmt = SetTransactionStatement { isolation_level, access_mode };
+
+    Ok(TransactionStatement::SetTransaction(set_stmt))
+}
+
+/// Converts an isolation level.
+fn convert_isolation_level(level: sp::TransactionIsolationLevel) -> ParseResult<IsolationLevel> {
+    match level {
+        sp::TransactionIsolationLevel::ReadUncommitted => Ok(IsolationLevel::ReadUncommitted),
+        sp::TransactionIsolationLevel::ReadCommitted => Ok(IsolationLevel::ReadCommitted),
+        sp::TransactionIsolationLevel::RepeatableRead => Ok(IsolationLevel::RepeatableRead),
+        sp::TransactionIsolationLevel::Serializable => Ok(IsolationLevel::Serializable),
+    }
+}
+
+/// Converts an access mode.
+fn convert_access_mode(mode: sp::TransactionAccessMode) -> TransactionAccessMode {
+    match mode {
+        sp::TransactionAccessMode::ReadOnly => TransactionAccessMode::ReadOnly,
+        sp::TransactionAccessMode::ReadWrite => TransactionAccessMode::ReadWrite,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1781,5 +1896,160 @@ mod tests {
             }
             _ => panic!("expected ALTER TABLE"),
         }
+    }
+
+    // ========================================================================
+    // Transaction Statement Tests
+    // ========================================================================
+
+    #[test]
+    fn parse_begin() {
+        let stmt = parse_single_statement("BEGIN").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Begin(begin)) => {
+                assert!(begin.isolation_level.is_none());
+                assert!(begin.access_mode.is_none());
+            }
+            _ => panic!("expected BEGIN"),
+        }
+    }
+
+    #[test]
+    fn parse_start_transaction() {
+        let stmt = parse_single_statement("START TRANSACTION").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Begin(begin)) => {
+                assert!(begin.isolation_level.is_none());
+                assert!(begin.access_mode.is_none());
+            }
+            _ => panic!("expected START TRANSACTION"),
+        }
+    }
+
+    #[test]
+    fn parse_begin_with_isolation_level() {
+        let stmt =
+            parse_single_statement("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Begin(begin)) => {
+                assert_eq!(begin.isolation_level, Some(IsolationLevel::Serializable));
+                assert!(begin.access_mode.is_none());
+            }
+            _ => panic!("expected BEGIN with isolation level"),
+        }
+    }
+
+    #[test]
+    fn parse_begin_read_only() {
+        let stmt = parse_single_statement("START TRANSACTION READ ONLY").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Begin(begin)) => {
+                assert_eq!(begin.access_mode, Some(TransactionAccessMode::ReadOnly));
+            }
+            _ => panic!("expected START TRANSACTION READ ONLY"),
+        }
+    }
+
+    #[test]
+    fn parse_begin_repeatable_read() {
+        let stmt =
+            parse_single_statement("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Begin(begin)) => {
+                assert_eq!(begin.isolation_level, Some(IsolationLevel::RepeatableRead));
+            }
+            _ => panic!("expected BEGIN with REPEATABLE READ"),
+        }
+    }
+
+    #[test]
+    fn parse_commit() {
+        let stmt = parse_single_statement("COMMIT").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Commit) => {}
+            _ => panic!("expected COMMIT"),
+        }
+    }
+
+    #[test]
+    fn parse_rollback() {
+        let stmt = parse_single_statement("ROLLBACK").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Rollback(rollback)) => {
+                assert!(rollback.to_savepoint.is_none());
+            }
+            _ => panic!("expected ROLLBACK"),
+        }
+    }
+
+    #[test]
+    fn parse_rollback_to_savepoint() {
+        let stmt = parse_single_statement("ROLLBACK TO SAVEPOINT sp1").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Rollback(rollback)) => {
+                assert_eq!(rollback.to_savepoint.as_ref().map(|s| s.name.as_str()), Some("sp1"));
+            }
+            _ => panic!("expected ROLLBACK TO SAVEPOINT"),
+        }
+    }
+
+    #[test]
+    fn parse_savepoint() {
+        let stmt = parse_single_statement("SAVEPOINT my_savepoint").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::Savepoint(sp)) => {
+                assert_eq!(sp.name.name, "my_savepoint");
+            }
+            _ => panic!("expected SAVEPOINT"),
+        }
+    }
+
+    #[test]
+    fn parse_release_savepoint() {
+        let stmt = parse_single_statement("RELEASE SAVEPOINT my_savepoint").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::ReleaseSavepoint(release)) => {
+                assert_eq!(release.name.name, "my_savepoint");
+            }
+            _ => panic!("expected RELEASE SAVEPOINT"),
+        }
+    }
+
+    #[test]
+    fn parse_set_transaction() {
+        let stmt =
+            parse_single_statement("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::SetTransaction(set_txn)) => {
+                assert_eq!(set_txn.isolation_level, Some(IsolationLevel::ReadCommitted));
+            }
+            _ => panic!("expected SET TRANSACTION"),
+        }
+    }
+
+    #[test]
+    fn parse_set_transaction_read_write() {
+        let stmt = parse_single_statement("SET TRANSACTION READ WRITE").unwrap();
+        match stmt {
+            Statement::Transaction(TransactionStatement::SetTransaction(set_txn)) => {
+                assert_eq!(set_txn.access_mode, Some(TransactionAccessMode::ReadWrite));
+            }
+            _ => panic!("expected SET TRANSACTION READ WRITE"),
+        }
+    }
+
+    #[test]
+    fn parse_transaction_sequence() {
+        // Test parsing multiple transaction statements in sequence
+        let stmts = parse_sql(
+            "BEGIN; INSERT INTO users VALUES (1, 'Alice'); SAVEPOINT sp1; ROLLBACK TO SAVEPOINT sp1; COMMIT"
+        ).unwrap();
+        assert_eq!(stmts.len(), 5);
+
+        assert!(matches!(&stmts[0], Statement::Transaction(TransactionStatement::Begin(_))));
+        assert!(matches!(&stmts[1], Statement::Insert(_)));
+        assert!(matches!(&stmts[2], Statement::Transaction(TransactionStatement::Savepoint(_))));
+        assert!(matches!(&stmts[3], Statement::Transaction(TransactionStatement::Rollback(_))));
+        assert!(matches!(&stmts[4], Statement::Transaction(TransactionStatement::Commit)));
     }
 }

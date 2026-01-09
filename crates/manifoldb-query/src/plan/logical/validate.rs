@@ -420,6 +420,16 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 return Err(PlanError::Unsupported("CALL requires procedure name".to_string()));
             }
         }
+
+        // Transaction control statements are always valid structurally
+        LogicalPlan::BeginTransaction(_)
+        | LogicalPlan::Commit(_)
+        | LogicalPlan::Rollback(_)
+        | LogicalPlan::Savepoint(_)
+        | LogicalPlan::ReleaseSavepoint(_)
+        | LogicalPlan::SetTransaction(_) => {
+            // Transaction statements have no structural validation requirements
+        }
     }
 
     Ok(())
