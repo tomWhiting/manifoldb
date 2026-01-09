@@ -24,11 +24,13 @@ pub use pattern::{
 };
 pub use statement::{
     Assignment, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget,
-    CreateCollectionStatement, CreateIndexStatement, CreateTableStatement, DataType,
-    DeleteStatement, DropCollectionStatement, DropIndexStatement, DropTableStatement, IndexColumn,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, MatchStatement, OnConflict,
-    PayloadFieldDef, ReturnItem, SelectItem, SelectStatement, SetOperation, SetOperator, Statement,
-    TableAlias, TableConstraint, TableRef, UpdateStatement, VectorDef, VectorTypeDef, WithClause,
+    CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement, CreateNodeRef,
+    CreatePathStep, CreatePattern, CreateTableStatement, DataType, DeleteStatement,
+    DropCollectionStatement, DropIndexStatement, DropTableStatement, IndexColumn, InsertSource,
+    InsertStatement, JoinClause, JoinCondition, JoinType, MatchStatement, MergeGraphStatement,
+    MergePattern, OnConflict, PayloadFieldDef, ReturnItem, SelectItem, SelectStatement, SetAction,
+    SetOperation, SetOperator, Statement, TableAlias, TableConstraint, TableRef, UpdateStatement,
+    VectorDef, VectorTypeDef, WithClause,
 };
 pub use vector::{
     DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,

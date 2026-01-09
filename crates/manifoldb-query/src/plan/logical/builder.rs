@@ -20,11 +20,12 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, CreateCollectionStatement, CreateIndexStatement, CreateTableStatement, DeleteStatement,
-    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
-    MatchStatement, PathPattern, SelectItem, SelectStatement, SetOperation, SetOperator, Statement,
-    TableRef, UpdateStatement, WindowFunction,
+    self, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement, CreateNodeRef,
+    CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
+    DropIndexStatement, DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement,
+    JoinClause, JoinCondition, JoinType as AstJoinType, MatchStatement, MergeGraphStatement,
+    MergePattern, PathPattern, SelectItem, SelectStatement, SetAction as AstSetAction,
+    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction,
 };
 
 use super::ddl::{
@@ -36,7 +37,10 @@ use super::expr::{
     AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
     SortOrder,
 };
-use super::graph::{ExpandDirection, ExpandLength, ExpandNode};
+use super::graph::{
+    CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
+    GraphMergeNode, GraphSetAction, MergePatternSpec,
+};
 use super::node::LogicalPlan;
 use super::relational::{
     AggregateNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode, SetOpNode,
@@ -96,6 +100,8 @@ impl PlanBuilder {
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
+            Statement::Create(create) => self.build_graph_create(create),
+            Statement::Merge(merge) => self.build_graph_merge(merge),
         }
     }
 
@@ -950,6 +956,265 @@ impl PlanBuilder {
             .with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropCollection(node))
+    }
+
+    /// Builds a logical plan from a Cypher CREATE statement.
+    fn build_graph_create(&mut self, create: &CreateGraphStatement) -> PlanResult<LogicalPlan> {
+        // Build optional MATCH clause as input
+        let input = if let Some(pattern) = &create.match_clause {
+            let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]])); // Start with single empty row
+            plan = self.build_graph_pattern(plan, pattern)?;
+
+            // Add WHERE clause if present
+            if let Some(where_expr) = &create.where_clause {
+                let filter = self.build_expr(where_expr)?;
+                plan = plan.filter(filter);
+            }
+
+            Some(Box::new(plan))
+        } else {
+            None
+        };
+
+        // Build the CREATE patterns
+        let mut graph_create = GraphCreateNode::new();
+
+        for pattern in &create.patterns {
+            match pattern {
+                CreatePattern::Node { variable, labels, properties } => {
+                    let var = variable.as_ref().map(|v| v.name.clone());
+                    let label_strs: Vec<String> = labels.iter().map(|l| l.name.clone()).collect();
+                    let mut props = Vec::new();
+                    for (name, expr) in properties {
+                        let logical_expr = self.build_expr(expr)?;
+                        props.push((name.name.clone(), logical_expr));
+                    }
+                    let node_spec = CreateNodeSpec::new(var, label_strs).with_properties(props);
+                    graph_create = graph_create.with_node(node_spec);
+                }
+                CreatePattern::Relationship { start, rel_variable, rel_type, properties, end } => {
+                    let start_var = start.name.clone();
+                    let end_var = end.name.clone();
+                    let rel_type_str = rel_type.name.clone();
+                    let mut props = Vec::new();
+                    for (name, expr) in properties {
+                        let logical_expr = self.build_expr(expr)?;
+                        props.push((name.name.clone(), logical_expr));
+                    }
+                    let mut rel_spec =
+                        CreateRelSpec::new(start_var, rel_type_str, end_var).with_properties(props);
+                    if let Some(rv) = rel_variable {
+                        rel_spec = rel_spec.with_variable(rv.name.clone());
+                    }
+                    graph_create = graph_create.with_relationship(rel_spec);
+                }
+                CreatePattern::Path { start, steps } => {
+                    // Process path pattern - extract start node and relationships
+                    match start {
+                        CreateNodeRef::New { variable, labels, properties } => {
+                            let var = variable.as_ref().map(|v| v.name.clone());
+                            let label_strs: Vec<String> =
+                                labels.iter().map(|l| l.name.clone()).collect();
+                            let mut props = Vec::new();
+                            for (name, expr) in properties {
+                                let logical_expr = self.build_expr(expr)?;
+                                props.push((name.name.clone(), logical_expr));
+                            }
+                            let node_spec =
+                                CreateNodeSpec::new(var, label_strs).with_properties(props);
+                            graph_create = graph_create.with_node(node_spec);
+                        }
+                        CreateNodeRef::Variable(_) => {
+                            // Variable reference - node already exists
+                        }
+                    }
+
+                    // Process steps
+                    let mut prev_var = match start {
+                        CreateNodeRef::Variable(v) => v.name.clone(),
+                        CreateNodeRef::New { variable, .. } => variable
+                            .as_ref()
+                            .map(|v| v.name.clone())
+                            .unwrap_or_else(|| self.next_alias("node")),
+                    };
+
+                    for step in steps {
+                        // Create destination node if new
+                        let dest_var = match &step.destination {
+                            CreateNodeRef::Variable(v) => v.name.clone(),
+                            CreateNodeRef::New { variable, labels, properties } => {
+                                let var = variable.as_ref().map(|v| v.name.clone());
+                                let var_name =
+                                    var.clone().unwrap_or_else(|| self.next_alias("node"));
+                                let label_strs: Vec<String> =
+                                    labels.iter().map(|l| l.name.clone()).collect();
+                                let mut props = Vec::new();
+                                for (name, expr) in properties {
+                                    let logical_expr = self.build_expr(expr)?;
+                                    props.push((name.name.clone(), logical_expr));
+                                }
+                                let node_spec =
+                                    CreateNodeSpec::new(var, label_strs).with_properties(props);
+                                graph_create = graph_create.with_node(node_spec);
+                                var_name
+                            }
+                        };
+
+                        // Create relationship
+                        let (start_var, end_var) = if step.outgoing {
+                            (prev_var.clone(), dest_var.clone())
+                        } else {
+                            (dest_var.clone(), prev_var.clone())
+                        };
+
+                        let mut props = Vec::new();
+                        for (name, expr) in &step.rel_properties {
+                            let logical_expr = self.build_expr(expr)?;
+                            props.push((name.name.clone(), logical_expr));
+                        }
+
+                        let mut rel_spec =
+                            CreateRelSpec::new(start_var, step.rel_type.name.clone(), end_var)
+                                .with_properties(props);
+                        if let Some(rv) = &step.rel_variable {
+                            rel_spec = rel_spec.with_variable(rv.name.clone());
+                        }
+                        graph_create = graph_create.with_relationship(rel_spec);
+
+                        prev_var = dest_var;
+                    }
+                }
+            }
+        }
+
+        // Add RETURN expressions if present
+        if !create.return_clause.is_empty() {
+            let returning = self.build_return_items(&create.return_clause)?;
+            graph_create = graph_create.with_returning(returning);
+        }
+
+        Ok(LogicalPlan::GraphCreate { node: Box::new(graph_create), input })
+    }
+
+    /// Builds a logical plan from a Cypher MERGE statement.
+    fn build_graph_merge(&mut self, merge: &MergeGraphStatement) -> PlanResult<LogicalPlan> {
+        // Build optional MATCH clause as input
+        let input = if let Some(pattern) = &merge.match_clause {
+            let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]])); // Start with single empty row
+            plan = self.build_graph_pattern(plan, pattern)?;
+
+            // Add WHERE clause if present
+            if let Some(where_expr) = &merge.where_clause {
+                let filter = self.build_expr(where_expr)?;
+                plan = plan.filter(filter);
+            }
+
+            Some(Box::new(plan))
+        } else {
+            None
+        };
+
+        // Build the MERGE pattern
+        let pattern_spec = match &merge.pattern {
+            MergePattern::Node { variable, labels, match_properties } => {
+                let var = variable.name.clone();
+                let label_strs: Vec<String> = labels.iter().map(|l| l.name.clone()).collect();
+                let mut props = Vec::new();
+                for (name, expr) in match_properties {
+                    let logical_expr = self.build_expr(expr)?;
+                    props.push((name.name.clone(), logical_expr));
+                }
+                MergePatternSpec::Node {
+                    variable: var,
+                    labels: label_strs,
+                    match_properties: props,
+                }
+            }
+            MergePattern::Relationship { start, rel_variable, rel_type, match_properties, end } => {
+                let start_var = start.name.clone();
+                let end_var = end.name.clone();
+                let rel_type_str = rel_type.name.clone();
+                let rel_var = rel_variable.as_ref().map(|v| v.name.clone());
+                let mut props = Vec::new();
+                for (name, expr) in match_properties {
+                    let logical_expr = self.build_expr(expr)?;
+                    props.push((name.name.clone(), logical_expr));
+                }
+                MergePatternSpec::Relationship {
+                    start_var,
+                    rel_variable: rel_var,
+                    rel_type: rel_type_str,
+                    match_properties: props,
+                    end_var,
+                }
+            }
+        };
+
+        let mut graph_merge = GraphMergeNode::new(pattern_spec);
+
+        // Build ON CREATE actions
+        let on_create_actions = self.build_set_actions(&merge.on_create)?;
+        graph_merge = graph_merge.with_on_create(on_create_actions);
+
+        // Build ON MATCH actions
+        let on_match_actions = self.build_set_actions(&merge.on_match)?;
+        graph_merge = graph_merge.with_on_match(on_match_actions);
+
+        // Add RETURN expressions if present
+        if !merge.return_clause.is_empty() {
+            let returning = self.build_return_items(&merge.return_clause)?;
+            graph_merge = graph_merge.with_returning(returning);
+        }
+
+        Ok(LogicalPlan::GraphMerge { node: Box::new(graph_merge), input })
+    }
+
+    /// Builds return items from AST ReturnItems.
+    fn build_return_items(
+        &mut self,
+        items: &[crate::ast::ReturnItem],
+    ) -> PlanResult<Vec<LogicalExpr>> {
+        let mut result = Vec::new();
+        for item in items {
+            match item {
+                crate::ast::ReturnItem::Wildcard => {
+                    // For wildcard, use the Wildcard expression variant
+                    result.push(LogicalExpr::Wildcard);
+                }
+                crate::ast::ReturnItem::Expr { expr, .. } => {
+                    let logical_expr = self.build_expr(expr)?;
+                    result.push(logical_expr);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Builds SET actions from AST SetActions.
+    fn build_set_actions(&mut self, actions: &[AstSetAction]) -> PlanResult<Vec<GraphSetAction>> {
+        let mut result = Vec::new();
+        for action in actions {
+            match action {
+                AstSetAction::Property { variable, property, value } => {
+                    let val = self.build_expr(value)?;
+                    result.push(GraphSetAction::Property {
+                        variable: variable.name.clone(),
+                        property: property.name.clone(),
+                        value: val,
+                    });
+                }
+                AstSetAction::Label { variable, label } => {
+                    result.push(GraphSetAction::Label {
+                        variable: variable.name.clone(),
+                        label: label.name.clone(),
+                    });
+                }
+                AstSetAction::Properties { .. } => {
+                    // Skip for now - would require map expression support
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// Builds a logical expression from an AST expression.

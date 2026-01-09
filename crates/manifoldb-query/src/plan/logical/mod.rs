@@ -46,7 +46,10 @@ pub use expr::{
     AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr, ScalarFunction,
     SortOrder,
 };
-pub use graph::{ExpandDirection, ExpandLength, ExpandNode, PathScanNode, PathStep};
+pub use graph::{
+    CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
+    GraphMergeNode, GraphSetAction, MergePatternSpec, PathScanNode, PathStep,
+};
 pub use node::LogicalPlan;
 pub use relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,

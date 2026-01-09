@@ -238,6 +238,35 @@ impl PredicatePushdown {
                 let optimized_input = self.push_down(*input, predicates);
                 LogicalPlan::HybridSearch { node, input: Box::new(optimized_input) }
             }
+
+            // Graph DML - push predicates to input if present
+            LogicalPlan::GraphCreate { node, input } => {
+                let optimized_input =
+                    input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
+                // Apply remaining predicates as filter if no input
+                if optimized_input.is_none() && !predicates.is_empty() {
+                    let combined = Self::combine_predicates(predicates);
+                    LogicalPlan::Filter {
+                        node: FilterNode::new(combined),
+                        input: Box::new(LogicalPlan::GraphCreate { node, input: None }),
+                    }
+                } else {
+                    LogicalPlan::GraphCreate { node, input: optimized_input }
+                }
+            }
+            LogicalPlan::GraphMerge { node, input } => {
+                let optimized_input =
+                    input.map(|i| Box::new(self.push_down(*i, predicates.clone())));
+                if optimized_input.is_none() && !predicates.is_empty() {
+                    let combined = Self::combine_predicates(predicates);
+                    LogicalPlan::Filter {
+                        node: FilterNode::new(combined),
+                        input: Box::new(LogicalPlan::GraphMerge { node, input: None }),
+                    }
+                } else {
+                    LogicalPlan::GraphMerge { node, input: optimized_input }
+                }
+            }
         }
     }
 

@@ -377,6 +377,12 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
         | PhysicalPlan::DropIndex(_)
         | PhysicalPlan::CreateCollection(_)
         | PhysicalPlan::DropCollection(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+
+        // Graph DML operations - placeholder implementations
+        // Actual execution requires storage layer integration
+        PhysicalPlan::GraphCreate { .. } | PhysicalPlan::GraphMerge { .. } => {
+            Ok(Box::new(EmptyOp::with_columns(vec![])))
+        }
     }
 }
 

@@ -1532,6 +1532,11 @@ fn execute_logical_plan<T: Transaction>(
             "Recursive CTEs should be executed through execute_physical_plan, not execute_logical_plan"
                 .to_string(),
         )),
+
+        LogicalPlan::GraphCreate { .. } | LogicalPlan::GraphMerge { .. } => Err(Error::Execution(
+            "Graph CREATE/MERGE should be executed via execute_statement, not execute_logical_plan"
+                .to_string(),
+        )),
     }
 }
 

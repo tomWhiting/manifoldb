@@ -315,6 +315,213 @@ impl PathStep {
     }
 }
 
+// ============================================================================
+// Graph Mutation Nodes (CREATE, MERGE)
+// ============================================================================
+
+/// A node specification for CREATE operations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateNodeSpec {
+    /// Optional variable name for the created node.
+    pub variable: Option<String>,
+    /// Labels for the node.
+    pub labels: Vec<String>,
+    /// Properties to set on the node.
+    pub properties: Vec<(String, LogicalExpr)>,
+}
+
+impl CreateNodeSpec {
+    /// Creates a new node specification.
+    #[must_use]
+    pub fn new(variable: Option<String>, labels: Vec<String>) -> Self {
+        Self { variable, labels, properties: vec![] }
+    }
+
+    /// Adds properties.
+    #[must_use]
+    pub fn with_properties(mut self, properties: Vec<(String, LogicalExpr)>) -> Self {
+        self.properties = properties;
+        self
+    }
+}
+
+/// A relationship specification for CREATE operations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateRelSpec {
+    /// Start node variable (must be bound).
+    pub start_var: String,
+    /// Optional variable name for the created relationship.
+    pub rel_variable: Option<String>,
+    /// Relationship type.
+    pub rel_type: String,
+    /// Properties to set on the relationship.
+    pub properties: Vec<(String, LogicalExpr)>,
+    /// End node variable (must be bound).
+    pub end_var: String,
+}
+
+impl CreateRelSpec {
+    /// Creates a new relationship specification.
+    #[must_use]
+    pub fn new(start_var: String, rel_type: String, end_var: String) -> Self {
+        Self { start_var, rel_variable: None, rel_type, properties: vec![], end_var }
+    }
+
+    /// Sets the relationship variable.
+    #[must_use]
+    pub fn with_variable(mut self, var: String) -> Self {
+        self.rel_variable = Some(var);
+        self
+    }
+
+    /// Adds properties.
+    #[must_use]
+    pub fn with_properties(mut self, properties: Vec<(String, LogicalExpr)>) -> Self {
+        self.properties = properties;
+        self
+    }
+}
+
+/// A graph create node for Cypher CREATE operations.
+///
+/// Creates nodes and/or relationships in the graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphCreateNode {
+    /// Nodes to create.
+    pub nodes: Vec<CreateNodeSpec>,
+    /// Relationships to create.
+    pub relationships: Vec<CreateRelSpec>,
+    /// Expressions for the RETURN clause.
+    pub returning: Vec<LogicalExpr>,
+}
+
+impl GraphCreateNode {
+    /// Creates a new graph create node.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { nodes: vec![], relationships: vec![], returning: vec![] }
+    }
+
+    /// Adds a node to create.
+    #[must_use]
+    pub fn with_node(mut self, node: CreateNodeSpec) -> Self {
+        self.nodes.push(node);
+        self
+    }
+
+    /// Adds a relationship to create.
+    #[must_use]
+    pub fn with_relationship(mut self, rel: CreateRelSpec) -> Self {
+        self.relationships.push(rel);
+        self
+    }
+
+    /// Sets the returning clause.
+    #[must_use]
+    pub fn with_returning(mut self, returning: Vec<LogicalExpr>) -> Self {
+        self.returning = returning;
+        self
+    }
+}
+
+impl Default for GraphCreateNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A SET action for graph mutations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GraphSetAction {
+    /// Set a single property: SET n.prop = value
+    Property {
+        /// Variable name.
+        variable: String,
+        /// Property name.
+        property: String,
+        /// Value expression.
+        value: LogicalExpr,
+    },
+    /// Add a label: SET n:Label
+    Label {
+        /// Variable name.
+        variable: String,
+        /// Label to add.
+        label: String,
+    },
+}
+
+/// A MERGE pattern specification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergePatternSpec {
+    /// Merge a node.
+    Node {
+        /// Variable name for the merged node.
+        variable: String,
+        /// Labels for matching/creating.
+        labels: Vec<String>,
+        /// Properties to match on (key properties for upsert).
+        match_properties: Vec<(String, LogicalExpr)>,
+    },
+    /// Merge a relationship.
+    Relationship {
+        /// Start node variable (must be bound).
+        start_var: String,
+        /// Optional relationship variable.
+        rel_variable: Option<String>,
+        /// Relationship type.
+        rel_type: String,
+        /// Properties to match on.
+        match_properties: Vec<(String, LogicalExpr)>,
+        /// End node variable (must be bound).
+        end_var: String,
+    },
+}
+
+/// A graph merge node for Cypher MERGE operations.
+///
+/// Implements upsert semantics: match existing or create new.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphMergeNode {
+    /// The pattern to merge.
+    pub pattern: MergePatternSpec,
+    /// Actions to perform on CREATE.
+    pub on_create: Vec<GraphSetAction>,
+    /// Actions to perform on MATCH.
+    pub on_match: Vec<GraphSetAction>,
+    /// Expressions for the RETURN clause.
+    pub returning: Vec<LogicalExpr>,
+}
+
+impl GraphMergeNode {
+    /// Creates a new graph merge node.
+    #[must_use]
+    pub fn new(pattern: MergePatternSpec) -> Self {
+        Self { pattern, on_create: vec![], on_match: vec![], returning: vec![] }
+    }
+
+    /// Adds ON CREATE actions.
+    #[must_use]
+    pub fn with_on_create(mut self, actions: Vec<GraphSetAction>) -> Self {
+        self.on_create = actions;
+        self
+    }
+
+    /// Adds ON MATCH actions.
+    #[must_use]
+    pub fn with_on_match(mut self, actions: Vec<GraphSetAction>) -> Self {
+        self.on_match = actions;
+        self
+    }
+
+    /// Sets the returning clause.
+    #[must_use]
+    pub fn with_returning(mut self, returning: Vec<LogicalExpr>) -> Self {
+        self.returning = returning;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
