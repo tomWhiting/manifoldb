@@ -1230,6 +1230,155 @@ fn evaluate_scalar_function(
             }
         }
 
+        // ========== Array Functions (PostgreSQL-compatible) ==========
+        ScalarFunction::ArrayLength => {
+            // ARRAY_LENGTH(array, dimension)
+            // For 1D arrays, dimension is 1. Returns NULL for empty arrays.
+            match args {
+                [Value::Array(arr), Value::Int(dim)] => {
+                    if *dim != 1 {
+                        // Only 1D arrays are currently supported
+                        Ok(Value::Null)
+                    } else if arr.is_empty() {
+                        Ok(Value::Null)
+                    } else {
+                        Ok(Value::Int(arr.len() as i64))
+                    }
+                }
+                [Value::Null, _] | [_, Value::Null] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Cardinality => {
+            // CARDINALITY(array)
+            // Returns total number of elements in the array (across all dimensions)
+            match args.first() {
+                Some(Value::Array(arr)) => Ok(Value::Int(arr.len() as i64)),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayAppend => {
+            // ARRAY_APPEND(array, element)
+            // Appends element to the end of array
+            match args {
+                [Value::Array(arr), element] => {
+                    let mut new_arr = arr.clone();
+                    new_arr.push(element.clone());
+                    Ok(Value::Array(new_arr))
+                }
+                [Value::Null, _] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayPrepend => {
+            // ARRAY_PREPEND(element, array)
+            // Prepends element to the beginning of array
+            match args {
+                [element, Value::Array(arr)] => {
+                    let mut new_arr = vec![element.clone()];
+                    new_arr.extend(arr.iter().cloned());
+                    Ok(Value::Array(new_arr))
+                }
+                [_, Value::Null] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayCat => {
+            // ARRAY_CAT(array1, array2)
+            // Concatenates two arrays
+            match args {
+                [Value::Array(arr1), Value::Array(arr2)] => {
+                    let mut new_arr = arr1.clone();
+                    new_arr.extend(arr2.iter().cloned());
+                    Ok(Value::Array(new_arr))
+                }
+                [Value::Null, _] | [_, Value::Null] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayRemove => {
+            // ARRAY_REMOVE(array, element)
+            // Removes all occurrences of element from array
+            match args {
+                [Value::Array(arr), element] => {
+                    let new_arr: Vec<Value> =
+                        arr.iter().filter(|v| !values_equal(v, element)).cloned().collect();
+                    Ok(Value::Array(new_arr))
+                }
+                [Value::Null, _] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayReplace => {
+            // ARRAY_REPLACE(array, from, to)
+            // Replaces all occurrences of 'from' with 'to'
+            match args {
+                [Value::Array(arr), from, to] => {
+                    let new_arr: Vec<Value> = arr
+                        .iter()
+                        .map(|v| if values_equal(v, from) { to.clone() } else { v.clone() })
+                        .collect();
+                    Ok(Value::Array(new_arr))
+                }
+                [Value::Null, _, _] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayPosition => {
+            // ARRAY_POSITION(array, element)
+            // Returns 1-based index of first occurrence, or NULL if not found
+            match args {
+                [Value::Array(arr), element] => {
+                    for (idx, v) in arr.iter().enumerate() {
+                        if values_equal(v, element) {
+                            return Ok(Value::Int((idx + 1) as i64));
+                        }
+                    }
+                    Ok(Value::Null)
+                }
+                [Value::Null, _] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::ArrayPositions => {
+            // ARRAY_POSITIONS(array, element)
+            // Returns array of 1-based indices for all occurrences
+            match args {
+                [Value::Array(arr), element] => {
+                    let positions: Vec<Value> = arr
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| values_equal(v, element))
+                        .map(|(idx, _)| Value::Int((idx + 1) as i64))
+                        .collect();
+                    Ok(Value::Array(positions))
+                }
+                [Value::Null, _] => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
+        ScalarFunction::Unnest => {
+            // UNNEST(array)
+            // Note: UNNEST is typically a set-returning function (SRF) that expands
+            // an array to rows. When used as a scalar function, it returns the first
+            // element of the array. For proper SRF behavior, use UNWIND in Cypher.
+            match args.first() {
+                Some(Value::Array(arr)) => Ok(arr.first().cloned().unwrap_or(Value::Null)),
+                Some(Value::Null) | None => Ok(Value::Null),
+                _ => Ok(Value::Null),
+            }
+        }
+
         // ========== JSON Functions ==========
         ScalarFunction::JsonExtractPath | ScalarFunction::JsonbExtractPath => {
             // JSON_EXTRACT_PATH(json, VARIADIC path_elements)
@@ -3700,6 +3849,367 @@ mod tests {
                 assert!(pairs.is_empty());
             }
             _ => panic!("Expected empty Array result"),
+        }
+    }
+
+    // ========== Array Function Tests ==========
+
+    #[test]
+    fn test_array_length() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_LENGTH([1, 2, 3], 1) = 3
+        let result = eval_fn(
+            ScalarFunction::ArrayLength,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(1)],
+        );
+        assert_eq!(result, Value::Int(3));
+
+        // ARRAY_LENGTH([], 1) = NULL (PostgreSQL returns NULL for empty arrays)
+        let result =
+            eval_fn(ScalarFunction::ArrayLength, vec![Value::Array(vec![]), Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+
+        // ARRAY_LENGTH([1, 2, 3], 2) = NULL (dimension 2 not supported for 1D arrays)
+        let result = eval_fn(
+            ScalarFunction::ArrayLength,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(2)],
+        );
+        assert_eq!(result, Value::Null);
+
+        // NULL array = NULL
+        let result = eval_fn(ScalarFunction::ArrayLength, vec![Value::Null, Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_cardinality() {
+        use crate::plan::logical::ScalarFunction;
+
+        // CARDINALITY([1, 2, 3]) = 3
+        let result = eval_fn(
+            ScalarFunction::Cardinality,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Int(3));
+
+        // CARDINALITY([]) = 0
+        let result = eval_fn(ScalarFunction::Cardinality, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Int(0));
+
+        // CARDINALITY(NULL) = NULL
+        let result = eval_fn(ScalarFunction::Cardinality, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_append() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_APPEND([1, 2, 3], 4) = [1, 2, 3, 4]
+        let result = eval_fn(
+            ScalarFunction::ArrayAppend,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(4)],
+        );
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        );
+
+        // ARRAY_APPEND([], 1) = [1]
+        let result =
+            eval_fn(ScalarFunction::ArrayAppend, vec![Value::Array(vec![]), Value::Int(1)]);
+        assert_eq!(result, Value::Array(vec![Value::Int(1)]));
+
+        // ARRAY_APPEND([1], NULL) = [1, NULL]
+        let result = eval_fn(
+            ScalarFunction::ArrayAppend,
+            vec![Value::Array(vec![Value::Int(1)]), Value::Null],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Null]));
+
+        // ARRAY_APPEND(NULL, 1) = NULL
+        let result = eval_fn(ScalarFunction::ArrayAppend, vec![Value::Null, Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_prepend() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_PREPEND(0, [1, 2, 3]) = [0, 1, 2, 3]
+        let result = eval_fn(
+            ScalarFunction::ArrayPrepend,
+            vec![Value::Int(0), Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(0), Value::Int(1), Value::Int(2), Value::Int(3)])
+        );
+
+        // ARRAY_PREPEND(1, []) = [1]
+        let result =
+            eval_fn(ScalarFunction::ArrayPrepend, vec![Value::Int(1), Value::Array(vec![])]);
+        assert_eq!(result, Value::Array(vec![Value::Int(1)]));
+
+        // ARRAY_PREPEND(1, NULL) = NULL
+        let result = eval_fn(ScalarFunction::ArrayPrepend, vec![Value::Int(1), Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_cat() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_CAT([1, 2], [3, 4]) = [1, 2, 3, 4]
+        let result = eval_fn(
+            ScalarFunction::ArrayCat,
+            vec![
+                Value::Array(vec![Value::Int(1), Value::Int(2)]),
+                Value::Array(vec![Value::Int(3), Value::Int(4)]),
+            ],
+        );
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        );
+
+        // ARRAY_CAT([], [1, 2]) = [1, 2]
+        let result = eval_fn(
+            ScalarFunction::ArrayCat,
+            vec![Value::Array(vec![]), Value::Array(vec![Value::Int(1), Value::Int(2)])],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2)]));
+
+        // ARRAY_CAT(NULL, [1]) = NULL
+        let result =
+            eval_fn(ScalarFunction::ArrayCat, vec![Value::Null, Value::Array(vec![Value::Int(1)])]);
+        assert_eq!(result, Value::Null);
+
+        // ARRAY_CAT([1], NULL) = NULL
+        let result =
+            eval_fn(ScalarFunction::ArrayCat, vec![Value::Array(vec![Value::Int(1)]), Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_remove() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_REMOVE([1, 2, 3, 2, 4], 2) = [1, 3, 4]
+        let result = eval_fn(
+            ScalarFunction::ArrayRemove,
+            vec![
+                Value::Array(vec![
+                    Value::Int(1),
+                    Value::Int(2),
+                    Value::Int(3),
+                    Value::Int(2),
+                    Value::Int(4),
+                ]),
+                Value::Int(2),
+            ],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(3), Value::Int(4)]));
+
+        // ARRAY_REMOVE([1, 2, 3], 5) = [1, 2, 3] (element not found)
+        let result = eval_fn(
+            ScalarFunction::ArrayRemove,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(5)],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+
+        // ARRAY_REMOVE(NULL, 1) = NULL
+        let result = eval_fn(ScalarFunction::ArrayRemove, vec![Value::Null, Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_replace() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_REPLACE([1, 2, 3, 2, 4], 2, 9) = [1, 9, 3, 9, 4]
+        let result = eval_fn(
+            ScalarFunction::ArrayReplace,
+            vec![
+                Value::Array(vec![
+                    Value::Int(1),
+                    Value::Int(2),
+                    Value::Int(3),
+                    Value::Int(2),
+                    Value::Int(4),
+                ]),
+                Value::Int(2),
+                Value::Int(9),
+            ],
+        );
+        assert_eq!(
+            result,
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Int(9),
+                Value::Int(3),
+                Value::Int(9),
+                Value::Int(4)
+            ])
+        );
+
+        // ARRAY_REPLACE([1, 2, 3], 5, 9) = [1, 2, 3] (element not found)
+        let result = eval_fn(
+            ScalarFunction::ArrayReplace,
+            vec![
+                Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                Value::Int(5),
+                Value::Int(9),
+            ],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+
+        // ARRAY_REPLACE(NULL, 1, 2) = NULL
+        let result =
+            eval_fn(ScalarFunction::ArrayReplace, vec![Value::Null, Value::Int(1), Value::Int(2)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_position() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_POSITION([1, 2, 3], 2) = 2 (1-based index)
+        let result = eval_fn(
+            ScalarFunction::ArrayPosition,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(2)],
+        );
+        assert_eq!(result, Value::Int(2));
+
+        // ARRAY_POSITION([1, 2, 3], 1) = 1
+        let result = eval_fn(
+            ScalarFunction::ArrayPosition,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(1)],
+        );
+        assert_eq!(result, Value::Int(1));
+
+        // ARRAY_POSITION([1, 2, 3], 5) = NULL (not found)
+        let result = eval_fn(
+            ScalarFunction::ArrayPosition,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(5)],
+        );
+        assert_eq!(result, Value::Null);
+
+        // ARRAY_POSITION(NULL, 1) = NULL
+        let result = eval_fn(ScalarFunction::ArrayPosition, vec![Value::Null, Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_positions() {
+        use crate::plan::logical::ScalarFunction;
+
+        // ARRAY_POSITIONS([1, 2, 3, 2, 4], 2) = [2, 4] (1-based indices)
+        let result = eval_fn(
+            ScalarFunction::ArrayPositions,
+            vec![
+                Value::Array(vec![
+                    Value::Int(1),
+                    Value::Int(2),
+                    Value::Int(3),
+                    Value::Int(2),
+                    Value::Int(4),
+                ]),
+                Value::Int(2),
+            ],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(2), Value::Int(4)]));
+
+        // ARRAY_POSITIONS([1, 2, 3], 5) = [] (not found)
+        let result = eval_fn(
+            ScalarFunction::ArrayPositions,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]), Value::Int(5)],
+        );
+        assert_eq!(result, Value::Array(vec![]));
+
+        // ARRAY_POSITIONS([1, 1, 1], 1) = [1, 2, 3]
+        let result = eval_fn(
+            ScalarFunction::ArrayPositions,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(1), Value::Int(1)]), Value::Int(1)],
+        );
+        assert_eq!(result, Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+
+        // ARRAY_POSITIONS(NULL, 1) = NULL
+        let result = eval_fn(ScalarFunction::ArrayPositions, vec![Value::Null, Value::Int(1)]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_unnest() {
+        use crate::plan::logical::ScalarFunction;
+
+        // UNNEST([1, 2, 3]) as scalar = 1 (returns first element)
+        // Note: True UNNEST behavior requires set-returning function context (UNWIND)
+        let result = eval_fn(
+            ScalarFunction::Unnest,
+            vec![Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])],
+        );
+        assert_eq!(result, Value::Int(1));
+
+        // UNNEST([]) = NULL
+        let result = eval_fn(ScalarFunction::Unnest, vec![Value::Array(vec![])]);
+        assert_eq!(result, Value::Null);
+
+        // UNNEST(NULL) = NULL
+        let result = eval_fn(ScalarFunction::Unnest, vec![Value::Null]);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_array_functions_with_strings() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Test array functions work with string elements
+        let result = eval_fn(
+            ScalarFunction::ArrayAppend,
+            vec![Value::Array(vec![Value::from("a"), Value::from("b")]), Value::from("c")],
+        );
+        assert_eq!(
+            result,
+            Value::Array(vec![Value::from("a"), Value::from("b"), Value::from("c")])
+        );
+
+        let result = eval_fn(
+            ScalarFunction::ArrayPosition,
+            vec![
+                Value::Array(vec![Value::from("a"), Value::from("b"), Value::from("c")]),
+                Value::from("b"),
+            ],
+        );
+        assert_eq!(result, Value::Int(2));
+
+        let result = eval_fn(
+            ScalarFunction::ArrayRemove,
+            vec![
+                Value::Array(vec![Value::from("a"), Value::from("b"), Value::from("a")]),
+                Value::from("a"),
+            ],
+        );
+        assert_eq!(result, Value::Array(vec![Value::from("b")]));
+    }
+
+    #[test]
+    fn test_array_functions_with_mixed_types() {
+        use crate::plan::logical::ScalarFunction;
+
+        // Arrays can contain mixed types
+        let mixed = Value::Array(vec![Value::Int(1), Value::from("two"), Value::Bool(true)]);
+
+        let result = eval_fn(ScalarFunction::Cardinality, vec![mixed.clone()]);
+        assert_eq!(result, Value::Int(3));
+
+        let result = eval_fn(ScalarFunction::ArrayAppend, vec![mixed.clone(), Value::Float(4.0)]);
+        if let Value::Array(arr) = result {
+            assert_eq!(arr.len(), 4);
+            assert_eq!(arr[3], Value::Float(4.0));
+        } else {
+            panic!("Expected array");
         }
     }
 }

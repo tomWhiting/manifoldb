@@ -1286,6 +1286,39 @@ pub enum ScalarFunction {
     /// Returns the list in reverse order.
     Reverse,
 
+    // Array functions (PostgreSQL-compatible)
+    /// `ARRAY_LENGTH(array, dimension)`.
+    /// Returns the length of the array in the specified dimension.
+    ArrayLength,
+    /// `CARDINALITY(array)`.
+    /// Returns the total number of elements in the array.
+    Cardinality,
+    /// `ARRAY_APPEND(array, element)`.
+    /// Appends an element to the end of an array.
+    ArrayAppend,
+    /// `ARRAY_PREPEND(element, array)`.
+    /// Prepends an element to the beginning of an array.
+    ArrayPrepend,
+    /// `ARRAY_CAT(array1, array2)`.
+    /// Concatenates two arrays.
+    ArrayCat,
+    /// `ARRAY_REMOVE(array, element)`.
+    /// Removes all occurrences of an element from an array.
+    ArrayRemove,
+    /// `ARRAY_REPLACE(array, from, to)`.
+    /// Replaces all occurrences of an element with another element.
+    ArrayReplace,
+    /// `ARRAY_POSITION(array, element)`.
+    /// Returns the index of the first occurrence of an element (1-based).
+    ArrayPosition,
+    /// `ARRAY_POSITIONS(array, element)`.
+    /// Returns an array of indices for all occurrences of an element (1-based).
+    ArrayPositions,
+    /// `UNNEST(array)`.
+    /// Expands an array into a set of rows.
+    /// Note: This is a set-returning function but can be used as a scalar.
+    Unnest,
+
     // JSON functions
     /// `JSON_EXTRACT_PATH(json, VARIADIC path)`.
     /// Extracts a JSON value at the given path.
@@ -1391,6 +1424,17 @@ impl fmt::Display for ScalarFunction {
             Self::Tail => "TAIL",
             Self::Last => "LAST",
             Self::Reverse => "REVERSE",
+            // Array functions
+            Self::ArrayLength => "ARRAY_LENGTH",
+            Self::Cardinality => "CARDINALITY",
+            Self::ArrayAppend => "ARRAY_APPEND",
+            Self::ArrayPrepend => "ARRAY_PREPEND",
+            Self::ArrayCat => "ARRAY_CAT",
+            Self::ArrayRemove => "ARRAY_REMOVE",
+            Self::ArrayReplace => "ARRAY_REPLACE",
+            Self::ArrayPosition => "ARRAY_POSITION",
+            Self::ArrayPositions => "ARRAY_POSITIONS",
+            Self::Unnest => "UNNEST",
             // JSON functions
             Self::JsonExtractPath => "JSON_EXTRACT_PATH",
             Self::JsonbExtractPath => "JSONB_EXTRACT_PATH",

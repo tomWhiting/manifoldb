@@ -548,14 +548,16 @@ These feature groups can be implemented independently:
 
 | Function | P | A | L | O | E | T | Notes |
 |----------|---|---|---|---|---|---|-------|
-| array_length | ✓ | ✓ | | | | | |
-| cardinality | ✓ | ✓ | | | | | |
-| array_append | ✓ | ✓ | | | | | |
-| array_prepend | ✓ | ✓ | | | | | |
-| array_cat | ✓ | ✓ | | | | | |
-| unnest | ✓ | ✓ | | | | | |
-| array_position | | | | | | | |
-| array_remove | | | | | | | |
+| array_length | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| cardinality | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_append | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_prepend | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_cat | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_remove | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_replace | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_position | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| array_positions | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| unnest | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † (scalar mode) |
 
 ---
 

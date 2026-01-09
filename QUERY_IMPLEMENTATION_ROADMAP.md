@@ -241,12 +241,12 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
   - [x] jsonb_set, jsonb_insert, jsonb_strip_nulls ✅ Jan 2026
   - [ ] jsonb_path_query, jsonb_path_exists
 
-- [ ] **Array Functions** (Tier 2)
-  - [ ] array_length, cardinality
-  - [ ] array_append, array_prepend, array_cat
-  - [ ] array_position, array_positions
-  - [ ] array_remove, array_replace
-  - [ ] unnest
+- [x] **Array Functions** (Tier 2) - Core functions complete ✅ Jan 2026
+  - [x] array_length, cardinality ✅ Jan 2026
+  - [x] array_append, array_prepend, array_cat ✅ Jan 2026
+  - [x] array_position, array_positions ✅ Jan 2026
+  - [x] array_remove, array_replace ✅ Jan 2026
+  - [x] unnest (scalar mode) ✅ Jan 2026
   - [ ] Subscript access array[n]
 
 - [x] **Type Conversion** (Tier 1) - Core complete
