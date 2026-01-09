@@ -26,6 +26,7 @@ pub mod project;
 pub mod scan;
 pub mod set_ops;
 pub mod sort;
+pub mod unwind;
 pub mod values;
 pub mod vector;
 
@@ -43,5 +44,6 @@ pub use project::ProjectOp;
 pub use scan::{FullScanOp, IndexRangeScanOp, IndexScanOp};
 pub use set_ops::{SetOpOp, UnionOp};
 pub use sort::SortOp;
+pub use unwind::UnwindOp;
 pub use values::{EmptyOp, ValuesOp};
 pub use vector::{BruteForceSearchOp, HnswSearchOp};

@@ -16,11 +16,11 @@ use super::node::{
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
     HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
     LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, SortExecNode,
+    ProjectExecNode, SortExecNode, UnwindExecNode,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
-    LogicalPlan, PathScanNode, ScanNode, ScoreCombinationMethod,
+    LogicalPlan, PathScanNode, ScanNode, ScoreCombinationMethod, UnwindNode,
 };
 use crate::plan::optimize::{AccessType, IndexCandidate, IndexSelector};
 
@@ -359,6 +359,7 @@ impl PhysicalPlanner {
                 // Alias is logical-only, just plan the input
                 self.plan(input)
             }
+            LogicalPlan::Unwind { node, input } => self.plan_unwind(node, input),
 
             // Binary nodes
             LogicalPlan::Join { node, left, right } => self.plan_join(node, left, right),
@@ -887,6 +888,21 @@ impl PhysicalPlanner {
         PhysicalPlan::HashDistinct {
             on_columns: node.on_columns.clone(),
             cost,
+            input: Box::new(input_plan),
+        }
+    }
+
+    fn plan_unwind(&self, node: &UnwindNode, input: &LogicalPlan) -> PhysicalPlan {
+        let input_plan = self.plan(input);
+        let input_rows = input_plan.cost().cardinality();
+
+        // Estimate average list size (assume ~5 elements per list on average)
+        let avg_list_size = 5;
+        let output_rows = input_rows * avg_list_size;
+        let cost = Cost::new(output_rows as f64, output_rows);
+
+        PhysicalPlan::Unwind {
+            node: UnwindExecNode::new(node.list_expr.clone(), &node.alias).with_cost(cost),
             input: Box::new(input_plan),
         }
     }

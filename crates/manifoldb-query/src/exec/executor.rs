@@ -19,6 +19,7 @@ use super::operators::{
     scan::{FullScanOp, IndexRangeScanOp, IndexScanOp},
     set_ops::{SetOpOp, UnionOp},
     sort::SortOp,
+    unwind::UnwindOp,
     values::{EmptyOp, ValuesOp},
     vector::{BruteForceSearchOp, HnswSearchOp, HybridSearchOp},
 };
@@ -220,6 +221,11 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
                 node.having.clone(),
                 input_op,
             )))
+        }
+
+        PhysicalPlan::Unwind { node, input } => {
+            let input_op = build_operator_tree(input)?;
+            Ok(Box::new(UnwindOp::new(node.list_expr.clone(), &node.alias, input_op)))
         }
 
         // Join operators

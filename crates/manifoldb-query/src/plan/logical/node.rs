@@ -25,7 +25,7 @@ use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{ExpandNode, PathScanNode};
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SortNode, UnionNode, ValuesNode,
+    SortNode, UnionNode, UnwindNode, ValuesNode,
 };
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
@@ -105,6 +105,14 @@ pub enum LogicalPlan {
     Alias {
         /// The alias name.
         alias: String,
+        /// The input plan.
+        input: Box<LogicalPlan>,
+    },
+
+    /// Unwind (expand a list into rows).
+    Unwind {
+        /// The unwind node.
+        node: UnwindNode,
         /// The input plan.
         input: Box<LogicalPlan>,
     },
@@ -322,6 +330,12 @@ impl LogicalPlan {
         Self::Alias { alias: name.into(), input: Box::new(self) }
     }
 
+    /// Adds an unwind operation to this plan.
+    #[must_use]
+    pub fn unwind(self, list_expr: LogicalExpr, alias: impl Into<String>) -> Self {
+        Self::Unwind { node: UnwindNode::new(list_expr, alias), input: Box::new(self) }
+    }
+
     /// Creates an inner join with another plan.
     #[must_use]
     pub fn inner_join(self, right: LogicalPlan, on: LogicalExpr) -> Self {
@@ -393,6 +407,7 @@ impl LogicalPlan {
             | Self::Limit { input, .. }
             | Self::Distinct { input, .. }
             | Self::Alias { input, .. }
+            | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
             | Self::PathScan { input, .. }
             | Self::AnnSearch { input, .. }
@@ -436,6 +451,7 @@ impl LogicalPlan {
             | Self::Limit { input, .. }
             | Self::Distinct { input, .. }
             | Self::Alias { input, .. }
+            | Self::Unwind { input, .. }
             | Self::Expand { input, .. }
             | Self::PathScan { input, .. }
             | Self::AnnSearch { input, .. }
@@ -484,6 +500,7 @@ impl LogicalPlan {
             Self::Limit { .. } => "Limit",
             Self::Distinct { .. } => "Distinct",
             Self::Alias { .. } => "Alias",
+            Self::Unwind { .. } => "Unwind",
             Self::Join { .. } => "Join",
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
@@ -626,6 +643,9 @@ impl DisplayTree<'_> {
             }
             LogicalPlan::Alias { alias, .. } => {
                 write!(f, "Alias: {alias}")?;
+            }
+            LogicalPlan::Unwind { node, .. } => {
+                write!(f, "Unwind: {} AS {}", node.list_expr, node.alias)?;
             }
             LogicalPlan::Join { node, .. } => {
                 write!(f, "Join: {} JOIN", node.join_type)?;

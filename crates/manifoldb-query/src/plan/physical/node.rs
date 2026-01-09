@@ -172,6 +172,15 @@ pub enum PhysicalPlan {
         inputs: Vec<PhysicalPlan>,
     },
 
+    // ========== Unwind Operation ==========
+    /// Unwind operator (expands list to rows).
+    Unwind {
+        /// Unwind configuration.
+        node: UnwindExecNode,
+        /// Input plan.
+        input: Box<PhysicalPlan>,
+    },
+
     // ========== Vector Operations ==========
     /// HNSW-based approximate nearest neighbor search (boxed node - 184 bytes unboxed).
     HnswSearch {
@@ -1496,6 +1505,38 @@ impl GraphPathScanExecNode {
 }
 
 // ============================================================================
+// Unwind Node Type
+// ============================================================================
+
+/// Unwind execution node.
+///
+/// Expands a list expression into multiple rows, one per element.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnwindExecNode {
+    /// The expression that produces a list to unwind.
+    pub list_expr: LogicalExpr,
+    /// The variable name to bind each unwound element to.
+    pub alias: String,
+    /// Estimated cost.
+    pub cost: Cost,
+}
+
+impl UnwindExecNode {
+    /// Creates a new unwind execution node.
+    #[must_use]
+    pub fn new(list_expr: LogicalExpr, alias: impl Into<String>) -> Self {
+        Self { list_expr, alias: alias.into(), cost: Cost::default() }
+    }
+
+    /// Sets the cost estimate.
+    #[must_use]
+    pub const fn with_cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+}
+
+// ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
 
@@ -1527,6 +1568,7 @@ impl PhysicalPlan {
             | Self::HashDistinct { input, .. }
             | Self::HashAggregate { input, .. }
             | Self::SortMergeAggregate { input, .. }
+            | Self::Unwind { input, .. }
             | Self::HnswSearch { input, .. }
             | Self::BruteForceSearch { input, .. }
             | Self::HybridSearch { input, .. }
@@ -1575,6 +1617,7 @@ impl PhysicalPlan {
             | Self::HashDistinct { input, .. }
             | Self::HashAggregate { input, .. }
             | Self::SortMergeAggregate { input, .. }
+            | Self::Unwind { input, .. }
             | Self::HnswSearch { input, .. }
             | Self::BruteForceSearch { input, .. }
             | Self::HybridSearch { input, .. }
@@ -1636,6 +1679,7 @@ impl PhysicalPlan {
             Self::MergeJoin { .. } => "MergeJoin",
             Self::SetOp { .. } => "SetOp",
             Self::Union { .. } => "Union",
+            Self::Unwind { .. } => "Unwind",
             Self::HnswSearch { .. } => "HnswSearch",
             Self::BruteForceSearch { .. } => "BruteForceSearch",
             Self::HybridSearch { .. } => "HybridSearch",
@@ -1674,6 +1718,7 @@ impl PhysicalPlan {
             Self::MergeJoin { node, .. } => node.cost,
             Self::SetOp { cost, .. } => *cost,
             Self::Union { cost, .. } => *cost,
+            Self::Unwind { node, .. } => node.cost,
             Self::HnswSearch { node, .. } => node.cost,
             Self::BruteForceSearch { node, .. } => node.cost,
             Self::HybridSearch { node, .. } => node.cost,
@@ -1904,6 +1949,15 @@ impl DisplayTree<'_> {
                     if *all { " All" } else { "" },
                     inputs.len(),
                     cost.value()
+                )?;
+            }
+            PhysicalPlan::Unwind { node, .. } => {
+                write!(
+                    f,
+                    "Unwind: {} AS {} (cost: {:.2})",
+                    node.list_expr,
+                    node.alias,
+                    node.cost.value()
                 )?;
             }
             PhysicalPlan::HnswSearch { node, .. } => {
