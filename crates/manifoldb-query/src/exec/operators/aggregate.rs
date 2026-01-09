@@ -118,10 +118,13 @@ impl HashAggregateOp {
 
             // Update each aggregate
             for (i, agg_expr) in self.aggregates.iter().enumerate() {
-                if let LogicalExpr::AggregateFunction { func, arg, distinct: _ } = agg_expr {
-                    let is_wildcard = matches!(arg.as_ref(), LogicalExpr::Wildcard);
-                    let arg_value = evaluate_expr(arg, &row)?;
-                    state.accumulators[i].update(func, &arg_value, is_wildcard);
+                if let LogicalExpr::AggregateFunction { func, args, distinct: _ } = agg_expr {
+                    let is_wildcard =
+                        args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                    // Evaluate all arguments
+                    let arg_values: Vec<Value> =
+                        args.iter().map(|a| evaluate_expr(a, &row)).collect::<Result<_, _>>()?;
+                    state.accumulators[i].update(func, &arg_values, is_wildcard);
                 }
             }
         }
@@ -305,10 +308,11 @@ impl SortMergeAggregateOp {
 
     fn update_accumulators(&mut self, row: &Row) -> OperatorResult<()> {
         for (i, agg_expr) in self.aggregates.iter().enumerate() {
-            if let LogicalExpr::AggregateFunction { func, arg, .. } = agg_expr {
-                let is_wildcard = matches!(arg.as_ref(), LogicalExpr::Wildcard);
-                let arg_value = evaluate_expr(arg, row)?;
-                self.accumulators[i].update(func, &arg_value, is_wildcard);
+            if let LogicalExpr::AggregateFunction { func, args, .. } = agg_expr {
+                let is_wildcard = args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                let arg_values: Vec<Value> =
+                    args.iter().map(|a| evaluate_expr(a, row)).collect::<Result<_, _>>()?;
+                self.accumulators[i].update(func, &arg_values, is_wildcard);
             }
         }
         Ok(())
@@ -467,6 +471,12 @@ struct Accumulator {
     sum: f64,
     min: Option<Value>,
     max: Option<Value>,
+    /// Collected values for array_agg.
+    array_values: Vec<Value>,
+    /// Collected strings for string_agg.
+    string_values: Vec<String>,
+    /// Delimiter for string_agg (captured from first row).
+    string_delimiter: Option<String>,
 }
 
 impl Accumulator {
@@ -474,11 +484,14 @@ impl Accumulator {
         Self::default()
     }
 
-    fn update(&mut self, func: &AggregateFunction, value: &Value, is_wildcard: bool) {
+    fn update(&mut self, func: &AggregateFunction, values: &[Value], is_wildcard: bool) {
         // Store the function type on first update
         if self.func.is_none() {
             self.func = Some(*func);
         }
+
+        // Get the primary value (first argument)
+        let value = values.first().unwrap_or(&Value::Null);
 
         // For COUNT(*), always count (even NULLs)
         if matches!(func, AggregateFunction::Count) && is_wildcard {
@@ -524,7 +537,38 @@ impl Accumulator {
                     }
                 });
             }
-            _ => {}
+            AggregateFunction::ArrayAgg => {
+                // Collect values into array (skip NULLs already handled above)
+                self.array_values.push(value.clone());
+            }
+            AggregateFunction::StringAgg => {
+                // Get the delimiter from the second argument (capture on first call)
+                if self.string_delimiter.is_none() {
+                    self.string_delimiter = Some(
+                        values
+                            .get(1)
+                            .map(|v| match v {
+                                Value::String(s) => s.clone(),
+                                _ => ",".to_string(), // Default delimiter
+                            })
+                            .unwrap_or_else(|| ",".to_string()),
+                    );
+                }
+                // Convert value to string and collect
+                let s = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Int(i) => i.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => String::new(),
+                };
+                if !s.is_empty() {
+                    self.string_values.push(s);
+                }
+            }
+            AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => {
+                // Vector aggregates - not implemented yet
+            }
         }
     }
 
@@ -547,7 +591,23 @@ impl Accumulator {
             }
             Some(AggregateFunction::Min) => self.min.clone().unwrap_or(Value::Null),
             Some(AggregateFunction::Max) => self.max.clone().unwrap_or(Value::Null),
-            _ => {
+            Some(AggregateFunction::ArrayAgg) => {
+                if self.array_values.is_empty() {
+                    Value::Null
+                } else {
+                    Value::Array(self.array_values.clone())
+                }
+            }
+            Some(AggregateFunction::StringAgg) => {
+                if self.string_values.is_empty() {
+                    Value::Null
+                } else {
+                    let delimiter = self.string_delimiter.as_deref().unwrap_or(",");
+                    Value::String(self.string_values.join(delimiter))
+                }
+            }
+            Some(AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid) => Value::Null,
+            None => {
                 // Fallback for unknown or unset function type
                 if self.min.is_some() {
                     return self.min.clone().unwrap_or(Value::Null);
@@ -563,10 +623,13 @@ impl Accumulator {
     fn default_for(&self, func: &AggregateFunction) -> Value {
         match func {
             AggregateFunction::Count => Value::Int(0),
-            AggregateFunction::Sum => Value::Null,
-            AggregateFunction::Avg => Value::Null,
-            AggregateFunction::Min | AggregateFunction::Max => Value::Null,
-            _ => Value::Null,
+            AggregateFunction::Sum
+            | AggregateFunction::Avg
+            | AggregateFunction::Min
+            | AggregateFunction::Max => Value::Null,
+            AggregateFunction::ArrayAgg => Value::Null,
+            AggregateFunction::StringAgg => Value::Null,
+            AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => Value::Null,
         }
     }
 }
@@ -816,6 +879,350 @@ mod tests {
         assert_eq!(row.get(1), Some(&Value::Float(20.0))); // AVG = 60/3 = 20
 
         assert!(op.next().unwrap().is_none());
+        op.close().unwrap();
+    }
+
+    // ========== Tests for array_agg ==========
+
+    #[test]
+    fn hash_aggregate_array_agg_basic() {
+        // Test basic array_agg - collects all values into an array
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string()],
+            vec![
+                vec![Value::from("Alice")],
+                vec![Value::from("Bob")],
+                vec![Value::from("Charlie")],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::array_agg(LogicalExpr::column("name"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        // Should be an array with all names
+        if let Value::Array(arr) = result {
+            assert_eq!(arr.len(), 3);
+            assert!(arr.contains(&Value::from("Alice")));
+            assert!(arr.contains(&Value::from("Bob")));
+            assert!(arr.contains(&Value::from("Charlie")));
+        } else {
+            panic!("Expected Array, got {:?}", result);
+        }
+
+        assert!(op.next().unwrap().is_none());
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_array_agg_with_group_by() {
+        // Test array_agg with GROUP BY
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "name".to_string()],
+            vec![
+                vec![Value::from("Engineering"), Value::from("Alice")],
+                vec![Value::from("Engineering"), Value::from("Bob")],
+                vec![Value::from("Sales"), Value::from("Charlie")],
+                vec![Value::from("Engineering"), Value::from("Dave")],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::array_agg(LogicalExpr::column("name"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let names = row.get(1).unwrap();
+
+            if dept == &Value::from("Engineering") {
+                if let Value::Array(arr) = names {
+                    assert_eq!(arr.len(), 3);
+                } else {
+                    panic!("Expected Array");
+                }
+            } else if dept == &Value::from("Sales") {
+                if let Value::Array(arr) = names {
+                    assert_eq!(arr.len(), 1);
+                    assert_eq!(arr[0], Value::from("Charlie"));
+                } else {
+                    panic!("Expected Array");
+                }
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_array_agg_with_nulls() {
+        // Test that array_agg skips NULLs
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string()],
+            vec![vec![Value::from("Alice")], vec![Value::Null], vec![Value::from("Bob")]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::array_agg(LogicalExpr::column("name"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        // Should only have non-NULL values
+        if let Value::Array(arr) = result {
+            assert_eq!(arr.len(), 2);
+            assert!(arr.contains(&Value::from("Alice")));
+            assert!(arr.contains(&Value::from("Bob")));
+        } else {
+            panic!("Expected Array, got {:?}", result);
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_array_agg_integers() {
+        // Test array_agg with integers
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![vec![Value::Int(10)], vec![Value::Int(20)], vec![Value::Int(30)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::array_agg(LogicalExpr::column("n"), false)];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        if let Value::Array(arr) = result {
+            assert_eq!(arr.len(), 3);
+            assert!(arr.contains(&Value::Int(10)));
+            assert!(arr.contains(&Value::Int(20)));
+            assert!(arr.contains(&Value::Int(30)));
+        } else {
+            panic!("Expected Array, got {:?}", result);
+        }
+
+        op.close().unwrap();
+    }
+
+    // ========== Tests for string_agg ==========
+
+    #[test]
+    fn hash_aggregate_string_agg_basic() {
+        // Test basic string_agg with comma delimiter
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string()],
+            vec![
+                vec![Value::from("Alice")],
+                vec![Value::from("Bob")],
+                vec![Value::from("Charlie")],
+            ],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::string_agg(
+            LogicalExpr::column("name"),
+            LogicalExpr::Literal(crate::ast::Literal::String(", ".to_string())),
+            false,
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        if let Value::String(s) = result {
+            // Order is not guaranteed in hash aggregation, so check components
+            let parts: Vec<&str> = s.split(", ").collect();
+            assert_eq!(parts.len(), 3);
+            assert!(parts.contains(&"Alice"));
+            assert!(parts.contains(&"Bob"));
+            assert!(parts.contains(&"Charlie"));
+        } else {
+            panic!("Expected String, got {:?}", result);
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_string_agg_with_group_by() {
+        // Test string_agg with GROUP BY
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "name".to_string()],
+            vec![
+                vec![Value::from("A"), Value::from("Alice")],
+                vec![Value::from("A"), Value::from("Bob")],
+                vec![Value::from("B"), Value::from("Charlie")],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+        let aggregates = vec![LogicalExpr::string_agg(
+            LogicalExpr::column("name"),
+            LogicalExpr::Literal(crate::ast::Literal::String(" | ".to_string())),
+            false,
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let names = row.get(1).unwrap();
+
+            if dept == &Value::from("A") {
+                if let Value::String(s) = names {
+                    // Should contain both Alice and Bob
+                    assert!(s.contains("Alice"));
+                    assert!(s.contains("Bob"));
+                    assert!(s.contains(" | "));
+                } else {
+                    panic!("Expected String");
+                }
+            } else if dept == &Value::from("B") {
+                assert_eq!(names, &Value::from("Charlie"));
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_string_agg_with_nulls() {
+        // Test that string_agg skips NULLs
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["name".to_string()],
+            vec![vec![Value::from("Alice")], vec![Value::Null], vec![Value::from("Bob")]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::string_agg(
+            LogicalExpr::column("name"),
+            LogicalExpr::Literal(crate::ast::Literal::String(", ".to_string())),
+            false,
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        if let Value::String(s) = result {
+            let parts: Vec<&str> = s.split(", ").collect();
+            assert_eq!(parts.len(), 2);
+            assert!(parts.contains(&"Alice"));
+            assert!(parts.contains(&"Bob"));
+        } else {
+            panic!("Expected String, got {:?}", result);
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_string_agg_with_integers() {
+        // Test string_agg with integers (should convert to strings)
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["n".to_string()],
+            vec![vec![Value::Int(1)], vec![Value::Int(2)], vec![Value::Int(3)]],
+        ));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::string_agg(
+            LogicalExpr::column("n"),
+            LogicalExpr::Literal(crate::ast::Literal::String("-".to_string())),
+            false,
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        if let Value::String(s) = result {
+            let parts: Vec<&str> = s.split('-').collect();
+            assert_eq!(parts.len(), 3);
+            assert!(parts.contains(&"1"));
+            assert!(parts.contains(&"2"));
+            assert!(parts.contains(&"3"));
+        } else {
+            panic!("Expected String, got {:?}", result);
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn hash_aggregate_string_agg_empty() {
+        // Test string_agg with all NULLs returns NULL
+        let input: BoxedOperator =
+            Box::new(ValuesOp::with_columns(vec!["name".to_string()], vec![vec![Value::Null]]));
+
+        let group_by = vec![];
+        let aggregates = vec![LogicalExpr::string_agg(
+            LogicalExpr::column("name"),
+            LogicalExpr::Literal(crate::ast::Literal::String(", ".to_string())),
+            false,
+        )];
+
+        let mut op = HashAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let row = op.next().unwrap().unwrap();
+        let result = row.get(0).unwrap();
+
+        assert_eq!(result, &Value::Null);
+
         op.close().unwrap();
     }
 }

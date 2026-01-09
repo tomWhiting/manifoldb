@@ -514,8 +514,10 @@ impl PredicatePushdown {
                     self.collect_columns_recursive(arg, columns);
                 }
             }
-            LogicalExpr::AggregateFunction { arg, .. } => {
-                self.collect_columns_recursive(arg, columns);
+            LogicalExpr::AggregateFunction { args, .. } => {
+                for arg in args {
+                    self.collect_columns_recursive(arg, columns);
+                }
             }
             LogicalExpr::Case { operand, when_clauses, else_result } => {
                 if let Some(op) = operand {

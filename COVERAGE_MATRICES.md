@@ -468,8 +468,8 @@ These feature groups can be implemented independently:
 | MIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | MAX | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | FILTER clause | ✓ | ✓ | ✓ | | | | Needs exec |
-| array_agg | ✓ | ✓ | | | | | Needs impl |
-| string_agg | ✓ | ✓ | | | | | Needs impl |
+| array_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| string_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | json_agg | ✓ | ✓ | | | | | Needs impl |
 | jsonb_agg | ✓ | ✓ | | | | | Needs impl |
 | bool_and | | | | | | | Not impl |

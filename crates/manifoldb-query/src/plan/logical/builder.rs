@@ -340,15 +340,19 @@ impl PlanBuilder {
                     func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
                 if let Some(agg_func) = self.parse_aggregate_function(&name) {
-                    let arg = if func.args.is_empty() {
-                        LogicalExpr::wildcard()
+                    // Build all arguments for the aggregate function
+                    let args: Vec<LogicalExpr> = if func.args.is_empty() {
+                        vec![LogicalExpr::wildcard()]
                     } else {
-                        self.build_expr(&func.args[0])?
+                        func.args
+                            .iter()
+                            .map(|a| self.build_expr(a))
+                            .collect::<PlanResult<Vec<_>>>()?
                     };
 
                     aggregates.push(LogicalExpr::AggregateFunction {
                         func: agg_func,
-                        arg: Box::new(arg),
+                        args,
                         distinct: func.distinct,
                     });
                 } else {
@@ -1862,15 +1866,18 @@ impl PlanBuilder {
 
                 // Check if it's an aggregate function
                 if let Some(agg_func) = self.parse_aggregate_function(&name) {
-                    let arg = if func.args.is_empty() {
-                        LogicalExpr::Wildcard
+                    let args: Vec<LogicalExpr> = if func.args.is_empty() {
+                        vec![LogicalExpr::Wildcard]
                     } else {
-                        self.build_expr(&func.args[0])?
+                        func.args
+                            .iter()
+                            .map(|a| self.build_expr(a))
+                            .collect::<PlanResult<Vec<_>>>()?
                     };
 
                     return Ok(LogicalExpr::AggregateFunction {
                         func: agg_func,
-                        arg: Box::new(arg),
+                        args,
                         distinct: func.distinct,
                     });
                 }

@@ -67,8 +67,10 @@ pub enum LogicalExpr {
     AggregateFunction {
         /// Aggregate function.
         func: AggregateFunction,
-        /// Expression to aggregate.
-        arg: Box<LogicalExpr>,
+        /// Arguments to the aggregate function.
+        /// For most aggregates this is a single expression.
+        /// For string_agg, this includes the expression and delimiter.
+        args: Vec<LogicalExpr>,
         /// Whether DISTINCT is specified.
         distinct: bool,
     },
@@ -591,38 +593,46 @@ impl LogicalExpr {
     /// Creates a COUNT aggregate.
     #[must_use]
     pub fn count(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Count, arg: Box::new(expr), distinct }
+        Self::AggregateFunction { func: AggregateFunction::Count, args: vec![expr], distinct }
     }
 
     /// Creates a SUM aggregate.
     #[must_use]
     pub fn sum(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Sum, arg: Box::new(expr), distinct }
+        Self::AggregateFunction { func: AggregateFunction::Sum, args: vec![expr], distinct }
     }
 
     /// Creates an AVG aggregate.
     #[must_use]
     pub fn avg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Avg, arg: Box::new(expr), distinct }
+        Self::AggregateFunction { func: AggregateFunction::Avg, args: vec![expr], distinct }
     }
 
     /// Creates a MIN aggregate.
     #[must_use]
     pub fn min(expr: Self) -> Self {
-        Self::AggregateFunction {
-            func: AggregateFunction::Min,
-            arg: Box::new(expr),
-            distinct: false,
-        }
+        Self::AggregateFunction { func: AggregateFunction::Min, args: vec![expr], distinct: false }
     }
 
     /// Creates a MAX aggregate.
     #[must_use]
     pub fn max(expr: Self) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::Max, args: vec![expr], distinct: false }
+    }
+
+    /// Creates an ARRAY_AGG aggregate.
+    #[must_use]
+    pub fn array_agg(expr: Self, distinct: bool) -> Self {
+        Self::AggregateFunction { func: AggregateFunction::ArrayAgg, args: vec![expr], distinct }
+    }
+
+    /// Creates a STRING_AGG aggregate.
+    #[must_use]
+    pub fn string_agg(expr: Self, delimiter: Self, distinct: bool) -> Self {
         Self::AggregateFunction {
-            func: AggregateFunction::Max,
-            arg: Box::new(expr),
-            distinct: false,
+            func: AggregateFunction::StringAgg,
+            args: vec![expr, delimiter],
+            distinct,
         }
     }
 
@@ -1016,12 +1026,18 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::AggregateFunction { func, arg, distinct } => {
+            Self::AggregateFunction { func, args, distinct } => {
                 write!(f, "{func}(")?;
                 if *distinct {
                     write!(f, "DISTINCT ")?;
                 }
-                write!(f, "{arg})")
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                write!(f, ")")
             }
             Self::Cast { expr, data_type } => write!(f, "CAST({expr} AS {data_type:?})"),
             Self::Case { operand, when_clauses, else_result } => {
