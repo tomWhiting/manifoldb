@@ -1506,12 +1506,26 @@ fn convert_set_variable(
     // Convert value
     let set_value = if value.is_empty() {
         None // SET x TO DEFAULT
-    } else if value.len() == 1 {
-        // Safe: we just checked that value.len() == 1, so there's at least one element
-        let first_expr = value.into_iter().next().expect("checked len == 1");
-        Some(SetValue::Single(convert_expr(first_expr)?))
     } else {
-        Some(SetValue::List(value.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?))
+        // Consume the vector and get an iterator
+        let mut iter = value.into_iter();
+        let first_expr = iter.next().ok_or_else(|| {
+            ParseError::MissingClause("value in SET statement".to_string())
+        })?;
+
+        // Check if there are more values (multi-value list)
+        let remaining: Vec<_> = iter.collect();
+        if remaining.is_empty() {
+            // Single value
+            Some(SetValue::Single(convert_expr(first_expr)?))
+        } else {
+            // Multiple values - collect all including the first
+            let mut all_values = vec![convert_expr(first_expr)?];
+            for expr in remaining {
+                all_values.push(convert_expr(expr)?);
+            }
+            Some(SetValue::List(all_values))
+        }
     };
 
     Ok(SetSessionStatement { name, value: set_value, local })
