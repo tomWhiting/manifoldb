@@ -73,7 +73,9 @@ CALL/YIELD Procedures
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
 ├── Logical Plan: ✅ PathScan node exists
-└── Needs: Physical operator implementation
+├── Physical Operator: ✅ GraphExpandOp with ExpandLength
+├── Execution: ✅ BFS traversal with cycle detection
+└── Status: ✅ Complete with integration tests
 ```
 
 ### Parallel Work Streams
@@ -84,7 +86,7 @@ These feature groups can be implemented independently:
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
 3. **Window Functions** - Isolated SQL feature
 4. **Graph Algorithms** - CALL/YIELD infrastructure
-5. **Variable-Length Paths** - Physical operator work
+5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---
 
@@ -551,11 +553,11 @@ These feature groups can be implemented independently:
 | Multiple edge types | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Edge properties | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | **Variable-Length Paths** |
-| [*] (any length) | ✓ | ✓ | ✓ | | | | Needs exec |
-| [*n] (exact) | ✓ | ✓ | ✓ | | | | Needs exec |
-| [*m..n] (range) | ✓ | ✓ | ✓ | | | | Needs exec |
-| [*..n] (up to) | ✓ | ✓ | ✓ | | | | Needs exec |
-| [*n..] (at least) | ✓ | ✓ | ✓ | | | | Needs exec |
+| [*] (any length) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| [*n] (exact) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| [*m..n] (range) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| [*..n] (up to) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| [*n..] (at least) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | **OPTIONAL MATCH** |
 | Basic OPTIONAL MATCH | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | **WHERE** |
@@ -896,7 +898,7 @@ These feature groups can be implemented independently:
 
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
-| Reading Clauses | 25 | 12 | 8 | 5 |
+| Reading Clauses | 25 | 17 | 3 | 5 |
 | Writing Clauses | 15 | 0 | 0 | 15 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |

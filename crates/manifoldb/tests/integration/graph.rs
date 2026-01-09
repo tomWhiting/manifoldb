@@ -851,3 +851,492 @@ fn test_optional_match_null_handling_concept() {
     // - Regular MATCH: Carol would not appear in results
     // - OPTIONAL MATCH: Carol appears with NULL for post variables
 }
+
+// ============================================================================
+// Variable-Length Path Tests
+// ============================================================================
+
+/// Creates a test graph for variable-length path tests:
+/// A -> B -> C -> D (linear chain)
+/// With KNOWS relationship type
+fn create_linear_chain_for_paths(db: &Database) -> Vec<EntityId> {
+    let mut tx = db.begin().expect("failed to begin");
+
+    let a = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Alice")
+        .with_property("depth", 0i64);
+    let b = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Bob")
+        .with_property("depth", 1i64);
+    let c = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "Carol")
+        .with_property("depth", 2i64);
+    let d = tx
+        .create_entity()
+        .expect("failed")
+        .with_label("Person")
+        .with_property("name", "David")
+        .with_property("depth", 3i64);
+
+    tx.put_entity(&a).expect("failed");
+    tx.put_entity(&b).expect("failed");
+    tx.put_entity(&c).expect("failed");
+    tx.put_entity(&d).expect("failed");
+
+    // A -> B -> C -> D chain
+    let e1 = tx.create_edge(a.id, b.id, "KNOWS").expect("failed");
+    let e2 = tx.create_edge(b.id, c.id, "KNOWS").expect("failed");
+    let e3 = tx.create_edge(c.id, d.id, "KNOWS").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+    tx.put_edge(&e3).expect("failed");
+
+    tx.commit().expect("failed");
+
+    vec![a.id, b.id, c.id, d.id]
+}
+
+/// Creates a friends-of-friends graph for testing:
+/// Alice -> Bob, Charlie (direct friends)
+/// Bob -> David, Eve (Bob's friends = Alice's friends-of-friends)
+/// Charlie -> Frank (Charlie's friend = Alice's friend-of-friend)
+fn create_friends_of_friends_graph(db: &Database) -> Vec<EntityId> {
+    let mut tx = db.begin().expect("failed to begin");
+
+    let alice =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "Alice");
+    let bob = tx.create_entity().expect("failed").with_label("Person").with_property("name", "Bob");
+    let charlie =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "Charlie");
+    let david =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "David");
+    let eve = tx.create_entity().expect("failed").with_label("Person").with_property("name", "Eve");
+    let frank =
+        tx.create_entity().expect("failed").with_label("Person").with_property("name", "Frank");
+
+    tx.put_entity(&alice).expect("failed");
+    tx.put_entity(&bob).expect("failed");
+    tx.put_entity(&charlie).expect("failed");
+    tx.put_entity(&david).expect("failed");
+    tx.put_entity(&eve).expect("failed");
+    tx.put_entity(&frank).expect("failed");
+
+    // Alice's direct friends
+    let e1 = tx.create_edge(alice.id, bob.id, "FRIEND").expect("failed");
+    let e2 = tx.create_edge(alice.id, charlie.id, "FRIEND").expect("failed");
+
+    // Bob's friends (Alice's friends-of-friends)
+    let e3 = tx.create_edge(bob.id, david.id, "FRIEND").expect("failed");
+    let e4 = tx.create_edge(bob.id, eve.id, "FRIEND").expect("failed");
+
+    // Charlie's friend
+    let e5 = tx.create_edge(charlie.id, frank.id, "FRIEND").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+    tx.put_edge(&e3).expect("failed");
+    tx.put_edge(&e4).expect("failed");
+    tx.put_edge(&e5).expect("failed");
+
+    tx.commit().expect("failed");
+
+    vec![alice.id, bob.id, charlie.id, david.id, eve.id, frank.id]
+}
+
+/// Creates a graph with a cycle for testing cycle detection:
+/// A -> B -> C -> A (triangle)
+fn create_cycle_graph(db: &Database) -> Vec<EntityId> {
+    let mut tx = db.begin().expect("failed to begin");
+
+    let a = tx.create_entity().expect("failed").with_label("Node").with_property("name", "A");
+    let b = tx.create_entity().expect("failed").with_label("Node").with_property("name", "B");
+    let c = tx.create_entity().expect("failed").with_label("Node").with_property("name", "C");
+
+    tx.put_entity(&a).expect("failed");
+    tx.put_entity(&b).expect("failed");
+    tx.put_entity(&c).expect("failed");
+
+    let e1 = tx.create_edge(a.id, b.id, "EDGE").expect("failed");
+    let e2 = tx.create_edge(b.id, c.id, "EDGE").expect("failed");
+    let e3 = tx.create_edge(c.id, a.id, "EDGE").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+    tx.put_edge(&e3).expect("failed");
+
+    tx.commit().expect("failed");
+
+    vec![a.id, b.id, c.id]
+}
+
+#[test]
+fn test_variable_length_path_single_hop() {
+    // Test [*1..1] - equivalent to single hop
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From A (depth 0), should reach only B (depth 1) with [*1..1]
+    let a_edges = tx.get_outgoing_edges(nodes[0]).expect("failed");
+    assert_eq!(a_edges.len(), 1);
+    assert_eq!(a_edges[0].target, nodes[1]);
+}
+
+#[test]
+fn test_variable_length_path_exact_depth() {
+    // Test [*2] - exact depth of 2
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From A, 2 hops should reach C
+    let a_edges = tx.get_outgoing_edges(nodes[0]).expect("failed");
+    assert_eq!(a_edges.len(), 1);
+    let b_id = a_edges[0].target;
+
+    let b_edges = tx.get_outgoing_edges(b_id).expect("failed");
+    assert_eq!(b_edges.len(), 1);
+    assert_eq!(b_edges[0].target, nodes[2]); // C
+}
+
+#[test]
+fn test_variable_length_path_range() {
+    // Test [*1..3] - depths 1 to 3
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // BFS traversal from A should reach B, C, D (depths 1, 2, 3)
+    let mut reachable = HashSet::new();
+    let mut queue = vec![nodes[0]];
+    let mut visited = HashSet::new();
+    let mut depth_map: std::collections::HashMap<EntityId, usize> =
+        std::collections::HashMap::new();
+
+    visited.insert(nodes[0]);
+    depth_map.insert(nodes[0], 0);
+
+    while !queue.is_empty() {
+        let mut next_queue = Vec::new();
+        for node in queue {
+            let edges = tx.get_outgoing_edges(node).expect("failed");
+            for edge in edges {
+                if !visited.contains(&edge.target) {
+                    visited.insert(edge.target);
+                    let new_depth = depth_map[&node] + 1;
+                    depth_map.insert(edge.target, new_depth);
+
+                    if new_depth >= 1 && new_depth <= 3 {
+                        reachable.insert(edge.target);
+                    }
+
+                    if new_depth < 3 {
+                        next_queue.push(edge.target);
+                    }
+                }
+            }
+        }
+        queue = next_queue;
+    }
+
+    // Should have B, C, D
+    assert_eq!(reachable.len(), 3);
+    assert!(reachable.contains(&nodes[1])); // B
+    assert!(reachable.contains(&nodes[2])); // C
+    assert!(reachable.contains(&nodes[3])); // D
+}
+
+#[test]
+fn test_friends_of_friends() {
+    // Test [*2..2] for friends-of-friends (exactly 2 hops away)
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_friends_of_friends_graph(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+    let alice = nodes[0];
+    let david = nodes[3];
+    let eve = nodes[4];
+    let frank = nodes[5];
+
+    // BFS from Alice to find friends-of-friends (depth 2)
+    let mut friends_of_friends = HashSet::new();
+
+    // First hop: get Alice's direct friends
+    let alice_friends = tx.get_outgoing_edges(alice).expect("failed");
+    assert_eq!(alice_friends.len(), 2); // Bob and Charlie
+
+    // Second hop: get friends of Alice's friends
+    for friend in &alice_friends {
+        let fof = tx.get_outgoing_edges(friend.target).expect("failed");
+        for f in fof {
+            friends_of_friends.insert(f.target);
+        }
+    }
+
+    // Alice's friends-of-friends should be David, Eve, Frank
+    assert_eq!(friends_of_friends.len(), 3);
+    assert!(friends_of_friends.contains(&david));
+    assert!(friends_of_friends.contains(&eve));
+    assert!(friends_of_friends.contains(&frank));
+}
+
+#[test]
+fn test_variable_length_path_min_only() {
+    // Test [*2..] - minimum depth 2, no maximum
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From A with min depth 2, should reach C and D (not B)
+    let mut reachable = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut queue = vec![(nodes[0], 0usize)];
+    visited.insert(nodes[0]);
+
+    while let Some((node, depth)) = queue.pop() {
+        let edges = tx.get_outgoing_edges(node).expect("failed");
+        for edge in edges {
+            if !visited.contains(&edge.target) {
+                visited.insert(edge.target);
+                let new_depth = depth + 1;
+
+                // Only add if depth >= 2
+                if new_depth >= 2 {
+                    reachable.insert(edge.target);
+                }
+
+                queue.push((edge.target, new_depth));
+            }
+        }
+    }
+
+    // Should reach C (depth 2) and D (depth 3), but not B (depth 1)
+    assert_eq!(reachable.len(), 2);
+    assert!(!reachable.contains(&nodes[1])); // B - excluded (depth 1)
+    assert!(reachable.contains(&nodes[2])); // C
+    assert!(reachable.contains(&nodes[3])); // D
+}
+
+#[test]
+fn test_variable_length_path_max_only() {
+    // Test [*..2] - maximum depth 2, minimum 1
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From A with max depth 2, should reach B and C (not D)
+    let mut reachable = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut queue = vec![(nodes[0], 0usize)];
+    visited.insert(nodes[0]);
+
+    while let Some((node, depth)) = queue.pop() {
+        if depth >= 2 {
+            continue; // Don't expand beyond max depth
+        }
+
+        let edges = tx.get_outgoing_edges(node).expect("failed");
+        for edge in edges {
+            if !visited.contains(&edge.target) {
+                visited.insert(edge.target);
+                let new_depth = depth + 1;
+
+                // Only add if depth >= 1 and <= 2
+                if new_depth >= 1 && new_depth <= 2 {
+                    reachable.insert(edge.target);
+                }
+
+                queue.push((edge.target, new_depth));
+            }
+        }
+    }
+
+    // Should reach B (depth 1) and C (depth 2), but not D (depth 3)
+    assert_eq!(reachable.len(), 2);
+    assert!(reachable.contains(&nodes[1])); // B
+    assert!(reachable.contains(&nodes[2])); // C
+    assert!(!reachable.contains(&nodes[3])); // D - excluded (depth 3)
+}
+
+#[test]
+fn test_variable_length_path_unbounded() {
+    // Test [*] - any depth (typically 1..)
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From A with [*], should reach all nodes B, C, D
+    let mut reachable = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut queue = vec![nodes[0]];
+    visited.insert(nodes[0]);
+
+    while let Some(node) = queue.pop() {
+        let edges = tx.get_outgoing_edges(node).expect("failed");
+        for edge in edges {
+            if !visited.contains(&edge.target) {
+                visited.insert(edge.target);
+                reachable.insert(edge.target);
+                queue.push(edge.target);
+            }
+        }
+    }
+
+    // Should reach all nodes
+    assert_eq!(reachable.len(), 3);
+    assert!(reachable.contains(&nodes[1])); // B
+    assert!(reachable.contains(&nodes[2])); // C
+    assert!(reachable.contains(&nodes[3])); // D
+}
+
+#[test]
+fn test_variable_length_path_cycle_detection() {
+    // Test that cycles don't cause infinite loops
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_cycle_graph(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // BFS from A with [*] should visit each node exactly once
+    let mut visited = HashSet::new();
+    let mut queue = vec![nodes[0]];
+    visited.insert(nodes[0]);
+
+    while let Some(node) = queue.pop() {
+        let edges = tx.get_outgoing_edges(node).expect("failed");
+        for edge in edges {
+            if !visited.contains(&edge.target) {
+                visited.insert(edge.target);
+                queue.push(edge.target);
+            }
+        }
+    }
+
+    // Should visit all 3 nodes exactly once (A, B, C)
+    assert_eq!(visited.len(), 3);
+    assert!(visited.contains(&nodes[0])); // A
+    assert!(visited.contains(&nodes[1])); // B
+    assert!(visited.contains(&nodes[2])); // C
+}
+
+#[test]
+fn test_variable_length_path_edge_type_filter() {
+    // Test [:TYPE*] - variable length with edge type filter
+    let db = Database::in_memory().expect("failed to create db");
+
+    let mut tx = db.begin().expect("failed to begin");
+
+    // Create graph with mixed edge types
+    let a = tx.create_entity().expect("failed").with_label("Person").with_property("name", "A");
+    let b = tx.create_entity().expect("failed").with_label("Person").with_property("name", "B");
+    let c = tx.create_entity().expect("failed").with_label("Person").with_property("name", "C");
+
+    tx.put_entity(&a).expect("failed");
+    tx.put_entity(&b).expect("failed");
+    tx.put_entity(&c).expect("failed");
+
+    // A -[FRIEND]-> B -[WORKS_WITH]-> C
+    let e1 = tx.create_edge(a.id, b.id, "FRIEND").expect("failed");
+    let e2 = tx.create_edge(b.id, c.id, "WORKS_WITH").expect("failed");
+
+    tx.put_edge(&e1).expect("failed");
+    tx.put_edge(&e2).expect("failed");
+
+    tx.commit().expect("failed");
+
+    // With [:FRIEND*], from A should only reach B (not C since B->C is WORKS_WITH)
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Filter by FRIEND edge type
+    let a_friends = tx.get_outgoing_edges(a.id).expect("failed");
+    let friend_edges: Vec<_> =
+        a_friends.iter().filter(|e| e.edge_type.as_str() == "FRIEND").collect();
+
+    assert_eq!(friend_edges.len(), 1);
+    assert_eq!(friend_edges[0].target, b.id);
+
+    // B's FRIEND edges (should be empty since B->C is WORKS_WITH)
+    let b_edges = tx.get_outgoing_edges(b.id).expect("failed");
+    let b_friend_edges: Vec<_> =
+        b_edges.iter().filter(|e| e.edge_type.as_str() == "FRIEND").collect();
+
+    assert!(b_friend_edges.is_empty());
+}
+
+#[test]
+fn test_variable_length_path_direction_outgoing() {
+    // Test outgoing direction: (a)-[:KNOWS*1..2]->(x)
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Outgoing from B should reach C and D
+    let b_outgoing = tx.get_outgoing_edges(nodes[1]).expect("failed");
+    assert_eq!(b_outgoing.len(), 1);
+    assert_eq!(b_outgoing[0].target, nodes[2]); // C
+
+    let c_outgoing = tx.get_outgoing_edges(nodes[2]).expect("failed");
+    assert_eq!(c_outgoing.len(), 1);
+    assert_eq!(c_outgoing[0].target, nodes[3]); // D
+}
+
+#[test]
+fn test_variable_length_path_direction_incoming() {
+    // Test incoming direction: (a)<-[:KNOWS*1..2]-(x)
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // Incoming to C should reach B and A
+    let c_incoming = tx.get_incoming_edges(nodes[2]).expect("failed");
+    assert_eq!(c_incoming.len(), 1);
+    assert_eq!(c_incoming[0].source, nodes[1]); // B
+
+    let b_incoming = tx.get_incoming_edges(nodes[1]).expect("failed");
+    assert_eq!(b_incoming.len(), 1);
+    assert_eq!(b_incoming[0].source, nodes[0]); // A
+}
+
+#[test]
+fn test_variable_length_path_direction_both() {
+    // Test both directions: (a)-[:KNOWS*1..2]-(x)
+    let db = Database::in_memory().expect("failed to create db");
+    let nodes = create_linear_chain_for_paths(&db);
+
+    let tx = db.begin_read().expect("failed to begin");
+
+    // From B with both directions should reach A (incoming) and C (outgoing)
+    let b_outgoing = tx.get_outgoing_edges(nodes[1]).expect("failed");
+    let b_incoming = tx.get_incoming_edges(nodes[1]).expect("failed");
+
+    // Combine both directions
+    let mut neighbors = HashSet::new();
+    for edge in b_outgoing {
+        neighbors.insert(edge.target);
+    }
+    for edge in b_incoming {
+        neighbors.insert(edge.source);
+    }
+
+    assert_eq!(neighbors.len(), 2);
+    assert!(neighbors.contains(&nodes[0])); // A (incoming)
+    assert!(neighbors.contains(&nodes[2])); // C (outgoing)
+}
