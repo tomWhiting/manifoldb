@@ -837,6 +837,62 @@ pub trait GraphMutator: Send + Sync {
     ///
     /// If the edge doesn't exist or the property doesn't exist, this is a no-op.
     fn remove_edge_property(&self, edge_id: EdgeId, property: &str) -> GraphAccessResult<()>;
+
+    /// Delete a node from the graph.
+    ///
+    /// For regular DELETE, this will fail if the node has any connected edges.
+    /// Use `delete_node_detach` to delete a node and all its edges.
+    ///
+    /// Returns `true` if the node was deleted, `false` if it didn't exist.
+    fn delete_node(&self, id: EntityId) -> GraphAccessResult<DeleteResult>;
+
+    /// Delete a node and all its connected edges (DETACH DELETE).
+    ///
+    /// This first deletes all incoming and outgoing edges, then deletes the node.
+    ///
+    /// Returns the delete result with counts of deleted nodes and edges.
+    fn delete_node_detach(&self, id: EntityId) -> GraphAccessResult<DeleteResult>;
+
+    /// Delete an edge from the graph.
+    ///
+    /// Returns `true` if the edge was deleted, `false` if it didn't exist.
+    fn delete_edge(&self, id: EdgeId) -> GraphAccessResult<bool>;
+
+    /// Check if a node has any connected edges.
+    ///
+    /// Used by regular DELETE to check if the node can be deleted.
+    fn node_has_edges(&self, id: EntityId) -> GraphAccessResult<bool>;
+}
+
+/// Result of a delete operation.
+#[derive(Debug, Clone, Default)]
+pub struct DeleteResult {
+    /// Number of nodes deleted.
+    pub nodes_deleted: usize,
+    /// Number of edges deleted.
+    pub edges_deleted: usize,
+}
+
+impl DeleteResult {
+    /// Create a new empty delete result.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a result indicating one node was deleted.
+    pub fn node_deleted() -> Self {
+        Self { nodes_deleted: 1, edges_deleted: 0 }
+    }
+
+    /// Create a result for a detach delete operation.
+    pub fn detach_deleted(edges_deleted: usize) -> Self {
+        Self { nodes_deleted: 1, edges_deleted }
+    }
+
+    /// Create a result indicating nothing was deleted (entity not found).
+    pub fn not_found() -> Self {
+        Self { nodes_deleted: 0, edges_deleted: 0 }
+    }
 }
 
 /// A null implementation of `GraphMutator` that always returns an error.
@@ -883,6 +939,22 @@ impl GraphMutator for NullGraphMutator {
     }
 
     fn remove_edge_property(&self, _edge_id: EdgeId, _property: &str) -> GraphAccessResult<()> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn delete_node(&self, _id: EntityId) -> GraphAccessResult<DeleteResult> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn delete_node_detach(&self, _id: EntityId) -> GraphAccessResult<DeleteResult> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn delete_edge(&self, _id: EdgeId) -> GraphAccessResult<bool> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn node_has_edges(&self, _id: EntityId) -> GraphAccessResult<bool> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -1099,6 +1171,81 @@ where
         }
 
         Ok(())
+    }
+
+    fn delete_node(&self, id: EntityId) -> GraphAccessResult<DeleteResult> {
+        // First check if node has any connected edges
+        if self.node_has_edges(id)? {
+            return Err(GraphAccessError::Internal(format!(
+                "cannot delete node {id:?} because it still has relationships. \
+                 Use DETACH DELETE to delete the node and its relationships."
+            )));
+        }
+
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let deleted = manifoldb_graph::store::NodeStore::delete(&mut *tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        if deleted {
+            Ok(DeleteResult::node_deleted())
+        } else {
+            Ok(DeleteResult::not_found())
+        }
+    }
+
+    fn delete_node_detach(&self, id: EntityId) -> GraphAccessResult<DeleteResult> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // First delete all connected edges
+        let edges_deleted =
+            manifoldb_graph::store::EdgeStore::delete_edges_for_entity(&mut *tx, id)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        // Then delete the node
+        let node_deleted = manifoldb_graph::store::NodeStore::delete(&mut *tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        if node_deleted {
+            Ok(DeleteResult::detach_deleted(edges_deleted))
+        } else {
+            // Node didn't exist, but we may have deleted some edges
+            // This shouldn't happen in practice, but handle it gracefully
+            Ok(DeleteResult { nodes_deleted: 0, edges_deleted })
+        }
+    }
+
+    fn delete_edge(&self, id: EdgeId) -> GraphAccessResult<bool> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        manifoldb_graph::store::EdgeStore::delete(&mut *tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+
+    fn node_has_edges(&self, id: EntityId) -> GraphAccessResult<bool> {
+        let tx = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire read lock: {e}")))?;
+
+        // Check for outgoing edges
+        let outgoing = manifoldb_graph::store::EdgeStore::get_outgoing_ids(&*tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+        if !outgoing.is_empty() {
+            return Ok(true);
+        }
+
+        // Check for incoming edges
+        let incoming = manifoldb_graph::store::EdgeStore::get_incoming_ids(&*tx, id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        Ok(!incoming.is_empty())
     }
 }
 

@@ -319,7 +319,7 @@ pub fn is_cypher_dml(sql: &str) -> bool {
     {
         return true;
     }
-    // Other Cypher DML keywords
+    // Other Cypher DML keywords at the start
     sql_upper.starts_with("MERGE")
         || sql_upper.starts_with("DELETE")
         || sql_upper.starts_with("DETACH DELETE")

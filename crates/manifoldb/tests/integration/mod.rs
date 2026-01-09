@@ -12,6 +12,7 @@ pub mod concurrency;
 pub mod correctness;
 pub mod crud;
 pub mod cypher_create;
+pub mod cypher_delete;
 pub mod cypher_remove;
 pub mod ddl;
 pub mod e2e;

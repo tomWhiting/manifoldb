@@ -69,10 +69,10 @@ Cypher Writing Clauses
 ├── CREATE: ✅ GraphCreate logical node + operator + EXECUTION complete (Jan 2026)
 ├── MERGE: ✅ GraphMerge node + operator complete
 ├── SET: ✅ GraphSet logical node + physical plan + EXECUTION complete (Jan 2026)
-├── DELETE: ✅ GraphDelete logical node + physical plan complete (Jan 2026)
+├── DELETE: ✅ GraphDelete logical + physical + EXECUTION complete (Jan 2026)
 ├── REMOVE: ✅ GraphRemove logical node + operator + EXECUTION complete (Jan 2026)
 ├── FOREACH: ✅ GraphForeach logical + physical plan complete (Jan 2026)
-└── Status: ✅ CREATE, SET, REMOVE fully executable, others parsing + planning complete
+└── Status: ✅ CREATE, SET, DELETE, REMOVE fully executable; MERGE, FOREACH parsing + planning complete
 
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
@@ -646,8 +646,8 @@ These feature groups can be implemented independently:
 | REMOVE property | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | REMOVE label | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | **DELETE** |
-| DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
-| DETACH DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
+| DELETE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| DETACH DELETE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | **FOREACH** |
 | FOREACH | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning (Jan 2026) |
 
