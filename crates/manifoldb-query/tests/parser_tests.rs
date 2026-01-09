@@ -2253,7 +2253,11 @@ mod builtin_procedures {
 
         // Path finding
         assert!(registry.contains("algo.shortestPath"));
+        assert!(registry.contains("algo.dijkstra"));
+        assert!(registry.contains("algo.astar"));
+        assert!(registry.contains("algo.allShortestPaths"));
+        assert!(registry.contains("algo.sssp"));
 
-        assert_eq!(registry.len(), 6);
+        assert_eq!(registry.len(), 10);
     }
 }

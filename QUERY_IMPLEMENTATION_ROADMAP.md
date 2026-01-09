@@ -398,9 +398,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 **Goal:** Expose path algorithms as procedures.
 
 - [x] `algo.shortestPath(start, end, config) YIELD path, cost` ✅ Jan 2026
-- [ ] `algo.allShortestPaths(start, end, config) YIELD path, cost`
-- [ ] `algo.dijkstra(start, end, weightProperty) YIELD path, cost`
-- [ ] `algo.astar(start, end, heuristic, weightProperty) YIELD path, cost`
+- [x] `algo.allShortestPaths(start, end, config) YIELD path, cost` ✅ Jan 2026
+- [x] `algo.dijkstra(start, end, weightProperty) YIELD path, cost` ✅ Jan 2026
+- [x] `algo.astar(start, end, heuristic, weightProperty) YIELD path, cost` ✅ Jan 2026
+- [x] `algo.sssp(start, weightProperty) YIELD nodeId, distance` ✅ Jan 2026
 - [ ] `algo.bfs(start, config) YIELD node, depth`
 - [ ] `algo.dfs(start, config) YIELD node, depth`
 
