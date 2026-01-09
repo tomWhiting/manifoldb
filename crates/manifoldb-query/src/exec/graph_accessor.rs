@@ -123,23 +123,27 @@ impl Default for ShortestPathConfig {
 
 impl ShortestPathConfig {
     /// Create a new shortest path configuration.
+    #[must_use]
     pub fn new(direction: Direction) -> Self {
         Self { direction, ..Default::default() }
     }
 
     /// Set edge type filters.
+    #[must_use]
     pub fn with_edge_types(mut self, types: Vec<EdgeType>) -> Self {
         self.edge_types = types;
         self
     }
 
     /// Set maximum path depth.
+    #[must_use]
     pub fn with_max_depth(mut self, max: usize) -> Self {
         self.max_depth = Some(max);
         self
     }
 
     /// Set whether to find all shortest paths.
+    #[must_use]
     pub fn with_find_all(mut self, find_all: bool) -> Self {
         self.find_all = find_all;
         self
