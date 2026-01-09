@@ -9,9 +9,9 @@
 use manifoldb_core::{Edge, EdgeType, Entity, EntityId};
 use manifoldb_graph::store::{EdgeStore, IdGenerator, NodeStore};
 use manifoldb_graph::traversal::{
-    AllShortestPaths, Dijkstra, Direction, Expand, ExpandAll, PathPattern, PathStep,
-    PatternBuilder, ShortestPath, SingleSourceDijkstra, TraversalConfig, TraversalFilter,
-    TraversalIterator,
+    AllShortestPaths, BfsTraversal, DfsTraversal, Dijkstra, Direction, Expand, ExpandAll,
+    PathPattern, PathStep, PatternBuilder, ShortestPath, SingleSourceDijkstra, TraversalConfig,
+    TraversalFilter, TraversalIterator,
 };
 use manifoldb_storage::backends::RedbEngine;
 use manifoldb_storage::{StorageEngine, Transaction};
@@ -1386,4 +1386,391 @@ fn single_source_dijkstra_with_max_weight() {
     assert!(distances.contains_key(&c));
     assert!(!distances.contains_key(&d)); // D requires 4.0
     assert!(!distances.contains_key(&e)); // E requires 5.0
+}
+
+// ============================================================================
+// BfsTraversal tests - Level-by-level traversal
+// ============================================================================
+
+#[test]
+fn bfs_traversal_linear_graph() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = BfsTraversal::new(a, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit all nodes including start
+    assert_eq!(results.len(), 4);
+
+    // Check depths
+    let a_result = results.iter().find(|r| r.node == a).unwrap();
+    assert_eq!(a_result.depth, 0);
+
+    let b_result = results.iter().find(|r| r.node == b).unwrap();
+    assert_eq!(b_result.depth, 1);
+
+    let c_result = results.iter().find(|r| r.node == c).unwrap();
+    assert_eq!(c_result.depth, 2);
+
+    let d_result = results.iter().find(|r| r.node == d).unwrap();
+    assert_eq!(d_result.depth, 3);
+}
+
+#[test]
+fn bfs_traversal_with_max_depth() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = BfsTraversal::new(a, Direction::Outgoing).with_max_depth(2).execute(&tx).unwrap();
+
+    // Should only visit nodes up to depth 2 (a, b, c)
+    assert_eq!(results.len(), 3);
+    let ids: Vec<_> = results.iter().map(|r| r.node).collect();
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+    assert!(!ids.contains(&d));
+}
+
+#[test]
+fn bfs_traversal_star_graph() {
+    let engine = create_test_engine();
+    let (center, leaves) = create_star_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = BfsTraversal::new(center, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit center (depth 0) and all leaves (depth 1)
+    assert_eq!(results.len(), 6);
+
+    // Check all leaves are at depth 1
+    for leaf in &leaves {
+        let result = results.iter().find(|r| r.node == *leaf).unwrap();
+        assert_eq!(result.depth, 1);
+    }
+}
+
+#[test]
+fn bfs_traversal_with_path_tracking() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        BfsTraversal::new(a, Direction::Outgoing).with_path_tracking().execute(&tx).unwrap();
+
+    // Check path to d
+    let d_result = results.iter().find(|r| r.node == d).unwrap();
+    assert_eq!(d_result.path, vec![a, b, c, d]);
+}
+
+#[test]
+fn bfs_traversal_handles_cycles() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_cyclic_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = BfsTraversal::new(a, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit each node exactly once despite cycle
+    assert_eq!(results.len(), 3);
+    let ids: Vec<_> = results.iter().map(|r| r.node).collect();
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+}
+
+#[test]
+fn bfs_traversal_with_edge_type() {
+    let engine = create_test_engine();
+    let (a, b, _c) = create_multi_type_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        BfsTraversal::new(a, Direction::Outgoing).with_edge_type("FRIEND").execute(&tx).unwrap();
+
+    // Should only find B via FRIEND edge
+    assert_eq!(results.len(), 2); // a and b
+    let ids: Vec<_> = results.iter().map(|r| r.node).collect();
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+}
+
+#[test]
+fn bfs_traversal_with_limit() {
+    let engine = create_test_engine();
+    let (center, _) = create_star_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        BfsTraversal::new(center, Direction::Outgoing).with_limit(3).execute(&tx).unwrap();
+
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn bfs_traversal_direction_both() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_bidirectional_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = BfsTraversal::new(a, Direction::Both).execute(&tx).unwrap();
+
+    // Should visit all nodes
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn bfs_traversal_direction_incoming() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    // Starting from d, going backwards
+    let results = BfsTraversal::new(d, Direction::Incoming).execute(&tx).unwrap();
+
+    assert_eq!(results.len(), 4);
+
+    // d should be at depth 0
+    let d_result = results.iter().find(|r| r.node == d).unwrap();
+    assert_eq!(d_result.depth, 0);
+
+    // a should be at depth 3
+    let a_result = results.iter().find(|r| r.node == a).unwrap();
+    assert_eq!(a_result.depth, 3);
+}
+
+// ============================================================================
+// DfsTraversal tests - Branch-first exploration
+// ============================================================================
+
+#[test]
+fn dfs_traversal_linear_graph() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(a, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit all nodes
+    assert_eq!(results.len(), 4);
+
+    // In DFS, the first result should be the start node
+    assert_eq!(results[0].node, a);
+    assert_eq!(results[0].depth, 0);
+}
+
+#[test]
+fn dfs_traversal_with_max_depth() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(a, Direction::Outgoing).with_max_depth(2).execute(&tx).unwrap();
+
+    // Should only visit nodes up to depth 2
+    assert_eq!(results.len(), 3);
+    let ids: Vec<_> = results.iter().map(|r| r.node).collect();
+    assert!(ids.contains(&a));
+    assert!(ids.contains(&b));
+    assert!(ids.contains(&c));
+    assert!(!ids.contains(&d));
+}
+
+#[test]
+fn dfs_traversal_star_graph() {
+    let engine = create_test_engine();
+    let (center, leaves) = create_star_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(center, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit center and all leaves
+    assert_eq!(results.len(), 6);
+
+    // All leaves should be at depth 1
+    for leaf in &leaves {
+        let result = results.iter().find(|r| r.node == *leaf).unwrap();
+        assert_eq!(result.depth, 1);
+    }
+}
+
+#[test]
+fn dfs_traversal_with_path_tracking() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        DfsTraversal::new(a, Direction::Outgoing).with_path_tracking().execute(&tx).unwrap();
+
+    // Check path to d
+    let d_result = results.iter().find(|r| r.node == d).unwrap();
+    assert_eq!(d_result.path, vec![a, b, c, d]);
+}
+
+#[test]
+fn dfs_traversal_handles_cycles() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_cyclic_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(a, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit each node exactly once despite cycle
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn dfs_traversal_with_edge_type() {
+    let engine = create_test_engine();
+    let (a, b, _c) = create_multi_type_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        DfsTraversal::new(a, Direction::Outgoing).with_edge_type("FRIEND").execute(&tx).unwrap();
+
+    // Should only find a and b via FRIEND edge
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn dfs_traversal_with_limit() {
+    let engine = create_test_engine();
+    let (center, _) = create_star_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results =
+        DfsTraversal::new(center, Direction::Outgoing).with_limit(3).execute(&tx).unwrap();
+
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn dfs_traversal_direction_both() {
+    let engine = create_test_engine();
+    let (a, b, c) = create_bidirectional_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(a, Direction::Both).execute(&tx).unwrap();
+
+    // Should visit all nodes
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn dfs_traversal_direction_incoming() {
+    let engine = create_test_engine();
+    let (a, b, c, d) = create_linear_graph(&engine);
+
+    let tx = engine.begin_read().unwrap();
+    // Starting from d, going backwards
+    let results = DfsTraversal::new(d, Direction::Incoming).execute(&tx).unwrap();
+
+    assert_eq!(results.len(), 4);
+}
+
+#[test]
+fn dfs_traversal_depth_first_order() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create a tree:
+    //       a
+    //      /|\
+    //     b c d
+    //    /|
+    //   e f
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let c = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let d = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let e = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let f = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "CHILD", |id| {
+        Edge::new(id, a.id, b.id, "CHILD")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, a.id, c.id, "CHILD", |id| {
+        Edge::new(id, a.id, c.id, "CHILD")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, a.id, d.id, "CHILD", |id| {
+        Edge::new(id, a.id, d.id, "CHILD")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, b.id, e.id, "CHILD", |id| {
+        Edge::new(id, b.id, e.id, "CHILD")
+    })
+    .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, b.id, f.id, "CHILD", |id| {
+        Edge::new(id, b.id, f.id, "CHILD")
+    })
+    .unwrap();
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+    let results = DfsTraversal::new(a.id, Direction::Outgoing).execute(&tx).unwrap();
+
+    // Should visit all 6 nodes
+    assert_eq!(results.len(), 6);
+
+    // First should be a at depth 0
+    assert_eq!(results[0].node, a.id);
+    assert_eq!(results[0].depth, 0);
+
+    // e and f should be at depth 2
+    let e_result = results.iter().find(|r| r.node == e.id).unwrap();
+    assert_eq!(e_result.depth, 2);
+    let f_result = results.iter().find(|r| r.node == f.id).unwrap();
+    assert_eq!(f_result.depth, 2);
+}
+
+#[test]
+fn bfs_vs_dfs_order() {
+    let engine = create_test_engine();
+    let id_gen = IdGenerator::new();
+    let mut tx = engine.begin_write().unwrap();
+
+    // Create a simple tree where BFS and DFS order differs:
+    //       a
+    //      / \
+    //     b   c
+    //    /
+    //   d
+    let a = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let b = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let c = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+    let d = NodeStore::create(&mut tx, &id_gen, |id| Entity::new(id)).unwrap();
+
+    EdgeStore::create(&mut tx, &id_gen, a.id, b.id, "EDGE", |id| Edge::new(id, a.id, b.id, "EDGE"))
+        .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, a.id, c.id, "EDGE", |id| Edge::new(id, a.id, c.id, "EDGE"))
+        .unwrap();
+    EdgeStore::create(&mut tx, &id_gen, b.id, d.id, "EDGE", |id| Edge::new(id, b.id, d.id, "EDGE"))
+        .unwrap();
+
+    tx.commit().unwrap();
+
+    let tx = engine.begin_read().unwrap();
+
+    // BFS should visit level by level: a (depth 0), b, c (depth 1), d (depth 2)
+    let bfs_results = BfsTraversal::new(a.id, Direction::Outgoing).execute(&tx).unwrap();
+    assert_eq!(bfs_results.len(), 4);
+
+    // In BFS, d should be visited after both b and c
+    let bfs_nodes: Vec<_> = bfs_results.iter().map(|r| r.node).collect();
+    let d_pos = bfs_nodes.iter().position(|&n| n == d.id).unwrap();
+    let b_pos = bfs_nodes.iter().position(|&n| n == b.id).unwrap();
+    let c_pos = bfs_nodes.iter().position(|&n| n == c.id).unwrap();
+    assert!(d_pos > b_pos && d_pos > c_pos);
+
+    // DFS should go deep first
+    let dfs_results = DfsTraversal::new(a.id, Direction::Outgoing).execute(&tx).unwrap();
+    assert_eq!(dfs_results.len(), 4);
 }

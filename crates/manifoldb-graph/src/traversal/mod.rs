@@ -11,6 +11,8 @@
 //!
 //! - [`Expand`] - Single-hop traversal from a node to its neighbors
 //! - [`ExpandAll`] - Multi-hop traversal with depth control
+//! - [`BfsTraversal`] - Breadth-first search traversal (level by level)
+//! - [`DfsTraversal`] - Depth-first search traversal (branch exploration)
 //! - [`ShortestPath`] - BFS-based unweighted shortest path finding
 //! - [`Dijkstra`] - Weighted shortest path using Dijkstra's algorithm
 //! - [`AStar`] - Goal-directed weighted shortest path with heuristics
@@ -79,6 +81,8 @@
 //! ```
 
 mod astar;
+mod bfs;
+mod dfs;
 mod dijkstra;
 mod expand;
 mod iterator;
@@ -88,6 +92,8 @@ mod shortest_path;
 pub use astar::{
     AStar, ConstantHeuristic, EuclideanHeuristic, Heuristic, ManhattanHeuristic, ZeroHeuristic,
 };
+pub use bfs::{BfsResult, BfsTraversal};
+pub use dfs::{DfsResult, DfsTraversal};
 pub use dijkstra::{Dijkstra, SingleSourceDijkstra, WeightConfig, WeightedPathResult};
 pub use expand::{Expand, ExpandAll, ExpandResult};
 pub use iterator::{
