@@ -39,7 +39,8 @@ pub use cost::{Cost, CostModel};
 pub use node::{
     BruteForceSearchNode, CallSubqueryExecNode, FilterExecNode, FullScanNode, GraphExpandExecNode,
     HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode, HybridSearchNode,
-    IndexRangeScanNode, IndexScanNode, JoinOrder, LimitExecNode, MergeJoinNode, NestedLoopJoinNode,
-    PhysicalPlan, PhysicalScoreCombinationMethod, ProjectExecNode, ShortestPathExecNode,
-    SortExecNode, SortMergeAggregateNode, WindowExecNode, WindowFunctionExpr,
+    IndexNestedLoopJoinNode, IndexRangeScanNode, IndexScanNode, JoinOrder, LimitExecNode,
+    MergeJoinNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
+    ProjectExecNode, ShortestPathExecNode, SortExecNode, SortMergeAggregateNode, SortMergeJoinNode,
+    WindowExecNode, WindowFunctionExpr,
 };
