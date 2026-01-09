@@ -22,12 +22,12 @@ use std::collections::HashMap;
 use crate::ast::{
     self, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
     CreateNodeRef, CreatePattern, CreateTableStatement, DeleteGraphStatement, DeleteStatement,
-    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
-    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
-    MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern, PathPattern,
-    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
-    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
-    WindowFunction, YieldItem,
+    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr,
+    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
+    InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
+    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, RemoveGraphStatement,
+    RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction, SetGraphStatement,
+    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -41,8 +41,8 @@ use super::expr::{
 };
 use super::graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
-    GraphDeleteNode, GraphMergeNode, GraphRemoveAction, GraphRemoveNode, GraphSetAction,
-    GraphSetNode, MergePatternSpec,
+    GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
+    GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec,
 };
 use super::node::LogicalPlan;
 use super::procedure::{ProcedureCallNode, YieldColumn};
@@ -110,6 +110,7 @@ impl PlanBuilder {
             Statement::Set(set) => self.build_graph_set(set),
             Statement::DeleteGraph(delete) => self.build_graph_delete(delete),
             Statement::Remove(remove) => self.build_graph_remove(remove),
+            Statement::Foreach(foreach) => self.build_graph_foreach(foreach),
         }
     }
 
@@ -1467,6 +1468,175 @@ impl PlanBuilder {
         }
 
         Ok(LogicalPlan::GraphRemove { node: Box::new(graph_remove), input: Box::new(plan) })
+    }
+
+    /// Builds a logical plan from a Cypher FOREACH statement.
+    fn build_graph_foreach(&mut self, foreach: &ForeachStatement) -> PlanResult<LogicalPlan> {
+        // Build MATCH clause as input (or start with single empty row)
+        let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]]));
+
+        if let Some(match_clause) = &foreach.match_clause {
+            plan = self.build_graph_pattern(plan, match_clause)?;
+        }
+
+        // Add WHERE clause if present
+        if let Some(where_expr) = &foreach.where_clause {
+            let filter = self.build_expr(where_expr)?;
+            plan = plan.filter(filter);
+        }
+
+        // Build the list expression
+        let list_expr = self.build_expr(&foreach.list_expr)?;
+
+        // Build the FOREACH actions
+        let actions = self.build_foreach_actions(&foreach.actions)?;
+
+        let foreach_node = GraphForeachNode::new(foreach.variable.name.clone(), list_expr, actions);
+
+        Ok(LogicalPlan::GraphForeach { node: Box::new(foreach_node), input: Box::new(plan) })
+    }
+
+    /// Builds FOREACH actions from AST ForeachActions.
+    fn build_foreach_actions(
+        &mut self,
+        actions: &[AstForeachAction],
+    ) -> PlanResult<Vec<GraphForeachAction>> {
+        let mut result = Vec::new();
+
+        for action in actions {
+            match action {
+                AstForeachAction::Set(set_action) => {
+                    let graph_set = match set_action {
+                        AstSetAction::Property { variable, property, value } => {
+                            let val = self.build_expr(value)?;
+                            GraphSetAction::Property {
+                                variable: variable.name.clone(),
+                                property: property.name.clone(),
+                                value: val,
+                            }
+                        }
+                        AstSetAction::Label { variable, label } => GraphSetAction::Label {
+                            variable: variable.name.clone(),
+                            label: label.name.clone(),
+                        },
+                        AstSetAction::Properties { .. } => {
+                            return Err(PlanError::Unsupported(
+                                "SET node = properties not yet supported in FOREACH".to_string(),
+                            ));
+                        }
+                    };
+                    result.push(GraphForeachAction::Set(graph_set));
+                }
+                AstForeachAction::Create(pattern) => {
+                    let create_node = self.build_create_pattern_to_node(pattern)?;
+                    result.push(GraphForeachAction::Create(create_node));
+                }
+                AstForeachAction::Merge(pattern) => {
+                    let merge_node = self.build_merge_pattern_to_node(pattern)?;
+                    result.push(GraphForeachAction::Merge(merge_node));
+                }
+                AstForeachAction::Delete { variables, detach } => {
+                    let var_names: Vec<String> =
+                        variables.iter().map(|id| id.name.clone()).collect();
+                    let delete_node = if *detach {
+                        GraphDeleteNode::detach(var_names)
+                    } else {
+                        GraphDeleteNode::new(var_names)
+                    };
+                    result.push(GraphForeachAction::Delete(delete_node));
+                }
+                AstForeachAction::Remove(remove_item) => {
+                    let remove_action = match remove_item {
+                        RemoveItem::Property { variable, property } => {
+                            GraphRemoveAction::Property {
+                                variable: variable.name.clone(),
+                                property: property.name.clone(),
+                            }
+                        }
+                        RemoveItem::Label { variable, label } => GraphRemoveAction::Label {
+                            variable: variable.name.clone(),
+                            label: label.name.clone(),
+                        },
+                    };
+                    result.push(GraphForeachAction::Remove(remove_action));
+                }
+                AstForeachAction::Foreach(nested) => {
+                    // Build nested FOREACH
+                    let nested_list_expr = self.build_expr(&nested.list_expr)?;
+                    let nested_actions = self.build_foreach_actions(&nested.actions)?;
+                    let nested_node = GraphForeachNode::new(
+                        nested.variable.name.clone(),
+                        nested_list_expr,
+                        nested_actions,
+                    );
+                    result.push(GraphForeachAction::Foreach(Box::new(nested_node)));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Builds a CREATE node from a CreatePattern.
+    fn build_create_pattern_to_node(
+        &mut self,
+        pattern: &CreatePattern,
+    ) -> PlanResult<GraphCreateNode> {
+        let mut create_node = GraphCreateNode::new();
+
+        match pattern {
+            CreatePattern::Node { variable, labels, properties } => {
+                let props: Vec<(String, LogicalExpr)> = properties
+                    .iter()
+                    .map(|(k, v)| Ok((k.name.clone(), self.build_expr(v)?)))
+                    .collect::<PlanResult<Vec<_>>>()?;
+
+                let node_spec = CreateNodeSpec::new(
+                    variable.as_ref().map(|id| id.name.clone()),
+                    labels.iter().map(|l| l.name.clone()).collect(),
+                )
+                .with_properties(props);
+                create_node = create_node.with_node(node_spec);
+            }
+            CreatePattern::Path { .. } => {
+                // For paths, we would need to build relationships too
+                return Err(PlanError::Unsupported(
+                    "Path patterns in FOREACH CREATE not yet supported".to_string(),
+                ));
+            }
+            CreatePattern::Relationship { .. } => {
+                return Err(PlanError::Unsupported(
+                    "Relationship patterns in FOREACH CREATE not yet supported".to_string(),
+                ));
+            }
+        }
+
+        Ok(create_node)
+    }
+
+    /// Builds a MERGE node from a MergePattern.
+    fn build_merge_pattern_to_node(
+        &mut self,
+        pattern: &MergePattern,
+    ) -> PlanResult<GraphMergeNode> {
+        match pattern {
+            MergePattern::Node { variable, labels, match_properties } => {
+                let props: Vec<(String, LogicalExpr)> = match_properties
+                    .iter()
+                    .map(|(k, v)| Ok((k.name.clone(), self.build_expr(v)?)))
+                    .collect::<PlanResult<Vec<_>>>()?;
+
+                let pattern_spec = MergePatternSpec::Node {
+                    variable: variable.name.clone(),
+                    labels: labels.iter().map(|l| l.name.clone()).collect(),
+                    match_properties: props,
+                };
+                Ok(GraphMergeNode::new(pattern_spec))
+            }
+            MergePattern::Relationship { .. } => Err(PlanError::Unsupported(
+                "Relationship patterns in FOREACH MERGE not yet supported".to_string(),
+            )),
+        }
     }
 
     /// Builds return items from AST ReturnItems.

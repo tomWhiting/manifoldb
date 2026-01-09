@@ -21,8 +21,9 @@ use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode, GraphMergeNode,
-    GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
+    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode,
+    GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr,
+    ProcedureCallNode, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -343,6 +344,14 @@ pub enum PhysicalPlan {
     GraphRemove {
         /// The REMOVE node configuration.
         node: Box<GraphRemoveNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<PhysicalPlan>,
+    },
+
+    /// Cypher FOREACH operation.
+    GraphForeach {
+        /// The FOREACH node configuration.
+        node: Box<GraphForeachNode>,
         /// Input plan (from MATCH clause).
         input: Box<PhysicalPlan>,
     },
@@ -1812,7 +1821,8 @@ impl PhysicalPlan {
             | Self::Insert { input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
-            | Self::GraphRemove { input, .. } => vec![input.as_ref()],
+            | Self::GraphRemove { input, .. }
+            | Self::GraphForeach { input, .. } => vec![input.as_ref()],
 
             // Binary nodes
             Self::NestedLoopJoin { left, right, .. }
@@ -1873,7 +1883,8 @@ impl PhysicalPlan {
             | Self::Insert { input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
-            | Self::GraphRemove { input, .. } => vec![input.as_mut()],
+            | Self::GraphRemove { input, .. }
+            | Self::GraphForeach { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
             Self::NestedLoopJoin { left, right, .. }
@@ -1959,6 +1970,7 @@ impl PhysicalPlan {
             Self::GraphSet { .. } => "GraphSet",
             Self::GraphDelete { .. } => "GraphDelete",
             Self::GraphRemove { .. } => "GraphRemove",
+            Self::GraphForeach { .. } => "GraphForeach",
             Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
@@ -2008,7 +2020,8 @@ impl PhysicalPlan {
             | Self::GraphMerge { .. }
             | Self::GraphSet { .. }
             | Self::GraphDelete { .. }
-            | Self::GraphRemove { .. } => Cost::default(),
+            | Self::GraphRemove { .. }
+            | Self::GraphForeach { .. } => Cost::default(),
         }
     }
 
@@ -2436,6 +2449,15 @@ impl DisplayTree<'_> {
                 if !node.returning.is_empty() {
                     write!(f, " RETURN {} items", node.returning.len())?;
                 }
+            }
+            PhysicalPlan::GraphForeach { node, .. } => {
+                write!(
+                    f,
+                    "GraphForeach: {} IN {} ({} actions)",
+                    node.variable,
+                    node.list_expr,
+                    node.actions.len()
+                )?;
             }
             PhysicalPlan::ProcedureCall(node) => {
                 write!(f, "ProcedureCall: {}", node.procedure_name)?;

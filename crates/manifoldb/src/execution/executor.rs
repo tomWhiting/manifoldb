@@ -1537,7 +1537,8 @@ fn execute_logical_plan<T: Transaction>(
         | LogicalPlan::GraphMerge { .. }
         | LogicalPlan::GraphSet { .. }
         | LogicalPlan::GraphDelete { .. }
-        | LogicalPlan::GraphRemove { .. } => Err(Error::Execution(
+        | LogicalPlan::GraphRemove { .. }
+        | LogicalPlan::GraphForeach { .. } => Err(Error::Execution(
             "Graph DML operations should be executed via execute_statement, not execute_logical_plan"
                 .to_string(),
         )),

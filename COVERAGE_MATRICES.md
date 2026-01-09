@@ -71,6 +71,7 @@ Cypher Writing Clauses
 ├── SET: ✅ GraphSet logical node + physical plan complete (Jan 2026)
 ├── DELETE: ✅ GraphDelete logical node + physical plan complete (Jan 2026)
 ├── REMOVE: ✅ GraphRemove logical node + physical plan complete (Jan 2026)
+├── FOREACH: ✅ GraphForeach logical + physical plan complete (Jan 2026)
 └── Status: ✅ Parsing + planning complete, execution TBD
 
 CALL/YIELD Procedures
@@ -621,7 +622,7 @@ These feature groups can be implemented independently:
 | DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | DETACH DELETE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning |
 | **FOREACH** |
-| FOREACH | | | | | | | Not implemented |
+| FOREACH | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl, parsing+planning (Jan 2026) |
 
 ## 2.3 Projecting Clauses
 
@@ -932,7 +933,7 @@ These feature groups can be implemented independently:
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | Reading Clauses | 25 | 17 | 3 | 5 |
-| Writing Clauses | 15 | 5 | 0 | 10 |
+| Writing Clauses | 15 | 6 | 0 | 9 |
 | Projecting Clauses | 15 | 10 | 3 | 2 |
 | Operators | 25 | 20 | 5 | 0 |
 | Expressions | 10 | 5 | 0 | 5 |

@@ -424,6 +424,10 @@ impl PhysicalPlanner {
                 let input_plan = Box::new(self.plan(input));
                 PhysicalPlan::GraphRemove { node: node.clone(), input: input_plan }
             }
+            LogicalPlan::GraphForeach { node, input } => {
+                let input_plan = Box::new(self.plan(input));
+                PhysicalPlan::GraphForeach { node: node.clone(), input: input_plan }
+            }
             LogicalPlan::ProcedureCall(node) => PhysicalPlan::ProcedureCall(node.clone()),
         }
     }

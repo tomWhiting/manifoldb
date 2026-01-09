@@ -374,6 +374,9 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         LogicalPlan::GraphRemove { input, .. } => {
             validate_plan(input)?;
         }
+        LogicalPlan::GraphForeach { input, .. } => {
+            validate_plan(input)?;
+        }
 
         LogicalPlan::ProcedureCall(node) => {
             if node.procedure_name.is_empty() {

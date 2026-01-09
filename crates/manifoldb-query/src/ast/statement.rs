@@ -46,6 +46,8 @@ pub enum Statement {
     DeleteGraph(Box<DeleteGraphStatement>),
     /// Cypher REMOVE statement for removing properties/labels.
     Remove(Box<RemoveGraphStatement>),
+    /// Cypher FOREACH statement for iterating over lists.
+    Foreach(Box<ForeachStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
 }
@@ -1869,6 +1871,153 @@ impl RemoveGraphStatement {
     #[must_use]
     pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
         self.return_clause = items;
+        self
+    }
+}
+
+// ============================================================================
+// Cypher FOREACH Statement
+// ============================================================================
+
+/// An action that can be performed inside a FOREACH clause.
+///
+/// FOREACH supports a subset of Cypher mutation operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForeachAction {
+    /// SET action: SET n.prop = value or SET n:Label
+    Set(SetAction),
+    /// CREATE action: CREATE (n:Label {props})
+    Create(CreatePattern),
+    /// MERGE action: MERGE (n:Label {props})
+    Merge(MergePattern),
+    /// DELETE action: DELETE n or DETACH DELETE n
+    Delete {
+        /// Variables to delete.
+        variables: Vec<Identifier>,
+        /// Whether this is a DETACH DELETE.
+        detach: bool,
+    },
+    /// REMOVE action: REMOVE n.prop or REMOVE n:Label
+    Remove(RemoveItem),
+    /// Nested FOREACH
+    Foreach(Box<ForeachStatement>),
+}
+
+impl ForeachAction {
+    /// Creates a SET property action.
+    #[must_use]
+    pub fn set_property(
+        variable: impl Into<Identifier>,
+        property: impl Into<Identifier>,
+        value: Expr,
+    ) -> Self {
+        Self::Set(SetAction::property(variable, property, value))
+    }
+
+    /// Creates a SET label action.
+    #[must_use]
+    pub fn set_label(variable: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
+        Self::Set(SetAction::label(variable, label))
+    }
+
+    /// Creates a DELETE action.
+    #[must_use]
+    pub fn delete(variables: Vec<Identifier>) -> Self {
+        Self::Delete { variables, detach: false }
+    }
+
+    /// Creates a DETACH DELETE action.
+    #[must_use]
+    pub fn detach_delete(variables: Vec<Identifier>) -> Self {
+        Self::Delete { variables, detach: true }
+    }
+
+    /// Creates a REMOVE property action.
+    #[must_use]
+    pub fn remove_property(
+        variable: impl Into<Identifier>,
+        property: impl Into<Identifier>,
+    ) -> Self {
+        Self::Remove(RemoveItem::property(variable, property))
+    }
+
+    /// Creates a REMOVE label action.
+    #[must_use]
+    pub fn remove_label(variable: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
+        Self::Remove(RemoveItem::label(variable, label))
+    }
+}
+
+/// A Cypher FOREACH statement for iterating over lists and performing mutations.
+///
+/// FOREACH iterates over a list expression and executes mutation operations
+/// for each element. The variable is bound to each element in turn.
+///
+/// # Examples
+///
+/// Set a property on all matched nodes:
+/// ```text
+/// MATCH (n:Person)
+/// FOREACH (x IN n.friends | SET x.contacted = true)
+/// ```
+///
+/// Create nodes from a list:
+/// ```text
+/// FOREACH (name IN ['Alice', 'Bob', 'Carol'] |
+///     CREATE (n:Person {name: name})
+/// )
+/// ```
+///
+/// Nested FOREACH:
+/// ```text
+/// FOREACH (i IN range(0, 10) |
+///     FOREACH (j IN range(0, 10) |
+///         CREATE (n:Cell {x: i, y: j})
+///     )
+/// )
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeachStatement {
+    /// Optional preceding MATCH clause to bind variables.
+    pub match_clause: Option<GraphPattern>,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// The iteration variable bound to each list element.
+    pub variable: Identifier,
+    /// The list expression to iterate over.
+    pub list_expr: Expr,
+    /// Actions to perform for each element.
+    pub actions: Vec<ForeachAction>,
+}
+
+impl ForeachStatement {
+    /// Creates a new FOREACH statement.
+    #[must_use]
+    pub fn new(
+        variable: impl Into<Identifier>,
+        list_expr: Expr,
+        actions: Vec<ForeachAction>,
+    ) -> Self {
+        Self {
+            match_clause: None,
+            where_clause: None,
+            variable: variable.into(),
+            list_expr,
+            actions,
+        }
+    }
+
+    /// Adds a MATCH clause to this FOREACH statement.
+    #[must_use]
+    pub fn with_match(mut self, pattern: GraphPattern) -> Self {
+        self.match_clause = Some(pattern);
+        self
+    }
+
+    /// Adds a WHERE clause to this FOREACH statement.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
         self
     }
 }

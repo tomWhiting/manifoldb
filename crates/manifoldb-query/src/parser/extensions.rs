@@ -48,11 +48,12 @@
 use crate::ast::{
     BinaryOp, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateNodeRef,
     CreatePathStep, CreatePattern, DataType, DeleteGraphStatement, DistanceMetric,
-    DropCollectionStatement, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
-    Identifier, MatchStatement, MergeGraphStatement, MergePattern, NodePattern, OrderByExpr,
-    ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition, QualifiedName,
-    RemoveGraphStatement, RemoveItem, ReturnItem, SelectStatement, SetAction, SetGraphStatement,
-    ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec, YieldItem,
+    DropCollectionStatement, EdgeDirection, EdgeLength, EdgePattern, Expr, ForeachAction,
+    ForeachStatement, GraphPattern, Identifier, MatchStatement, MergeGraphStatement, MergePattern,
+    NodePattern, OrderByExpr, ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition,
+    QualifiedName, RemoveGraphStatement, RemoveItem, ReturnItem, SelectStatement, SetAction,
+    SetGraphStatement, ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
+    YieldItem,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -76,6 +77,12 @@ impl ExtendedParser {
     pub fn parse(input: &str) -> ParseResult<Vec<Statement>> {
         if input.trim().is_empty() {
             return Err(ParseError::EmptyQuery);
+        }
+
+        // Check for Cypher-style FOREACH statement (before other MATCH-based checks)
+        // Must come first since MATCH ... FOREACH would otherwise match is_standalone_match
+        if Self::is_cypher_foreach(input) {
+            return Self::parse_cypher_foreach(input);
         }
 
         // Check for standalone MATCH statement (Cypher-style)
@@ -291,6 +298,32 @@ impl ExtendedParser {
 
         // Must start with MATCH and contain REMOVE
         upper.starts_with("MATCH") && upper.contains(" REMOVE ")
+    }
+
+    /// Checks if the input is a Cypher-style FOREACH statement.
+    ///
+    /// FOREACH can appear standalone or after MATCH.
+    fn is_cypher_foreach(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+
+        // Check for standalone FOREACH
+        if upper.starts_with("FOREACH") {
+            let after_foreach = input.trim()[7..].trim_start();
+            // Must be followed by '(' for the variable/list expression
+            return after_foreach.starts_with('(');
+        }
+
+        // Check for MATCH ... FOREACH pattern
+        if upper.starts_with("MATCH") && upper.contains("FOREACH") {
+            if let Some(pos) = Self::find_keyword_pos(&upper, "FOREACH") {
+                let after_foreach = &input.trim()[pos + 7..].trim_start();
+                if after_foreach.starts_with('(') {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Parses a DROP COLLECTION statement.
@@ -1450,6 +1483,450 @@ impl ExtendedParser {
         }
 
         Ok(items)
+    }
+
+    /// Parses a Cypher-style FOREACH statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// FOREACH (variable IN list_expr | action1 action2 ...)
+    /// MATCH (n:Label) WHERE condition FOREACH (x IN n.list | SET x.prop = value)
+    /// ```
+    ///
+    /// Actions inside FOREACH can be: SET, CREATE, MERGE, DELETE, REMOVE, or nested FOREACH.
+    fn parse_cypher_foreach(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        let foreach_pos = Self::find_keyword_pos(&upper, "FOREACH")
+            .ok_or_else(|| ParseError::InvalidPattern("expected FOREACH keyword".to_string()))?;
+
+        // Parse optional MATCH ... WHERE before FOREACH
+        let (match_clause, where_clause) = if foreach_pos > 0 && upper.starts_with("MATCH") {
+            let where_pos = Self::find_keyword_pos(&upper[..foreach_pos], "WHERE");
+            let match_end = where_pos.unwrap_or(foreach_pos);
+            let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+            let match_pattern = Self::parse_graph_pattern(pattern_str)?;
+
+            let wc = if let Some(wp) = where_pos {
+                let where_content = &input[wp + 5..foreach_pos]; // +5 for "WHERE"
+                Some(Self::parse_where_expression(where_content.trim())?)
+            } else {
+                None
+            };
+
+            (Some(match_pattern), wc)
+        } else {
+            (None, None)
+        };
+
+        // Parse the FOREACH body: FOREACH (variable IN list | actions)
+        let after_foreach = &input[foreach_pos + 7..].trim_start(); // +7 for "FOREACH"
+
+        // Find the opening and closing parentheses
+        if !after_foreach.starts_with('(') {
+            return Err(ParseError::InvalidPattern("FOREACH must be followed by '('".to_string()));
+        }
+
+        // Find matching closing paren
+        let close_paren = Self::find_matching_paren(after_foreach, 0).ok_or_else(|| {
+            ParseError::InvalidPattern("unmatched parenthesis in FOREACH".to_string())
+        })?;
+        let foreach_content = &after_foreach[1..close_paren]; // Content inside parens
+
+        // Parse: variable IN list_expr | actions
+        let upper_content = foreach_content.to_uppercase();
+        // Use .find() directly since " IN " already has spaces as word boundaries
+        let in_pos = upper_content.find(" IN ").ok_or_else(|| {
+            ParseError::InvalidPattern("FOREACH requires 'IN' keyword".to_string())
+        })?;
+
+        let variable_str = foreach_content[..in_pos].trim();
+        if variable_str.is_empty() || variable_str.contains(char::is_whitespace) {
+            return Err(ParseError::InvalidPattern("FOREACH requires a variable name".to_string()));
+        }
+        let variable = Identifier::new(variable_str);
+
+        // Find the pipe separator
+        let pipe_pos =
+            Self::find_top_level_operator(&foreach_content[in_pos + 4..], "|").ok_or_else(
+                || ParseError::InvalidPattern("FOREACH requires '|' separator".to_string()),
+            )? + in_pos
+                + 4;
+
+        let list_expr_str = &foreach_content[in_pos + 4..pipe_pos].trim(); // +4 for " IN "
+        let list_expr = Self::parse_simple_expression(list_expr_str)?;
+
+        let actions_str = &foreach_content[pipe_pos + 1..].trim();
+        let actions = Self::parse_foreach_actions(actions_str)?;
+
+        if actions.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "FOREACH requires at least one action".to_string(),
+            ));
+        }
+
+        let mut stmt = ForeachStatement::new(variable, list_expr, actions);
+        if let Some(m) = match_clause {
+            stmt = stmt.with_match(m);
+        }
+        if let Some(w) = where_clause {
+            stmt = stmt.with_where(w);
+        }
+
+        Ok(vec![Statement::Foreach(Box::new(stmt))])
+    }
+
+    /// Parses the actions inside a FOREACH clause.
+    ///
+    /// Actions can be: SET, CREATE, MERGE, DELETE, DETACH DELETE, REMOVE, or nested FOREACH.
+    fn parse_foreach_actions(input: &str) -> ParseResult<Vec<ForeachAction>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut actions = Vec::new();
+        let mut current_pos = 0;
+
+        while current_pos < input.len() {
+            let untrimmed = &input[current_pos..];
+            let remaining = untrimmed.trim_start();
+            // Calculate leading whitespace length
+            let leading_ws = untrimmed.len() - remaining.len();
+            let remaining_upper = remaining.to_uppercase();
+
+            if remaining.is_empty() {
+                break;
+            }
+
+            // Try to match each action type
+            if remaining_upper.starts_with("SET ") {
+                let (action, consumed) = Self::parse_foreach_set_action(remaining)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("CREATE ")
+                || remaining_upper.starts_with("CREATE(")
+            {
+                let (action, consumed) = Self::parse_foreach_create_action(remaining)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("MERGE ") || remaining_upper.starts_with("MERGE(")
+            {
+                let (action, consumed) = Self::parse_foreach_merge_action(remaining)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("DETACH DELETE ") {
+                let (action, consumed) = Self::parse_foreach_delete_action(remaining, true)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("DELETE ") {
+                let (action, consumed) = Self::parse_foreach_delete_action(remaining, false)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("REMOVE ") {
+                let (action, consumed) = Self::parse_foreach_remove_action(remaining)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else if remaining_upper.starts_with("FOREACH ")
+                || remaining_upper.starts_with("FOREACH(")
+            {
+                let (action, consumed) = Self::parse_nested_foreach(remaining)?;
+                actions.push(action);
+                current_pos += leading_ws + consumed;
+            } else {
+                // Skip whitespace and continue
+                if remaining.starts_with(char::is_whitespace) {
+                    current_pos += 1;
+                } else {
+                    return Err(ParseError::InvalidPattern(format!(
+                        "unexpected token in FOREACH: {}",
+                        &remaining[..remaining.len().min(20)]
+                    )));
+                }
+            }
+        }
+
+        Ok(actions)
+    }
+
+    /// Parses a SET action inside FOREACH. Returns (action, consumed_length).
+    fn parse_foreach_set_action(input: &str) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "SET "
+        let after_set = &input[4..].trim_start();
+        let offset = 4 + (input.len() - 4 - after_set.len());
+
+        // Find end of SET action (next keyword or end)
+        let end = Self::find_action_end(after_set);
+        let set_content = &after_set[..end].trim();
+
+        // Parse a single SET item (property or label)
+        let action = if set_content.contains('=') {
+            // Property assignment
+            let eq_pos = set_content
+                .find('=')
+                .ok_or_else(|| ParseError::InvalidPattern("expected '='".to_string()))?;
+            let left = set_content[..eq_pos].trim();
+            let right = set_content[eq_pos + 1..].trim();
+
+            let dot_pos = left.find('.').ok_or_else(|| {
+                ParseError::InvalidPattern("expected 'variable.property' format".to_string())
+            })?;
+            let variable = Identifier::new(&left[..dot_pos]);
+            let property = Identifier::new(&left[dot_pos + 1..]);
+            let value = Self::parse_where_expression(right)?;
+
+            ForeachAction::Set(SetAction::Property { variable, property, value })
+        } else if set_content.contains(':') {
+            // Label assignment
+            let colon_pos = set_content
+                .find(':')
+                .ok_or_else(|| ParseError::InvalidPattern("expected ':'".to_string()))?;
+            let variable = Identifier::new(&set_content[..colon_pos]);
+            let label = Identifier::new(&set_content[colon_pos + 1..]);
+
+            ForeachAction::Set(SetAction::Label { variable, label })
+        } else {
+            return Err(ParseError::InvalidPattern(format!(
+                "invalid SET in FOREACH: {}",
+                set_content
+            )));
+        };
+
+        Ok((action, offset + end))
+    }
+
+    /// Parses a CREATE action inside FOREACH. Returns (action, consumed_length).
+    fn parse_foreach_create_action(input: &str) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "CREATE"
+        let after_create = input[6..].trim_start();
+        // Calculate whitespace consumed: (input.len() - 6) is length after "CREATE",
+        // after_create.len() is length after trimming whitespace
+        let whitespace_len = input.len() - 6 - after_create.len();
+        let offset = 6 + whitespace_len;
+
+        // Find the pattern - it starts with '(' and we need to find matching ')'
+        if !after_create.starts_with('(') {
+            return Err(ParseError::InvalidPattern("CREATE requires a node pattern".to_string()));
+        }
+
+        let close_paren = Self::find_matching_paren(after_create, 0).ok_or_else(|| {
+            ParseError::InvalidPattern("unmatched parenthesis in CREATE".to_string())
+        })?;
+        let pattern_str = &after_create[..=close_paren];
+
+        // Parse as a create pattern (simplified - just node for now)
+        let pattern = Self::parse_create_pattern_simple(pattern_str)?;
+
+        Ok((ForeachAction::Create(pattern), offset + close_paren + 1))
+    }
+
+    /// Parses a simplified CREATE pattern (node only).
+    fn parse_create_pattern_simple(input: &str) -> ParseResult<CreatePattern> {
+        // Parse (variable:Label {props})
+        let inner = input.trim();
+        if !inner.starts_with('(') || !inner.ends_with(')') {
+            return Err(ParseError::InvalidPattern(
+                "CREATE pattern must be enclosed in parentheses".to_string(),
+            ));
+        }
+
+        let content = &inner[1..inner.len() - 1].trim();
+
+        // Parse as NodePattern and extract components
+        let node = Self::parse_node_inner(content)?;
+
+        Ok(CreatePattern::Node {
+            variable: node.variable,
+            labels: node.labels,
+            properties: node.properties.into_iter().map(|prop| (prop.name, prop.value)).collect(),
+        })
+    }
+
+    /// Parses a MERGE action inside FOREACH. Returns (action, consumed_length).
+    fn parse_foreach_merge_action(input: &str) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "MERGE"
+        let after_merge = input[5..].trim_start();
+        let whitespace_len = input.len() - 5 - after_merge.len();
+        let offset = 5 + whitespace_len;
+
+        // Find the pattern
+        if !after_merge.starts_with('(') {
+            return Err(ParseError::InvalidPattern("MERGE requires a node pattern".to_string()));
+        }
+
+        let close_paren = Self::find_matching_paren(after_merge, 0).ok_or_else(|| {
+            ParseError::InvalidPattern("unmatched parenthesis in MERGE".to_string())
+        })?;
+        let pattern_str = &after_merge[..=close_paren];
+
+        // Parse as a merge pattern
+        let pattern = Self::parse_merge_pattern_simple(pattern_str)?;
+
+        Ok((ForeachAction::Merge(pattern), offset + close_paren + 1))
+    }
+
+    /// Parses a simplified MERGE pattern (node only).
+    fn parse_merge_pattern_simple(input: &str) -> ParseResult<MergePattern> {
+        // Parse (variable:Label {props})
+        let inner = input.trim();
+        if !inner.starts_with('(') || !inner.ends_with(')') {
+            return Err(ParseError::InvalidPattern(
+                "MERGE pattern must be enclosed in parentheses".to_string(),
+            ));
+        }
+
+        let content = &inner[1..inner.len() - 1].trim();
+
+        // Parse as NodePattern and extract components
+        let node = Self::parse_node_inner(content)?;
+
+        let var = node.variable.ok_or_else(|| {
+            ParseError::InvalidPattern("MERGE pattern requires a variable".to_string())
+        })?;
+
+        Ok(MergePattern::Node {
+            variable: var,
+            labels: node.labels,
+            match_properties: node
+                .properties
+                .into_iter()
+                .map(|prop| (prop.name, prop.value))
+                .collect(),
+        })
+    }
+
+    /// Parses a DELETE action inside FOREACH. Returns (action, consumed_length).
+    fn parse_foreach_delete_action(
+        input: &str,
+        detach: bool,
+    ) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "DELETE " or "DETACH DELETE "
+        let keyword_len = if detach { 14 } else { 7 }; // "DETACH DELETE " or "DELETE "
+        let after_delete = &input[keyword_len..].trim_start();
+        let offset = keyword_len + (input.len() - keyword_len - after_delete.len());
+
+        // Find end of DELETE action
+        let end = Self::find_action_end(after_delete);
+        let delete_content = &after_delete[..end].trim();
+
+        // Parse variables
+        let variables: Vec<Identifier> = delete_content
+            .split(',')
+            .map(|s| Identifier::new(s.trim()))
+            .filter(|id| !id.name.is_empty())
+            .collect();
+
+        if variables.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "DELETE requires at least one variable".to_string(),
+            ));
+        }
+
+        Ok((ForeachAction::Delete { variables, detach }, offset + end))
+    }
+
+    /// Parses a REMOVE action inside FOREACH. Returns (action, consumed_length).
+    fn parse_foreach_remove_action(input: &str) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "REMOVE "
+        let after_remove = &input[7..].trim_start();
+        let offset = 7 + (input.len() - 7 - after_remove.len());
+
+        // Find end of REMOVE action
+        let end = Self::find_action_end(after_remove);
+        let remove_content = &after_remove[..end].trim();
+
+        // Parse single REMOVE item
+        let item = if let Some(dot_pos) = remove_content.find('.') {
+            let variable = Identifier::new(&remove_content[..dot_pos]);
+            let property = Identifier::new(&remove_content[dot_pos + 1..]);
+            RemoveItem::Property { variable, property }
+        } else if let Some(colon_pos) = remove_content.find(':') {
+            let variable = Identifier::new(&remove_content[..colon_pos]);
+            let label = Identifier::new(&remove_content[colon_pos + 1..]);
+            RemoveItem::Label { variable, label }
+        } else {
+            return Err(ParseError::InvalidPattern(format!(
+                "invalid REMOVE in FOREACH: {}",
+                remove_content
+            )));
+        };
+
+        Ok((ForeachAction::Remove(item), offset + end))
+    }
+
+    /// Parses a nested FOREACH. Returns (action, consumed_length).
+    fn parse_nested_foreach(input: &str) -> ParseResult<(ForeachAction, usize)> {
+        // Skip "FOREACH"
+        let after_foreach = input[7..].trim_start();
+        let whitespace_len = input.len() - 7 - after_foreach.len();
+        let offset = 7 + whitespace_len;
+
+        if !after_foreach.starts_with('(') {
+            return Err(ParseError::InvalidPattern(
+                "nested FOREACH must be followed by '('".to_string(),
+            ));
+        }
+
+        let close_paren = Self::find_matching_paren(after_foreach, 0).ok_or_else(|| {
+            ParseError::InvalidPattern("unmatched parenthesis in nested FOREACH".to_string())
+        })?;
+        let foreach_content = &after_foreach[1..close_paren]; // Content inside parens
+
+        // Parse: variable IN list_expr | actions
+        let upper_content = foreach_content.to_uppercase();
+        // Use .find() directly since " IN " already has spaces as word boundaries
+        let in_pos = upper_content.find(" IN ").ok_or_else(|| {
+            ParseError::InvalidPattern("nested FOREACH requires 'IN' keyword".to_string())
+        })?;
+
+        let variable_str = foreach_content[..in_pos].trim();
+        let variable = Identifier::new(variable_str);
+
+        let pipe_pos =
+            Self::find_top_level_operator(&foreach_content[in_pos + 4..], "|").ok_or_else(
+                || ParseError::InvalidPattern("nested FOREACH requires '|' separator".to_string()),
+            )? + in_pos
+                + 4;
+
+        let list_expr_str = &foreach_content[in_pos + 4..pipe_pos].trim();
+        let list_expr = Self::parse_simple_expression(list_expr_str)?;
+
+        let actions_str = &foreach_content[pipe_pos + 1..].trim();
+        let actions = Self::parse_foreach_actions(actions_str)?;
+
+        let nested = ForeachStatement::new(variable, list_expr, actions);
+        Ok((ForeachAction::Foreach(Box::new(nested)), offset + close_paren + 1))
+    }
+
+    /// Finds the end of an action within FOREACH (before the next keyword).
+    fn find_action_end(input: &str) -> usize {
+        let upper = input.to_uppercase();
+        // Keywords that start new actions - use .find() since they include trailing space/paren
+        let keywords = [
+            " SET ",
+            " CREATE ",
+            " CREATE(",
+            " MERGE ",
+            " MERGE(",
+            " DELETE ",
+            " DETACH ",
+            " REMOVE ",
+            " FOREACH ",
+            " FOREACH(",
+        ];
+
+        let mut min_pos = input.len();
+        for keyword in &keywords {
+            if let Some(pos) = upper.find(keyword) {
+                // pos is the position of the leading space; action ends at this position
+                if pos > 0 && pos < min_pos {
+                    min_pos = pos;
+                }
+            }
+        }
+
+        min_pos
     }
 
     /// Parses collection definitions (vectors and payload fields).
@@ -5675,5 +6152,219 @@ mod tests {
         assert!(!ExtendedParser::is_simple_identifier(""));
         assert!(!ExtendedParser::is_simple_identifier("123abc"));
         assert!(!ExtendedParser::is_simple_identifier("a + b"));
+    }
+
+    // FOREACH tests
+
+    #[test]
+    fn parse_foreach_simple_set() {
+        let stmts =
+            ExtendedParser::parse("FOREACH (x IN [1, 2, 3] | SET x.visited = true)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.variable.name, "x");
+            assert!(foreach.match_clause.is_none());
+            assert!(foreach.where_clause.is_none());
+            assert_eq!(foreach.actions.len(), 1);
+            assert!(matches!(foreach.actions[0], ForeachAction::Set(_)));
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_match() {
+        let stmts = ExtendedParser::parse(
+            "MATCH (n:Person) FOREACH (x IN n.friends | SET x.contacted = true)",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert!(foreach.match_clause.is_some());
+            assert_eq!(foreach.variable.name, "x");
+            assert_eq!(foreach.actions.len(), 1);
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_match_and_where() {
+        let stmts = ExtendedParser::parse(
+            "MATCH (n:Person) WHERE n.age > 21 FOREACH (x IN n.friends | SET x.adult_friend = true)",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert!(foreach.match_clause.is_some());
+            assert!(foreach.where_clause.is_some());
+            assert_eq!(foreach.variable.name, "x");
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_create() {
+        let stmts = ExtendedParser::parse(
+            "FOREACH (name IN ['Alice', 'Bob', 'Carol'] | CREATE (n:Person {name: name}))",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.variable.name, "name");
+            assert_eq!(foreach.actions.len(), 1);
+            assert!(matches!(foreach.actions[0], ForeachAction::Create(_)));
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_merge() {
+        let stmts =
+            ExtendedParser::parse("FOREACH (id IN [1, 2, 3] | MERGE (n:Node {id: id}))").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.actions.len(), 1);
+            assert!(matches!(foreach.actions[0], ForeachAction::Merge(_)));
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_delete() {
+        let stmts = ExtendedParser::parse("FOREACH (n IN nodesToDelete | DELETE n)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.actions.len(), 1);
+            if let ForeachAction::Delete { variables, detach } = &foreach.actions[0] {
+                assert_eq!(variables.len(), 1);
+                assert_eq!(variables[0].name, "n");
+                assert!(!detach);
+            } else {
+                panic!("Expected Delete action");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_detach_delete() {
+        let stmts =
+            ExtendedParser::parse("FOREACH (n IN nodesToDelete | DETACH DELETE n)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            if let ForeachAction::Delete { variables, detach } = &foreach.actions[0] {
+                assert!(*detach);
+                assert_eq!(variables[0].name, "n");
+            } else {
+                panic!("Expected Delete action");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_remove() {
+        let stmts = ExtendedParser::parse("FOREACH (n IN nodes | REMOVE n.temp)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.actions.len(), 1);
+            if let ForeachAction::Remove(item) = &foreach.actions[0] {
+                assert!(matches!(item, RemoveItem::Property { .. }));
+            } else {
+                panic!("Expected Remove action");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_with_remove_label() {
+        let stmts = ExtendedParser::parse("FOREACH (n IN nodes | REMOVE n:TempLabel)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            if let ForeachAction::Remove(item) = &foreach.actions[0] {
+                if let RemoveItem::Label { variable, label } = item {
+                    assert_eq!(variable.name, "n");
+                    assert_eq!(label.name, "TempLabel");
+                } else {
+                    panic!("Expected Label removal");
+                }
+            } else {
+                panic!("Expected Remove action");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_nested() {
+        let stmts = ExtendedParser::parse(
+            "FOREACH (i IN range(0, 10) | FOREACH (j IN range(0, 10) | CREATE (n:Cell {x: i, y: j})))",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.variable.name, "i");
+            assert_eq!(foreach.actions.len(), 1);
+            if let ForeachAction::Foreach(nested) = &foreach.actions[0] {
+                assert_eq!(nested.variable.name, "j");
+                assert_eq!(nested.actions.len(), 1);
+                assert!(matches!(nested.actions[0], ForeachAction::Create(_)));
+            } else {
+                panic!("Expected nested Foreach");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_multiple_actions() {
+        let stmts = ExtendedParser::parse(
+            "FOREACH (n IN nodes | SET n.processed = true SET n.timestamp = 123)",
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            assert_eq!(foreach.actions.len(), 2);
+            assert!(matches!(foreach.actions[0], ForeachAction::Set(_)));
+            assert!(matches!(foreach.actions[1], ForeachAction::Set(_)));
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn parse_foreach_set_label() {
+        let stmts = ExtendedParser::parse("FOREACH (n IN nodes | SET n:Processed)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Foreach(foreach) = &stmts[0] {
+            if let ForeachAction::Set(set_action) = &foreach.actions[0] {
+                assert!(matches!(set_action, SetAction::Label { .. }));
+            } else {
+                panic!("Expected Set action");
+            }
+        } else {
+            panic!("Expected Foreach statement");
+        }
+    }
+
+    #[test]
+    fn is_cypher_foreach_detection() {
+        // Should detect standalone FOREACH
+        assert!(ExtendedParser::is_cypher_foreach("FOREACH (x IN list | SET x.a = 1)"));
+        // Should detect MATCH ... FOREACH
+        assert!(ExtendedParser::is_cypher_foreach("MATCH (n) FOREACH (x IN list | SET x.a = 1)"));
+        // Should not detect without proper format
+        assert!(!ExtendedParser::is_cypher_foreach("FOREACH_something"));
+        assert!(!ExtendedParser::is_cypher_foreach("SELECT * FROM foreach_table"));
     }
 }

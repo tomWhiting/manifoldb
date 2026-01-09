@@ -287,6 +287,10 @@ impl PredicatePushdown {
                 let optimized_input = self.push_down(*input, predicates);
                 LogicalPlan::GraphRemove { node, input: Box::new(optimized_input) }
             }
+            LogicalPlan::GraphForeach { node, input } => {
+                let optimized_input = self.push_down(*input, predicates);
+                LogicalPlan::GraphForeach { node, input: Box::new(optimized_input) }
+            }
         }
     }
 
