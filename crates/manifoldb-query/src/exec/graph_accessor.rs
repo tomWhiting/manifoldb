@@ -720,6 +720,21 @@ pub trait GraphMutator: Send + Sync {
     ///
     /// Returns the created edge with its generated ID.
     fn create_edge(&self, request: &CreateEdgeRequest) -> GraphAccessResult<Edge>;
+
+    /// Remove a property from an entity (node).
+    ///
+    /// If the entity doesn't exist or the property doesn't exist, this is a no-op.
+    fn remove_entity_property(&self, entity_id: EntityId, property: &str) -> GraphAccessResult<()>;
+
+    /// Remove a label from an entity (node).
+    ///
+    /// If the entity doesn't exist or doesn't have the label, this is a no-op.
+    fn remove_entity_label(&self, entity_id: EntityId, label: &str) -> GraphAccessResult<()>;
+
+    /// Remove a property from an edge (relationship).
+    ///
+    /// If the edge doesn't exist or the property doesn't exist, this is a no-op.
+    fn remove_edge_property(&self, edge_id: EdgeId, property: &str) -> GraphAccessResult<()>;
 }
 
 /// A null implementation of `GraphMutator` that always returns an error.
@@ -734,6 +749,22 @@ impl GraphMutator for NullGraphMutator {
     }
 
     fn create_edge(&self, _request: &CreateEdgeRequest) -> GraphAccessResult<Edge> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn remove_entity_property(
+        &self,
+        _entity_id: EntityId,
+        _property: &str,
+    ) -> GraphAccessResult<()> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn remove_entity_label(&self, _entity_id: EntityId, _label: &str) -> GraphAccessResult<()> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn remove_edge_property(&self, _edge_id: EdgeId, _property: &str) -> GraphAccessResult<()> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -797,6 +828,69 @@ where
             },
         )
         .map_err(|e| GraphAccessError::Internal(e.to_string()))
+    }
+
+    fn remove_entity_property(&self, entity_id: EntityId, property: &str) -> GraphAccessResult<()> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // Get current entity
+        let entity: Option<Entity> = manifoldb_graph::store::NodeStore::get(&*tx, entity_id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        if let Some(mut entity) = entity {
+            // Remove the property
+            entity.properties.remove(property);
+
+            // Update the entity
+            manifoldb_graph::store::NodeStore::update(&mut *tx, &entity)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_entity_label(&self, entity_id: EntityId, label: &str) -> GraphAccessResult<()> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // Get current entity
+        let entity: Option<Entity> = manifoldb_graph::store::NodeStore::get(&*tx, entity_id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        if let Some(mut entity) = entity {
+            // Remove the label
+            entity.labels.retain(|l| l.as_str() != label);
+
+            // Update the entity
+            manifoldb_graph::store::NodeStore::update(&mut *tx, &entity)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_edge_property(&self, edge_id: EdgeId, property: &str) -> GraphAccessResult<()> {
+        let mut tx = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        // Get current edge
+        let edge: Option<Edge> = manifoldb_graph::store::EdgeStore::get(&*tx, edge_id)
+            .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+
+        if let Some(mut edge) = edge {
+            // Remove the property
+            edge.properties.remove(property);
+
+            // Update the edge
+            manifoldb_graph::store::EdgeStore::update(&mut *tx, &edge)
+                .map_err(|e| GraphAccessError::Internal(e.to_string()))?;
+        }
+
+        Ok(())
     }
 }
 

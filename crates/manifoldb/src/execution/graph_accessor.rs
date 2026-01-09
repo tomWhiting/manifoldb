@@ -470,6 +470,85 @@ where
 
         Ok(edge)
     }
+
+    fn remove_entity_property(&self, entity_id: EntityId, property: &str) -> GraphAccessResult<()> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Get current entity
+        if let Some(mut entity) = tx
+            .get_entity(entity_id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get entity: {e}")))?
+        {
+            // Remove the property
+            entity.properties.remove(property);
+
+            // Save the updated entity
+            tx.put_entity(&entity)
+                .map_err(|e| GraphAccessError::Internal(format!("failed to save entity: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_entity_label(&self, entity_id: EntityId, label: &str) -> GraphAccessResult<()> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Get current entity
+        if let Some(mut entity) = tx
+            .get_entity(entity_id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get entity: {e}")))?
+        {
+            // Remove the label
+            entity.labels.retain(|l| l.as_str() != label);
+
+            // Save the updated entity (put_entity handles label index updates)
+            tx.put_entity(&entity)
+                .map_err(|e| GraphAccessError::Internal(format!("failed to save entity: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    fn remove_edge_property(
+        &self,
+        edge_id: manifoldb_core::EdgeId,
+        property: &str,
+    ) -> GraphAccessResult<()> {
+        let mut guard = self.tx.write().map_err(|e| {
+            GraphAccessError::Internal(format!("failed to acquire write lock: {e}"))
+        })?;
+
+        let tx = guard
+            .as_mut()
+            .ok_or_else(|| GraphAccessError::Internal("transaction already taken".to_string()))?;
+
+        // Get current edge
+        if let Some(mut edge) = tx
+            .get_edge(edge_id)
+            .map_err(|e| GraphAccessError::Internal(format!("failed to get edge: {e}")))?
+        {
+            // Remove the property
+            edge.properties.remove(property);
+
+            // Save the updated edge
+            tx.put_edge(&edge)
+                .map_err(|e| GraphAccessError::Internal(format!("failed to save edge: {e}")))?;
+        }
+
+        Ok(())
+    }
 }
 
 // ============================================================================

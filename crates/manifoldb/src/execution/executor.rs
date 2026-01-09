@@ -309,8 +309,13 @@ pub fn is_cypher_dml(sql: &str) -> bool {
             return true;
         }
     }
-    // MATCH ... CREATE is Cypher
-    if sql_upper.starts_with("MATCH") && sql_upper.contains("CREATE") {
+    // MATCH ... CREATE/SET/REMOVE/DELETE is Cypher
+    if sql_upper.starts_with("MATCH")
+        && (sql_upper.contains("CREATE")
+            || sql_upper.contains("SET")
+            || sql_upper.contains("REMOVE")
+            || sql_upper.contains("DELETE"))
+    {
         return true;
     }
     // Other Cypher DML keywords
