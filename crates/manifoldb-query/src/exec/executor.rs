@@ -380,12 +380,14 @@ fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator> {
 
         // Graph DML operations - placeholder implementations
         // Actual execution requires storage layer integration
-        PhysicalPlan::GraphCreate { .. } | PhysicalPlan::GraphMerge { .. } => {
-            Ok(Box::new(EmptyOp::with_columns(vec![])))
-        }
+        PhysicalPlan::GraphCreate { .. }
+        | PhysicalPlan::GraphMerge { .. }
+        | PhysicalPlan::GraphSet { .. }
+        | PhysicalPlan::GraphDelete { .. }
+        | PhysicalPlan::GraphRemove { .. } => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         // Procedure calls are handled via the ProcedureRegistry at a higher level
-        PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![])))
+        PhysicalPlan::ProcedureCall(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
     }
 }
 

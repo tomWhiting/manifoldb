@@ -365,6 +365,15 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
                 validate_plan(input)?;
             }
         }
+        LogicalPlan::GraphSet { input, .. } => {
+            validate_plan(input)?;
+        }
+        LogicalPlan::GraphDelete { input, .. } => {
+            validate_plan(input)?;
+        }
+        LogicalPlan::GraphRemove { input, .. } => {
+            validate_plan(input)?;
+        }
 
         LogicalPlan::ProcedureCall(node) => {
             if node.procedure_name.is_empty() {

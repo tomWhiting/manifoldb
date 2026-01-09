@@ -21,10 +21,11 @@ use std::collections::HashMap;
 
 use crate::ast::{
     self, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement,
-    CreateNodeRef, CreatePattern, CreateTableStatement, DeleteStatement, DropCollectionStatement,
-    DropIndexStatement, DropTableStatement, Expr, GraphPattern, InsertSource, InsertStatement,
-    JoinClause, JoinCondition, JoinType as AstJoinType, MatchStatement, MergeGraphStatement,
-    MergePattern, PathPattern, SelectItem, SelectStatement, SetAction as AstSetAction,
+    CreateNodeRef, CreatePattern, CreateTableStatement, DeleteGraphStatement, DeleteStatement,
+    DropCollectionStatement, DropIndexStatement, DropTableStatement, Expr, GraphPattern,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
+    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, RemoveGraphStatement,
+    RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction, SetGraphStatement,
     SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
 };
 
@@ -39,7 +40,8 @@ use super::expr::{
 };
 use super::graph::{
     CreateNodeSpec, CreateRelSpec, ExpandDirection, ExpandLength, ExpandNode, GraphCreateNode,
-    GraphMergeNode, GraphSetAction, MergePatternSpec,
+    GraphDeleteNode, GraphMergeNode, GraphRemoveAction, GraphRemoveNode, GraphSetAction,
+    GraphSetNode, MergePatternSpec,
 };
 use super::node::LogicalPlan;
 use super::procedure::{ProcedureCallNode, YieldColumn};
@@ -104,6 +106,9 @@ impl PlanBuilder {
             Statement::Create(create) => self.build_graph_create(create),
             Statement::Merge(merge) => self.build_graph_merge(merge),
             Statement::Call(call) => self.build_call(call),
+            Statement::Set(set) => self.build_graph_set(set),
+            Statement::DeleteGraph(delete) => self.build_graph_delete(delete),
+            Statement::Remove(remove) => self.build_graph_remove(remove),
         }
     }
 
@@ -1169,6 +1174,99 @@ impl PlanBuilder {
         }
 
         Ok(LogicalPlan::GraphMerge { node: Box::new(graph_merge), input })
+    }
+
+    /// Builds a logical plan from a Cypher SET statement.
+    fn build_graph_set(&mut self, set: &SetGraphStatement) -> PlanResult<LogicalPlan> {
+        // Build MATCH clause as input
+        let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]])); // Start with single empty row
+        plan = self.build_graph_pattern(plan, &set.match_clause)?;
+
+        // Add WHERE clause if present
+        if let Some(where_expr) = &set.where_clause {
+            let filter = self.build_expr(where_expr)?;
+            plan = plan.filter(filter);
+        }
+
+        // Build the SET actions
+        let set_actions = self.build_set_actions(&set.set_actions)?;
+        let mut graph_set = GraphSetNode::new(set_actions);
+
+        // Add RETURN expressions if present
+        if !set.return_clause.is_empty() {
+            let returning = self.build_return_items(&set.return_clause)?;
+            graph_set = graph_set.with_returning(returning);
+        }
+
+        Ok(LogicalPlan::GraphSet { node: Box::new(graph_set), input: Box::new(plan) })
+    }
+
+    /// Builds a logical plan from a Cypher DELETE statement.
+    fn build_graph_delete(&mut self, delete: &DeleteGraphStatement) -> PlanResult<LogicalPlan> {
+        // Build MATCH clause as input
+        let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]])); // Start with single empty row
+        plan = self.build_graph_pattern(plan, &delete.match_clause)?;
+
+        // Add WHERE clause if present
+        if let Some(where_expr) = &delete.where_clause {
+            let filter = self.build_expr(where_expr)?;
+            plan = plan.filter(filter);
+        }
+
+        // Build the DELETE node
+        let variables: Vec<String> = delete.variables.iter().map(|v| v.name.clone()).collect();
+        let mut graph_delete = if delete.detach {
+            GraphDeleteNode::detach(variables)
+        } else {
+            GraphDeleteNode::new(variables)
+        };
+
+        // Add RETURN expressions if present
+        if !delete.return_clause.is_empty() {
+            let returning = self.build_return_items(&delete.return_clause)?;
+            graph_delete = graph_delete.with_returning(returning);
+        }
+
+        Ok(LogicalPlan::GraphDelete { node: Box::new(graph_delete), input: Box::new(plan) })
+    }
+
+    /// Builds a logical plan from a Cypher REMOVE statement.
+    fn build_graph_remove(&mut self, remove: &RemoveGraphStatement) -> PlanResult<LogicalPlan> {
+        // Build MATCH clause as input
+        let mut plan = LogicalPlan::Values(ValuesNode::new(vec![vec![]])); // Start with single empty row
+        plan = self.build_graph_pattern(plan, &remove.match_clause)?;
+
+        // Add WHERE clause if present
+        if let Some(where_expr) = &remove.where_clause {
+            let filter = self.build_expr(where_expr)?;
+            plan = plan.filter(filter);
+        }
+
+        // Build the REMOVE actions
+        let remove_actions: Vec<GraphRemoveAction> = remove
+            .items
+            .iter()
+            .map(|item| match item {
+                RemoveItem::Property { variable, property } => GraphRemoveAction::Property {
+                    variable: variable.name.clone(),
+                    property: property.name.clone(),
+                },
+                RemoveItem::Label { variable, label } => GraphRemoveAction::Label {
+                    variable: variable.name.clone(),
+                    label: label.name.clone(),
+                },
+            })
+            .collect();
+
+        let mut graph_remove = GraphRemoveNode::new(remove_actions);
+
+        // Add RETURN expressions if present
+        if !remove.return_clause.is_empty() {
+            let returning = self.build_return_items(&remove.return_clause)?;
+            graph_remove = graph_remove.with_returning(returning);
+        }
+
+        Ok(LogicalPlan::GraphRemove { node: Box::new(graph_remove), input: Box::new(plan) })
     }
 
     /// Builds return items from AST ReturnItems.

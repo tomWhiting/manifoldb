@@ -22,7 +22,10 @@ use super::ddl::{
     DropTableNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
-use super::graph::{ExpandNode, GraphCreateNode, GraphMergeNode, PathScanNode};
+use super::graph::{
+    ExpandNode, GraphCreateNode, GraphDeleteNode, GraphMergeNode, GraphRemoveNode, GraphSetNode,
+    PathScanNode,
+};
 use super::procedure::ProcedureCallNode;
 use super::relational::{
     AggregateNode, DistinctNode, FilterNode, JoinNode, LimitNode, ProjectNode, RecursiveCTENode,
@@ -284,6 +287,30 @@ pub enum LogicalPlan {
         input: Option<Box<LogicalPlan>>,
     },
 
+    /// Cypher SET operation (update properties/labels).
+    GraphSet {
+        /// The SET node.
+        node: Box<GraphSetNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<LogicalPlan>,
+    },
+
+    /// Cypher DELETE operation (remove nodes/relationships).
+    GraphDelete {
+        /// The DELETE node.
+        node: Box<GraphDeleteNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<LogicalPlan>,
+    },
+
+    /// Cypher REMOVE operation (remove properties/labels).
+    GraphRemove {
+        /// The REMOVE node.
+        node: Box<GraphRemoveNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<LogicalPlan>,
+    },
+
     // ========== Procedure Nodes ==========
     /// Procedure call (CALL/YIELD).
     ProcedureCall(Box<ProcedureCallNode>),
@@ -499,6 +526,11 @@ impl LogicalPlan {
             | Self::GraphMerge { input: Some(input), .. } => vec![input.as_ref()],
             Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
 
+            // Graph DML nodes (required input)
+            Self::GraphSet { input, .. }
+            | Self::GraphDelete { input, .. }
+            | Self::GraphRemove { input, .. } => vec![input.as_ref()],
+
             // Procedure nodes (leaf - no inputs)
             Self::ProcedureCall(_) => vec![],
         }
@@ -526,7 +558,10 @@ impl LogicalPlan {
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
             | Self::HybridSearch { input, .. }
-            | Self::Insert { input, .. } => vec![input.as_mut()],
+            | Self::Insert { input, .. }
+            | Self::GraphSet { input, .. }
+            | Self::GraphDelete { input, .. }
+            | Self::GraphRemove { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
             Self::Join { left, right, .. }
@@ -553,6 +588,8 @@ impl LogicalPlan {
             Self::GraphCreate { input: Some(input), .. }
             | Self::GraphMerge { input: Some(input), .. } => vec![input.as_mut()],
             Self::GraphCreate { input: None, .. } | Self::GraphMerge { input: None, .. } => vec![],
+
+            // Graph DML nodes (required input) - already handled above in unary nodes
 
             // Procedure nodes (leaf - no inputs)
             Self::ProcedureCall(_) => vec![],
@@ -601,6 +638,9 @@ impl LogicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
+            Self::GraphSet { .. } => "GraphSet",
+            Self::GraphDelete { .. } => "GraphDelete",
+            Self::GraphRemove { .. } => "GraphRemove",
             Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
@@ -902,6 +942,18 @@ impl DisplayTree<'_> {
                     }
                 };
                 write!(f, "GraphMerge: {pattern_desc}")?;
+            }
+            LogicalPlan::GraphSet { node, .. } => {
+                write!(f, "GraphSet: {} actions", node.set_actions.len())?;
+            }
+            LogicalPlan::GraphDelete { node, .. } => {
+                write!(f, "GraphDelete: {}", node.variables.join(", "))?;
+                if node.detach {
+                    write!(f, " DETACH")?;
+                }
+            }
+            LogicalPlan::GraphRemove { node, .. } => {
+                write!(f, "GraphRemove: {} actions", node.remove_actions.len())?;
             }
             LogicalPlan::ProcedureCall(node) => {
                 write!(f, "ProcedureCall: {}", node.procedure_name)?;

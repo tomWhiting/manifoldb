@@ -21,8 +21,8 @@ use crate::ast::DistanceMetric;
 use crate::ast::WindowFunction;
 use crate::plan::logical::{
     CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode, DropIndexNode,
-    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphMergeNode, JoinType,
-    LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
+    DropTableNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode, GraphMergeNode,
+    GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr, ProcedureCallNode, SetOpType, SortOrder,
 };
 
 use super::cost::Cost;
@@ -321,6 +321,30 @@ pub enum PhysicalPlan {
         node: Box<GraphMergeNode>,
         /// Optional input plan (from MATCH clause).
         input: Option<Box<PhysicalPlan>>,
+    },
+
+    /// Cypher SET operation.
+    GraphSet {
+        /// The SET node configuration.
+        node: Box<GraphSetNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<PhysicalPlan>,
+    },
+
+    /// Cypher DELETE operation.
+    GraphDelete {
+        /// The DELETE node configuration.
+        node: Box<GraphDeleteNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<PhysicalPlan>,
+    },
+
+    /// Cypher REMOVE operation.
+    GraphRemove {
+        /// The REMOVE node configuration.
+        node: Box<GraphRemoveNode>,
+        /// Input plan (from MATCH clause).
+        input: Box<PhysicalPlan>,
     },
 
     // ========== Procedure Operations ==========
@@ -1726,7 +1750,10 @@ impl PhysicalPlan {
             | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
-            | Self::Insert { input, .. } => vec![input.as_ref()],
+            | Self::Insert { input, .. }
+            | Self::GraphSet { input, .. }
+            | Self::GraphDelete { input, .. }
+            | Self::GraphRemove { input, .. } => vec![input.as_ref()],
 
             // Binary nodes
             Self::NestedLoopJoin { left, right, .. }
@@ -1784,7 +1811,10 @@ impl PhysicalPlan {
             | Self::HybridSearch { input, .. }
             | Self::GraphExpand { input, .. }
             | Self::GraphPathScan { input, .. }
-            | Self::Insert { input, .. } => vec![input.as_mut()],
+            | Self::Insert { input, .. }
+            | Self::GraphSet { input, .. }
+            | Self::GraphDelete { input, .. }
+            | Self::GraphRemove { input, .. } => vec![input.as_mut()],
 
             // Binary nodes
             Self::NestedLoopJoin { left, right, .. }
@@ -1867,6 +1897,9 @@ impl PhysicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
+            Self::GraphSet { .. } => "GraphSet",
+            Self::GraphDelete { .. } => "GraphDelete",
+            Self::GraphRemove { .. } => "GraphRemove",
             Self::ProcedureCall(_) => "ProcedureCall",
         }
     }
@@ -1912,7 +1945,11 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::ProcedureCall(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
-            Self::GraphCreate { .. } | Self::GraphMerge { .. } => Cost::default(),
+            Self::GraphCreate { .. }
+            | Self::GraphMerge { .. }
+            | Self::GraphSet { .. }
+            | Self::GraphDelete { .. }
+            | Self::GraphRemove { .. } => Cost::default(),
         }
     }
 
@@ -2316,6 +2353,27 @@ impl DisplayTree<'_> {
                 if !node.on_match.is_empty() {
                     write!(f, " ON MATCH {} SET", node.on_match.len())?;
                 }
+                if !node.returning.is_empty() {
+                    write!(f, " RETURN {} items", node.returning.len())?;
+                }
+            }
+            PhysicalPlan::GraphSet { node, .. } => {
+                write!(f, "GraphSet: {} actions", node.set_actions.len())?;
+                if !node.returning.is_empty() {
+                    write!(f, " RETURN {} items", node.returning.len())?;
+                }
+            }
+            PhysicalPlan::GraphDelete { node, .. } => {
+                write!(f, "GraphDelete: {}", node.variables.join(", "))?;
+                if node.detach {
+                    write!(f, " DETACH")?;
+                }
+                if !node.returning.is_empty() {
+                    write!(f, " RETURN {} items", node.returning.len())?;
+                }
+            }
+            PhysicalPlan::GraphRemove { node, .. } => {
+                write!(f, "GraphRemove: {} actions", node.remove_actions.len())?;
                 if !node.returning.is_empty() {
                     write!(f, " RETURN {} items", node.returning.len())?;
                 }

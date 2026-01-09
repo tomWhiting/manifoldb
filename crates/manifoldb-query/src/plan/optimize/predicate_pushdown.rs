@@ -273,6 +273,20 @@ impl PredicatePushdown {
                     LogicalPlan::GraphMerge { node, input: optimized_input }
                 }
             }
+
+            // Graph SET/DELETE/REMOVE - push predicates to input
+            LogicalPlan::GraphSet { node, input } => {
+                let optimized_input = self.push_down(*input, predicates);
+                LogicalPlan::GraphSet { node, input: Box::new(optimized_input) }
+            }
+            LogicalPlan::GraphDelete { node, input } => {
+                let optimized_input = self.push_down(*input, predicates);
+                LogicalPlan::GraphDelete { node, input: Box::new(optimized_input) }
+            }
+            LogicalPlan::GraphRemove { node, input } => {
+                let optimized_input = self.push_down(*input, predicates);
+                LogicalPlan::GraphRemove { node, input: Box::new(optimized_input) }
+            }
         }
     }
 

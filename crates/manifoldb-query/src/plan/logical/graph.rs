@@ -522,6 +522,115 @@ impl GraphMergeNode {
     }
 }
 
+// ============================================================================
+// Graph SET, DELETE, and REMOVE Nodes
+// ============================================================================
+
+/// A REMOVE action for graph mutations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphRemoveAction {
+    /// Remove a property: REMOVE n.property
+    Property {
+        /// Variable name.
+        variable: String,
+        /// Property name to remove.
+        property: String,
+    },
+    /// Remove a label: REMOVE n:Label
+    Label {
+        /// Variable name.
+        variable: String,
+        /// Label to remove.
+        label: String,
+    },
+}
+
+/// A graph SET node for Cypher SET operations.
+///
+/// Updates properties or adds labels to matched nodes/relationships.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphSetNode {
+    /// SET actions to apply.
+    pub set_actions: Vec<GraphSetAction>,
+    /// Expressions for the RETURN clause.
+    pub returning: Vec<LogicalExpr>,
+}
+
+impl GraphSetNode {
+    /// Creates a new graph SET node.
+    #[must_use]
+    pub fn new(set_actions: Vec<GraphSetAction>) -> Self {
+        Self { set_actions, returning: vec![] }
+    }
+
+    /// Sets the returning clause.
+    #[must_use]
+    pub fn with_returning(mut self, returning: Vec<LogicalExpr>) -> Self {
+        self.returning = returning;
+        self
+    }
+}
+
+/// A graph DELETE node for Cypher DELETE operations.
+///
+/// Deletes nodes and/or relationships from the graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphDeleteNode {
+    /// Variables to delete (node or relationship variables).
+    pub variables: Vec<String>,
+    /// Whether this is a DETACH DELETE (also deletes relationships).
+    pub detach: bool,
+    /// Expressions for the RETURN clause.
+    pub returning: Vec<LogicalExpr>,
+}
+
+impl GraphDeleteNode {
+    /// Creates a new graph DELETE node.
+    #[must_use]
+    pub fn new(variables: Vec<String>) -> Self {
+        Self { variables, detach: false, returning: vec![] }
+    }
+
+    /// Creates a new DETACH DELETE node.
+    #[must_use]
+    pub fn detach(variables: Vec<String>) -> Self {
+        Self { variables, detach: true, returning: vec![] }
+    }
+
+    /// Sets the returning clause.
+    #[must_use]
+    pub fn with_returning(mut self, returning: Vec<LogicalExpr>) -> Self {
+        self.returning = returning;
+        self
+    }
+}
+
+/// A graph REMOVE node for Cypher REMOVE operations.
+///
+/// Removes properties or labels from matched nodes/relationships.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphRemoveNode {
+    /// REMOVE actions to apply.
+    pub remove_actions: Vec<GraphRemoveAction>,
+    /// Expressions for the RETURN clause.
+    pub returning: Vec<LogicalExpr>,
+}
+
+impl GraphRemoveNode {
+    /// Creates a new graph REMOVE node.
+    #[must_use]
+    pub fn new(remove_actions: Vec<GraphRemoveAction>) -> Self {
+        Self { remove_actions, returning: vec![] }
+    }
+
+    /// Sets the returning clause.
+    #[must_use]
+    pub fn with_returning(mut self, returning: Vec<LogicalExpr>) -> Self {
+        self.returning = returning;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

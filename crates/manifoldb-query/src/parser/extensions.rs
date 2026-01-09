@@ -47,10 +47,11 @@
 
 use crate::ast::{
     BinaryOp, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateNodeRef,
-    CreatePathStep, CreatePattern, DataType, DistanceMetric, DropCollectionStatement,
-    EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern, Identifier, MatchStatement,
-    MergeGraphStatement, MergePattern, NodePattern, OrderByExpr, ParameterRef, PathPattern,
-    PayloadFieldDef, PropertyCondition, QualifiedName, ReturnItem, SelectStatement, SetAction,
+    CreatePathStep, CreatePattern, DataType, DeleteGraphStatement, DistanceMetric,
+    DropCollectionStatement, EdgeDirection, EdgeLength, EdgePattern, Expr, GraphPattern,
+    Identifier, MatchStatement, MergeGraphStatement, MergePattern, NodePattern, OrderByExpr,
+    ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition, QualifiedName,
+    RemoveGraphStatement, RemoveItem, ReturnItem, SelectStatement, SetAction, SetGraphStatement,
     ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec, YieldItem,
 };
 use crate::error::{ParseError, ParseResult};
@@ -102,6 +103,21 @@ impl ExtendedParser {
             return Self::parse_cypher_merge(input);
         }
 
+        // Check for Cypher-style SET statement (MATCH ... SET ...)
+        if Self::is_cypher_set(input) {
+            return Self::parse_cypher_set(input);
+        }
+
+        // Check for Cypher-style DELETE statement (MATCH ... DELETE ...)
+        if Self::is_cypher_delete(input) {
+            return Self::parse_cypher_delete(input);
+        }
+
+        // Check for Cypher-style REMOVE statement (MATCH ... REMOVE ...)
+        if Self::is_cypher_remove(input) {
+            return Self::parse_cypher_remove(input);
+        }
+
         // Check for CALL with YIELD (requires custom parsing for Cypher-style YIELD clause)
         if Self::is_call_with_yield(input) {
             return Self::parse_call_with_yield(input);
@@ -146,7 +162,23 @@ impl ExtendedParser {
         }
 
         // Must contain RETURN keyword
-        upper.contains("RETURN")
+        if !upper.contains("RETURN") {
+            return false;
+        }
+
+        // Must NOT contain Cypher DML keywords (those are handled separately)
+        // Check for SET, DELETE, REMOVE which indicate mutation operations
+        if upper.contains(" SET ") && !upper.contains("MERGE") {
+            return false; // This is a SET statement
+        }
+        if upper.contains(" DELETE ") || upper.contains("DETACH DELETE") {
+            return false; // This is a DELETE statement
+        }
+        if upper.contains(" REMOVE ") {
+            return false; // This is a REMOVE statement
+        }
+
+        true
     }
 
     /// Checks if the input is a CREATE COLLECTION statement.
@@ -220,6 +252,45 @@ impl ExtendedParser {
         }
 
         false
+    }
+
+    /// Checks if the input is a Cypher-style SET statement.
+    ///
+    /// A Cypher SET must follow a MATCH clause (standalone SET is not valid Cypher).
+    fn is_cypher_set(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+
+        // Must start with MATCH and contain SET (but not ON MATCH SET from MERGE)
+        if upper.starts_with("MATCH") && upper.contains(" SET ") {
+            // Ensure it's not a MERGE statement with ON MATCH SET
+            !upper.contains("MERGE")
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the input is a Cypher-style DELETE statement.
+    ///
+    /// DELETE follows MATCH. DETACH DELETE is also supported.
+    fn is_cypher_delete(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+
+        // Must start with MATCH and contain DELETE
+        if upper.starts_with("MATCH") {
+            upper.contains(" DELETE ") || upper.contains("DETACH DELETE")
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the input is a Cypher-style REMOVE statement.
+    ///
+    /// REMOVE follows MATCH to remove properties or labels.
+    fn is_cypher_remove(input: &str) -> bool {
+        let upper = input.trim().to_uppercase();
+
+        // Must start with MATCH and contain REMOVE
+        upper.starts_with("MATCH") && upper.contains(" REMOVE ")
     }
 
     /// Parses a DROP COLLECTION statement.
@@ -1055,6 +1126,330 @@ impl ExtendedParser {
         }
 
         input.len()
+    }
+
+    /// Parses a Cypher-style SET statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// MATCH (n:Label) WHERE condition SET n.prop = value [, n.prop2 = value2] [RETURN n]
+    /// MATCH (n:Label) SET n:NewLabel [RETURN n]
+    /// ```
+    fn parse_cypher_set(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        // Find the MATCH, WHERE, SET, and RETURN positions
+        let set_pos = Self::find_keyword_pos(&upper, "SET")
+            .ok_or_else(|| ParseError::InvalidPattern("expected SET keyword".to_string()))?;
+        let where_pos = Self::find_keyword_pos(&upper[..set_pos], "WHERE");
+        let return_pos = Self::find_keyword_pos(&upper, "RETURN");
+
+        // Parse the MATCH pattern
+        let match_end = where_pos.unwrap_or(set_pos);
+        let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+        let match_clause = Self::parse_graph_pattern(pattern_str)?;
+
+        // Parse WHERE clause if present
+        let where_clause = if let Some(wp) = where_pos {
+            let where_content = &input[wp + 5..set_pos]; // +5 for "WHERE"
+            Some(Self::parse_where_expression(where_content.trim())?)
+        } else {
+            None
+        };
+
+        // Parse SET clause
+        let set_end = return_pos.unwrap_or(input.len());
+        let set_content = &input[set_pos + 3..set_end].trim(); // +3 for "SET"
+        let set_actions = Self::parse_set_items(set_content)?;
+
+        // Parse RETURN clause if present
+        let return_clause = if let Some(rp) = return_pos {
+            let return_content = &input[rp + 6..].trim(); // 6 = "RETURN".len()
+            Self::parse_return_items(return_content)?
+        } else {
+            vec![]
+        };
+
+        let mut stmt = SetGraphStatement::new(match_clause, set_actions);
+        if let Some(w) = where_clause {
+            stmt = stmt.with_where(w);
+        }
+        if !return_clause.is_empty() {
+            stmt = stmt.with_return(return_clause);
+        }
+
+        Ok(vec![Statement::Set(Box::new(stmt))])
+    }
+
+    /// Parses SET items (property assignments and label additions).
+    fn parse_set_items(input: &str) -> ParseResult<Vec<SetAction>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("SET clause cannot be empty".to_string()));
+        }
+
+        let mut actions = Vec::new();
+        let items = Self::split_by_comma(input);
+
+        for item in items {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+
+            // Check if it's a label assignment (n:Label) or property assignment (n.prop = value)
+            if item.contains('=') {
+                // Property assignment: n.prop = value
+                let eq_pos = item
+                    .find('=')
+                    .ok_or_else(|| ParseError::InvalidPattern("expected '='".to_string()))?;
+                let left = item[..eq_pos].trim();
+                let right = item[eq_pos + 1..].trim();
+
+                // Parse left side: variable.property
+                let dot_pos = left.find('.').ok_or_else(|| {
+                    ParseError::InvalidPattern("expected 'variable.property' format".to_string())
+                })?;
+                let variable = Identifier::new(&left[..dot_pos]);
+                let property = Identifier::new(&left[dot_pos + 1..]);
+
+                // Parse value
+                let value = Self::parse_where_expression(right)?;
+
+                actions.push(SetAction::Property { variable, property, value });
+            } else if item.contains(':') {
+                // Label assignment: n:Label
+                let colon_pos = item
+                    .find(':')
+                    .ok_or_else(|| ParseError::InvalidPattern("expected ':'".to_string()))?;
+                let variable = Identifier::new(&item[..colon_pos]);
+                let label = Identifier::new(&item[colon_pos + 1..]);
+
+                actions.push(SetAction::Label { variable, label });
+            } else {
+                return Err(ParseError::InvalidPattern(format!(
+                    "invalid SET item: {item}; expected property assignment or label"
+                )));
+            }
+        }
+
+        if actions.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "SET clause requires at least one action".to_string(),
+            ));
+        }
+
+        Ok(actions)
+    }
+
+    /// Splits input by comma, respecting parentheses and quotes.
+    fn split_by_comma(input: &str) -> Vec<&str> {
+        let mut result = Vec::new();
+        let mut start = 0;
+        let mut paren_depth: i32 = 0;
+        let mut bracket_depth: i32 = 0;
+        let mut in_string = false;
+
+        for (i, c) in input.char_indices() {
+            match c {
+                '\'' if !in_string => in_string = true,
+                '\'' if in_string => in_string = false,
+                '(' if !in_string => paren_depth += 1,
+                ')' if !in_string => paren_depth = paren_depth.saturating_sub(1),
+                '[' if !in_string => bracket_depth += 1,
+                ']' if !in_string => bracket_depth = bracket_depth.saturating_sub(1),
+                ',' if !in_string && paren_depth == 0 && bracket_depth == 0 => {
+                    result.push(&input[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+
+        result.push(&input[start..]);
+        result
+    }
+
+    /// Parses a Cypher-style DELETE statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// MATCH (n:Label) WHERE condition DELETE n
+    /// MATCH (n:Label) WHERE condition DETACH DELETE n
+    /// MATCH (a)-[r]->(b) DELETE r
+    /// ```
+    fn parse_cypher_delete(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        // Check for DETACH DELETE
+        let (detach, delete_pos) =
+            if let Some(pos) = Self::find_keyword_pos(&upper, "DETACH DELETE") {
+                (true, pos)
+            } else if let Some(pos) = Self::find_keyword_pos(&upper, "DELETE") {
+                (false, pos)
+            } else {
+                return Err(ParseError::InvalidPattern("expected DELETE keyword".to_string()));
+            };
+
+        let where_pos = Self::find_keyword_pos(&upper[..delete_pos], "WHERE");
+        let return_pos = Self::find_keyword_pos(&upper, "RETURN");
+
+        // Parse the MATCH pattern
+        let match_end = where_pos.unwrap_or(delete_pos);
+        let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+        let match_clause = Self::parse_graph_pattern(pattern_str)?;
+
+        // Parse WHERE clause if present
+        let where_clause = if let Some(wp) = where_pos {
+            let where_content = &input[wp + 5..delete_pos]; // +5 for "WHERE"
+            Some(Self::parse_where_expression(where_content.trim())?)
+        } else {
+            None
+        };
+
+        // Parse DELETE variables
+        let delete_keyword_len = if detach { 13 } else { 6 }; // "DETACH DELETE" or "DELETE"
+        let delete_end = return_pos.unwrap_or(input.len());
+        let delete_content = &input[delete_pos + delete_keyword_len..delete_end].trim();
+
+        let variables: Vec<Identifier> = delete_content
+            .split(',')
+            .map(|s| Identifier::new(s.trim()))
+            .filter(|id| !id.name.is_empty())
+            .collect();
+
+        if variables.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "DELETE requires at least one variable".to_string(),
+            ));
+        }
+
+        // Parse RETURN clause if present
+        let return_clause = if let Some(rp) = return_pos {
+            let return_content = &input[rp + 6..].trim(); // 6 = "RETURN".len()
+            Self::parse_return_items(return_content)?
+        } else {
+            vec![]
+        };
+
+        let mut stmt = if detach {
+            DeleteGraphStatement::detach(match_clause, variables)
+        } else {
+            DeleteGraphStatement::new(match_clause, variables)
+        };
+
+        if let Some(w) = where_clause {
+            stmt = stmt.with_where(w);
+        }
+        if !return_clause.is_empty() {
+            stmt = stmt.with_return(return_clause);
+        }
+
+        Ok(vec![Statement::DeleteGraph(Box::new(stmt))])
+    }
+
+    /// Parses a Cypher-style REMOVE statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// MATCH (n:Label) WHERE condition REMOVE n.property
+    /// MATCH (n:Label:Admin) REMOVE n:Admin
+    /// ```
+    fn parse_cypher_remove(input: &str) -> ParseResult<Vec<Statement>> {
+        let input = input.trim().trim_end_matches(';');
+        let upper = input.to_uppercase();
+
+        let remove_pos = Self::find_keyword_pos(&upper, "REMOVE")
+            .ok_or_else(|| ParseError::InvalidPattern("expected REMOVE keyword".to_string()))?;
+        let where_pos = Self::find_keyword_pos(&upper[..remove_pos], "WHERE");
+        let return_pos = Self::find_keyword_pos(&upper, "RETURN");
+
+        // Parse the MATCH pattern
+        let match_end = where_pos.unwrap_or(remove_pos);
+        let pattern_str = &input[5..match_end].trim(); // 5 = "MATCH".len()
+        let match_clause = Self::parse_graph_pattern(pattern_str)?;
+
+        // Parse WHERE clause if present
+        let where_clause = if let Some(wp) = where_pos {
+            let where_content = &input[wp + 5..remove_pos]; // +5 for "WHERE"
+            Some(Self::parse_where_expression(where_content.trim())?)
+        } else {
+            None
+        };
+
+        // Parse REMOVE items
+        let remove_end = return_pos.unwrap_or(input.len());
+        let remove_content = &input[remove_pos + 6..remove_end].trim(); // +6 for "REMOVE"
+
+        let items = Self::parse_remove_items(remove_content)?;
+
+        // Parse RETURN clause if present
+        let return_clause = if let Some(rp) = return_pos {
+            let return_content = &input[rp + 6..].trim(); // 6 = "RETURN".len()
+            Self::parse_return_items(return_content)?
+        } else {
+            vec![]
+        };
+
+        let mut stmt = RemoveGraphStatement::new(match_clause, items);
+        if let Some(w) = where_clause {
+            stmt = stmt.with_where(w);
+        }
+        if !return_clause.is_empty() {
+            stmt = stmt.with_return(return_clause);
+        }
+
+        Ok(vec![Statement::Remove(Box::new(stmt))])
+    }
+
+    /// Parses REMOVE items (property removal and label removal).
+    fn parse_remove_items(input: &str) -> ParseResult<Vec<RemoveItem>> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("REMOVE clause cannot be empty".to_string()));
+        }
+
+        let mut items = Vec::new();
+        let parts = Self::split_by_comma(input);
+
+        for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            if part.contains('.') {
+                // Property removal: n.property
+                let dot_pos = part
+                    .find('.')
+                    .ok_or_else(|| ParseError::InvalidPattern("expected '.'".to_string()))?;
+                let variable = Identifier::new(&part[..dot_pos]);
+                let property = Identifier::new(&part[dot_pos + 1..]);
+                items.push(RemoveItem::Property { variable, property });
+            } else if part.contains(':') {
+                // Label removal: n:Label
+                let colon_pos = part
+                    .find(':')
+                    .ok_or_else(|| ParseError::InvalidPattern("expected ':'".to_string()))?;
+                let variable = Identifier::new(&part[..colon_pos]);
+                let label = Identifier::new(&part[colon_pos + 1..]);
+                items.push(RemoveItem::Label { variable, label });
+            } else {
+                return Err(ParseError::InvalidPattern(format!(
+                    "invalid REMOVE item: {part}; expected property or label"
+                )));
+            }
+        }
+
+        if items.is_empty() {
+            return Err(ParseError::InvalidPattern(
+                "REMOVE clause requires at least one item".to_string(),
+            ));
+        }
+
+        Ok(items)
     }
 
     /// Parses collection definitions (vectors and payload fields).
@@ -4409,6 +4804,234 @@ mod tests {
                 _ => panic!("Expected relationship pattern"),
             },
             _ => panic!("Expected MergeGraph statement"),
+        }
+    }
+
+    // ========== SET Tests ==========
+
+    #[test]
+    fn parse_cypher_set_property() {
+        let result = ExtendedParser::parse("MATCH (u:User {name: 'Alice'}) SET u.verified = true");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Set(stmt) => {
+                assert_eq!(stmt.set_actions.len(), 1);
+                match &stmt.set_actions[0] {
+                    SetAction::Property { variable, property, .. } => {
+                        assert_eq!(variable.name, "u");
+                        assert_eq!(property.name, "verified");
+                    }
+                    _ => panic!("Expected property assignment"),
+                }
+            }
+            _ => panic!("Expected Set statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_set_multiple_properties() {
+        let result = ExtendedParser::parse(
+            "MATCH (u:User) WHERE u.name = 'Alice' SET u.verified = true, u.updated = 123",
+        );
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Set(stmt) => {
+                assert!(stmt.where_clause.is_some());
+                assert_eq!(stmt.set_actions.len(), 2);
+            }
+            _ => panic!("Expected Set statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_set_label() {
+        let result = ExtendedParser::parse("MATCH (u:User {name: 'Alice'}) SET u:Admin");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Set(stmt) => {
+                assert_eq!(stmt.set_actions.len(), 1);
+                match &stmt.set_actions[0] {
+                    SetAction::Label { variable, label } => {
+                        assert_eq!(variable.name, "u");
+                        assert_eq!(label.name, "Admin");
+                    }
+                    _ => panic!("Expected label assignment"),
+                }
+            }
+            _ => panic!("Expected Set statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_set_with_return() {
+        let result = ExtendedParser::parse("MATCH (u:User) SET u.verified = true RETURN u");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Set(stmt) => {
+                assert_eq!(stmt.return_clause.len(), 1);
+            }
+            _ => panic!("Expected Set statement"),
+        }
+    }
+
+    // ========== DELETE Tests ==========
+
+    #[test]
+    fn parse_cypher_delete_node() {
+        let result = ExtendedParser::parse("MATCH (u:User {name: 'Alice'}) DELETE u");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::DeleteGraph(stmt) => {
+                assert!(!stmt.detach);
+                assert_eq!(stmt.variables.len(), 1);
+                assert_eq!(stmt.variables[0].name, "u");
+            }
+            _ => panic!("Expected DeleteGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_detach_delete() {
+        let result = ExtendedParser::parse("MATCH (u:User {name: 'Alice'}) DETACH DELETE u");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::DeleteGraph(stmt) => {
+                assert!(stmt.detach);
+                assert_eq!(stmt.variables.len(), 1);
+            }
+            _ => panic!("Expected DeleteGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_delete_relationship() {
+        let result = ExtendedParser::parse(
+            "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE a.name = 'Alice' DELETE r",
+        );
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::DeleteGraph(stmt) => {
+                assert!(!stmt.detach);
+                assert_eq!(stmt.variables.len(), 1);
+                assert_eq!(stmt.variables[0].name, "r");
+                assert!(stmt.where_clause.is_some());
+            }
+            _ => panic!("Expected DeleteGraph statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_delete_with_return() {
+        let result = ExtendedParser::parse("MATCH (u:User) DELETE u RETURN u.name");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::DeleteGraph(stmt) => {
+                assert_eq!(stmt.return_clause.len(), 1);
+            }
+            _ => panic!("Expected DeleteGraph statement"),
+        }
+    }
+
+    // ========== REMOVE Tests ==========
+
+    #[test]
+    fn parse_cypher_remove_property() {
+        let result = ExtendedParser::parse("MATCH (u:User {name: 'Alice'}) REMOVE u.temporary");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Remove(stmt) => {
+                assert_eq!(stmt.items.len(), 1);
+                match &stmt.items[0] {
+                    RemoveItem::Property { variable, property } => {
+                        assert_eq!(variable.name, "u");
+                        assert_eq!(property.name, "temporary");
+                    }
+                    _ => panic!("Expected property removal"),
+                }
+            }
+            _ => panic!("Expected Remove statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_remove_label() {
+        let result = ExtendedParser::parse("MATCH (u:User:Admin) REMOVE u:Admin");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Remove(stmt) => {
+                assert_eq!(stmt.items.len(), 1);
+                match &stmt.items[0] {
+                    RemoveItem::Label { variable, label } => {
+                        assert_eq!(variable.name, "u");
+                        assert_eq!(label.name, "Admin");
+                    }
+                    _ => panic!("Expected label removal"),
+                }
+            }
+            _ => panic!("Expected Remove statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_remove_multiple_items() {
+        let result = ExtendedParser::parse(
+            "MATCH (u:User) WHERE u.id = 1 REMOVE u.temp1, u.temp2, u:Temporary",
+        );
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Remove(stmt) => {
+                assert!(stmt.where_clause.is_some());
+                assert_eq!(stmt.items.len(), 3);
+            }
+            _ => panic!("Expected Remove statement"),
+        }
+    }
+
+    #[test]
+    fn parse_cypher_remove_with_return() {
+        let result = ExtendedParser::parse("MATCH (u:User) REMOVE u.temp RETURN u");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let stmts = result.unwrap();
+        assert_eq!(stmts.len(), 1);
+
+        match &stmts[0] {
+            Statement::Remove(stmt) => {
+                assert_eq!(stmt.return_clause.len(), 1);
+            }
+            _ => panic!("Expected Remove statement"),
         }
     }
 }

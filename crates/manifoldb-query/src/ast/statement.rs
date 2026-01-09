@@ -40,6 +40,12 @@ pub enum Statement {
     Merge(Box<MergeGraphStatement>),
     /// CALL statement for procedure invocation.
     Call(Box<CallStatement>),
+    /// Cypher SET statement for updating properties.
+    Set(Box<SetGraphStatement>),
+    /// Cypher DELETE statement for removing nodes/relationships.
+    DeleteGraph(Box<DeleteGraphStatement>),
+    /// Cypher REMOVE statement for removing properties/labels.
+    Remove(Box<RemoveGraphStatement>),
     /// EXPLAIN statement.
     Explain(Box<Statement>),
 }
@@ -1658,6 +1664,212 @@ impl SetAction {
     #[must_use]
     pub fn label(variable: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
         Self::Label { variable: variable.into(), label: label.into() }
+    }
+}
+
+// ============================================================================
+// Cypher SET, DELETE, and REMOVE Statements
+// ============================================================================
+
+/// A Cypher SET statement for updating properties.
+///
+/// SET can update properties on nodes or relationships matched by a MATCH clause.
+///
+/// # Examples
+///
+/// Set a property:
+/// ```text
+/// MATCH (u:User {name: 'Alice'})
+/// SET u.verified = true, u.updated_at = timestamp()
+/// ```
+///
+/// Add a label:
+/// ```text
+/// MATCH (u:User {name: 'Alice'})
+/// SET u:Admin
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetGraphStatement {
+    /// The MATCH pattern to find entities to update.
+    pub match_clause: GraphPattern,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// The SET actions to apply.
+    pub set_actions: Vec<SetAction>,
+    /// Optional RETURN clause.
+    pub return_clause: Vec<ReturnItem>,
+}
+
+impl SetGraphStatement {
+    /// Creates a new SET statement.
+    #[must_use]
+    pub fn new(match_clause: GraphPattern, set_actions: Vec<SetAction>) -> Self {
+        Self { match_clause, where_clause: None, set_actions, return_clause: vec![] }
+    }
+
+    /// Adds a WHERE clause.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Adds a RETURN clause.
+    #[must_use]
+    pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
+        self.return_clause = items;
+        self
+    }
+}
+
+/// A Cypher DELETE statement for removing nodes and relationships.
+///
+/// DELETE removes nodes/relationships matched by a MATCH clause.
+/// DETACH DELETE also removes all connected relationships.
+///
+/// # Examples
+///
+/// Delete a node (fails if has relationships):
+/// ```text
+/// MATCH (u:User {name: 'Alice'})
+/// DELETE u
+/// ```
+///
+/// Detach delete (removes node and all its relationships):
+/// ```text
+/// MATCH (u:User {name: 'Alice'})
+/// DETACH DELETE u
+/// ```
+///
+/// Delete a relationship:
+/// ```text
+/// MATCH (a:User)-[r:FOLLOWS]->(b:User)
+/// WHERE a.name = 'Alice' AND b.name = 'Bob'
+/// DELETE r
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeleteGraphStatement {
+    /// The MATCH pattern to find entities to delete.
+    pub match_clause: GraphPattern,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// Variables to delete (node or relationship variables).
+    pub variables: Vec<Identifier>,
+    /// Whether this is a DETACH DELETE (also deletes relationships).
+    pub detach: bool,
+    /// Optional RETURN clause (returns deleted entities).
+    pub return_clause: Vec<ReturnItem>,
+}
+
+impl DeleteGraphStatement {
+    /// Creates a new DELETE statement.
+    #[must_use]
+    pub fn new(match_clause: GraphPattern, variables: Vec<Identifier>) -> Self {
+        Self { match_clause, where_clause: None, variables, detach: false, return_clause: vec![] }
+    }
+
+    /// Creates a new DETACH DELETE statement.
+    #[must_use]
+    pub fn detach(match_clause: GraphPattern, variables: Vec<Identifier>) -> Self {
+        Self { match_clause, where_clause: None, variables, detach: true, return_clause: vec![] }
+    }
+
+    /// Adds a WHERE clause.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Adds a RETURN clause.
+    #[must_use]
+    pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
+        self.return_clause = items;
+        self
+    }
+}
+
+/// An item to remove in a REMOVE clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoveItem {
+    /// Remove a property: REMOVE n.property
+    Property {
+        /// The variable to remove the property from.
+        variable: Identifier,
+        /// The property name to remove.
+        property: Identifier,
+    },
+    /// Remove a label: REMOVE n:Label
+    Label {
+        /// The variable to remove the label from.
+        variable: Identifier,
+        /// The label to remove.
+        label: Identifier,
+    },
+}
+
+impl RemoveItem {
+    /// Creates a property removal item.
+    #[must_use]
+    pub fn property(variable: impl Into<Identifier>, property: impl Into<Identifier>) -> Self {
+        Self::Property { variable: variable.into(), property: property.into() }
+    }
+
+    /// Creates a label removal item.
+    #[must_use]
+    pub fn label(variable: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
+        Self::Label { variable: variable.into(), label: label.into() }
+    }
+}
+
+/// A Cypher REMOVE statement for removing properties and labels.
+///
+/// REMOVE removes properties or labels from nodes/relationships.
+///
+/// # Examples
+///
+/// Remove a property:
+/// ```text
+/// MATCH (u:User {name: 'Alice'})
+/// REMOVE u.temporary_field
+/// ```
+///
+/// Remove a label:
+/// ```text
+/// MATCH (u:User:Admin {name: 'Alice'})
+/// REMOVE u:Admin
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveGraphStatement {
+    /// The MATCH pattern to find entities to modify.
+    pub match_clause: GraphPattern,
+    /// Optional WHERE clause on the MATCH.
+    pub where_clause: Option<Expr>,
+    /// Items to remove (properties and labels).
+    pub items: Vec<RemoveItem>,
+    /// Optional RETURN clause.
+    pub return_clause: Vec<ReturnItem>,
+}
+
+impl RemoveGraphStatement {
+    /// Creates a new REMOVE statement.
+    #[must_use]
+    pub fn new(match_clause: GraphPattern, items: Vec<RemoveItem>) -> Self {
+        Self { match_clause, where_clause: None, items, return_clause: vec![] }
+    }
+
+    /// Adds a WHERE clause.
+    #[must_use]
+    pub fn with_where(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
+    }
+
+    /// Adds a RETURN clause.
+    #[must_use]
+    pub fn with_return(mut self, items: Vec<ReturnItem>) -> Self {
+        self.return_clause = items;
+        self
     }
 }
 

@@ -1533,8 +1533,12 @@ fn execute_logical_plan<T: Transaction>(
                 .to_string(),
         )),
 
-        LogicalPlan::GraphCreate { .. } | LogicalPlan::GraphMerge { .. } => Err(Error::Execution(
-            "Graph CREATE/MERGE should be executed via execute_statement, not execute_logical_plan"
+        LogicalPlan::GraphCreate { .. }
+        | LogicalPlan::GraphMerge { .. }
+        | LogicalPlan::GraphSet { .. }
+        | LogicalPlan::GraphDelete { .. }
+        | LogicalPlan::GraphRemove { .. } => Err(Error::Execution(
+            "Graph DML operations should be executed via execute_statement, not execute_logical_plan"
                 .to_string(),
         )),
 

@@ -25,10 +25,11 @@ pub use pattern::{
 pub use statement::{
     Assignment, CallStatement, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget,
     CreateCollectionStatement, CreateGraphStatement, CreateIndexStatement, CreateNodeRef,
-    CreatePathStep, CreatePattern, CreateTableStatement, DataType, DeleteStatement,
-    DropCollectionStatement, DropIndexStatement, DropTableStatement, IndexColumn, InsertSource,
-    InsertStatement, JoinClause, JoinCondition, JoinType, MatchStatement, MergeGraphStatement,
-    MergePattern, OnConflict, PayloadFieldDef, ReturnItem, SelectItem, SelectStatement, SetAction,
+    CreatePathStep, CreatePattern, CreateTableStatement, DataType, DeleteGraphStatement,
+    DeleteStatement, DropCollectionStatement, DropIndexStatement, DropTableStatement, IndexColumn,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType, MatchStatement,
+    MergeGraphStatement, MergePattern, OnConflict, PayloadFieldDef, RemoveGraphStatement,
+    RemoveItem, ReturnItem, SelectItem, SelectStatement, SetAction, SetGraphStatement,
     SetOperation, SetOperator, Statement, TableAlias, TableConstraint, TableRef, UpdateStatement,
     VectorDef, VectorTypeDef, WithClause, YieldItem,
 };
