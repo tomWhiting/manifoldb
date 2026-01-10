@@ -2339,6 +2339,11 @@ fn execute_insert<T: Transaction>(
             }
 
             // No conflict - proceed with normal insert
+
+            // Validate constraints before inserting
+            super::constraints::ConstraintValidator::validate_insert(tx, table, &row_values, ctx)
+                .map_err(|e| Error::Execution(e.to_string()))?;
+
             let mut entity = tx.create_entity().map_err(Error::Transaction)?;
             entity = entity.with_label(table);
 
@@ -2480,7 +2485,8 @@ fn execute_update<T: Transaction>(
             let mut vectors_to_update: Vec<(String, manifoldb_vector::types::VectorData)> =
                 Vec::new();
 
-            // Apply assignments
+            // Apply assignments and collect new values for constraint validation
+            let mut new_values: HashMap<String, Value> = HashMap::new();
             for (col, expr) in assignments {
                 let value = evaluate_expr(expr, &updated_entity, ctx);
 
@@ -2497,8 +2503,19 @@ fn execute_update<T: Transaction>(
                     }
                 }
 
+                new_values.insert(col.clone(), value.clone());
                 updated_entity.set_property(col, value);
             }
+
+            // Validate constraints for the updated values
+            super::constraints::ConstraintValidator::validate_update(
+                tx,
+                table,
+                &old_entity,
+                &new_values,
+                ctx,
+            )
+            .map_err(|e| Error::Execution(e.to_string()))?;
 
             tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
 
@@ -2565,6 +2582,11 @@ fn execute_delete<T: Transaction>(
         };
 
         if matches {
+            // Validate foreign key constraints before deleting
+            // (check that no other table references this row)
+            super::constraints::ConstraintValidator::validate_delete(tx, table, &entity)
+                .map_err(|e| Error::Execution(e.to_string()))?;
+
             // Remove from property indexes before deleting
             super::index_maintenance::EntityIndexMaintenance::on_delete(tx, &entity)
                 .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
@@ -4424,6 +4446,20 @@ fn expr_to_column_name(expr: &LogicalExpr) -> String {
         LogicalExpr::Literal(lit) => format!("{lit:?}"),
         _ => "?".to_string(),
     }
+}
+
+/// Evaluate a predicate expression for constraint validation.
+///
+/// This is a public wrapper around the internal `evaluate_predicate` function
+/// for use by the constraint enforcement module.
+///
+/// Returns `true` if the predicate evaluates to true, `false` otherwise.
+pub fn evaluate_predicate_for_constraint(
+    expr: &LogicalExpr,
+    entity: &Entity,
+    ctx: &ExecutionContext,
+) -> bool {
+    evaluate_predicate(expr, entity, ctx)
 }
 
 #[cfg(test)]

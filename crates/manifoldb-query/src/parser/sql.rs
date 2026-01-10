@@ -19,15 +19,14 @@ use crate::ast::{
     FunctionLanguage, FunctionParameter, FunctionVolatility, GroupByClause, GroupingSet,
     Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
     JoinCondition, JoinType, Literal, MergeAction, MergeClause, MergeMatchType, MergeSqlStatement,
-    NamedWindowDefinition, OnConflict, OrderByExpr,
-    ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
-    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
-    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
-    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
-    TruncateCascade, TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement,
-    UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec,
-    WithClause,
+    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
+    PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
+    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
+    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
+    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
+    TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity, TruncateTableStatement,
+    UnaryOp, UpdateStatement, UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -59,6 +58,62 @@ pub fn parse_single_statement(sql: &str) -> ParseResult<Statement> {
     }
     // SAFETY: We just verified there's exactly one statement
     Ok(stmts.remove(0))
+}
+
+/// Parses a CHECK constraint expression from SQL.
+///
+/// This wraps the expression in a SELECT statement and extracts the WHERE clause
+/// to leverage the existing expression parsing infrastructure.
+///
+/// # Errors
+///
+/// Returns an error if the expression is syntactically invalid.
+///
+/// # Example
+///
+/// ```ignore
+/// use manifoldb_query::parser::parse_check_expression;
+///
+/// let expr = parse_check_expression("age >= 0 AND age <= 150")?;
+/// ```
+pub fn parse_check_expression(expression: &str) -> ParseResult<crate::plan::logical::LogicalExpr> {
+    use crate::plan::logical::PlanBuilder;
+
+    if expression.trim().is_empty() {
+        return Err(ParseError::EmptyQuery);
+    }
+
+    // Parse the expression by wrapping it in a SELECT statement
+    let dialect = PostgreSqlDialect {};
+    let wrapped_sql = format!("SELECT 1 WHERE {}", expression);
+    let statements = Parser::parse_sql(&dialect, &wrapped_sql)?;
+
+    if statements.len() != 1 {
+        return Err(ParseError::SqlSyntax("expected single statement".to_string()));
+    }
+
+    // Extract the WHERE clause from the SELECT
+    match &statements[0] {
+        sp::Statement::Query(query) => {
+            match query.body.as_ref() {
+                sp::SetExpr::Select(select) => {
+                    if let Some(selection) = &select.selection {
+                        // Convert the sqlparser expression to our AST
+                        let ast_expr = convert_expr(selection.clone())?;
+                        // Convert AST expr to LogicalExpr using PlanBuilder
+                        let mut builder = PlanBuilder::new();
+                        builder.build_expr(&ast_expr).map_err(|e| {
+                            ParseError::SqlSyntax(format!("failed to build expression: {}", e))
+                        })
+                    } else {
+                        Err(ParseError::MissingClause("WHERE clause".to_string()))
+                    }
+                }
+                _ => Err(ParseError::SqlSyntax("expected SELECT".to_string())),
+            }
+        }
+        _ => Err(ParseError::SqlSyntax("expected query".to_string())),
+    }
 }
 
 /// Converts a sqlparser Statement to our Statement.

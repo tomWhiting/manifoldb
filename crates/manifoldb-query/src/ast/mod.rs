@@ -43,10 +43,10 @@ pub use statement::{
     SavepointStatement, SearchClause, SearchOrder, SelectItem, SelectStatement, SetAction,
     SetGraphStatement, SetOperation, SetOperator, SetSearchPathStatement, SetSessionStatement,
     SetTransactionStatement, SetValue, ShowProceduresStatement, ShowStatement, Statement,
-    TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
-    TruncateCascade, TruncateIdentity, TruncateTableStatement, UpdateStatement, UtilityStatement,
-    VacuumStatement, VectorDef, VectorTypeDef, WithClause, YieldItem,
+    TableAlias, TableConstraint, TableRef, TransactionAccessMode, TransactionStatement,
+    TriggerEvent, TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity,
+    TruncateTableStatement, UpdateStatement, UtilityStatement, VacuumStatement, VectorDef,
+    VectorTypeDef, WithClause, YieldItem,
 };
 pub use vector::{
     DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,
