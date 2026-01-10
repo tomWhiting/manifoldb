@@ -1803,8 +1803,7 @@ impl PlanBuilder {
         let restart_identity =
             truncate.identity.is_some_and(|i| matches!(i, ast::TruncateIdentity::Restart));
 
-        let cascade =
-            truncate.cascade.is_some_and(|c| matches!(c, ast::TruncateCascade::Cascade));
+        let cascade = truncate.cascade.is_some_and(|c| matches!(c, ast::TruncateCascade::Cascade));
 
         let node = TruncateTableNode::new(names)
             .with_restart_identity(restart_identity)
