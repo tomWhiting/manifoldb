@@ -239,8 +239,8 @@ pub enum ServerCommands {
         #[arg(short = 'H', long, default_value = "127.0.0.1")]
         host: String,
 
-        /// Port to listen on
-        #[arg(short, long, default_value = "4000")]
+        /// Port to listen on (auto-selects next free port if in use)
+        #[arg(short, long, default_value = "6010")]
         port: u16,
 
         /// Run in background (daemonize)
@@ -273,7 +273,7 @@ pub enum ServerCommands {
         host: String,
 
         /// Port to listen on
-        #[arg(short, long, default_value = "4000")]
+        #[arg(short, long, default_value = "6010")]
         port: u16,
 
         /// Suppress output
@@ -288,7 +288,7 @@ pub enum ServerCommands {
         host: String,
 
         /// Port to listen on
-        #[arg(short, long, default_value = "4000")]
+        #[arg(short, long, default_value = "6010")]
         port: u16,
     },
 

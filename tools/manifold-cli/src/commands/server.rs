@@ -3,6 +3,7 @@
 //! Provides commands to start, stop, and manage the ManifoldDB GraphQL server.
 
 use std::fs::{self, File};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,6 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CliError, Result};
 use crate::ServerCommands;
+
+/// Default port for the server.
+const DEFAULT_PORT: u16 = 6010;
+
+/// Maximum number of ports to try when auto-selecting.
+const PORT_SCAN_RANGE: u16 = 100;
 
 /// Server state persisted to disk.
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,6 +89,25 @@ fn delete_state() {
     let _ = fs::remove_file(pid_file()); // Clean up legacy PID file too
 }
 
+/// Check if a port is available on the given host.
+fn is_port_available(host: &str, port: u16) -> bool {
+    TcpListener::bind((host, port)).is_ok()
+}
+
+/// Find a free port starting from the requested port.
+///
+/// Returns the first available port in the range [port, port + PORT_SCAN_RANGE).
+/// If none are available, returns None.
+fn find_free_port(host: &str, starting_port: u16) -> Option<u16> {
+    for offset in 0..PORT_SCAN_RANGE {
+        let port = starting_port.saturating_add(offset);
+        if is_port_available(host, port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 /// Run a server subcommand.
 pub fn run(database: Option<&Path>, cmd: ServerCommands) -> Result<()> {
     match cmd {
@@ -114,12 +140,32 @@ fn start(
         return Err(CliError::ServerAlreadyRunning);
     }
 
+    // Find a free port (auto-select if requested port is in use)
+    let actual_port = if is_port_available(host, port) {
+        port
+    } else {
+        if !quiet {
+            eprintln!("Port {} is in use, searching for available port...", port);
+        }
+        find_free_port(host, port).ok_or_else(|| {
+            CliError::InvalidInput(format!(
+                "No available port found in range {}-{}",
+                port,
+                port.saturating_add(PORT_SCAN_RANGE)
+            ))
+        })?
+    };
+
+    if actual_port != port && !quiet {
+        println!("Using port {} (requested {} was in use)", actual_port, port);
+    }
+
     let db_path = database.map(PathBuf::from).unwrap_or_else(default_database);
 
     if background {
-        start_background(&db_path, host, port, quiet)
+        start_background(&db_path, host, actual_port, quiet)
     } else {
-        start_foreground(&db_path, host, port, quiet)
+        start_foreground(&db_path, host, actual_port, quiet)
     }
 }
 
@@ -327,11 +373,11 @@ fn restart(database: Option<&Path>, host: &str, port: u16, quiet: bool) -> Resul
     }
 
     // Use saved settings as defaults, but allow CLI overrides
-    // CLI defaults are "127.0.0.1" and 4000, so we check against those
+    // CLI defaults are "127.0.0.1" and DEFAULT_PORT, so we check against those
     let (final_host, final_port, final_db) = if let Some(ref state) = saved_state {
         // Use saved values unless CLI provided non-default values
         let use_host = if host == "127.0.0.1" { &state.host } else { host };
-        let use_port = if port == 4000 { state.port } else { port };
+        let use_port = if port == DEFAULT_PORT { state.port } else { port };
         let use_db = database
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&state.database));
