@@ -38,6 +38,22 @@ pub enum Statement {
     CreateView(Box<CreateViewStatement>),
     /// DROP VIEW statement.
     DropView(DropViewStatement),
+    /// CREATE SCHEMA statement.
+    CreateSchema(CreateSchemaStatement),
+    /// ALTER SCHEMA statement.
+    AlterSchema(AlterSchemaStatement),
+    /// DROP SCHEMA statement.
+    DropSchema(DropSchemaStatement),
+    /// CREATE FUNCTION statement.
+    CreateFunction(Box<CreateFunctionStatement>),
+    /// DROP FUNCTION statement.
+    DropFunction(DropFunctionStatement),
+    /// CREATE TRIGGER statement.
+    CreateTrigger(Box<CreateTriggerStatement>),
+    /// DROP TRIGGER statement.
+    DropTrigger(DropTriggerStatement),
+    /// SET search_path statement.
+    SetSearchPath(SetSearchPathStatement),
     /// MATCH statement (Cypher-style graph query).
     Match(Box<MatchStatement>),
     /// Cypher CREATE statement for creating nodes and relationships.
@@ -3325,6 +3341,680 @@ impl ResetStatement {
     #[must_use]
     pub fn variable(name: impl Into<Identifier>) -> Self {
         Self { name: Some(name.into()) }
+    }
+}
+
+// ============================================================================
+// Schema Object Statements
+// ============================================================================
+
+/// A CREATE SCHEMA statement.
+///
+/// Creates a new schema namespace for organizing database objects.
+///
+/// # Examples
+///
+/// Basic schema creation:
+/// ```sql
+/// CREATE SCHEMA analytics;
+/// ```
+///
+/// Create schema with authorization:
+/// ```sql
+/// CREATE SCHEMA IF NOT EXISTS reporting AUTHORIZATION admin;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateSchemaStatement {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The schema name.
+    pub name: Identifier,
+    /// Optional authorization (owner) for the schema.
+    pub authorization: Option<Identifier>,
+}
+
+impl CreateSchemaStatement {
+    /// Creates a new CREATE SCHEMA statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>) -> Self {
+        Self { if_not_exists: false, name: name.into(), authorization: None }
+    }
+
+    /// Sets the IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn with_if_not_exists(mut self, if_not_exists: bool) -> Self {
+        self.if_not_exists = if_not_exists;
+        self
+    }
+
+    /// Sets the authorization (owner) for the schema.
+    #[must_use]
+    pub fn with_authorization(mut self, auth: impl Into<Identifier>) -> Self {
+        self.authorization = Some(auth.into());
+        self
+    }
+}
+
+/// An ALTER SCHEMA statement.
+///
+/// Modifies an existing schema's properties.
+///
+/// # Examples
+///
+/// Change schema owner:
+/// ```sql
+/// ALTER SCHEMA analytics OWNER TO admin;
+/// ```
+///
+/// Rename schema:
+/// ```sql
+/// ALTER SCHEMA old_name RENAME TO new_name;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterSchemaStatement {
+    /// The schema name to alter.
+    pub name: Identifier,
+    /// The action to perform on the schema.
+    pub action: AlterSchemaAction,
+}
+
+impl AlterSchemaStatement {
+    /// Creates a new ALTER SCHEMA statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, action: AlterSchemaAction) -> Self {
+        Self { name: name.into(), action }
+    }
+
+    /// Creates an ALTER SCHEMA ... OWNER TO statement.
+    #[must_use]
+    pub fn owner_to(name: impl Into<Identifier>, new_owner: impl Into<Identifier>) -> Self {
+        Self::new(name, AlterSchemaAction::OwnerTo(new_owner.into()))
+    }
+
+    /// Creates an ALTER SCHEMA ... RENAME TO statement.
+    #[must_use]
+    pub fn rename_to(name: impl Into<Identifier>, new_name: impl Into<Identifier>) -> Self {
+        Self::new(name, AlterSchemaAction::RenameTo(new_name.into()))
+    }
+}
+
+/// Actions that can be performed in an ALTER SCHEMA statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlterSchemaAction {
+    /// Change the schema owner.
+    OwnerTo(Identifier),
+    /// Rename the schema.
+    RenameTo(Identifier),
+}
+
+/// A DROP SCHEMA statement.
+///
+/// Removes a schema from the database.
+///
+/// # Examples
+///
+/// Basic drop:
+/// ```sql
+/// DROP SCHEMA analytics;
+/// ```
+///
+/// Drop with cascade:
+/// ```sql
+/// DROP SCHEMA IF EXISTS analytics CASCADE;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropSchemaStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The schema names to drop.
+    pub names: Vec<Identifier>,
+    /// Whether CASCADE is specified (drops all contained objects).
+    pub cascade: bool,
+}
+
+impl DropSchemaStatement {
+    /// Creates a new DROP SCHEMA statement.
+    #[must_use]
+    pub fn new(names: Vec<Identifier>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+/// A SET search_path statement.
+///
+/// Sets the schema search path for name resolution.
+///
+/// # Examples
+///
+/// ```sql
+/// SET search_path TO analytics, public;
+/// SET search_path = 'myschema';
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetSearchPathStatement {
+    /// The schemas in the search path.
+    pub schemas: Vec<Identifier>,
+}
+
+impl SetSearchPathStatement {
+    /// Creates a new SET search_path statement.
+    #[must_use]
+    pub fn new(schemas: Vec<Identifier>) -> Self {
+        Self { schemas }
+    }
+}
+
+// ============================================================================
+// Function Statements
+// ============================================================================
+
+/// A CREATE FUNCTION statement.
+///
+/// Creates a user-defined function.
+///
+/// # Examples
+///
+/// Simple SQL function:
+/// ```sql
+/// CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER AS $$
+///   SELECT x + 1;
+/// $$ LANGUAGE SQL;
+/// ```
+///
+/// With OR REPLACE:
+/// ```sql
+/// CREATE OR REPLACE FUNCTION double(x INTEGER) RETURNS INTEGER AS $$
+///   SELECT x * 2;
+/// $$ LANGUAGE SQL;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct CreateFunctionStatement {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The function name (may be schema-qualified).
+    pub name: QualifiedName,
+    /// Function parameters.
+    pub parameters: Vec<FunctionParameter>,
+    /// Return type.
+    pub returns: DataType,
+    /// Whether the function returns a set of values (SETOF).
+    pub returns_setof: bool,
+    /// The function body.
+    pub body: String,
+    /// The language of the function body.
+    pub language: FunctionLanguage,
+    /// Function volatility (IMMUTABLE, STABLE, VOLATILE).
+    pub volatility: Option<FunctionVolatility>,
+    /// Whether the function is STRICT (returns NULL on NULL input).
+    pub strict: bool,
+    /// Security definer mode (SECURITY DEFINER vs SECURITY INVOKER).
+    pub security_definer: bool,
+}
+
+impl CreateFunctionStatement {
+    /// Creates a new CREATE FUNCTION statement.
+    #[must_use]
+    pub fn new(
+        name: impl Into<QualifiedName>,
+        parameters: Vec<FunctionParameter>,
+        returns: DataType,
+        body: impl Into<String>,
+        language: FunctionLanguage,
+    ) -> Self {
+        Self {
+            or_replace: false,
+            name: name.into(),
+            parameters,
+            returns,
+            returns_setof: false,
+            body: body.into(),
+            language,
+            volatility: None,
+            strict: false,
+            security_definer: false,
+        }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets whether the function returns a set.
+    #[must_use]
+    pub const fn with_returns_setof(mut self, returns_setof: bool) -> Self {
+        self.returns_setof = returns_setof;
+        self
+    }
+
+    /// Sets the function volatility.
+    #[must_use]
+    pub fn with_volatility(mut self, volatility: FunctionVolatility) -> Self {
+        self.volatility = Some(volatility);
+        self
+    }
+
+    /// Sets the function as STRICT.
+    #[must_use]
+    pub const fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    /// Sets SECURITY DEFINER mode.
+    #[must_use]
+    pub const fn with_security_definer(mut self, security_definer: bool) -> Self {
+        self.security_definer = security_definer;
+        self
+    }
+}
+
+/// A function parameter definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionParameter {
+    /// Optional parameter name.
+    pub name: Option<Identifier>,
+    /// Parameter mode (IN, OUT, INOUT, VARIADIC).
+    pub mode: ParameterMode,
+    /// Parameter data type.
+    pub data_type: DataType,
+    /// Optional default value expression (as string).
+    pub default: Option<String>,
+}
+
+impl FunctionParameter {
+    /// Creates a new function parameter.
+    #[must_use]
+    pub fn new(name: Option<Identifier>, data_type: DataType) -> Self {
+        Self { name, mode: ParameterMode::In, data_type, default: None }
+    }
+
+    /// Creates an IN parameter.
+    #[must_use]
+    pub fn input(name: impl Into<Identifier>, data_type: DataType) -> Self {
+        Self { name: Some(name.into()), mode: ParameterMode::In, data_type, default: None }
+    }
+
+    /// Creates an OUT parameter.
+    #[must_use]
+    pub fn output(name: impl Into<Identifier>, data_type: DataType) -> Self {
+        Self { name: Some(name.into()), mode: ParameterMode::Out, data_type, default: None }
+    }
+
+    /// Creates an INOUT parameter.
+    #[must_use]
+    pub fn inout(name: impl Into<Identifier>, data_type: DataType) -> Self {
+        Self { name: Some(name.into()), mode: ParameterMode::InOut, data_type, default: None }
+    }
+
+    /// Sets the default value.
+    #[must_use]
+    pub fn with_default(mut self, default: impl Into<String>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+}
+
+/// Function parameter mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParameterMode {
+    /// Input parameter (default).
+    #[default]
+    In,
+    /// Output parameter.
+    Out,
+    /// Input/output parameter.
+    InOut,
+    /// Variadic parameter.
+    Variadic,
+}
+
+impl std::fmt::Display for ParameterMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::In => write!(f, "IN"),
+            Self::Out => write!(f, "OUT"),
+            Self::InOut => write!(f, "INOUT"),
+            Self::Variadic => write!(f, "VARIADIC"),
+        }
+    }
+}
+
+/// Function language.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FunctionLanguage {
+    /// SQL language (default).
+    #[default]
+    Sql,
+    /// PL/pgSQL language.
+    PlPgSql,
+    /// Custom language name.
+    Custom(String),
+}
+
+impl std::fmt::Display for FunctionLanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "SQL"),
+            Self::PlPgSql => write!(f, "PLPGSQL"),
+            Self::Custom(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+/// Function volatility category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionVolatility {
+    /// Function always returns the same result for the same arguments.
+    Immutable,
+    /// Function returns the same result within a single query.
+    Stable,
+    /// Function may return different results even within a single query.
+    Volatile,
+}
+
+impl std::fmt::Display for FunctionVolatility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Immutable => write!(f, "IMMUTABLE"),
+            Self::Stable => write!(f, "STABLE"),
+            Self::Volatile => write!(f, "VOLATILE"),
+        }
+    }
+}
+
+/// A DROP FUNCTION statement.
+///
+/// Removes a user-defined function.
+///
+/// # Examples
+///
+/// Drop a function:
+/// ```sql
+/// DROP FUNCTION add_one(INTEGER);
+/// ```
+///
+/// Drop if exists:
+/// ```sql
+/// DROP FUNCTION IF EXISTS double;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropFunctionStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The function name (may be schema-qualified).
+    pub name: QualifiedName,
+    /// Optional argument types (for overload resolution).
+    pub arg_types: Vec<DataType>,
+    /// Whether CASCADE is specified.
+    pub cascade: bool,
+}
+
+impl DropFunctionStatement {
+    /// Creates a new DROP FUNCTION statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>) -> Self {
+        Self { if_exists: false, name: name.into(), arg_types: vec![], cascade: false }
+    }
+
+    /// Creates a DROP FUNCTION statement with argument types.
+    #[must_use]
+    pub fn with_args(name: impl Into<QualifiedName>, arg_types: Vec<DataType>) -> Self {
+        Self { if_exists: false, name: name.into(), arg_types, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+// ============================================================================
+// Trigger Statements
+// ============================================================================
+
+/// A CREATE TRIGGER statement.
+///
+/// Creates a trigger that executes a function in response to events.
+///
+/// # Examples
+///
+/// Before update trigger:
+/// ```sql
+/// CREATE TRIGGER update_timestamp
+///   BEFORE UPDATE ON users
+///   FOR EACH ROW
+///   EXECUTE FUNCTION set_updated_at();
+/// ```
+///
+/// After insert trigger with condition:
+/// ```sql
+/// CREATE TRIGGER audit_insert
+///   AFTER INSERT ON orders
+///   FOR EACH ROW
+///   WHEN (NEW.amount > 1000)
+///   EXECUTE FUNCTION audit_high_value_order();
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateTriggerStatement {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The trigger name.
+    pub name: Identifier,
+    /// When the trigger fires (BEFORE, AFTER, INSTEAD OF).
+    pub timing: TriggerTiming,
+    /// Events that fire the trigger (INSERT, UPDATE, DELETE, TRUNCATE).
+    pub events: Vec<TriggerEvent>,
+    /// The table the trigger is on.
+    pub table: QualifiedName,
+    /// Whether this is a row-level or statement-level trigger.
+    pub for_each: TriggerForEach,
+    /// Optional WHEN condition.
+    pub when_clause: Option<Expr>,
+    /// The function to execute.
+    pub function: QualifiedName,
+    /// Arguments to pass to the function.
+    pub function_args: Vec<String>,
+}
+
+impl CreateTriggerStatement {
+    /// Creates a new CREATE TRIGGER statement.
+    #[must_use]
+    pub fn new(
+        name: impl Into<Identifier>,
+        timing: TriggerTiming,
+        events: Vec<TriggerEvent>,
+        table: impl Into<QualifiedName>,
+        function: impl Into<QualifiedName>,
+    ) -> Self {
+        Self {
+            or_replace: false,
+            name: name.into(),
+            timing,
+            events,
+            table: table.into(),
+            for_each: TriggerForEach::Row,
+            when_clause: None,
+            function: function.into(),
+            function_args: vec![],
+        }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets the FOR EACH clause.
+    #[must_use]
+    pub const fn with_for_each(mut self, for_each: TriggerForEach) -> Self {
+        self.for_each = for_each;
+        self
+    }
+
+    /// Sets the WHEN clause.
+    #[must_use]
+    pub fn with_when(mut self, condition: Expr) -> Self {
+        self.when_clause = Some(condition);
+        self
+    }
+
+    /// Sets the function arguments.
+    #[must_use]
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.function_args = args;
+        self
+    }
+}
+
+/// Trigger timing (when the trigger fires relative to the operation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerTiming {
+    /// Trigger fires before the operation.
+    Before,
+    /// Trigger fires after the operation.
+    After,
+    /// Trigger fires instead of the operation (for views).
+    InsteadOf,
+}
+
+impl std::fmt::Display for TriggerTiming {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Before => write!(f, "BEFORE"),
+            Self::After => write!(f, "AFTER"),
+            Self::InsteadOf => write!(f, "INSTEAD OF"),
+        }
+    }
+}
+
+/// Trigger events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerEvent {
+    /// INSERT event.
+    Insert,
+    /// UPDATE event, optionally on specific columns.
+    Update(Vec<Identifier>),
+    /// DELETE event.
+    Delete,
+    /// TRUNCATE event.
+    Truncate,
+}
+
+impl std::fmt::Display for TriggerEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Insert => write!(f, "INSERT"),
+            Self::Update(cols) if cols.is_empty() => write!(f, "UPDATE"),
+            Self::Update(cols) => {
+                write!(f, "UPDATE OF ")?;
+                for (i, col) in cols.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", col.name)?;
+                }
+                Ok(())
+            }
+            Self::Delete => write!(f, "DELETE"),
+            Self::Truncate => write!(f, "TRUNCATE"),
+        }
+    }
+}
+
+/// Trigger granularity (row-level vs statement-level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriggerForEach {
+    /// Row-level trigger (fires once per affected row).
+    #[default]
+    Row,
+    /// Statement-level trigger (fires once per statement).
+    Statement,
+}
+
+impl std::fmt::Display for TriggerForEach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Row => write!(f, "FOR EACH ROW"),
+            Self::Statement => write!(f, "FOR EACH STATEMENT"),
+        }
+    }
+}
+
+/// A DROP TRIGGER statement.
+///
+/// Removes a trigger from a table.
+///
+/// # Examples
+///
+/// Drop a trigger:
+/// ```sql
+/// DROP TRIGGER update_timestamp ON users;
+/// ```
+///
+/// Drop if exists:
+/// ```sql
+/// DROP TRIGGER IF EXISTS audit_insert ON orders;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTriggerStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The trigger name.
+    pub name: Identifier,
+    /// The table the trigger is on.
+    pub table: QualifiedName,
+    /// Whether CASCADE is specified.
+    pub cascade: bool,
+}
+
+impl DropTriggerStatement {
+    /// Creates a new DROP TRIGGER statement.
+    #[must_use]
+    pub fn new(name: impl Into<Identifier>, table: impl Into<QualifiedName>) -> Self {
+        Self { if_exists: false, name: name.into(), table: table.into(), cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
     }
 }
 

@@ -324,7 +324,14 @@ impl LogicalPlan {
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
-            | Self::DropView(_) => {
+            | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_) => {
                 // DDL statements don't return data
                 Ok(Schema::empty())
             }
