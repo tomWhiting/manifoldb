@@ -252,19 +252,38 @@ fn test_foreach_with_mixed_types() {
 // ============================================================================
 
 #[test]
-#[ignore = "FOREACH with MERGE requires full MERGE semantics implementation"]
 fn test_foreach_with_merge() {
     let db = Database::in_memory().expect("failed to create db");
 
-    // This test documents the expected behavior for FOREACH with MERGE
-    let _result = db.query(
+    // First, create one person that will be merged (not created again)
+    db.query("CREATE (:Person {name: 'Alice'})").expect("create failed");
+
+    // Verify initial state
+    {
+        let tx = db.begin_read().expect("failed to begin read");
+        let entities = tx.iter_entities(Some("Person")).expect("failed to iterate");
+        assert_eq!(entities.len(), 1, "Expected 1 Person entity before MERGE");
+    }
+
+    // Use FOREACH with MERGE - Alice should match, Bob and Charlie should be created
+    let result = db.query(
         "FOREACH (name IN ['Alice', 'Bob', 'Charlie'] |
-            MERGE (:Person {name: name})
+            MERGE (p:Person {name: name})
         )",
     );
+    assert!(result.is_ok(), "FOREACH with MERGE failed: {:?}", result.err());
 
-    // MERGE in FOREACH would need to:
-    // 1. Check if node exists
-    // 2. Create if not exists
-    // 3. Execute ON CREATE/ON MATCH actions
+    // Verify results: should have 3 Person nodes (Alice was matched, Bob and Charlie were created)
+    let tx = db.begin_read().expect("failed to begin read");
+    let entities = tx.iter_entities(Some("Person")).expect("failed to iterate");
+    assert_eq!(entities.len(), 3, "Expected 3 Person entities after MERGE");
+
+    // Verify names
+    let names: Vec<&Value> = entities.iter().filter_map(|e| e.properties.get("name")).collect();
+    assert!(names.iter().any(|v| v == &&Value::String("Alice".to_string())), "Should have Alice");
+    assert!(names.iter().any(|v| v == &&Value::String("Bob".to_string())), "Should have Bob");
+    assert!(
+        names.iter().any(|v| v == &&Value::String("Charlie".to_string())),
+        "Should have Charlie"
+    );
 }
