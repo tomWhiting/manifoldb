@@ -81,13 +81,13 @@ Cypher Writing Clauses
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
 ├── Procedure registry infrastructure: ✅ Complete
-├── PageRank/ShortestPath: ✅ Complete
-├── Traversal (bfs, dfs): ✅ Complete (Jan 2026)
-├── Centrality (betweenness, closeness, degree, eigenvector): ✅ Complete
-├── Community (labelPropagation, connectedComponents, stronglyConnected): ✅ Complete
-├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Complete
-├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ✅ Complete (Jan 2026)
-└── Status: ✅ 20 procedures registered (Jan 2026)
+├── PageRank/ShortestPath: ⚠️ Registered but execution not wired (returns EmptyOp)
+├── Traversal (bfs, dfs): ⚠️ Registered but execution not wired
+├── Centrality (betweenness, closeness, degree, eigenvector): ⚠️ Registered but execution not wired
+├── Community (labelPropagation, connectedComponents, stronglyConnected): ⚠️ Registered but execution not wired
+├── Path (dijkstra, astar, allShortestPaths, sssp): ⚠️ Registered but execution not wired
+├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ⚠️ Registered but execution not wired
+└── Status: ⚠️ 20 procedures registered; helpers exist but executor integration missing (Jan 2026)
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -139,7 +139,7 @@ These feature groups can be implemented independently:
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
 3. **Window Functions** - ✅ Complete (Jan 2026) - all ranking/distribution functions implemented
-4. **Graph Algorithms** - ✅ 20 procedures via CALL/YIELD (Jan 2026) - includes BFS/DFS traversal and similarity
+4. **Graph Algorithms** - ⚠️ 20 procedures registered (Jan 2026); helpers exist but executor wiring needed for execution
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---
@@ -544,7 +544,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | AVG | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | MIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | MAX | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| FILTER clause | ✓ | ✓ | ✓ | | | | Needs exec |
+| FILTER clause | ✓ | ✓ | ✓ | ✓ | ⚠️ | | **Partial** - HashAggregateOp works, SortMergeAggregateOp ignores filter (bug) |
 | array_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | string_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | json_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
@@ -787,10 +787,10 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| CALL procedure() | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
-| YIELD columns | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
-| YIELD * | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
-| YIELD with WHERE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
+| CALL procedure() | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
+| YIELD columns | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
+| YIELD * | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
+| YIELD with WHERE | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
 | SHOW PROCEDURES | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - lists registered procedures |
 
 ## 2.6 Operators
@@ -831,7 +831,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | List comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | List literal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | Map projection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| Pattern comprehension | ✓ | ✓ | ✓ | | | ✓ | Parsed, logical plan complete (Jan 2026)† |
+| Pattern comprehension | ✓ | ✓ | ✓ | | | | Parsed + logical plan; execution returns empty (placeholder) |
 | Parameters ($param) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 
 ## 2.8 Scalar Functions

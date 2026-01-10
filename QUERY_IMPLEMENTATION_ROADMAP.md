@@ -48,24 +48,24 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Physical Join Operators†** - IndexNestedLoopJoinOp, SortMergeJoinOp, HAVING clause enhancement
 - ✅ **Utility Statements†** - EXPLAIN ANALYZE, ANALYZE, COPY, SET/SHOW, VACUUM/RESET (sqlparser 0.60)
 
-### Remaining Work (10 Meta-Tasks)
+### Remaining Work (2 Meta-Tasks)
 
-The following meta-tasks cover the remaining items needed for full SQL/Cypher completion:
+Most meta-tasks are complete. The following remain for full SQL/Cypher completion:
 
-| # | Meta-Task | Items | Priority | Focus Area |
-|---|-----------|-------|----------|------------|
-| 1 | Type System & Plan Infrastructure | 4 | Medium | Plan node schemas, validation, type inference |
-| 2 | Advanced CTE Features | 4 | Low | SEARCH, CYCLE, MATERIALIZED hints |
-| 3 | Window Function Extensions | 5 | Low | Named windows, GROUPS, FILTER clause |
-| 4 | Advanced SELECT Features | 3 | Low | DISTINCT ON, WITH TIES, TABLESAMPLE |
-| 5 | LATERAL Subqueries | 2 | Medium | LATERAL parser + planner |
-| 6 | View Expansion & Correlated Subqueries | 4 | Medium | View queries, correlated CALL { }, scoping |
-| 7 | DDL: Schema Objects | 3 | Low | SCHEMA, FUNCTION, TRIGGER |
-| 8 | DDL: Table Operations | 3 | Low | ALTER INDEX, TRUNCATE, partitions |
-| 9 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
-| 10 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
+| # | Meta-Task | Items | Priority | Status |
+|---|-----------|-------|----------|--------|
+| 1 | Type System & Plan Infrastructure | 4 | Medium | ✅ Complete (Jan 2026) |
+| 2 | Advanced CTE Features | 4 | Low | **TODO** - SEARCH, CYCLE, MATERIALIZED hints |
+| 3 | Window Function Extensions | 5 | Low | ✅ Complete (Jan 2026) |
+| 4 | Advanced SELECT Features | 3 | Low | **TODO** - DISTINCT ON, WITH TIES, TABLESAMPLE |
+| 5 | LATERAL Subqueries | 2 | Medium | ✅ Complete (Jan 2026) |
+| 6 | View Expansion & Correlated Subqueries | 4 | Medium | ✅ Complete (Jan 2026) |
+| 7 | DDL: Schema Objects | 3 | Low | ✅ Complete (Jan 2026) |
+| 8 | DDL: Table Operations | 3 | Low | ✅ Complete (Jan 2026) |
+| 9 | Cypher Pattern Extensions | 5 | Low | ✅ Complete (Jan 2026) |
+| 10 | Small Completions Bundle | 6 | Low | ✅ Complete (Jan 2026) |
 
-**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. sqlparser upgraded to 0.60 (Jan 2026).
+**Note:** sqlparser upgraded to 0.60 (Jan 2026). See [COVERAGE_MATRICES.md](./COVERAGE_MATRICES.md) for detailed feature tracking.
 
 ---
 
@@ -158,7 +158,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] List comprehensions `[x IN list WHERE ... | expr]` ✅ Jan 2026
   - [x] Map projections `node{.prop1, .prop2}` ✅ Jan 2026
   - [x] Pattern expressions (for EXISTS subqueries) ✅ Jan 2026
-  - [ ] Temporal literals and operations
+  - [x] Temporal literals and operations ✅ Jan 2026 (DATE/TIME/TIMESTAMP/INTERVAL literals, arithmetic)
   - [x] Spatial point literals ✅ Jan 2026
 - [x] Implement expression type inference ✅ Jan 2026
 - [ ] Add expression simplification/optimization
@@ -177,28 +177,28 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [ ] CYCLE detection clause
   - [ ] MATERIALIZED/NOT MATERIALIZED hints
 
-- [ ] **Window Functions**
-  - [ ] Named window definitions (WINDOW w AS ...)
+- [x] **Window Functions** ✅ Jan 2026
+  - [x] Named window definitions (WINDOW w AS ...) ✅ Jan 2026
   - [x] Frame clause support (ROWS/RANGE BETWEEN) ✅ Jan 2026
-  - [ ] GROUPS frame type
-  - [ ] Frame exclusion (EXCLUDE CURRENT ROW, etc.)
-  - [ ] FILTER clause on window functions
+  - [x] GROUPS frame type ✅ Jan 2026
+  - [x] Frame exclusion (EXCLUDE CURRENT ROW, etc.) ✅ Jan 2026
+  - [x] FILTER clause on window functions ✅ Jan 2026
 
 - [ ] **Advanced SELECT**
   - [ ] DISTINCT ON (expression, ...)
   - [ ] FETCH FIRST ... WITH TIES
   - [ ] TABLESAMPLE clause
-  - [ ] LATERAL subqueries
+  - [x] LATERAL subqueries ✅ Jan 2026
 
-- [x] **DDL Extensions** (partial)
+- [x] **DDL Extensions** ✅ Jan 2026
   - [x] ALTER TABLE (ADD/DROP/ALTER COLUMN) ✅ Jan 2026
-  - [ ] ALTER INDEX
-  - [x] CREATE VIEW / DROP VIEW ✅ Jan 2026 (ALTER VIEW not implemented, view expansion in queries pending)
-  - [ ] CREATE/ALTER/DROP SCHEMA
-  - [ ] CREATE/ALTER/DROP FUNCTION
-  - [ ] CREATE/ALTER/DROP TRIGGER
-  - [ ] TRUNCATE TABLE
-  - [ ] Partitioned tables (PARTITION BY RANGE/LIST/HASH)
+  - [x] ALTER INDEX (RENAME, SET/RESET options) ✅ Jan 2026
+  - [x] CREATE VIEW / DROP VIEW ✅ Jan 2026 (view expansion complete)
+  - [x] CREATE/ALTER/DROP SCHEMA ✅ Jan 2026 (parser + plan nodes; storage TBD)
+  - [x] CREATE/DROP FUNCTION ✅ Jan 2026 (parser + plan nodes)
+  - [x] CREATE/DROP TRIGGER ✅ Jan 2026 (parser + plan nodes)
+  - [x] TRUNCATE TABLE ✅ Jan 2026
+  - [ ] Partitioned tables (PARTITION BY RANGE/LIST/HASH) - parsing complete, storage TBD
 
 - [x] **Transactions** ✅ Jan 2026 (parsing + planning, execution TBD)
   - [x] BEGIN/START TRANSACTION ✅ Jan 2026
@@ -250,7 +250,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] stddev, stddev_pop, variance, var_pop ✅ Complete (Jan 2026)
   - [x] percentileCont, percentileDisc ✅ Complete (Jan 2026)
   - [x] bool_and, bool_or, every ✅ Jan 2026
-  - [ ] FILTER clause on aggregates
+  - [x] FILTER clause on aggregates ✅ Jan 2026 (**BUG:** SortMergeAggregateOp ignores filter - only HashAggregateOp works)
 
 - [x] **Window Functions** (Tier 2) - Complete ✅ Jan 2026
   - [x] row_number, rank, dense_rank ✅ Jan 2026
@@ -275,7 +275,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] array_position, array_positions ✅ Jan 2026
   - [x] array_remove, array_replace ✅ Jan 2026
   - [x] unnest (scalar mode) ✅ Jan 2026
-  - [ ] Subscript access array[n]
+  - [x] Subscript access array[n] ✅ Jan 2026
 
 - [x] **Type Conversion** (Tier 1) - Core complete
   - [x] CAST(expr AS type) ✅ Complete
@@ -285,10 +285,10 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 #### 2.3 Logical Plan Generation
 **Goal:** Generate correct logical plans from SQL AST.
 
-- [ ] Implement SQL → Logical Plan translation for all new constructs
-- [ ] Handle correlated subqueries correctly
-- [ ] Implement proper scoping for CTEs and subqueries
-- [ ] Add LATERAL join support in planner
+- [x] Implement SQL → Logical Plan translation for all new constructs ✅ Jan 2026
+- [x] Handle correlated subqueries correctly ✅ Jan 2026
+- [x] Implement proper scoping for CTEs and subqueries ✅ Jan 2026
+- [x] Add LATERAL join support in planner ✅ Jan 2026 (uses CallSubqueryNode)
 
 #### 2.4 Physical Operators
 **Goal:** Implement missing physical operators.
@@ -346,7 +346,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 
 - [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
 - [x] Map projections: `node{.prop1, .prop2, key: expr}` ✅ Jan 2026
-- [x] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]` ✅ Jan 2026
+- [x] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]` ✅ Jan 2026 (parsed + logical plan; **execution returns empty placeholder**)
 - [x] CASE expressions (simple and searched) ✅ Complete
 - [x] Parameter syntax ($param) ✅ Complete
 
@@ -384,7 +384,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] datetime, localdatetime, date, time, localtime ✅ Jan 2026
   - [x] duration ✅ Jan 2026
   - [x] datetime.truncate ✅ Jan 2026
-  - [ ] Temporal arithmetic
+  - [x] Temporal arithmetic ✅ Jan 2026 (datetime +/- duration, datetime - datetime)
 
 - [x] **Spatial Functions** (Tier 3) ✅ Jan 2026
   - [x] point construction ✅ Jan 2026
@@ -420,6 +420,8 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 
 ### Phase 4: Graph Algorithms (Priority: Medium)
 
+> **⚠️ IMPORTANT:** All procedures below are **registered** in the procedure registry with parser, AST, logical plan, and physical plan support. However, **actual execution is not yet wired** - the executor returns `EmptyOp` for `ProcedureCall`. Helper functions exist (e.g., `execute_pagerank_with_tx()`) but are not connected to the main executor. See [COVERAGE_MATRICES.md](./COVERAGE_MATRICES.md) for details.
+
 #### 4.1 CALL/YIELD Infrastructure
 **Goal:** Implement procedure call framework.
 
@@ -427,7 +429,8 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 - [x] Implement CALL ... YIELD parsing (both languages) ✅ Jan 2026
 - [x] Create `ProcedureCall` logical plan node ✅ Jan 2026
 - [x] Implement procedure dispatcher ✅ Jan 2026
-- [ ] Add built-in procedure discovery (SHOW PROCEDURES)
+- [x] Add built-in procedure discovery (SHOW PROCEDURES) ✅ Jan 2026
+- [ ] **Wire procedure execution to helpers** (currently returns EmptyOp)
 
 #### 4.2 Path Algorithms
 **Goal:** Expose path algorithms as procedures.
