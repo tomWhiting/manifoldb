@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{
-    collections, execute_command, graph, import_export, indexes, info, open, query,
+    collections, execute_command, graph, import_export, indexes, info, open, query, server,
 };
 use crate::error::Result;
 use crate::repl::Repl;
@@ -123,6 +123,10 @@ pub enum Commands {
     /// Graph operations
     #[command(subcommand)]
     Graph(GraphCommands),
+
+    /// Manage the GraphQL server
+    #[command(subcommand)]
+    Server(ServerCommands),
 }
 
 /// Import file formats
@@ -226,6 +230,72 @@ pub enum TraversalDirection {
     Both,
 }
 
+/// Server management commands.
+#[derive(Subcommand, Debug)]
+pub enum ServerCommands {
+    /// Start the GraphQL server
+    Start {
+        /// Host to bind to
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to listen on
+        #[arg(short, long, default_value = "4000")]
+        port: u16,
+
+        /// Run in background (daemonize)
+        #[arg(short, long)]
+        background: bool,
+
+        /// Suppress output
+        #[arg(short, long)]
+        quiet: bool,
+    },
+
+    /// Stop the running server
+    Stop {
+        /// Suppress output
+        #[arg(short, long)]
+        quiet: bool,
+    },
+
+    /// Check server status
+    Status {
+        /// Output as JSON
+        #[arg(short, long)]
+        json: bool,
+    },
+
+    /// Restart the server
+    Restart {
+        /// Host to bind to
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to listen on
+        #[arg(short, long, default_value = "4000")]
+        port: u16,
+
+        /// Suppress output
+        #[arg(short, long)]
+        quiet: bool,
+    },
+
+    /// Install as system service (launchd on macOS)
+    Install {
+        /// Host to bind to
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to listen on
+        #[arg(short, long, default_value = "4000")]
+        port: u16,
+    },
+
+    /// Uninstall system service
+    Uninstall,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("Error: {e}");
@@ -255,5 +325,6 @@ fn run() -> Result<()> {
         Commands::Collections(cmd) => collections::run(cli.database.as_deref(), cmd, cli.format),
         Commands::Indexes(cmd) => indexes::run(cli.database.as_deref(), cmd, cli.format),
         Commands::Graph(cmd) => graph::run(cli.database.as_deref(), cmd, cli.format),
+        Commands::Server(cmd) => server::run(cli.database.as_deref(), cmd),
     }
 }

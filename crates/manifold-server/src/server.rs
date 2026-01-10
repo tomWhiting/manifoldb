@@ -11,7 +11,7 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
-use manifold_server::{create_schema, AppSchema, PubSub};
+use crate::{create_schema, AppSchema, PubSub};
 
 async fn graphql_handler(
     Extension(schema): Extension<AppSchema>,
@@ -24,6 +24,27 @@ async fn graphql_playground() -> impl IntoResponse {
     Html(playground_source(
         GraphQLPlaygroundConfig::new("/graphql").subscription_endpoint("/graphql/ws"),
     ))
+}
+
+/// Create a shutdown signal that listens for SIGTERM and SIGINT.
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
+
+    tokio::select! {
+        _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+        _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
+    }
+}
+
+/// Create a shutdown signal (Windows/other platforms).
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c().await.expect("Failed to register Ctrl+C handler");
+    info!("Received Ctrl+C, shutting down...");
 }
 
 /// Run the GraphQL server.
@@ -51,7 +72,10 @@ pub async fn run(database_path: &str, host: &str, port: u16) -> Result<()> {
     info!("GraphQL WebSocket: ws://{}/graphql/ws", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
 
+    // Run with graceful shutdown
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+
+    info!("Server shut down gracefully");
     Ok(())
 }

@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, CliError>;
 
 /// CLI error types.
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum CliError {
     /// No database specified.
     #[error("no database specified. Use --database or set MANIFOLD_DB environment variable")]
@@ -49,4 +50,45 @@ pub enum CliError {
     /// File not found.
     #[error("file not found: {0}")]
     FileNotFound(PathBuf),
+
+    /// Server already running.
+    #[error("server is already running")]
+    ServerAlreadyRunning,
+
+    /// Server not running.
+    #[error("server is not running")]
+    ServerNotRunning,
+
+    /// Daemonization error.
+    #[error("failed to daemonize: {0}")]
+    Daemon(String),
+
+    /// Invalid PID file.
+    #[error("invalid PID file")]
+    InvalidPidFile,
+
+    /// Invalid path encoding.
+    #[error("invalid path encoding")]
+    InvalidPath,
+
+    /// No home directory.
+    #[error("could not determine home directory")]
+    NoHomeDir,
+
+    /// Unsupported platform.
+    #[error("unsupported platform: {0}")]
+    UnsupportedPlatform(String),
+
+    /// Server error.
+    #[error("server error: {0}")]
+    Server(#[from] anyhow::Error),
+
+    /// Nix/signal error (Unix only).
+    #[cfg(unix)]
+    #[error("system error: {0}")]
+    Nix(#[from] nix::Error),
+
+    /// Parse error.
+    #[error("parse error: {0}")]
+    Parse(String),
 }

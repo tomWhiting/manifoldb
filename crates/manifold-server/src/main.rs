@@ -5,8 +5,6 @@
 use anyhow::Result;
 use clap::Parser;
 
-mod server;
-
 #[derive(Parser)]
 #[command(name = "manifold-server")]
 #[command(about = "GraphQL server for ManifoldDB")]
@@ -34,5 +32,5 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    server::run(&args.database, &args.host, args.port).await
+    manifold_server::server::run(&args.database, &args.host, args.port).await
 }

@@ -8,6 +8,7 @@ pub mod indexes;
 pub mod info;
 pub mod open;
 pub mod query;
+pub mod server;
 
 use std::path::Path;
 
