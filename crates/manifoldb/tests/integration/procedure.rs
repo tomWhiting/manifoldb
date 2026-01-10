@@ -1,11 +1,6 @@
 //! Procedure execution integration tests.
 //!
 //! Tests CALL/YIELD statement execution for graph algorithms.
-//!
-//! Note: Some graph algorithms (PageRank, Louvain, etc.) require iterating over all nodes
-//! using the graph layer's NodeStore which expects a different table schema ("entities")
-//! than the high-level Database API uses ("nodes"). These tests are marked as ignored
-//! until the storage layers are unified.
 
 use manifoldb::{Database, EntityId, Value};
 
@@ -49,11 +44,10 @@ fn create_test_graph(db: &Database) -> (Vec<EntityId>, Vec<manifoldb::EdgeId>) {
 }
 
 // ============================================================================
-// PageRank Tests - requires NodeStore::for_each (different schema)
+// PageRank Tests
 // ============================================================================
 
 #[test]
-#[ignore = "PageRank requires iterating all nodes via NodeStore which uses 'entities' table, not 'nodes'"]
 fn test_pagerank_execution() {
     let db = Database::in_memory().expect("failed to create db");
     let (node_ids, _) = create_test_graph(&db);
@@ -76,7 +70,6 @@ fn test_pagerank_execution() {
 }
 
 #[test]
-#[ignore = "PageRank requires iterating all nodes via NodeStore which uses 'entities' table, not 'nodes'"]
 fn test_pagerank_with_parameters() {
     let db = Database::in_memory().expect("failed to create db");
     let (node_ids, _) = create_test_graph(&db);
@@ -176,11 +169,10 @@ fn test_shortest_path_no_path() {
 }
 
 // ============================================================================
-// Connected Components Tests - requires NodeStore::for_each (different schema)
+// Connected Components Tests
 // ============================================================================
 
 #[test]
-#[ignore = "Connected components requires iterating all nodes via NodeStore which uses 'entities' table, not 'nodes'"]
 fn test_connected_components_execution() {
     let db = Database::in_memory().expect("failed to create db");
     let (node_ids, _) = create_test_graph(&db);
@@ -205,11 +197,10 @@ fn test_connected_components_execution() {
 }
 
 // ============================================================================
-// Louvain Community Detection Tests - requires NodeStore::for_each (different schema)
+// Louvain Community Detection Tests
 // ============================================================================
 
 #[test]
-#[ignore = "Louvain requires iterating all nodes via NodeStore which uses 'entities' table, not 'nodes'"]
 fn test_louvain_execution() {
     let db = Database::in_memory().expect("failed to create db");
     let (node_ids, _) = create_test_graph(&db);
@@ -222,25 +213,24 @@ fn test_louvain_execution() {
 }
 
 // ============================================================================
-// Degree Centrality Tests - requires NodeStore::for_each (different schema)
+// Degree Centrality Tests
 // ============================================================================
 
 #[test]
-#[ignore = "Degree centrality requires iterating all nodes via NodeStore which uses 'entities' table, not 'nodes'"]
 fn test_degree_centrality_execution() {
     let db = Database::in_memory().expect("failed to create db");
     let (node_ids, _) = create_test_graph(&db);
 
     // Execute degree centrality
     let result = db
-        .query("CALL algo.degreeCentrality() YIELD nodeId, inDegree, outDegree, degree")
+        .query("CALL algo.degreeCentrality() YIELD nodeId, inDegree, outDegree, totalDegree")
         .expect("query failed");
 
     // Should return one row per node
     assert_eq!(result.len(), node_ids.len());
 
     // Check that degrees are non-negative
-    let degree_idx = result.column_index("degree").expect("degree column not found");
+    let degree_idx = result.column_index("totalDegree").expect("totalDegree column not found");
     for row in result.rows() {
         let degree = row.get(degree_idx).expect("degree value missing");
         match degree {

@@ -31,7 +31,9 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
+use manifoldb_core::encoding::keys::encode_entity_key;
 use manifoldb_core::encoding::sortable::encode_sortable;
+use manifoldb_core::encoding::Decoder;
 use manifoldb_core::{Entity, EntityId, Value};
 use manifoldb_storage::backends::redb::tables;
 use manifoldb_storage::backends::RedbEngine;
@@ -342,14 +344,11 @@ impl IndexManager {
         // Now index each entity
         for entity_id in entity_ids {
             // Get entity data
-            let entity_key = entity_id.as_u64().to_be_bytes();
+            let entity_key = encode_entity_key(entity_id);
 
             if let Some(data) = tx.get(tables::names::NODES, &entity_key)? {
-                // Decode entity using bincode
-                if let Ok((entity, _)) = bincode::serde::decode_from_slice::<Entity, _>(
-                    &data,
-                    bincode::config::standard(),
-                ) {
+                // Decode entity using the standard encoder format
+                if let Ok(entity) = Entity::decode(&data) {
                     // Get property value
                     if let Some(value) = entity.get_property(property) {
                         // Create index entry
