@@ -60,6 +60,11 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Constraint Enforcement** - CHECK and FOREIGN KEY validation on INSERT/UPDATE/DELETE
 - ✅ **Correlated CALL {} Subquery** - Variable bindings flow from outer scope into subquery operators
 - ✅ **Advanced SELECT Features** - DISTINCT ON, FETCH WITH TIES (TABLESAMPLE AST only - sqlparser limitation)
+- ✅ **Edge Variable Binding** - Fixed MATCH edge variables for SET/DELETE on relationships (3 bugs: start node scan, schema mismatch, edge/node distinction)
+- ✅ **MATCH...MERGE Parser Fix** - Parser now correctly routes MATCH...MERGE without ON CREATE/MATCH SET clauses
+- ✅ **FOREACH MERGE Node Matching** - find_matching_node now scans and matches existing nodes instead of always creating
+- ✅ **Entity Serialization Unification** - Unified encode_entity_key and Entity::encode/decode across Database API layer
+- ✅ **Collection Drop Integration** - Unified PointStore and CollectionManager for consistent collection lifecycle
 
 ### Remaining Work (1 Meta-Task)
 

@@ -92,7 +92,7 @@ CALL/YIELD Procedures
 ├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Execution wired (Jan 2026)
 ├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ✅ Execution wired (Jan 2026)
 └── Status: ✅ All 20 procedures wired to graph algorithm helpers (Jan 2026)
-    Note: Bulk-iteration algorithms (PageRank, Louvain, etc.) work but require table name fix
+    Note: Entity serialization unified - all algorithms fully functional
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists
@@ -144,7 +144,7 @@ These feature groups can be implemented independently:
 1. **SQL Functions** - String, numeric, date functions can be added without conflicts
 2. **Cypher Writing** - CREATE/MERGE/SET/DELETE are isolated from SQL features
 3. **Window Functions** - ✅ Complete (Jan 2026) - all ranking/distribution functions implemented
-4. **Graph Algorithms** - ⚠️ 20 procedures registered (Jan 2026); helpers exist but executor wiring needed for execution
+4. **Graph Algorithms** - ✅ All 20 procedures fully functional (Jan 2026); entity serialization unified
 5. **Variable-Length Paths** - ✅ Complete (Jan 2026)
 
 ---
