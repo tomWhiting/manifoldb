@@ -182,9 +182,9 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 - [x] **CTEs** (basic support complete)
   - [x] Non-recursive CTEs with multiple CTE support
   - [x] WITH RECURSIVE support ✅ Jan 2026
-  - [ ] SEARCH DEPTH/BREADTH FIRST
-  - [ ] CYCLE detection clause
-  - [ ] MATERIALIZED/NOT MATERIALIZED hints
+  - [x] SEARCH DEPTH/BREADTH FIRST ✅ Jan 2026
+  - [x] CYCLE detection clause ✅ Jan 2026
+  - [x] MATERIALIZED/NOT MATERIALIZED hints ✅ Jan 2026
 
 - [x] **Window Functions** ✅ Jan 2026
   - [x] Named window definitions (WINDOW w AS ...) ✅ Jan 2026
@@ -310,7 +310,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 - [x] **RecursiveCTEOp** - Recursive CTE execution ✅ Jan 2026
   - [x] Working table management
   - [x] Cycle detection
-  - [ ] Depth/breadth-first ordering
+  - [x] Depth/breadth-first ordering ✅ Jan 2026
 
 - [x] **IndexNestedLoopJoinOp** - Index-accelerated joins ✅ Jan 2026
 - [x] **SortMergeJoinOp** - Sort-merge join implementation ✅ Jan 2026
@@ -429,7 +429,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 
 ### Phase 4: Graph Algorithms (Priority: Medium)
 
-> **⚠️ IMPORTANT:** All procedures below are **registered** in the procedure registry with parser, AST, logical plan, and physical plan support. However, **actual execution is not yet wired** - the executor returns `EmptyOp` for `ProcedureCall`. Helper functions exist (e.g., `execute_pagerank_with_tx()`) but are not connected to the main executor. See [COVERAGE_MATRICES.md](./COVERAGE_MATRICES.md) for details.
+> **✅ COMPLETE:** All 20 procedures are registered and wired to their graph algorithm helpers (Jan 2026). Execution is fully functional. See [COVERAGE_MATRICES.md](./COVERAGE_MATRICES.md) for details.
 
 #### 4.1 CALL/YIELD Infrastructure
 **Goal:** Implement procedure call framework.
@@ -439,7 +439,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 - [x] Create `ProcedureCall` logical plan node ✅ Jan 2026
 - [x] Implement procedure dispatcher ✅ Jan 2026
 - [x] Add built-in procedure discovery (SHOW PROCEDURES) ✅ Jan 2026
-- [ ] **Wire procedure execution to helpers** (currently returns EmptyOp)
+- [x] **Wire procedure execution to helpers** ✅ Jan 2026
 
 #### 4.2 Path Algorithms
 **Goal:** Expose path algorithms as procedures.
