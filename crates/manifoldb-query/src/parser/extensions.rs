@@ -49,11 +49,11 @@ use crate::ast::{
     BinaryOp, CallStatement, CreateCollectionStatement, CreateGraphStatement, CreateNodeRef,
     CreatePathStep, CreatePattern, DataType, DeleteGraphStatement, DistanceMetric,
     DropCollectionStatement, EdgeDirection, EdgeLength, EdgePattern, Expr, ForeachAction,
-    ForeachStatement, GraphPattern, Identifier, MatchStatement, MergeGraphStatement, MergePattern,
-    NodePattern, OrderByExpr, ParameterRef, PathPattern, PayloadFieldDef, PropertyCondition,
-    QualifiedName, RemoveGraphStatement, RemoveItem, ReturnItem, SelectStatement, SetAction,
-    SetGraphStatement, ShortestPathPattern, Statement, VectorDef, VectorTypeDef, WeightSpec,
-    YieldItem,
+    ForeachStatement, GraphPattern, Identifier, LabelExpression, MatchStatement,
+    MergeGraphStatement, MergePattern, NodePattern, OrderByExpr, ParameterRef, PathPattern,
+    PayloadFieldDef, PropertyCondition, QualifiedName, RemoveGraphStatement, RemoveItem,
+    ReturnItem, SelectStatement, SetAction, SetGraphStatement, ShortestPathPattern, Statement,
+    VectorDef, VectorTypeDef, WeightSpec, YieldItem,
 };
 use crate::error::{ParseError, ParseResult};
 use crate::parser::sql;
@@ -130,7 +130,7 @@ impl ExtendedParser {
             return Self::parse_call_with_yield(input);
         }
 
-        // Step 1: Extract MATCH and OPTIONAL MATCH clauses (they're not valid SQL)
+        // Step 1: Extract MATCH, OPTIONAL MATCH, and MANDATORY MATCH clauses
         let (sql_without_match, match_patterns, optional_patterns) =
             Self::extract_match_clauses(input)?;
 
@@ -143,8 +143,11 @@ impl ExtendedParser {
         // Step 4: Post-process to restore vector operators and add match clauses
         for (i, stmt) in statements.iter_mut().enumerate() {
             Self::restore_vector_ops(stmt);
-            if let Some(pattern) = match_patterns.get(i) {
+            if let Some((pattern, is_mandatory)) = match_patterns.get(i) {
                 Self::add_match_clause(stmt, pattern.clone());
+                if *is_mandatory {
+                    Self::set_mandatory_match(stmt, true);
+                }
             }
             if let Some(opt_patterns) = optional_patterns.get(i) {
                 for pattern in opt_patterns {
@@ -819,7 +822,7 @@ impl ExtendedParser {
 
         let pattern = CreatePattern::Node {
             variable: node.variable,
-            labels: node.labels,
+            labels: node.label_expr.into_simple_labels(),
             properties: node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
         };
 
@@ -832,7 +835,7 @@ impl ExtendedParser {
         let (start_node, after_start) = Self::parse_node_pattern(input)?;
 
         let start = if start_node.variable.is_some()
-            && start_node.labels.is_empty()
+            && start_node.label_expr.is_none()
             && start_node.properties.is_empty()
         {
             // Just a variable reference to an existing node
@@ -842,7 +845,7 @@ impl ExtendedParser {
         } else {
             CreateNodeRef::New {
                 variable: start_node.variable,
-                labels: start_node.labels,
+                labels: start_node.label_expr.into_simple_labels(),
                 properties: start_node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
             }
         };
@@ -883,7 +886,7 @@ impl ExtendedParser {
             let (dest_node, after_dest) = Self::parse_node_pattern(after_edge)?;
 
             let destination = if dest_node.variable.is_some()
-                && dest_node.labels.is_empty()
+                && dest_node.label_expr.is_none()
                 && dest_node.properties.is_empty()
             {
                 CreateNodeRef::Variable(dest_node.variable.clone().ok_or_else(|| {
@@ -892,7 +895,7 @@ impl ExtendedParser {
             } else {
                 CreateNodeRef::New {
                     variable: dest_node.variable,
-                    labels: dest_node.labels,
+                    labels: dest_node.label_expr.into_simple_labels(),
                     properties: dest_node
                         .properties
                         .into_iter()
@@ -1063,7 +1066,7 @@ impl ExtendedParser {
 
             Ok(MergePattern::Node {
                 variable,
-                labels: node.labels,
+                labels: node.label_expr.into_simple_labels(),
                 match_properties: node.properties.into_iter().map(|p| (p.name, p.value)).collect(),
             })
         }
@@ -1741,7 +1744,7 @@ impl ExtendedParser {
 
         Ok(CreatePattern::Node {
             variable: node.variable,
-            labels: node.labels,
+            labels: node.label_expr.into_simple_labels(),
             properties: node.properties.into_iter().map(|prop| (prop.name, prop.value)).collect(),
         })
     }
@@ -1790,7 +1793,7 @@ impl ExtendedParser {
 
         Ok(MergePattern::Node {
             variable: var,
-            labels: node.labels,
+            labels: node.label_expr.into_simple_labels(),
             match_properties: node
                 .properties
                 .into_iter()
@@ -3821,38 +3824,51 @@ impl ExtendedParser {
         Ok(stmts.remove(0))
     }
 
-    /// Extracts MATCH and OPTIONAL MATCH clauses from the SQL and returns the modified SQL.
+    /// Extracts MATCH, OPTIONAL MATCH, and MANDATORY MATCH clauses from the SQL.
     ///
-    /// Returns a tuple of (modified SQL, required MATCH patterns, OPTIONAL MATCH patterns per statement).
+    /// Returns a tuple of:
+    /// - modified SQL (with MATCH clauses removed)
+    /// - required MATCH patterns with mandatory flag (pattern, is_mandatory)
+    /// - OPTIONAL MATCH patterns per statement
     ///
     /// The expected syntax is:
     /// ```sql
-    /// SELECT ... FROM MATCH (pattern) OPTIONAL MATCH (opt_pattern1) OPTIONAL MATCH (opt_pattern2) WHERE ...
+    /// SELECT ... FROM MATCH (pattern) OPTIONAL MATCH (opt_pattern1) WHERE ...
+    /// SELECT ... FROM MANDATORY MATCH (pattern) WHERE ...  -- error if no match
     /// ```
     ///
     /// Where OPTIONAL MATCH clauses follow the required MATCH and apply to it.
     fn extract_match_clauses(
         input: &str,
-    ) -> ParseResult<(String, Vec<GraphPattern>, Vec<Vec<GraphPattern>>)> {
+    ) -> ParseResult<(String, Vec<(GraphPattern, bool)>, Vec<Vec<GraphPattern>>)> {
         let mut result = String::with_capacity(input.len());
-        let mut match_patterns: Vec<GraphPattern> = Vec::new();
+        let mut match_patterns: Vec<(GraphPattern, bool)> = Vec::new(); // (pattern, is_mandatory)
         let mut optional_patterns: Vec<Vec<GraphPattern>> = Vec::new();
         let mut remaining = input;
 
         loop {
-            // Find the next OPTIONAL MATCH or MATCH keyword
+            // Find the next OPTIONAL MATCH, MANDATORY MATCH, or plain MATCH keyword
             let optional_pos = Self::find_optional_match_keyword(remaining);
+            let mandatory_pos = Self::find_mandatory_match_keyword(remaining);
             let match_pos = Self::find_match_keyword(remaining);
 
-            // Determine which comes first
-            match (optional_pos, match_pos) {
-                (Some(opt_pos), Some(m_pos)) if opt_pos < m_pos => {
-                    // OPTIONAL MATCH comes before a regular MATCH
-                    // This shouldn't normally happen in valid syntax, but handle it
-                    result.push_str(&remaining[..opt_pos]);
+            // Find the earliest match type
+            let earliest = [
+                optional_pos.map(|p| (p, "optional")),
+                mandatory_pos.map(|p| (p, "mandatory")),
+                match_pos.map(|p| (p, "match")),
+            ]
+            .into_iter()
+            .flatten()
+            .min_by_key(|(pos, _)| *pos);
+
+            match earliest {
+                Some((pos, "optional")) => {
+                    // OPTIONAL MATCH
+                    result.push_str(&remaining[..pos]);
 
                     // Skip "OPTIONAL" and whitespace before "MATCH"
-                    let after_optional = &remaining[opt_pos + 8..]; // "OPTIONAL" = 8 chars
+                    let after_optional = &remaining[pos + 8..]; // "OPTIONAL" = 8 chars
                     let after_optional_trimmed = after_optional.trim_start();
                     let whitespace_len = after_optional.len() - after_optional_trimmed.len();
 
@@ -3867,54 +3883,54 @@ impl ExtendedParser {
                     if let Some(last_optionals) = optional_patterns.last_mut() {
                         last_optionals.push(pattern);
                     } else {
-                        // No required MATCH yet - this is unusual but handle it
-                        optional_patterns.push(vec![pattern]);
-                    }
-
-                    remaining = &after_match[end_pos..];
-                }
-                (Some(opt_pos), None) => {
-                    // Only OPTIONAL MATCH found (no more required MATCH)
-                    result.push_str(&remaining[..opt_pos]);
-
-                    let after_optional = &remaining[opt_pos + 8..];
-                    let after_optional_trimmed = after_optional.trim_start();
-                    let whitespace_len = after_optional.len() - after_optional_trimmed.len();
-
-                    let after_match = &after_optional[whitespace_len + 5..];
-                    let end_pos = Self::find_match_end(after_match);
-
-                    let pattern_str = after_match[..end_pos].trim();
-                    let pattern = Self::parse_graph_pattern(pattern_str)?;
-
-                    // Attach to the last required MATCH
-                    if let Some(last_optionals) = optional_patterns.last_mut() {
-                        last_optionals.push(pattern);
-                    } else {
                         // No required MATCH yet - unusual but handle it
                         optional_patterns.push(vec![pattern]);
                     }
 
                     remaining = &after_match[end_pos..];
                 }
-                (_, Some(m_pos)) => {
-                    // Regular MATCH comes first (or there's no OPTIONAL MATCH in this part)
-                    result.push_str(&remaining[..m_pos]);
+                Some((pos, "mandatory")) => {
+                    // MANDATORY MATCH
+                    result.push_str(&remaining[..pos]);
 
-                    let after_match = &remaining[m_pos + 5..]; // Skip "MATCH"
+                    // Skip "MANDATORY" and whitespace before "MATCH"
+                    let after_mandatory = &remaining[pos + 9..]; // "MANDATORY" = 9 chars
+                    let after_mandatory_trimmed = after_mandatory.trim_start();
+                    let whitespace_len = after_mandatory.len() - after_mandatory_trimmed.len();
+
+                    // Skip "MATCH"
+                    let after_match = &after_mandatory[whitespace_len + 5..];
                     let end_pos = Self::find_match_end(after_match);
 
                     let pattern_str = after_match[..end_pos].trim();
                     let pattern = Self::parse_graph_pattern(pattern_str)?;
 
-                    // Store the required match pattern
-                    match_patterns.push(pattern);
-                    // Create a new (empty) vector for optional patterns that will follow this MATCH
+                    // Store the mandatory match pattern
+                    match_patterns.push((pattern, true)); // is_mandatory = true
+                                                          // Create a new (empty) vector for optional patterns that will follow
                     optional_patterns.push(Vec::new());
 
                     remaining = &after_match[end_pos..];
                 }
-                (None, None) => {
+                Some((pos, "match")) => {
+                    // Regular MATCH
+                    result.push_str(&remaining[..pos]);
+
+                    let after_match = &remaining[pos + 5..]; // Skip "MATCH"
+                    let end_pos = Self::find_match_end(after_match);
+
+                    let pattern_str = after_match[..end_pos].trim();
+                    let pattern = Self::parse_graph_pattern(pattern_str)?;
+
+                    // Store the regular match pattern
+                    match_patterns.push((pattern, false)); // is_mandatory = false
+                                                           // Create a new (empty) vector for optional patterns that will follow
+                    optional_patterns.push(Vec::new());
+
+                    remaining = &after_match[end_pos..];
+                }
+                Some((_, _)) => unreachable!(),
+                None => {
                     // No more MATCH clauses
                     break;
                 }
@@ -3967,7 +3983,7 @@ impl ExtendedParser {
 
     /// Finds the position of the MATCH keyword (case-insensitive, word boundary).
     ///
-    /// This function skips "MATCH" when it's part of "OPTIONAL MATCH".
+    /// This function skips "MATCH" when it's part of "OPTIONAL MATCH" or "MANDATORY MATCH".
     fn find_match_keyword(input: &str) -> Option<usize> {
         let input_upper = input.to_uppercase();
         let mut search_from = 0;
@@ -3982,10 +3998,11 @@ impl ExtendedParser {
                 || !input.as_bytes()[absolute_pos + 5].is_ascii_alphanumeric();
 
             if before_ok && after_ok {
-                // Check if this is part of "OPTIONAL MATCH" - look backwards for OPTIONAL
+                // Check if this is part of "OPTIONAL MATCH" or "MANDATORY MATCH"
                 let is_optional_match = Self::is_preceded_by_optional(&input_upper, absolute_pos);
+                let is_mandatory_match = Self::is_preceded_by_mandatory(&input_upper, absolute_pos);
 
-                if !is_optional_match {
+                if !is_optional_match && !is_mandatory_match {
                     return Some(absolute_pos);
                 }
             }
@@ -4021,6 +4038,70 @@ impl ExtendedParser {
         false
     }
 
+    /// Checks if a MATCH at the given position is preceded by MANDATORY (with whitespace).
+    fn is_preceded_by_mandatory(input_upper: &str, match_pos: usize) -> bool {
+        if match_pos < 9 {
+            // "MANDATORY" is 9 chars, so not enough room
+            return false;
+        }
+
+        // Look backwards from match_pos, skipping whitespace
+        let before_match = &input_upper[..match_pos];
+        let trimmed = before_match.trim_end();
+
+        // Check if it ends with "MANDATORY"
+        if trimmed.len() >= 9 && trimmed.ends_with("MANDATORY") {
+            // Check word boundary before MANDATORY
+            let mandatory_start = trimmed.len() - 9;
+            if mandatory_start == 0 {
+                return true;
+            }
+            let byte_before = trimmed.as_bytes()[mandatory_start - 1];
+            return !byte_before.is_ascii_alphanumeric();
+        }
+
+        false
+    }
+
+    /// Finds the position of the MANDATORY MATCH keyword pair (case-insensitive, word boundary).
+    fn find_mandatory_match_keyword(input: &str) -> Option<usize> {
+        let input_upper = input.to_uppercase();
+        let mut search_from = 0;
+
+        while let Some(pos) = input_upper[search_from..].find("MANDATORY") {
+            let absolute_pos = search_from + pos;
+
+            // Check word boundaries for MANDATORY
+            let before_ok =
+                absolute_pos == 0 || !input.as_bytes()[absolute_pos - 1].is_ascii_alphanumeric();
+            let after_ok = absolute_pos + 9 >= input.len()
+                || !input.as_bytes()[absolute_pos + 9].is_ascii_alphanumeric();
+
+            if before_ok && after_ok {
+                // Check if MATCH follows after whitespace
+                let after_mandatory = &input_upper[absolute_pos + 9..];
+                let after_mandatory_trimmed = after_mandatory.trim_start();
+
+                if after_mandatory_trimmed.starts_with("MATCH") {
+                    // Check word boundary after MATCH
+                    let match_start =
+                        absolute_pos + 9 + (after_mandatory.len() - after_mandatory_trimmed.len());
+                    let match_end = match_start + 5;
+                    let match_after_ok = match_end >= input.len()
+                        || !input.as_bytes()[match_end].is_ascii_alphanumeric();
+
+                    if match_after_ok {
+                        return Some(absolute_pos);
+                    }
+                }
+            }
+
+            search_from = absolute_pos + 9;
+        }
+
+        None
+    }
+
     /// Finds the end of a MATCH clause.
     ///
     /// A MATCH clause ends at the next SQL keyword (WHERE, ORDER BY, etc.),
@@ -4038,8 +4119,9 @@ impl ExtendedParser {
             "UNION",
             "INTERSECT",
             "EXCEPT",
-            "OPTIONAL", // Stop at OPTIONAL MATCH
-            "MATCH",    // Stop at the next MATCH (for multiple OPTIONAL MATCHes)
+            "OPTIONAL",  // Stop at OPTIONAL MATCH
+            "MANDATORY", // Stop at MANDATORY MATCH
+            "MATCH",     // Stop at the next MATCH (for multiple OPTIONAL MATCHes)
         ];
 
         let mut min_pos = input.len();
@@ -4504,6 +4586,17 @@ impl ExtendedParser {
         // OPTIONAL MATCH is not supported for UPDATE/DELETE - just ignore
     }
 
+    /// Sets the MANDATORY MATCH flag on a statement.
+    ///
+    /// When mandatory_match is true, the query should error if no matches are found.
+    /// This is a Neo4j extension for stricter pattern matching.
+    fn set_mandatory_match(stmt: &mut Statement, mandatory: bool) {
+        if let Statement::Select(select) = stmt {
+            select.mandatory_match = mandatory;
+        }
+        // MANDATORY MATCH is only supported for SELECT statements
+    }
+
     /// Parses a graph pattern string.
     ///
     /// Supports:
@@ -4711,6 +4804,14 @@ impl ExtendedParser {
     }
 
     /// Parses the inner content of a node pattern.
+    ///
+    /// Supports label expressions with OR (`|`), AND (`&`), and NOT (`!`) operators:
+    /// - `n:Person` - single label
+    /// - `n:Person:Employee` - multiple labels (AND semantics, traditional Cypher)
+    /// - `n:Person|Company` - OR of labels
+    /// - `n:Active&Premium` - AND of labels (explicit)
+    /// - `n:!Deleted` - NOT label
+    /// - `n:Person&!Bot` - combined expressions
     fn parse_node_inner(input: &str) -> ParseResult<NodePattern> {
         let input = input.trim();
 
@@ -4719,8 +4820,6 @@ impl ExtendedParser {
         }
 
         let mut variable = None;
-        // Most nodes have 1-2 labels
-        let mut labels = Vec::with_capacity(2);
         // Most nodes have 0-3 properties
         let mut properties = Vec::with_capacity(2);
 
@@ -4736,16 +4835,8 @@ impl ExtendedParser {
             current = &current[end..];
         }
 
-        // Parse labels (each starts with :)
-        while current.starts_with(':') {
-            current = &current[1..]; // Skip ':'
-            let end = current.find([':', '{', ' ', ')']).unwrap_or(current.len());
-            let label = &current[..end];
-            if !label.is_empty() {
-                labels.push(Identifier::new(label));
-            }
-            current = current[end..].trim_start();
-        }
+        // Parse label expression
+        let label_expr = Self::parse_label_expression(&mut current)?;
 
         // Parse properties (in braces)
         if current.starts_with('{') {
@@ -4756,7 +4847,92 @@ impl ExtendedParser {
             properties = Self::parse_properties(props_str)?;
         }
 
-        Ok(NodePattern { variable, labels, properties })
+        Ok(NodePattern { variable, label_expr, properties })
+    }
+
+    /// Parses a label expression supporting OR, AND, and NOT operators.
+    ///
+    /// Grammar (informal):
+    /// - `:Label` - single label
+    /// - `:Label1:Label2` - implicit AND (traditional Cypher)
+    /// - `:Label1|Label2` - OR
+    /// - `:Label1&Label2` - explicit AND
+    /// - `:!Label` - NOT
+    /// - `:Label1&!Label2` - combined
+    ///
+    /// Precedence: NOT > AND > OR
+    fn parse_label_expression(current: &mut &str) -> ParseResult<LabelExpression> {
+        if !current.starts_with(':') {
+            return Ok(LabelExpression::None);
+        }
+
+        // Collect all label tokens and operators
+        let mut or_groups: Vec<Vec<LabelExpression>> = vec![vec![]];
+
+        while current.starts_with(':') || current.starts_with('|') || current.starts_with('&') {
+            let Some(operator) = current.chars().next() else {
+                break;
+            };
+            *current = &current[1..]; // Skip operator
+
+            // Handle NOT
+            let negated = current.starts_with('!');
+            if negated {
+                *current = &current[1..]; // Skip '!'
+            }
+
+            // Parse the label name
+            let end = current.find([':', '|', '&', '{', ' ', ')']).unwrap_or(current.len());
+            let label_name = &current[..end];
+
+            if label_name.is_empty() {
+                // Handle :! without a label - skip or error
+                if negated {
+                    return Err(ParseError::InvalidPattern("expected label after '!'".to_string()));
+                }
+                break;
+            }
+
+            let label_expr = if negated {
+                LabelExpression::not(LabelExpression::single(label_name))
+            } else {
+                LabelExpression::single(label_name)
+            };
+
+            *current = current[end..].trim_start();
+
+            match operator {
+                ':' | '&' => {
+                    // AND with current group - or_groups always has at least one element
+                    if let Some(last_group) = or_groups.last_mut() {
+                        last_group.push(label_expr);
+                    }
+                }
+                '|' => {
+                    // Start a new OR group
+                    or_groups.push(vec![label_expr]);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // Build the expression tree
+        // First, combine each AND group
+        let and_exprs: Vec<LabelExpression> = or_groups
+            .into_iter()
+            .filter_map(
+                |group| {
+                    if group.is_empty() {
+                        None
+                    } else {
+                        Some(LabelExpression::and(group))
+                    }
+                },
+            )
+            .collect();
+
+        // Then combine with OR
+        Ok(LabelExpression::or(and_exprs))
     }
 
     /// Parses an edge pattern: `-[variable:TYPE*min..max]->` or `<-[...]-`.
@@ -4832,7 +5008,8 @@ impl ExtendedParser {
         // Parse edge types (each starts with : or |)
         while current.starts_with(':') || current.starts_with('|') {
             current = &current[1..]; // Skip ':' or '|'
-            let end = current.find(['|', '*', '{', ' ', ']']).unwrap_or(current.len());
+                                     // Stop at quantifier/length markers: |, *, {, +, ?, or end markers: space, ]
+            let end = current.find(['|', '*', '{', '+', '?', ' ', ']']).unwrap_or(current.len());
             let edge_type = &current[..end];
             if !edge_type.is_empty() {
                 edge_types.push(Identifier::new(edge_type));
@@ -4840,7 +5017,15 @@ impl ExtendedParser {
             current = current[end..].trim_start();
         }
 
-        // Parse length (*min..max, *n, or *)
+        // Parse length specification
+        // Supports:
+        // - *min..max (Cypher-style range)
+        // - *n (exact count)
+        // - * (any)
+        // - {n,m} (GQL-style range)
+        // - {n} (GQL-style exact)
+        // - + (one or more, GQL)
+        // - ? (zero or one, GQL)
         if current.starts_with('*') {
             current = &current[1..];
             length = Self::parse_edge_length(current)?;
@@ -4848,6 +5033,35 @@ impl ExtendedParser {
             // Skip past the length specification
             let end = current.find(['{', ' ', ']']).unwrap_or(current.len());
             current = current[end..].trim_start();
+        } else if current.starts_with('+') {
+            // GQL-style one-or-more
+            current = &current[1..].trim_start();
+            length = EdgeLength::at_least(1);
+        } else if current.starts_with('?') {
+            // GQL-style zero-or-one
+            current = &current[1..].trim_start();
+            length = EdgeLength::Range { min: Some(0), max: Some(1) };
+        } else if current.starts_with('{') {
+            // Check if this looks like a GQL-style quantifier {n} or {n,m}
+            // vs edge properties {key: value}
+            let close_brace = current
+                .find('}')
+                .ok_or_else(|| ParseError::InvalidPattern("unclosed braces".to_string()))?;
+            let braces_content = &current[1..close_brace];
+
+            // Quantifiers only contain digits, commas, and whitespace
+            // Properties contain colons and identifiers
+            let is_quantifier = braces_content
+                .trim()
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ',' || c.is_whitespace())
+                && !braces_content.trim().is_empty();
+
+            if is_quantifier {
+                length = Self::parse_gql_quantifier(braces_content)?;
+                current = &current[close_brace + 1..].trim_start();
+            }
+            // If not a quantifier, fall through to properties parsing below
         }
 
         // Parse properties (in braces)
@@ -4914,6 +5128,45 @@ impl ExtendedParser {
         }
 
         Ok(EdgeLength::Any)
+    }
+
+    /// Parses a GQL-style quantifier: `{n}`, `{n,}`, `{,m}`, or `{n,m}`.
+    fn parse_gql_quantifier(input: &str) -> ParseResult<EdgeLength> {
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Err(ParseError::InvalidPattern("empty quantifier".to_string()));
+        }
+
+        // Check for comma (range)
+        if let Some(comma_pos) = input.find(',') {
+            let before = input[..comma_pos].trim();
+            let after = input[comma_pos + 1..].trim();
+
+            let min = if before.is_empty() {
+                None
+            } else {
+                Some(before.parse::<u32>().map_err(|_| {
+                    ParseError::InvalidPattern(format!("invalid min in quantifier: {before}"))
+                })?)
+            };
+
+            let max = if after.is_empty() {
+                None
+            } else {
+                Some(after.parse::<u32>().map_err(|_| {
+                    ParseError::InvalidPattern(format!("invalid max in quantifier: {after}"))
+                })?)
+            };
+
+            Ok(EdgeLength::Range { min, max })
+        } else {
+            // Exact count
+            let n = input
+                .parse::<u32>()
+                .map_err(|_| ParseError::InvalidPattern(format!("invalid quantifier: {input}")))?;
+            Ok(EdgeLength::Exact(n))
+        }
     }
 
     /// Parses properties from a property string like `name: 'Alice', age: 30`.
@@ -5221,30 +5474,93 @@ mod tests {
         let (node, remaining) = ExtendedParser::parse_node_pattern("(p)").unwrap();
         assert!(remaining.is_empty());
         assert_eq!(node.variable.as_ref().map(|i| i.name.as_str()), Some("p"));
-        assert!(node.labels.is_empty());
+        assert!(node.label_expr.is_none());
     }
 
     #[test]
     fn parse_node_with_label() {
         let (node, _) = ExtendedParser::parse_node_pattern("(p:Person)").unwrap();
         assert_eq!(node.variable.as_ref().map(|i| i.name.as_str()), Some("p"));
-        assert_eq!(node.labels.len(), 1);
-        assert_eq!(node.labels[0].name, "Person");
+        let labels = node.simple_labels().expect("simple labels");
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].name, "Person");
     }
 
     #[test]
     fn parse_node_with_multiple_labels() {
         let (node, _) = ExtendedParser::parse_node_pattern("(p:Person:Employee)").unwrap();
-        assert_eq!(node.labels.len(), 2);
-        assert_eq!(node.labels[0].name, "Person");
-        assert_eq!(node.labels[1].name, "Employee");
+        let labels = node.simple_labels().expect("simple labels");
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].name, "Person");
+        assert_eq!(labels[1].name, "Employee");
     }
 
     #[test]
     fn parse_anonymous_node() {
         let (node, _) = ExtendedParser::parse_node_pattern("()").unwrap();
         assert!(node.variable.is_none());
-        assert!(node.labels.is_empty());
+        assert!(node.label_expr.is_none());
+    }
+
+    #[test]
+    fn parse_label_or_expression() {
+        let (node, _) = ExtendedParser::parse_node_pattern("(n:Person|Company)").unwrap();
+        match &node.label_expr {
+            LabelExpression::Or(exprs) => {
+                assert_eq!(exprs.len(), 2);
+            }
+            _ => panic!("expected Or expression, got {:?}", node.label_expr),
+        }
+    }
+
+    #[test]
+    fn parse_label_and_expression() {
+        let (node, _) = ExtendedParser::parse_node_pattern("(n:Active&Premium)").unwrap();
+        match &node.label_expr {
+            LabelExpression::And(exprs) => {
+                assert_eq!(exprs.len(), 2);
+            }
+            _ => panic!("expected And expression, got {:?}", node.label_expr),
+        }
+    }
+
+    #[test]
+    fn parse_label_not_expression() {
+        let (node, _) = ExtendedParser::parse_node_pattern("(n:!Deleted)").unwrap();
+        match &node.label_expr {
+            LabelExpression::Not(_) => {}
+            _ => panic!("expected Not expression, got {:?}", node.label_expr),
+        }
+    }
+
+    #[test]
+    fn parse_complex_label_expression() {
+        // Person AND NOT Bot
+        let (node, _) = ExtendedParser::parse_node_pattern("(n:Person&!Bot)").unwrap();
+        match &node.label_expr {
+            LabelExpression::And(exprs) => {
+                assert_eq!(exprs.len(), 2);
+                assert!(matches!(&exprs[0], LabelExpression::Single(_)));
+                assert!(matches!(&exprs[1], LabelExpression::Not(_)));
+            }
+            _ => panic!("expected And expression with Not, got {:?}", node.label_expr),
+        }
+    }
+
+    #[test]
+    fn parse_mixed_or_and_expression() {
+        // (Person AND Employee) OR (Company)
+        let (node, _) = ExtendedParser::parse_node_pattern("(n:Person:Employee|Company)").unwrap();
+        match &node.label_expr {
+            LabelExpression::Or(or_exprs) => {
+                assert_eq!(or_exprs.len(), 2);
+                // First should be And(Person, Employee)
+                assert!(matches!(&or_exprs[0], LabelExpression::And(_)));
+                // Second should be Single(Company)
+                assert!(matches!(&or_exprs[1], LabelExpression::Single(_)));
+            }
+            _ => panic!("expected Or expression, got {:?}", node.label_expr),
+        }
     }
 
     #[test]
@@ -5282,6 +5598,48 @@ mod tests {
     }
 
     #[test]
+    fn parse_edge_gql_quantifier_range() {
+        // GQL-style: {2,5}
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS{2,5}]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Range { min: Some(2), max: Some(5) });
+    }
+
+    #[test]
+    fn parse_edge_gql_quantifier_exact() {
+        // GQL-style: {3}
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS{3}]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Exact(3));
+    }
+
+    #[test]
+    fn parse_edge_gql_quantifier_min_only() {
+        // GQL-style: {2,}
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS{2,}]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Range { min: Some(2), max: None });
+    }
+
+    #[test]
+    fn parse_edge_gql_quantifier_max_only() {
+        // GQL-style: {,5}
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS{,5}]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Range { min: None, max: Some(5) });
+    }
+
+    #[test]
+    fn parse_edge_gql_plus() {
+        // GQL-style: + (one or more)
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS+]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Range { min: Some(1), max: None });
+    }
+
+    #[test]
+    fn parse_edge_gql_question() {
+        // GQL-style: ? (zero or one)
+        let (edge, _) = ExtendedParser::parse_edge_pattern("-[:KNOWS?]->").unwrap();
+        assert_eq!(edge.length, EdgeLength::Range { min: Some(0), max: Some(1) });
+    }
+
+    #[test]
     fn parse_edge_any_length() {
         let (edge, _) = ExtendedParser::parse_edge_pattern("-[:PATH*]->").unwrap();
         assert_eq!(edge.length, EdgeLength::Any);
@@ -5299,6 +5657,16 @@ mod tests {
         let (path, _) =
             ExtendedParser::parse_path_pattern("(a)-[:KNOWS]->(b)-[:LIKES]->(c)").unwrap();
         assert_eq!(path.steps.len(), 2);
+    }
+
+    #[test]
+    fn parse_path_with_variable_assignment() {
+        // p = (a)-[*]->(b) - path variable assignment
+        let pattern = ExtendedParser::parse_graph_pattern("p = (a)-[*]->(b)").unwrap();
+        assert_eq!(pattern.paths.len(), 1);
+        let path = &pattern.paths[0];
+        assert_eq!(path.variable.as_ref().map(|i| i.name.as_str()), Some("p"));
+        assert_eq!(path.start.variable.as_ref().map(|i| i.name.as_str()), Some("a"));
     }
 
     #[test]
@@ -6069,7 +6437,8 @@ mod tests {
             assert_eq!(edge.edge_types[0].name, "FOLLOWS");
             // End node should be `f:User`
             assert_eq!(node.variable.as_ref().map(|v| v.name.as_str()), Some("f"));
-            assert_eq!(node.labels[0].name, "User");
+            let labels = node.simple_labels().expect("simple labels");
+            assert_eq!(labels[0].name, "User");
         } else {
             panic!("Expected SELECT statement");
         }
@@ -6116,6 +6485,123 @@ mod tests {
         assert_eq!(patterns.len(), 1);
         assert_eq!(optional_patterns.len(), 1);
         assert_eq!(optional_patterns[0].len(), 1);
+    }
+
+    // ============================================================================
+    // MANDATORY MATCH Tests
+    // ============================================================================
+
+    #[test]
+    fn find_mandatory_match_keyword() {
+        // Should find MANDATORY MATCH at position 0
+        assert_eq!(ExtendedParser::find_mandatory_match_keyword("MANDATORY MATCH (a)"), Some(0));
+
+        // Should find with leading whitespace
+        assert_eq!(ExtendedParser::find_mandatory_match_keyword("  MANDATORY MATCH (a)"), Some(2));
+
+        // Should not find plain MATCH
+        assert_eq!(ExtendedParser::find_mandatory_match_keyword("MATCH (a)"), None);
+
+        // Should not find MANDATORY without MATCH
+        assert_eq!(ExtendedParser::find_mandatory_match_keyword("MANDATORY something else"), None);
+
+        // Case insensitive
+        assert_eq!(ExtendedParser::find_mandatory_match_keyword("mandatory match (a)"), Some(0));
+    }
+
+    #[test]
+    fn find_match_skips_mandatory_match() {
+        // find_match_keyword should NOT match the MATCH inside "MANDATORY MATCH"
+        let input = "MANDATORY MATCH (a) MATCH (b)";
+        let pos = ExtendedParser::find_match_keyword(input);
+        // Should find the standalone MATCH, not the one in MANDATORY MATCH
+        assert_eq!(pos, Some(20)); // Position of the second MATCH
+
+        // When there's only MANDATORY MATCH, should return None
+        assert_eq!(ExtendedParser::find_match_keyword("MANDATORY MATCH (a)"), None);
+    }
+
+    #[test]
+    fn extract_mandatory_match_clause() {
+        let (sql, patterns, optional_patterns) = ExtendedParser::extract_match_clauses(
+            "SELECT u.name FROM users MANDATORY MATCH (u:User) WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        // The SQL should not contain MATCH or MANDATORY
+        assert!(!sql.to_uppercase().contains("MATCH"));
+        assert!(!sql.to_uppercase().contains("MANDATORY"));
+
+        // One required MATCH pattern that is mandatory
+        assert_eq!(patterns.len(), 1);
+        let (pattern, is_mandatory) = &patterns[0];
+        assert!(is_mandatory);
+        assert_eq!(pattern.paths.len(), 1);
+
+        // No optional patterns
+        assert_eq!(optional_patterns.len(), 1);
+        assert_eq!(optional_patterns[0].len(), 0);
+    }
+
+    #[test]
+    fn parse_mandatory_match_in_select() {
+        let stmts = ExtendedParser::parse(
+            "SELECT u.name FROM users MANDATORY MATCH (u:User) WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            // Required MATCH should be present
+            assert!(select.match_clause.is_some());
+            // mandatory_match should be true
+            assert!(select.mandatory_match);
+            // WHERE should be preserved
+            assert!(select.where_clause.is_some());
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn parse_regular_match_not_mandatory() {
+        let stmts = ExtendedParser::parse(
+            "SELECT u.name FROM users MATCH (u:User) WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            // Required MATCH should be present
+            assert!(select.match_clause.is_some());
+            // mandatory_match should be false for regular MATCH
+            assert!(!select.mandatory_match);
+        } else {
+            panic!("Expected SELECT statement");
+        }
+    }
+
+    #[test]
+    fn mandatory_match_with_optional_match() {
+        // MANDATORY MATCH can be followed by OPTIONAL MATCH clauses
+        let stmts = ExtendedParser::parse(
+            "SELECT u.name, p.title FROM users \
+             MANDATORY MATCH (u:User) \
+             OPTIONAL MATCH (u)-[:LIKES]->(p:Post) \
+             WHERE u.status = 'active'",
+        )
+        .unwrap();
+
+        assert_eq!(stmts.len(), 1);
+        if let Statement::Select(select) = &stmts[0] {
+            // Required MATCH should be present and mandatory
+            assert!(select.match_clause.is_some());
+            assert!(select.mandatory_match);
+            // One OPTIONAL MATCH clause
+            assert_eq!(select.optional_match_clauses.len(), 1);
+        } else {
+            panic!("Expected SELECT statement");
+        }
     }
 
     // ========== CREATE Tests ==========
@@ -7202,13 +7688,15 @@ mod tests {
         match result {
             Expr::PatternComprehension { pattern, .. } => {
                 // Start node has Person label
-                assert!(!pattern.start.labels.is_empty());
-                assert_eq!(pattern.start.labels[0].name, "Person");
+                assert!(pattern.start.has_labels());
+                let start_labels = pattern.start.simple_labels().expect("simple labels");
+                assert_eq!(start_labels[0].name, "Person");
 
                 // End node has Person label
                 let (_, node) = &pattern.steps[0];
-                assert!(!node.labels.is_empty());
-                assert_eq!(node.labels[0].name, "Person");
+                assert!(node.has_labels());
+                let end_labels = node.simple_labels().expect("simple labels");
+                assert_eq!(end_labels[0].name, "Person");
             }
             _ => panic!("Expected PatternComprehension, got {:?}", result),
         }
@@ -7555,8 +8043,9 @@ mod tests {
         match result {
             Expr::ExistsSubquery { pattern, .. } => {
                 let (_, node) = &pattern.steps[0];
-                assert!(!node.labels.is_empty());
-                assert_eq!(node.labels[0].name, "Person");
+                assert!(node.has_labels());
+                let labels = node.simple_labels().expect("simple labels");
+                assert_eq!(labels[0].name, "Person");
             }
             _ => panic!("Expected ExistsSubquery, got {:?}", result),
         }

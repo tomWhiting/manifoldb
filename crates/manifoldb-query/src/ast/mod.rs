@@ -20,8 +20,8 @@ pub use expr::{
     WindowSpec,
 };
 pub use pattern::{
-    EdgeDirection, EdgeLength, EdgePattern, GraphPattern, NodePattern, PathPattern,
-    PropertyCondition, ShortestPathPattern, WeightSpec,
+    EdgeDirection, EdgeLength, EdgePattern, GraphPattern, LabelExpression, NodePattern,
+    PathPattern, PropertyCondition, ShortestPathPattern, WeightSpec,
 };
 pub use statement::{
     AlterColumnAction, AlterTableAction, AlterTableStatement, AnalyzeStatement, Assignment,

@@ -447,6 +447,10 @@ pub struct SelectStatement {
     pub from: Vec<TableRef>,
     /// Optional MATCH clause for graph patterns.
     pub match_clause: Option<GraphPattern>,
+    /// Whether the MATCH clause is mandatory (throws error if no match).
+    /// - false: Standard MATCH - returns empty result if no match
+    /// - true: MANDATORY MATCH - throws error if no match (Neo4j extension)
+    pub mandatory_match: bool,
     /// OPTIONAL MATCH clauses for left outer join graph patterns.
     /// Each pattern is joined with the main query using a LEFT OUTER JOIN,
     /// returning NULL for unmatched optional patterns.
@@ -477,6 +481,7 @@ impl SelectStatement {
             projection,
             from: vec![],
             match_clause: None,
+            mandatory_match: false,
             optional_match_clauses: vec![],
             where_clause: None,
             group_by: vec![],
@@ -513,6 +518,17 @@ impl SelectStatement {
     #[must_use]
     pub fn match_clause(mut self, pattern: GraphPattern) -> Self {
         self.match_clause = Some(pattern);
+        self
+    }
+
+    /// Adds a MANDATORY MATCH clause (Neo4j extension).
+    ///
+    /// MANDATORY MATCH throws an error if no match is found, unlike regular MATCH
+    /// which returns an empty result set.
+    #[must_use]
+    pub fn mandatory_match_clause(mut self, pattern: GraphPattern) -> Self {
+        self.match_clause = Some(pattern);
+        self.mandatory_match = true;
         self
     }
 
@@ -652,6 +668,7 @@ impl MatchStatement {
             projection,
             from: vec![], // Graph patterns don't need a FROM clause
             match_clause: Some(self.pattern.clone()),
+            mandatory_match: false, // Cypher MATCH is not mandatory by default
             optional_match_clauses: vec![], // TODO: Add support for OPTIONAL MATCH in standalone Cypher
             where_clause: self.where_clause.clone(),
             group_by: vec![],

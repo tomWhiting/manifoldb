@@ -1106,15 +1106,18 @@ impl PlanBuilder {
         }
 
         // Add source/target node labels
-        if !sp.path.start.labels.is_empty() {
-            sp_node = sp_node
-                .with_src_labels(sp.path.start.labels.iter().map(|l| l.name.clone()).collect());
+        if let Some(labels) = sp.path.start.simple_labels() {
+            if !labels.is_empty() {
+                sp_node = sp_node.with_src_labels(labels.iter().map(|l| l.name.clone()).collect());
+            }
         }
 
         if let Some((_, last_node)) = sp.path.steps.last() {
-            if !last_node.labels.is_empty() {
-                sp_node = sp_node
-                    .with_dst_labels(last_node.labels.iter().map(|l| l.name.clone()).collect());
+            if let Some(labels) = last_node.simple_labels() {
+                if !labels.is_empty() {
+                    sp_node =
+                        sp_node.with_dst_labels(labels.iter().map(|l| l.name.clone()).collect());
+                }
             }
         }
 
@@ -1180,19 +1183,21 @@ impl PlanBuilder {
         // of all matching nodes.
         if path.steps.is_empty() {
             // Get the label(s) from the start node - we'll scan by the first label
-            if !path.start.labels.is_empty() {
-                let label = path.start.labels[0].name.clone();
-                let node_scan =
-                    LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
+            if let Some(labels) = path.start.simple_labels() {
+                if let Some(first_label) = labels.first() {
+                    let label = first_label.name.clone();
+                    let node_scan =
+                        LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
 
-                // If the input is an empty Values node, just use the scan directly.
-                // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
-                plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
-                {
-                    node_scan
-                } else {
-                    plan.cross_join(node_scan)
-                };
+                    // If the input is an empty Values node, just use the scan directly.
+                    // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
+                    plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
+                    {
+                        node_scan
+                    } else {
+                        plan.cross_join(node_scan)
+                    };
+                }
             }
 
             // Add property filter if specified
@@ -1250,9 +1255,11 @@ impl PlanBuilder {
             expand = expand.with_length(ExpandLength::from_ast(&edge.length));
 
             // Add node labels
-            if !node.labels.is_empty() {
-                expand =
-                    expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
+            if let Some(labels) = node.simple_labels() {
+                if !labels.is_empty() {
+                    expand =
+                        expand.with_node_labels(labels.iter().map(|l| l.name.clone()).collect());
+                }
             }
 
             // Add node property filter
@@ -1414,9 +1421,11 @@ impl PlanBuilder {
             expand = expand.with_length(ExpandLength::from_ast(&edge.length));
 
             // Add node labels
-            if !node.labels.is_empty() {
-                expand =
-                    expand.with_node_labels(node.labels.iter().map(|l| l.name.clone()).collect());
+            if let Some(labels) = node.simple_labels() {
+                if !labels.is_empty() {
+                    expand =
+                        expand.with_node_labels(labels.iter().map(|l| l.name.clone()).collect());
+                }
             }
 
             expand_nodes.push(expand);

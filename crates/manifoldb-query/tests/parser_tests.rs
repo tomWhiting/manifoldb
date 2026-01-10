@@ -590,8 +590,9 @@ mod graph_patterns {
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
             let path = &pattern.paths[0];
-            assert_eq!(path.start.labels.len(), 1);
-            assert_eq!(path.start.labels[0].name, "User");
+            let labels = path.start.simple_labels().expect("simple labels");
+            assert_eq!(labels.len(), 1);
+            assert_eq!(labels[0].name, "User");
         } else {
             panic!("expected SELECT");
         }
@@ -603,7 +604,8 @@ mod graph_patterns {
 
         if let Statement::Select(select) = &stmts[0] {
             let pattern = select.match_clause.as_ref().unwrap();
-            assert_eq!(pattern.paths[0].start.labels.len(), 2);
+            let labels = pattern.paths[0].start.simple_labels().expect("simple labels");
+            assert_eq!(labels.len(), 2);
         } else {
             panic!("expected SELECT");
         }
@@ -1123,7 +1125,8 @@ mod ast_builders {
         .then(EdgePattern::directed().edge_type("LIKES"), NodePattern::var("c"));
 
         assert_eq!(path.steps.len(), 2);
-        assert_eq!(path.start.labels[0].name, "Person");
+        let labels = path.start.simple_labels().expect("simple labels");
+        assert_eq!(labels[0].name, "Person");
     }
 
     #[test]
@@ -1174,7 +1177,8 @@ mod standalone_match {
         if let Statement::Match(match_stmt) = &stmts[0] {
             // Check pattern
             assert_eq!(match_stmt.pattern.paths.len(), 1);
-            assert_eq!(match_stmt.pattern.paths[0].start.labels[0].name, "User");
+            let labels = match_stmt.pattern.paths[0].start.simple_labels().expect("simple labels");
+            assert_eq!(labels[0].name, "User");
 
             // Check return clause
             assert_eq!(match_stmt.return_clause.len(), 2);
@@ -2317,8 +2321,9 @@ mod shortest_path_patterns {
             let sp = &match_stmt.pattern.shortest_paths[0];
 
             // Check start node labels
-            assert_eq!(sp.path.start.labels.len(), 1);
-            assert_eq!(sp.path.start.labels[0].name, "User");
+            let labels = sp.path.start.simple_labels().expect("simple labels");
+            assert_eq!(labels.len(), 1);
+            assert_eq!(labels[0].name, "User");
 
             // Check edge types
             assert_eq!(sp.path.steps[0].0.edge_types.len(), 1);
@@ -2520,8 +2525,9 @@ mod shortest_path_patterns {
             let sp = &match_stmt.pattern.shortest_paths[0];
             assert!(sp.find_all);
             // Check labels are parsed correctly
-            assert_eq!(sp.path.start.labels.len(), 1);
-            assert_eq!(sp.path.start.labels[0].name, "Person");
+            let labels = sp.path.start.simple_labels().expect("simple labels");
+            assert_eq!(labels.len(), 1);
+            assert_eq!(labels[0].name, "Person");
         } else {
             panic!("expected MATCH statement");
         }

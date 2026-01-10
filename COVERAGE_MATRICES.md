@@ -641,21 +641,30 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | Node pattern (n) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Node with label (n:Label) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Multiple labels | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| Label expressions (:A\|B, :A&B, :!A) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - GQL/Cypher label operators |
 | Node properties | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Edge pattern -[]-> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Edge pattern <-[]- | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Edge pattern -[]- | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | Edge type [:TYPE] | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| Multiple edge types | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| Multiple edge types [:A\|B] | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Match multiple relationship types |
 | Edge properties | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| Path assignment (p = ...) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Named path patterns |
 | **Variable-Length Paths** |
 | [*] (any length) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | [*n] (exact) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | [*m..n] (range) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | [*..n] (up to) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | [*n..] (at least) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| **GQL Quantified Paths** |
+| {n} (exact, GQL) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - GQL-style exact quantifier |
+| {n,m} (range, GQL) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - GQL-style range quantifier |
+| + (one or more, GQL) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - GQL-style one-or-more |
+| ? (zero or one, GQL) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - GQL-style optional |
 | **OPTIONAL MATCH** |
 | Basic OPTIONAL MATCH | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| **MANDATORY MATCH** |
+| MANDATORY MATCH | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Neo4j extension for strict matching |
 | **WHERE** |
 | Basic predicates | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Pattern predicates | ✓ | ✓ | | | | | |

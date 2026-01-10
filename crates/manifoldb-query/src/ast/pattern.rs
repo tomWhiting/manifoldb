@@ -13,6 +13,174 @@
 use super::expr::{Expr, Identifier};
 use std::fmt;
 
+/// A label expression for advanced pattern matching.
+///
+/// Supports logical operators on labels in node patterns:
+/// - `:Person|Company` - OR: matches nodes with either label
+/// - `:Active&Premium` - AND: matches nodes with both labels
+/// - `:!Deleted` - NOT: matches nodes without the label
+/// - `:Person&!Bot` - combination: Person AND NOT Bot
+///
+/// # Precedence
+/// NOT has highest precedence, then AND, then OR (like boolean logic).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LabelExpression {
+    /// No label constraint.
+    None,
+    /// Single label: `:Person`.
+    Single(Identifier),
+    /// OR of labels: `:Person|Company`.
+    Or(Vec<LabelExpression>),
+    /// AND of labels: `:Active&Premium`.
+    And(Vec<LabelExpression>),
+    /// NOT label: `:!Deleted`.
+    Not(Box<LabelExpression>),
+}
+
+impl LabelExpression {
+    /// Creates an empty (no constraint) label expression.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self::None
+    }
+
+    /// Creates a single label expression.
+    #[must_use]
+    pub fn single(label: impl Into<Identifier>) -> Self {
+        Self::Single(label.into())
+    }
+
+    /// Creates an OR expression from multiple label expressions.
+    #[must_use]
+    pub fn or(mut exprs: Vec<LabelExpression>) -> Self {
+        match exprs.len() {
+            0 => Self::None,
+            1 => exprs.swap_remove(0),
+            _ => Self::Or(exprs),
+        }
+    }
+
+    /// Creates an AND expression from multiple label expressions.
+    #[must_use]
+    pub fn and(mut exprs: Vec<LabelExpression>) -> Self {
+        match exprs.len() {
+            0 => Self::None,
+            1 => exprs.swap_remove(0),
+            _ => Self::And(exprs),
+        }
+    }
+
+    /// Creates a NOT expression.
+    #[must_use]
+    pub fn not(expr: LabelExpression) -> Self {
+        Self::Not(Box::new(expr))
+    }
+
+    /// Returns true if this is an empty constraint.
+    #[must_use]
+    pub const fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// Converts a simple list of labels to an AND expression (legacy compatibility).
+    /// This is the traditional Cypher behavior where `:Person:Employee` means both.
+    #[must_use]
+    pub fn from_labels(mut labels: Vec<Identifier>) -> Self {
+        match labels.len() {
+            0 => Self::None,
+            1 => Self::Single(labels.swap_remove(0)),
+            _ => Self::And(labels.into_iter().map(Self::Single).collect()),
+        }
+    }
+
+    /// Extracts simple labels if this is a legacy-style expression (None, Single, or And of Singles).
+    /// Returns None if the expression uses OR or NOT operators.
+    #[must_use]
+    pub fn as_simple_labels(&self) -> Option<Vec<&Identifier>> {
+        match self {
+            Self::None => Some(vec![]),
+            Self::Single(id) => Some(vec![id]),
+            Self::And(exprs) => {
+                let mut labels = Vec::with_capacity(exprs.len());
+                for expr in exprs {
+                    if let Self::Single(id) = expr {
+                        labels.push(id);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(labels)
+            }
+            Self::Or(_) | Self::Not(_) => None,
+        }
+    }
+
+    /// Extracts and clones simple labels. Returns an empty vec for complex expressions.
+    /// Use this for backward compatibility with code expecting `Vec<Identifier>`.
+    #[must_use]
+    pub fn into_simple_labels(self) -> Vec<Identifier> {
+        match self {
+            Self::None => vec![],
+            Self::Single(id) => vec![id],
+            Self::And(exprs) => exprs
+                .into_iter()
+                .filter_map(|e| if let Self::Single(id) = e { Some(id) } else { None })
+                .collect(),
+            Self::Or(_) | Self::Not(_) => vec![],
+        }
+    }
+}
+
+impl Default for LabelExpression {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl fmt::Display for LabelExpression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => Ok(()),
+            Self::Single(id) => write!(f, ":{id}"),
+            Self::Or(exprs) => {
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "|")?;
+                    }
+                    // Don't write the leading colon for nested expressions after first
+                    match expr {
+                        Self::Single(id) if i > 0 => write!(f, "{id}")?,
+                        Self::Single(id) => write!(f, ":{id}")?,
+                        other => write!(f, "{other}")?,
+                    }
+                }
+                Ok(())
+            }
+            Self::And(exprs) => {
+                for (i, expr) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "&")?;
+                    }
+                    match expr {
+                        Self::Single(id) if i > 0 => write!(f, "{id}")?,
+                        Self::Single(id) => write!(f, ":{id}")?,
+                        other => write!(f, "{other}")?,
+                    }
+                }
+                Ok(())
+            }
+            Self::Not(expr) => write!(
+                f,
+                ":!{}",
+                match expr.as_ref() {
+                    Self::Single(id) => id.to_string(),
+                    other => format!("({other})"),
+                }
+            ),
+        }
+    }
+}
+
 /// A complete graph pattern (used in MATCH clauses).
 ///
 /// A graph pattern consists of one or more path patterns that may share nodes,
@@ -110,13 +278,13 @@ impl fmt::Display for PathPattern {
 
 /// A node pattern in a graph pattern.
 ///
-/// Example: `(p:Person {name: 'Alice'})`
+/// Example: `(p:Person {name: 'Alice'})` or `(n:Person|Company)` or `(n:Active&!Deleted)`
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePattern {
     /// Optional variable binding for this node.
     pub variable: Option<Identifier>,
-    /// Optional label(s) for this node.
-    pub labels: Vec<Identifier>,
+    /// Label expression for this node (supports OR, AND, NOT).
+    pub label_expr: LabelExpression,
     /// Optional property conditions.
     pub properties: Vec<PropertyCondition>,
 }
@@ -125,25 +293,46 @@ impl NodePattern {
     /// Creates an anonymous node pattern (no variable, no labels).
     #[must_use]
     pub const fn anonymous() -> Self {
-        Self { variable: None, labels: vec![], properties: vec![] }
+        Self { variable: None, label_expr: LabelExpression::None, properties: vec![] }
     }
 
     /// Creates a node pattern with just a variable.
     #[must_use]
     pub fn var(name: impl Into<Identifier>) -> Self {
-        Self { variable: Some(name.into()), labels: vec![], properties: vec![] }
+        Self { variable: Some(name.into()), label_expr: LabelExpression::None, properties: vec![] }
     }
 
     /// Creates a node pattern with a variable and label.
     #[must_use]
     pub fn with_label(name: impl Into<Identifier>, label: impl Into<Identifier>) -> Self {
-        Self { variable: Some(name.into()), labels: vec![label.into()], properties: vec![] }
+        Self {
+            variable: Some(name.into()),
+            label_expr: LabelExpression::single(label),
+            properties: vec![],
+        }
     }
 
-    /// Adds a label to this node pattern.
+    /// Creates a node pattern with a variable and label expression.
+    #[must_use]
+    pub fn with_label_expr(name: impl Into<Identifier>, label_expr: LabelExpression) -> Self {
+        Self { variable: Some(name.into()), label_expr, properties: vec![] }
+    }
+
+    /// Adds a label to this node pattern (AND semantics, legacy compatibility).
     #[must_use]
     pub fn label(mut self, label: impl Into<Identifier>) -> Self {
-        self.labels.push(label.into());
+        let new_label = LabelExpression::single(label);
+        self.label_expr = match self.label_expr {
+            LabelExpression::None => new_label,
+            LabelExpression::Single(existing) => {
+                LabelExpression::And(vec![LabelExpression::Single(existing), new_label])
+            }
+            LabelExpression::And(mut exprs) => {
+                exprs.push(new_label);
+                LabelExpression::And(exprs)
+            }
+            other => LabelExpression::And(vec![other, new_label]),
+        };
         self
     }
 
@@ -153,6 +342,19 @@ impl NodePattern {
         self.properties.push(PropertyCondition { name: name.into(), value });
         self
     }
+
+    /// Returns the labels as a simple list if this is a legacy-style pattern.
+    /// Returns None if the pattern uses OR or NOT operators.
+    #[must_use]
+    pub fn simple_labels(&self) -> Option<Vec<&Identifier>> {
+        self.label_expr.as_simple_labels()
+    }
+
+    /// Returns true if this node has any label constraints.
+    #[must_use]
+    pub fn has_labels(&self) -> bool {
+        !self.label_expr.is_none()
+    }
 }
 
 impl fmt::Display for NodePattern {
@@ -161,9 +363,7 @@ impl fmt::Display for NodePattern {
         if let Some(var) = &self.variable {
             write!(f, "{var}")?;
         }
-        for label in &self.labels {
-            write!(f, ":{label}")?;
-        }
+        write!(f, "{}", self.label_expr)?;
         if !self.properties.is_empty() {
             write!(f, " {{")?;
             for (i, prop) in self.properties.iter().enumerate() {
@@ -558,8 +758,96 @@ mod tests {
         let node = NodePattern::with_label("p", "Person");
         assert_eq!(node.to_string(), "(p:Person)");
 
+        // Multiple labels with AND semantics (traditional Cypher behavior)
         let node = NodePattern::with_label("p", "Person").label("Employee");
-        assert_eq!(node.to_string(), "(p:Person:Employee)");
+        assert_eq!(node.to_string(), "(p:Person&Employee)");
+    }
+
+    #[test]
+    fn label_expression_display() {
+        // Single label
+        let expr = LabelExpression::single("Person");
+        assert_eq!(expr.to_string(), ":Person");
+
+        // OR labels
+        let expr = LabelExpression::or(vec![
+            LabelExpression::single("Person"),
+            LabelExpression::single("Company"),
+        ]);
+        assert_eq!(expr.to_string(), ":Person|Company");
+
+        // AND labels
+        let expr = LabelExpression::and(vec![
+            LabelExpression::single("Active"),
+            LabelExpression::single("Premium"),
+        ]);
+        assert_eq!(expr.to_string(), ":Active&Premium");
+
+        // NOT label
+        let expr = LabelExpression::not(LabelExpression::single("Deleted"));
+        assert_eq!(expr.to_string(), ":!Deleted");
+
+        // Combined: Person AND NOT Bot
+        let expr = LabelExpression::and(vec![
+            LabelExpression::single("Person"),
+            LabelExpression::not(LabelExpression::single("Bot")),
+        ]);
+        assert_eq!(expr.to_string(), ":Person&:!Bot");
+    }
+
+    #[test]
+    fn label_expression_from_labels() {
+        // Empty labels
+        let expr = LabelExpression::from_labels(vec![]);
+        assert!(expr.is_none());
+
+        // Single label
+        let expr = LabelExpression::from_labels(vec![Identifier::new("Person")]);
+        assert_eq!(expr, LabelExpression::single("Person"));
+
+        // Multiple labels (AND semantics)
+        let expr = LabelExpression::from_labels(vec![
+            Identifier::new("Person"),
+            Identifier::new("Employee"),
+        ]);
+        match expr {
+            LabelExpression::And(exprs) => {
+                assert_eq!(exprs.len(), 2);
+            }
+            _ => panic!("expected And"),
+        }
+    }
+
+    #[test]
+    fn label_expression_as_simple_labels() {
+        // None
+        let expr = LabelExpression::None;
+        assert_eq!(expr.as_simple_labels(), Some(vec![]));
+
+        // Single
+        let id = Identifier::new("Person");
+        let expr = LabelExpression::Single(id.clone());
+        assert_eq!(expr.as_simple_labels(), Some(vec![&id]));
+
+        // And of singles
+        let id1 = Identifier::new("Person");
+        let id2 = Identifier::new("Employee");
+        let expr = LabelExpression::And(vec![
+            LabelExpression::Single(id1.clone()),
+            LabelExpression::Single(id2.clone()),
+        ]);
+        assert_eq!(expr.as_simple_labels(), Some(vec![&id1, &id2]));
+
+        // Or - not simple
+        let expr = LabelExpression::or(vec![
+            LabelExpression::single("Person"),
+            LabelExpression::single("Company"),
+        ]);
+        assert_eq!(expr.as_simple_labels(), None);
+
+        // Not - not simple
+        let expr = LabelExpression::not(LabelExpression::single("Deleted"));
+        assert_eq!(expr.as_simple_labels(), None);
     }
 
     #[test]
