@@ -4,6 +4,132 @@
 
 use async_graphql::{Enum, InputObject, Json, SimpleObject, ID};
 
+// =============================================================================
+// Vector/Collection Types
+// =============================================================================
+
+/// Information about a vector collection.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct CollectionInfo {
+    /// The collection name.
+    pub name: String,
+    /// Vector configurations in this collection.
+    pub vectors: Vec<VectorConfigInfo>,
+    /// Number of points in the collection.
+    pub point_count: i32,
+}
+
+/// Configuration for a named vector within a collection.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct VectorConfigInfo {
+    /// The name of this vector field.
+    pub name: String,
+    /// The type of vector (Dense, Sparse, Multi, Binary).
+    pub vector_type: VectorTypeEnum,
+    /// The dimension of the vector (null for sparse vectors).
+    pub dimension: Option<i32>,
+    /// The distance metric used for similarity search.
+    pub distance_metric: DistanceMetricEnum,
+}
+
+/// Type of vector stored in a collection.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum VectorTypeEnum {
+    /// Dense fixed-dimension vector (e.g., BERT, OpenAI embeddings).
+    Dense,
+    /// Sparse vector with variable non-zero elements (e.g., SPLADE, BM25).
+    Sparse,
+    /// Multi-vector for per-token embeddings (e.g., ColBERT).
+    Multi,
+    /// Binary bit-packed vector (e.g., LSH, SimHash).
+    Binary,
+}
+
+/// Distance metric for similarity search.
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
+pub enum DistanceMetricEnum {
+    /// Cosine similarity (1 - cosine distance).
+    Cosine,
+    /// Dot product similarity.
+    DotProduct,
+    /// Euclidean (L2) distance.
+    Euclidean,
+    /// Manhattan (L1) distance.
+    Manhattan,
+    /// Chebyshev (L-infinity) distance.
+    Chebyshev,
+    /// Hamming distance for binary vectors.
+    Hamming,
+}
+
+/// Result of a similarity search.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct VectorSearchResult {
+    /// The ID of the matched point.
+    pub id: ID,
+    /// The similarity score (higher is better).
+    pub score: f64,
+    /// The payload of the matched point (if requested).
+    pub payload: Option<Json<serde_json::Value>>,
+}
+
+/// Input for creating a new vector collection.
+#[derive(InputObject, Debug)]
+pub struct CreateCollectionInput {
+    /// The name of the collection.
+    pub name: String,
+    /// Vector configurations for this collection.
+    pub vectors: Vec<VectorConfigInput>,
+}
+
+/// Input for configuring a vector in a collection.
+#[derive(InputObject, Debug, Clone)]
+pub struct VectorConfigInput {
+    /// The name of this vector field.
+    pub name: String,
+    /// The dimension of the vector (required for dense vectors).
+    pub dimension: i32,
+    /// The distance metric to use (defaults to Cosine).
+    pub distance_metric: Option<DistanceMetricEnum>,
+}
+
+/// Input for similarity search.
+#[derive(InputObject, Debug)]
+pub struct VectorSearchInput {
+    /// The name of the vector field to search.
+    pub vector_name: String,
+    /// The query vector (as an array of floats).
+    pub query_vector: Vec<f64>,
+    /// Maximum number of results to return.
+    pub limit: Option<i32>,
+    /// Number of results to skip (for pagination).
+    pub offset: Option<i32>,
+    /// Include payload in results.
+    pub with_payload: Option<bool>,
+    /// Minimum score threshold for results.
+    pub score_threshold: Option<f64>,
+}
+
+/// Input for upserting a vector into a collection.
+#[derive(InputObject, Debug)]
+pub struct UpsertVectorInput {
+    /// The ID of the point (will be auto-generated if not provided).
+    pub id: Option<ID>,
+    /// The payload (metadata) for this point.
+    pub payload: Option<Json<serde_json::Value>>,
+    /// The vectors to store (keyed by vector name).
+    pub vectors: Vec<VectorInput>,
+}
+
+/// A named vector value.
+#[derive(InputObject, Debug)]
+pub struct VectorInput {
+    /// The name of the vector field.
+    pub name: String,
+    /// The vector values (as an array of floats).
+    pub values: Vec<f64>,
+}
+
 /// A node in the graph.
 #[derive(SimpleObject, Clone, Debug)]
 pub struct Node {
