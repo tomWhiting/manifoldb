@@ -36,8 +36,8 @@ pub use statement::{
     PayloadFieldDef, ReleaseSavepointStatement, RemoveGraphStatement, RemoveItem, ResetStatement,
     ReturnItem, RollbackTransaction, SavepointStatement, SelectItem, SelectStatement, SetAction,
     SetGraphStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
-    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, UpdateStatement, UtilityStatement,
+    SetValue, ShowProceduresStatement, ShowStatement, Statement, TableAlias, TableConstraint,
+    TableRef, TransactionAccessMode, TransactionStatement, UpdateStatement, UtilityStatement,
     VacuumStatement, VectorDef, VectorTypeDef, WithClause, YieldItem,
 };
 pub use vector::{

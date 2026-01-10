@@ -18,8 +18,8 @@ use super::node::{
     HybridSearchComponentNode, HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode,
     IndexScanNode, JoinOrder, LimitExecNode, NestedLoopJoinNode, PhysicalPlan,
     PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ResetExecNode,
-    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, SortExecNode, UnwindExecNode,
-    VacuumExecNode, WindowExecNode, WindowFunctionExpr,
+    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, ShowProceduresExecNode, SortExecNode,
+    UnwindExecNode, VacuumExecNode, WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
@@ -533,6 +533,9 @@ impl PhysicalPlanner {
             LogicalPlan::Show(node) => PhysicalPlan::Show(ShowExecNode { name: node.name.clone() }),
             LogicalPlan::Reset(node) => {
                 PhysicalPlan::Reset(ResetExecNode { name: node.name.clone() })
+            }
+            LogicalPlan::ShowProcedures(node) => {
+                PhysicalPlan::ShowProcedures(ShowProceduresExecNode { executable: node.executable })
             }
         }
     }

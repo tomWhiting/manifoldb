@@ -341,7 +341,8 @@ impl PredicatePushdown {
             | LogicalPlan::Copy(_)
             | LogicalPlan::SetSession(_)
             | LogicalPlan::Show(_)
-            | LogicalPlan::Reset(_) => {
+            | LogicalPlan::Reset(_)
+            | LogicalPlan::ShowProcedures(_) => {
                 // Utility statements have no inputs, just apply any predicates as a filter
                 self.apply_predicates(plan, predicates)
             }

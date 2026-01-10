@@ -46,6 +46,8 @@ pub enum Statement {
     Merge(Box<MergeGraphStatement>),
     /// CALL statement for procedure invocation.
     Call(Box<CallStatement>),
+    /// SHOW PROCEDURES statement (Cypher schema command).
+    ShowProcedures(ShowProceduresStatement),
     /// Cypher SET statement for updating properties.
     Set(Box<SetGraphStatement>),
     /// Cypher DELETE statement for removing nodes/relationships.
@@ -828,6 +830,66 @@ impl From<&str> for YieldItem {
 impl From<Identifier> for YieldItem {
     fn from(id: Identifier) -> Self {
         Self::Column { name: id, alias: None }
+    }
+}
+
+/// A SHOW PROCEDURES statement.
+///
+/// Lists available procedures in the database.
+///
+/// # Examples
+///
+/// ```text
+/// -- Cypher style
+/// SHOW PROCEDURES
+/// SHOW PROCEDURES YIELD name, description WHERE name STARTS WITH 'algo'
+///
+/// -- With EXECUTABLE BY filter
+/// SHOW PROCEDURES EXECUTABLE BY current_user
+/// ```
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ShowProceduresStatement {
+    /// Whether to show EXECUTABLE BY clause (Neo4j extension).
+    pub executable: bool,
+    /// Items to yield from the result.
+    pub yield_items: Vec<YieldItem>,
+    /// Optional WHERE clause to filter results.
+    pub where_clause: Option<Expr>,
+}
+
+impl ShowProceduresStatement {
+    /// Creates a new SHOW PROCEDURES statement.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the EXECUTABLE BY filter.
+    #[must_use]
+    pub fn executable(mut self) -> Self {
+        self.executable = true;
+        self
+    }
+
+    /// Adds YIELD items.
+    #[must_use]
+    pub fn yield_items(mut self, items: Vec<YieldItem>) -> Self {
+        self.yield_items = items;
+        self
+    }
+
+    /// Adds a YIELD * clause.
+    #[must_use]
+    pub fn yield_all(mut self) -> Self {
+        self.yield_items = vec![YieldItem::Wildcard];
+        self
+    }
+
+    /// Sets the WHERE clause.
+    #[must_use]
+    pub fn where_clause(mut self, condition: Expr) -> Self {
+        self.where_clause = Some(condition);
+        self
     }
 }
 

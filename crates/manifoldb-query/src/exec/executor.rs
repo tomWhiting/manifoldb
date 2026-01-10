@@ -545,6 +545,16 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
             // RESET returns confirmation
             Ok(Box::new(EmptyOp::with_columns(vec!["RESET".to_string()])))
         }
+        PhysicalPlan::ShowProcedures(_) => {
+            // SHOW PROCEDURES returns procedure metadata columns
+            // In a real implementation, this would query the procedure catalog
+            Ok(Box::new(EmptyOp::with_columns(vec![
+                "name".to_string(),
+                "description".to_string(),
+                "mode".to_string(),
+                "worksOnSystem".to_string(),
+            ])))
+        }
     }
 }
 

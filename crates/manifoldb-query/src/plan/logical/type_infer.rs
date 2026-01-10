@@ -166,6 +166,14 @@ impl LogicalExpr {
             // BETWEEN returns boolean
             Self::Between { .. } => Ok(PlanType::Boolean),
 
+            // Array index returns element type
+            Self::ArrayIndex { array, .. } => {
+                let array_type = array.infer_type(ctx)?;
+                // If it's a list/array type, return the element type
+                // Otherwise return Any since we might be indexing a dynamic value
+                Ok(array_type.element_type().cloned().unwrap_or(PlanType::Any))
+            }
+
             // Scalar subquery - would need to look at subquery output schema
             // For now, return Any since we don't have the subquery schema
             Self::Subquery(_) => Ok(PlanType::Any),
@@ -313,6 +321,9 @@ impl LogicalExpr {
             Self::Case { .. } => "case".to_string(),
             Self::InList { expr, .. } => expr.infer_name(),
             Self::Between { expr, .. } => expr.infer_name(),
+            Self::ArrayIndex { array, index } => {
+                format!("{}[{}]", array.infer_name(), index.infer_name())
+            }
             Self::Subquery(_) => "subquery".to_string(),
             Self::Exists { .. } => "exists".to_string(),
             Self::InSubquery { expr, .. } => expr.infer_name(),
@@ -552,6 +563,10 @@ fn infer_scalar_function_type(
         ToBoolean => Ok(PlanType::Boolean),
         ToInteger => Ok(PlanType::BigInt),
         ToFloat => Ok(PlanType::DoublePrecision),
+
+        // SQL type conversion with format
+        ToNumber => Ok(PlanType::DoublePrecision),
+        ToText => Ok(PlanType::Text),
 
         // Spatial functions
         Point => Ok(PlanType::Custom("POINT".to_string())),

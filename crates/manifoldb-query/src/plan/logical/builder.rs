@@ -112,6 +112,7 @@ impl PlanBuilder {
             Statement::Create(create) => self.build_graph_create(create),
             Statement::Merge(merge) => self.build_graph_merge(merge),
             Statement::Call(call) => self.build_call(call),
+            Statement::ShowProcedures(show) => self.build_show_procedures(show),
             Statement::Set(set) => self.build_graph_set(set),
             Statement::DeleteGraph(delete) => self.build_graph_delete(delete),
             Statement::Remove(remove) => self.build_graph_remove(remove),
@@ -2215,6 +2216,55 @@ impl PlanBuilder {
         Ok(LogicalPlan::procedure_call(node))
     }
 
+    /// Builds a SHOW PROCEDURES statement plan.
+    fn build_show_procedures(
+        &mut self,
+        show: &ast::ShowProceduresStatement,
+    ) -> PlanResult<LogicalPlan> {
+        use super::utility::ShowProceduresNode;
+
+        let node = if show.executable {
+            ShowProceduresNode::new().executable()
+        } else {
+            ShowProceduresNode::new()
+        };
+
+        let mut plan = LogicalPlan::ShowProcedures(node);
+
+        // If there are YIELD items (other than wildcard), we need to wrap in a projection
+        if !show.yield_items.is_empty()
+            && !matches!(show.yield_items.first(), Some(ast::YieldItem::Wildcard))
+        {
+            let exprs: Vec<LogicalExpr> = show
+                .yield_items
+                .iter()
+                .filter_map(|item| match item {
+                    ast::YieldItem::Wildcard => None,
+                    ast::YieldItem::Column { name, alias } => {
+                        let col = LogicalExpr::column(&name.name);
+                        if let Some(a) = alias {
+                            Some(LogicalExpr::Alias { expr: Box::new(col), alias: a.name.clone() })
+                        } else {
+                            Some(col)
+                        }
+                    }
+                })
+                .collect();
+
+            if !exprs.is_empty() {
+                plan = plan.project(exprs);
+            }
+        }
+
+        // Apply WHERE filter if present
+        if let Some(ref where_clause) = show.where_clause {
+            let filter_expr = self.build_expr(where_clause)?;
+            plan = plan.filter(filter_expr);
+        }
+
+        Ok(plan)
+    }
+
     /// Builds a logical expression from an AST expression.
     pub fn build_expr(&mut self, expr: &Expr) -> PlanResult<LogicalExpr> {
         match expr {
@@ -2327,6 +2377,8 @@ impl PlanBuilder {
                     "TO_TIMESTAMP" => Some(ScalarFunction::ToTimestamp),
                     "TO_DATE" => Some(ScalarFunction::ToDate),
                     "TO_CHAR" => Some(ScalarFunction::ToChar),
+                    "TO_NUMBER" => Some(ScalarFunction::ToNumber),
+                    "TO_TEXT" => Some(ScalarFunction::ToText),
                     "AGE" => Some(ScalarFunction::Age),
                     "DATE_ADD" => Some(ScalarFunction::DateAdd),
                     "DATE_SUBTRACT" => Some(ScalarFunction::DateSubtract),
@@ -2583,13 +2635,9 @@ impl PlanBuilder {
             }
 
             Expr::ArrayIndex { array, index } => {
-                // Array indexing could be implemented as a function
                 let arr = self.build_expr(array)?;
                 let idx = self.build_expr(index)?;
-                Ok(LogicalExpr::ScalarFunction {
-                    func: ScalarFunction::Custom(0),
-                    args: vec![arr, idx],
-                })
+                Ok(LogicalExpr::ArrayIndex { array: Box::new(arr), index: Box::new(idx) })
             }
 
             Expr::ListComprehension { variable, list_expr, filter_predicate, transform_expr } => {

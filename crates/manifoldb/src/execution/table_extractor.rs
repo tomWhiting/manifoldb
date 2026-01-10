@@ -201,8 +201,11 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
                 collect_tables_from_plan(query_plan, tables);
             }
         }
-        LogicalPlan::SetSession(_) | LogicalPlan::Show(_) | LogicalPlan::Reset(_) => {
-            // Session variable statements don't reference tables
+        LogicalPlan::SetSession(_)
+        | LogicalPlan::Show(_)
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {
+            // Session variable and utility statements don't reference tables
         }
     }
 }

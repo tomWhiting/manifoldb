@@ -667,9 +667,172 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
             // Named parameter like $name
             Ok(Expr::Parameter(ParameterRef::Named(name.value)))
         }
+        // TypedString: DATE '2024-01-15', TIME '10:30:00', TIMESTAMP '2024-01-15T10:30:00'
+        sp::Expr::TypedString(typed_string) => {
+            let sp::TypedString { data_type, value, .. } = typed_string;
+            // Extract string value from ValueWithSpan
+            let str_val = match value.value {
+                sp::Value::SingleQuotedString(s) => s,
+                sp::Value::DoubleQuotedString(s) => s,
+                sp::Value::Number(n, _) => n,
+                _ => return Err(ParseError::InvalidLiteral("expected string value".to_string())),
+            };
+            // Convert typed string to function call: DATE '...' -> TO_DATE('...')
+            // or just return as a string literal with type info stored as a function call
+            match &data_type {
+                sp::DataType::Date => {
+                    // DATE 'value' -> string literal that represents date
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("date".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                sp::DataType::Time(..) => {
+                    // TIME 'value' -> time function call
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("time".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                sp::DataType::Timestamp(..) => {
+                    // TIMESTAMP 'value' -> datetime function call
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("datetime".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                _ => {
+                    // For other typed strings, just return the string value
+                    Ok(Expr::Literal(Literal::String(str_val)))
+                }
+            }
+        }
+        // INTERVAL '1 day', INTERVAL '2 hours', etc.
+        sp::Expr::Interval(interval) => {
+            // Convert interval to duration function call
+            // INTERVAL 'P1D' or INTERVAL '1 day' -> duration('P1D')
+            let value = match *interval.value {
+                sp::Expr::Value(sp::ValueWithSpan {
+                    value: sp::Value::SingleQuotedString(s),
+                    ..
+                }) => s,
+                sp::Expr::Value(sp::ValueWithSpan {
+                    value: sp::Value::DoubleQuotedString(s),
+                    ..
+                }) => s,
+                sp::Expr::Value(sp::ValueWithSpan { value: sp::Value::Number(n, _), .. }) => {
+                    // If just a number, try to construct with leading_field
+                    let unit = interval
+                        .leading_field
+                        .map(|f| format!("{:?}", f).to_lowercase())
+                        .unwrap_or_else(|| "day".to_string());
+                    format!("{} {}", n, unit)
+                }
+                other => {
+                    // For other expression types, convert and return directly
+                    return convert_expr(other);
+                }
+            };
+
+            // Convert SQL interval format to ISO 8601 duration
+            let duration = convert_sql_interval_to_iso8601(&value);
+
+            Ok(Expr::Function(FunctionCall {
+                name: QualifiedName::simple("duration".to_string()),
+                args: vec![Expr::Literal(Literal::String(duration))],
+                distinct: false,
+                filter: None,
+                over: None,
+            }))
+        }
         // Handle placeholder for positional parameters
         _ => Err(ParseError::Unsupported(format!("expression type: {expr:?}"))),
     }
+}
+
+/// Converts SQL interval format to ISO 8601 duration format.
+///
+/// Examples:
+/// - '1 day' -> 'P1D'
+/// - '2 hours' -> 'PT2H'
+/// - '1 year 2 months' -> 'P1Y2M'
+/// - '1 day 2 hours 30 minutes' -> 'P1DT2H30M'
+fn convert_sql_interval_to_iso8601(value: &str) -> String {
+    // If already in ISO 8601 format, return as-is
+    if value.starts_with('P') {
+        return value.to_string();
+    }
+
+    let value_lower = value.to_lowercase();
+    let mut years = 0i64;
+    let mut months = 0i64;
+    let mut days = 0i64;
+    let mut hours = 0i64;
+    let mut minutes = 0i64;
+    let mut seconds = 0i64;
+
+    // Parse "N unit" pairs
+    let mut current_num: Option<i64> = None;
+    for token in value_lower.split_whitespace() {
+        if let Ok(num) = token.parse::<i64>() {
+            current_num = Some(num);
+        } else if let Some(num) = current_num.take() {
+            match token.trim_end_matches('s') {
+                "year" => years = num,
+                "month" => months = num,
+                "week" => days += num * 7,
+                "day" => days = num,
+                "hour" => hours = num,
+                "minute" | "min" => minutes = num,
+                "second" | "sec" => seconds = num,
+                _ => {}
+            }
+        }
+    }
+
+    use std::fmt::Write;
+
+    // Build ISO 8601 duration string
+    let mut result = String::from("P");
+
+    if years > 0 {
+        let _ = write!(result, "{years}Y");
+    }
+    if months > 0 {
+        let _ = write!(result, "{months}M");
+    }
+    if days > 0 {
+        let _ = write!(result, "{days}D");
+    }
+
+    if hours > 0 || minutes > 0 || seconds > 0 {
+        result.push('T');
+        if hours > 0 {
+            let _ = write!(result, "{hours}H");
+        }
+        if minutes > 0 {
+            let _ = write!(result, "{minutes}M");
+        }
+        if seconds > 0 {
+            let _ = write!(result, "{seconds}S");
+        }
+    }
+
+    if result == "P" {
+        // No values parsed, return original
+        return value.to_string();
+    }
+
+    result
 }
 
 /// Converts an array expression, detecting vector and multi-vector literals.

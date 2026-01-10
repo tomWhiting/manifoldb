@@ -491,7 +491,8 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         | LogicalPlan::Copy(_)
         | LogicalPlan::SetSession(_)
         | LogicalPlan::Show(_)
-        | LogicalPlan::Reset(_) => {
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {
             // Utility statements have no structural validation requirements
         }
     }
@@ -795,7 +796,8 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         | LogicalPlan::Copy(_)
         | LogicalPlan::SetSession(_)
         | LogicalPlan::Show(_)
-        | LogicalPlan::Reset(_) => {}
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {}
     }
 
     Ok(())

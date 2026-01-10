@@ -255,3 +255,27 @@ impl ResetNode {
         Self { name: Some(name.into()) }
     }
 }
+
+/// SHOW PROCEDURES node.
+///
+/// Lists available procedures in the database.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShowProceduresNode {
+    /// Whether to only show executable procedures.
+    pub executable: bool,
+}
+
+impl ShowProceduresNode {
+    /// Creates a new SHOW PROCEDURES node.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the executable filter.
+    #[must_use]
+    pub const fn executable(mut self) -> Self {
+        self.executable = true;
+        self
+    }
+}

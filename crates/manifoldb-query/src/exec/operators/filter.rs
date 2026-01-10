@@ -294,6 +294,38 @@ pub fn evaluate_expr_with_graph(
             Ok(Value::Bool(result))
         }
 
+        LogicalExpr::ArrayIndex { array, index } => {
+            let arr_val = evaluate_expr_with_graph(array, row, graph)?;
+            let idx_val = evaluate_expr_with_graph(index, row, graph)?;
+
+            match (&arr_val, &idx_val) {
+                (Value::Array(elements), Value::Int(idx)) => {
+                    // Convert to 0-based index (arrays use 1-based indexing in SQL)
+                    // For consistency with Cypher (0-based), we use the index as-is
+                    // SQL convention would be to subtract 1 for 1-based indexing
+                    let idx = *idx as i64;
+                    if idx < 0 || idx as usize >= elements.len() {
+                        // Out of bounds - return NULL (SQL semantics)
+                        Ok(Value::Null)
+                    } else {
+                        Ok(elements[idx as usize].clone())
+                    }
+                }
+                (Value::String(s), Value::Int(idx)) => {
+                    // String character access (1-based like SQL)
+                    let idx = *idx as i64;
+                    if idx <= 0 || idx as usize > s.chars().count() {
+                        Ok(Value::Null)
+                    } else {
+                        let ch = s.chars().nth((idx - 1) as usize).unwrap_or_default();
+                        Ok(Value::String(ch.to_string()))
+                    }
+                }
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                _ => Ok(Value::Null), // Type mismatch - return NULL
+            }
+        }
+
         LogicalExpr::Case { operand, when_clauses, else_result } => {
             if let Some(operand_expr) = operand {
                 // Simple CASE
@@ -1389,8 +1421,20 @@ fn evaluate_binary_op(left: &Value, op: &BinaryOp, right: &Value) -> OperatorRes
         }
 
         // Arithmetic operators
-        BinaryOp::Add => evaluate_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
-        BinaryOp::Sub => evaluate_arithmetic(left, right, |a, b| a - b, |a, b| a - b),
+        BinaryOp::Add => {
+            // Try temporal arithmetic first (datetime + duration)
+            if let Some(result) = evaluate_temporal_add(left, right) {
+                return Ok(result);
+            }
+            evaluate_arithmetic(left, right, |a, b| a + b, |a, b| a + b)
+        }
+        BinaryOp::Sub => {
+            // Try temporal arithmetic first (datetime - duration or datetime - datetime)
+            if let Some(result) = evaluate_temporal_sub(left, right) {
+                return Ok(result);
+            }
+            evaluate_arithmetic(left, right, |a, b| a - b, |a, b| a - b)
+        }
         BinaryOp::Mul => evaluate_arithmetic(left, right, |a, b| a * b, |a, b| a * b),
         BinaryOp::Div => {
             // Check for division by zero
@@ -2765,6 +2809,78 @@ fn evaluate_scalar_function(
                     Ok(Value::String(format!("[{}]", elements.join(", "))))
                 }
                 _ => Ok(Value::Null), // Other types return null
+            }
+        }
+
+        // ========== SQL Type Conversion with Format ==========
+        ScalarFunction::ToNumber => {
+            // TO_NUMBER(text, format)
+            // Parses a string to a number using PostgreSQL-compatible format patterns.
+            // Simplified implementation - handles basic formats.
+            match (args.first(), args.get(1)) {
+                (Some(Value::Null) | None, _) | (_, Some(Value::Null)) => Ok(Value::Null),
+                (Some(Value::String(s)), Some(Value::String(_format))) => {
+                    // Parse the number string, removing common format characters
+                    let cleaned = s
+                        .chars()
+                        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                        .collect::<String>();
+
+                    // Check for negative in parentheses format: (123) -> -123
+                    let is_negative = s.starts_with('(') && s.ends_with(')');
+
+                    match cleaned.parse::<f64>() {
+                        Ok(mut num) => {
+                            if is_negative {
+                                num = -num;
+                            }
+                            Ok(Value::Float(num))
+                        }
+                        Err(_) => Ok(Value::Null),
+                    }
+                }
+                (Some(Value::String(s)), None) => {
+                    // Without format, just try to parse directly
+                    let cleaned = s
+                        .chars()
+                        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                        .collect::<String>();
+                    match cleaned.parse::<f64>() {
+                        Ok(num) => Ok(Value::Float(num)),
+                        Err(_) => Ok(Value::Null),
+                    }
+                }
+                _ => Ok(Value::Null),
+            }
+        }
+        ScalarFunction::ToText => {
+            // TO_TEXT(value, format) - Alias for TO_CHAR
+            // Simplified implementation - formats numbers/dates to text.
+            match (args.first(), args.get(1)) {
+                (Some(Value::Null) | None, _) => Ok(Value::Null),
+                (Some(Value::Int(n)), Some(Value::String(format))) => {
+                    // Simple format: just convert to string with appropriate padding
+                    let width = format.chars().filter(|c| *c == '9' || *c == '0').count();
+                    if width > 0 {
+                        Ok(Value::String(format!("{:>width$}", n, width = width)))
+                    } else {
+                        Ok(Value::String(n.to_string()))
+                    }
+                }
+                (Some(Value::Float(n)), Some(Value::String(format))) => {
+                    // Simple format for floats
+                    let parts: Vec<&str> = format.split('.').collect();
+                    if parts.len() == 2 {
+                        let decimal_places = parts[1].chars().filter(|c| *c == '9').count();
+                        Ok(Value::String(format!("{:.prec$}", n, prec = decimal_places)))
+                    } else {
+                        Ok(Value::String(n.to_string()))
+                    }
+                }
+                (Some(Value::Int(n)), None) => Ok(Value::String(n.to_string())),
+                (Some(Value::Float(n)), None) => Ok(Value::String(n.to_string())),
+                (Some(Value::String(s)), _) => Ok(Value::String(s.clone())),
+                _ => Ok(Value::Null),
             }
         }
 
@@ -4615,6 +4731,374 @@ fn cypher_duration(args: &[Value]) -> OperatorResult<Value> {
         }
         _ => Ok(Value::Null),
     }
+}
+
+// ========== Temporal Arithmetic ==========
+
+/// Evaluates temporal addition: datetime + duration or duration + datetime.
+///
+/// # Returns
+/// - `Some(Value)` if this is a temporal addition operation
+/// - `None` if operands are not temporal types
+fn evaluate_temporal_add(left: &Value, right: &Value) -> Option<Value> {
+    match (left, right) {
+        (Value::String(datetime), Value::String(duration)) => {
+            // Check if it looks like datetime + duration
+            if is_datetime_string(datetime) && is_duration_string(duration) {
+                return Some(add_duration_to_datetime(datetime, duration));
+            }
+            // Or duration + datetime
+            if is_duration_string(datetime) && is_datetime_string(duration) {
+                return Some(add_duration_to_datetime(duration, datetime));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Evaluates temporal subtraction: datetime - duration or datetime - datetime.
+///
+/// # Returns
+/// - `Some(Value)` if this is a temporal subtraction operation
+/// - `None` if operands are not temporal types
+fn evaluate_temporal_sub(left: &Value, right: &Value) -> Option<Value> {
+    match (left, right) {
+        (Value::String(datetime), Value::String(duration_or_datetime)) => {
+            // datetime - duration
+            if is_datetime_string(datetime) && is_duration_string(duration_or_datetime) {
+                return Some(subtract_duration_from_datetime(datetime, duration_or_datetime));
+            }
+            // datetime - datetime = duration
+            if is_datetime_string(datetime) && is_datetime_string(duration_or_datetime) {
+                return Some(datetime_difference(datetime, duration_or_datetime));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Checks if a string looks like a datetime (ISO 8601 format).
+fn is_datetime_string(s: &str) -> bool {
+    // Quick heuristic: contains date separator and time separator or is just a date
+    (s.contains('-') && (s.contains('T') || s.len() == 10))
+        && !s.starts_with('P')
+        && !s.starts_with('{')
+}
+
+/// Checks if a string looks like a duration (ISO 8601 format).
+fn is_duration_string(s: &str) -> bool {
+    // ISO 8601 durations start with 'P'
+    s.starts_with('P') || s.starts_with('{')
+}
+
+/// Adds a duration to a datetime.
+fn add_duration_to_datetime(datetime: &str, duration: &str) -> Value {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+
+    let duration_parts = parse_duration_parts(duration);
+
+    // Try to parse as full datetime first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(datetime) {
+        let result = apply_duration_to_datetime(dt.with_timezone(&Utc), &duration_parts);
+        return Value::String(result.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+    }
+
+    // Try as naive datetime
+    if let Ok(dt) = NaiveDateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%S") {
+        let result = apply_duration_to_naive_datetime(dt, &duration_parts);
+        return Value::String(result.format("%Y-%m-%dT%H:%M:%S").to_string());
+    }
+
+    // Try as date only
+    if let Ok(date) = NaiveDate::parse_from_str(datetime, "%Y-%m-%d") {
+        let result = apply_duration_to_date(date, &duration_parts);
+        return Value::String(result.format("%Y-%m-%d").to_string());
+    }
+
+    Value::Null
+}
+
+/// Subtracts a duration from a datetime.
+fn subtract_duration_from_datetime(datetime: &str, duration: &str) -> Value {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+
+    let mut duration_parts = parse_duration_parts(duration);
+    // Negate all parts for subtraction
+    duration_parts.years = -duration_parts.years;
+    duration_parts.months = -duration_parts.months;
+    duration_parts.days = -duration_parts.days;
+    duration_parts.hours = -duration_parts.hours;
+    duration_parts.minutes = -duration_parts.minutes;
+    duration_parts.seconds = -duration_parts.seconds;
+
+    // Try to parse as full datetime first
+    if let Ok(dt) = DateTime::parse_from_rfc3339(datetime) {
+        let result = apply_duration_to_datetime(dt.with_timezone(&Utc), &duration_parts);
+        return Value::String(result.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+    }
+
+    // Try as naive datetime
+    if let Ok(dt) = NaiveDateTime::parse_from_str(datetime, "%Y-%m-%dT%H:%M:%S") {
+        let result = apply_duration_to_naive_datetime(dt, &duration_parts);
+        return Value::String(result.format("%Y-%m-%dT%H:%M:%S").to_string());
+    }
+
+    // Try as date only
+    if let Ok(date) = NaiveDate::parse_from_str(datetime, "%Y-%m-%d") {
+        let result = apply_duration_to_date(date, &duration_parts);
+        return Value::String(result.format("%Y-%m-%d").to_string());
+    }
+
+    Value::Null
+}
+
+/// Calculates the difference between two datetimes as a duration.
+fn datetime_difference(datetime1: &str, datetime2: &str) -> Value {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime};
+
+    // Try to parse as full datetime first
+    if let (Ok(dt1), Ok(dt2)) =
+        (DateTime::parse_from_rfc3339(datetime1), DateTime::parse_from_rfc3339(datetime2))
+    {
+        let duration = dt1.signed_duration_since(dt2);
+        return duration_to_iso8601(duration);
+    }
+
+    // Try as naive datetime
+    if let (Ok(dt1), Ok(dt2)) = (
+        NaiveDateTime::parse_from_str(datetime1, "%Y-%m-%dT%H:%M:%S"),
+        NaiveDateTime::parse_from_str(datetime2, "%Y-%m-%dT%H:%M:%S"),
+    ) {
+        let duration = dt1.signed_duration_since(dt2);
+        return duration_to_iso8601(duration);
+    }
+
+    // Try as date only
+    if let (Ok(d1), Ok(d2)) = (
+        NaiveDate::parse_from_str(datetime1, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(datetime2, "%Y-%m-%d"),
+    ) {
+        let days = (d1 - d2).num_days();
+        return Value::String(format!("P{}D", days.abs()));
+    }
+
+    Value::Null
+}
+
+/// Parsed duration parts.
+struct DurationParts {
+    years: i32,
+    months: i32,
+    days: i64,
+    hours: i64,
+    minutes: i64,
+    seconds: i64,
+}
+
+/// Parses ISO 8601 duration string into parts.
+fn parse_duration_parts(duration: &str) -> DurationParts {
+    let mut parts =
+        DurationParts { years: 0, months: 0, days: 0, hours: 0, minutes: 0, seconds: 0 };
+
+    // Handle JSON map format
+    if duration.starts_with('{') {
+        if let Some(json) = parse_json(duration) {
+            if let Some(obj) = json.as_object() {
+                parts.years = obj.get("years").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                parts.months = obj.get("months").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                parts.days = obj.get("days").and_then(|v| v.as_i64()).unwrap_or(0);
+                parts.hours = obj.get("hours").and_then(|v| v.as_i64()).unwrap_or(0);
+                parts.minutes = obj.get("minutes").and_then(|v| v.as_i64()).unwrap_or(0);
+                parts.seconds = obj.get("seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            }
+        }
+        return parts;
+    }
+
+    // Parse ISO 8601 duration: P[n]Y[n]M[n]DT[n]H[n]M[n]S
+    let s = duration.trim_start_matches('P');
+    let (date_part, time_part) =
+        if let Some(idx) = s.find('T') { (&s[..idx], &s[idx + 1..]) } else { (s, "") };
+
+    // Parse date part (Y, M, D)
+    let mut num_buf = String::new();
+    for c in date_part.chars() {
+        if c.is_ascii_digit() {
+            num_buf.push(c);
+        } else {
+            let num: i64 = num_buf.parse().unwrap_or(0);
+            match c {
+                'Y' => parts.years = num as i32,
+                'M' => parts.months = num as i32,
+                'D' => parts.days = num,
+                'W' => parts.days = num * 7, // Weeks
+                _ => {}
+            }
+            num_buf.clear();
+        }
+    }
+
+    // Parse time part (H, M, S)
+    num_buf.clear();
+    for c in time_part.chars() {
+        if c.is_ascii_digit() || c == '.' {
+            num_buf.push(c);
+        } else {
+            let num: i64 = num_buf.parse::<f64>().unwrap_or(0.0) as i64;
+            match c {
+                'H' => parts.hours = num,
+                'M' => parts.minutes = num,
+                'S' => parts.seconds = num,
+                _ => {}
+            }
+            num_buf.clear();
+        }
+    }
+
+    parts
+}
+
+/// Applies duration to a DateTime<Utc>.
+fn apply_duration_to_datetime(
+    dt: chrono::DateTime<chrono::Utc>,
+    parts: &DurationParts,
+) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Duration, Months};
+
+    let mut result = dt;
+
+    // Apply years and months using checked arithmetic
+    if parts.years != 0 {
+        if parts.years > 0 {
+            result =
+                result.checked_add_months(Months::new((parts.years * 12) as u32)).unwrap_or(result);
+        } else {
+            result = result
+                .checked_sub_months(Months::new((-parts.years * 12) as u32))
+                .unwrap_or(result);
+        }
+    }
+    if parts.months != 0 {
+        if parts.months > 0 {
+            result = result.checked_add_months(Months::new(parts.months as u32)).unwrap_or(result);
+        } else {
+            result =
+                result.checked_sub_months(Months::new((-parts.months) as u32)).unwrap_or(result);
+        }
+    }
+
+    // Apply days, hours, minutes, seconds
+    result += Duration::days(parts.days);
+    result += Duration::hours(parts.hours);
+    result += Duration::minutes(parts.minutes);
+    result += Duration::seconds(parts.seconds);
+
+    result
+}
+
+/// Applies duration to a NaiveDateTime.
+fn apply_duration_to_naive_datetime(
+    dt: chrono::NaiveDateTime,
+    parts: &DurationParts,
+) -> chrono::NaiveDateTime {
+    use chrono::{Duration, Months};
+
+    let mut result = dt;
+
+    // Apply years and months
+    if parts.years != 0 {
+        if parts.years > 0 {
+            result =
+                result.checked_add_months(Months::new((parts.years * 12) as u32)).unwrap_or(result);
+        } else {
+            result = result
+                .checked_sub_months(Months::new((-parts.years * 12) as u32))
+                .unwrap_or(result);
+        }
+    }
+    if parts.months != 0 {
+        if parts.months > 0 {
+            result = result.checked_add_months(Months::new(parts.months as u32)).unwrap_or(result);
+        } else {
+            result =
+                result.checked_sub_months(Months::new((-parts.months) as u32)).unwrap_or(result);
+        }
+    }
+
+    // Apply days, hours, minutes, seconds
+    result += Duration::days(parts.days);
+    result += Duration::hours(parts.hours);
+    result += Duration::minutes(parts.minutes);
+    result += Duration::seconds(parts.seconds);
+
+    result
+}
+
+/// Applies duration to a NaiveDate.
+fn apply_duration_to_date(date: chrono::NaiveDate, parts: &DurationParts) -> chrono::NaiveDate {
+    use chrono::{Duration, Months};
+
+    let mut result = date;
+
+    // Apply years and months
+    if parts.years != 0 {
+        if parts.years > 0 {
+            result =
+                result.checked_add_months(Months::new((parts.years * 12) as u32)).unwrap_or(result);
+        } else {
+            result = result
+                .checked_sub_months(Months::new((-parts.years * 12) as u32))
+                .unwrap_or(result);
+        }
+    }
+    if parts.months != 0 {
+        if parts.months > 0 {
+            result = result.checked_add_months(Months::new(parts.months as u32)).unwrap_or(result);
+        } else {
+            result =
+                result.checked_sub_months(Months::new((-parts.months) as u32)).unwrap_or(result);
+        }
+    }
+
+    // Apply days
+    result += Duration::days(parts.days);
+
+    result
+}
+
+/// Converts a chrono Duration to ISO 8601 duration string.
+fn duration_to_iso8601(duration: chrono::Duration) -> Value {
+    use std::fmt::Write;
+
+    let total_seconds = duration.num_seconds().abs();
+    let days = total_seconds / 86400;
+    let hours = (total_seconds % 86400) / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    let mut result = String::from("P");
+    if days > 0 {
+        let _ = write!(result, "{days}D");
+    }
+    if hours > 0 || minutes > 0 || seconds > 0 {
+        result.push('T');
+        if hours > 0 {
+            let _ = write!(result, "{hours}H");
+        }
+        if minutes > 0 {
+            let _ = write!(result, "{minutes}M");
+        }
+        if seconds > 0 {
+            let _ = write!(result, "{seconds}S");
+        }
+    }
+    if result == "P" {
+        result = "PT0S".to_string(); // Zero duration
+    }
+
+    Value::String(result)
 }
 
 /// datetime.truncate(unit, datetime) - Truncates datetime to specified unit.

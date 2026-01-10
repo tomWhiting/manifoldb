@@ -454,6 +454,9 @@ pub enum PhysicalPlan {
 
     /// RESET session variable.
     Reset(ResetExecNode),
+
+    /// SHOW PROCEDURES command.
+    ShowProcedures(ShowProceduresExecNode),
 }
 
 // ============================================================================
@@ -2367,6 +2370,21 @@ impl ResetExecNode {
     }
 }
 
+/// SHOW PROCEDURES execution node.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShowProceduresExecNode {
+    /// Whether to only show executable procedures.
+    pub executable: bool,
+}
+
+impl ShowProceduresExecNode {
+    /// Creates a SHOW PROCEDURES node.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 // ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
@@ -2458,7 +2476,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -2548,7 +2567,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -2584,6 +2604,7 @@ impl PhysicalPlan {
                 | Self::SetSession(_)
                 | Self::Show(_)
                 | Self::Reset(_)
+                | Self::ShowProcedures(_)
         )
     }
 
@@ -2652,6 +2673,7 @@ impl PhysicalPlan {
             Self::SetSession(_) => "SetSession",
             Self::Show(_) => "Show",
             Self::Reset(_) => "Reset",
+            Self::ShowProcedures(_) => "ShowProcedures",
         }
     }
 
@@ -2716,7 +2738,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => Cost::zero(),
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. }
             | Self::GraphMerge { .. }
@@ -3354,6 +3377,12 @@ impl DisplayTree<'_> {
                     write!(f, ": {name}")?;
                 } else {
                     write!(f, " ALL")?;
+                }
+            }
+            PhysicalPlan::ShowProcedures(node) => {
+                write!(f, "ShowProcedures")?;
+                if node.executable {
+                    write!(f, " EXECUTABLE")?;
                 }
             }
         }

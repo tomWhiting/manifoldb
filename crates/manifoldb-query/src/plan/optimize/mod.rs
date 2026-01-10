@@ -9,6 +9,7 @@
 //!
 //! - **Predicate Pushdown**: Push filters closer to data sources
 //! - **Projection Pushdown**: Read only required columns
+//! - **Expression Simplification**: Constant folding, boolean simplification, null propagation
 //! - **Index Selection**: Choose optimal access methods
 //!
 //! # Example
@@ -25,10 +26,12 @@
 //! let optimized = optimizer.optimize(plan);
 //! ```
 
+mod expression_simplify;
 mod index_selection;
 mod predicate_pushdown;
 mod projection_pushdown;
 
+pub use expression_simplify::ExpressionSimplify;
 pub use index_selection::{AccessType, IndexCandidate, IndexSelector};
 pub use predicate_pushdown::{split_conjunction, PredicatePushdown};
 pub use projection_pushdown::ProjectionPushdown;
@@ -45,6 +48,8 @@ pub struct Optimizer {
     predicate_pushdown: bool,
     /// Whether to enable projection pushdown.
     projection_pushdown: bool,
+    /// Whether to enable expression simplification.
+    expression_simplify: bool,
     /// Maximum optimization iterations.
     max_iterations: usize,
 }
@@ -53,7 +58,12 @@ impl Optimizer {
     /// Creates a new optimizer with all optimizations enabled.
     #[must_use]
     pub fn new() -> Self {
-        Self { predicate_pushdown: true, projection_pushdown: true, max_iterations: 10 }
+        Self {
+            predicate_pushdown: true,
+            projection_pushdown: true,
+            expression_simplify: true,
+            max_iterations: 10,
+        }
     }
 
     /// Disables predicate pushdown.
@@ -67,6 +77,13 @@ impl Optimizer {
     #[must_use]
     pub const fn without_projection_pushdown(mut self) -> Self {
         self.projection_pushdown = false;
+        self
+    }
+
+    /// Disables expression simplification.
+    #[must_use]
+    pub const fn without_expression_simplify(mut self) -> Self {
+        self.expression_simplify = false;
         self
     }
 
@@ -98,6 +115,12 @@ impl Optimizer {
     /// Applies all enabled optimization rules.
     fn apply_rules(&self, plan: LogicalPlan) -> LogicalPlan {
         let mut current = plan;
+
+        // Expression simplification should run first to simplify predicates
+        // before they get pushed down
+        if self.expression_simplify {
+            current = ExpressionSimplify::new().optimize(current);
+        }
 
         if self.predicate_pushdown {
             current = PredicatePushdown::new().optimize(current);

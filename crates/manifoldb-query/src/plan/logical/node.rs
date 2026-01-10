@@ -36,7 +36,8 @@ use super::transaction::{
     SetTransactionNode,
 };
 use super::utility::{
-    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ResetNode, SetSessionNode, ShowNode, VacuumNode,
+    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ResetNode, SetSessionNode, ShowNode,
+    ShowProceduresNode, VacuumNode,
 };
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
@@ -405,6 +406,9 @@ pub enum LogicalPlan {
 
     /// RESET session variable.
     Reset(ResetNode),
+
+    /// SHOW PROCEDURES command.
+    ShowProcedures(ShowProceduresNode),
 }
 
 impl LogicalPlan {
@@ -646,7 +650,8 @@ impl LogicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -729,7 +734,8 @@ impl LogicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -798,6 +804,7 @@ impl LogicalPlan {
             Self::SetSession(_) => "SetSession",
             Self::Show(_) => "Show",
             Self::Reset(_) => "Reset",
+            Self::ShowProcedures(_) => "ShowProcedures",
         }
     }
 
@@ -1285,6 +1292,12 @@ impl DisplayTree<'_> {
                     write!(f, ": {name}")?;
                 } else {
                     write!(f, " ALL")?;
+                }
+            }
+            LogicalPlan::ShowProcedures(node) => {
+                write!(f, "ShowProcedures")?;
+                if node.executable {
+                    write!(f, " EXECUTABLE")?;
                 }
             }
         }

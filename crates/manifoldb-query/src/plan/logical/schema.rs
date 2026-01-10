@@ -431,6 +431,17 @@ impl LogicalPlan {
                     TypedColumn::new("setting", PlanType::Text),
                 ]))
             }
+
+            Self::ShowProcedures(_) => {
+                // SHOW PROCEDURES returns procedure metadata columns
+                // Modeled after Neo4j's SHOW PROCEDURES output
+                Ok(Schema::new(vec![
+                    TypedColumn::new("name", PlanType::Text),
+                    TypedColumn::new("description", PlanType::Text),
+                    TypedColumn::new("mode", PlanType::Text),
+                    TypedColumn::new("worksOnSystem", PlanType::Boolean),
+                ]))
+            }
         }
     }
 }

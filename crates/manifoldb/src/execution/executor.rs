@@ -1723,7 +1723,8 @@ fn execute_logical_plan<T: Transaction>(
         | LogicalPlan::Copy(_)
         | LogicalPlan::SetSession(_)
         | LogicalPlan::Show(_)
-        | LogicalPlan::Reset(_) => {
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {
             // Utility statements are handled at the session level, not here
             Ok(Vec::new())
         }
