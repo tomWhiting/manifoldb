@@ -183,24 +183,68 @@ impl JoinNode {
     }
 }
 
+/// A single logical grouping set (set of expressions to group by).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogicalGroupingSet(pub Vec<LogicalExpr>);
+
+impl LogicalGroupingSet {
+    /// Creates a new grouping set.
+    #[must_use]
+    pub fn new(exprs: Vec<LogicalExpr>) -> Self {
+        Self(exprs)
+    }
+
+    /// Creates an empty grouping set (grand total).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(vec![])
+    }
+
+    /// Returns the expressions in this grouping set.
+    #[must_use]
+    pub fn exprs(&self) -> &[LogicalExpr] {
+        &self.0
+    }
+
+    /// Returns true if this is the empty grouping set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// An aggregate node.
 ///
-/// Represents a grouping/aggregation operation.
+/// Represents a grouping/aggregation operation with optional ROLLUP, CUBE, or GROUPING SETS.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateNode {
-    /// GROUP BY expressions.
+    /// GROUP BY expressions (base expressions, before grouping set expansion).
     pub group_by: Vec<LogicalExpr>,
     /// Aggregate expressions.
     pub aggregates: Vec<LogicalExpr>,
     /// Optional HAVING clause.
     pub having: Option<LogicalExpr>,
+    /// Grouping sets for ROLLUP/CUBE/GROUPING SETS.
+    /// If empty, this is a simple GROUP BY.
+    /// Each grouping set contains indices into `group_by`.
+    pub grouping_sets: Vec<LogicalGroupingSet>,
 }
 
 impl AggregateNode {
     /// Creates a new aggregate node.
     #[must_use]
-    pub const fn new(group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self { group_by, aggregates, having: None }
+    pub fn new(group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
+        Self { group_by, aggregates, having: None, grouping_sets: vec![] }
+    }
+
+    /// Creates an aggregate node with explicit grouping sets.
+    #[must_use]
+    pub fn with_grouping_sets(
+        group_by: Vec<LogicalExpr>,
+        aggregates: Vec<LogicalExpr>,
+        grouping_sets: Vec<LogicalGroupingSet>,
+    ) -> Self {
+        Self { group_by, aggregates, having: None, grouping_sets }
     }
 
     /// Sets the HAVING clause.
@@ -213,7 +257,13 @@ impl AggregateNode {
     /// Returns true if this is a simple aggregation (no GROUP BY).
     #[must_use]
     pub fn is_simple(&self) -> bool {
-        self.group_by.is_empty()
+        self.group_by.is_empty() && self.grouping_sets.is_empty()
+    }
+
+    /// Returns true if this uses advanced grouping (ROLLUP/CUBE/GROUPING SETS).
+    #[must_use]
+    pub fn has_grouping_sets(&self) -> bool {
+        !self.grouping_sets.is_empty()
     }
 }
 

@@ -641,6 +641,9 @@ fn infer_aggregate_function_type(
 
         // Boolean aggregates
         AggregateFunction::BoolAnd | AggregateFunction::BoolOr => Ok(PlanType::Boolean),
+
+        // GROUPING returns an integer (0 or 1, or bitmask for multiple args)
+        AggregateFunction::Grouping => Ok(PlanType::Integer),
     }
 }
 

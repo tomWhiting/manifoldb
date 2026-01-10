@@ -26,12 +26,12 @@ use crate::ast::{
     CreateTriggerStatement, CreateViewStatement, DeleteGraphStatement, DeleteStatement,
     DropCollectionStatement, DropFunctionStatement, DropIndexStatement, DropSchemaStatement,
     DropTableStatement, DropTriggerStatement, DropViewStatement, Expr,
-    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
-    InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
-    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, PropertyCondition,
-    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
-    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
-    WindowFunction, YieldItem,
+    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, GroupByClause,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
+    MapProjectionItem, MatchStatement, MergeGraphStatement, MergePattern, PathPattern,
+    PropertyCondition, RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement,
+    SetAction as AstSetAction, SetGraphStatement, SetOperation, SetOperator, Statement, TableRef,
+    UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -53,8 +53,8 @@ use super::graph::{
 use super::node::{LogicalConflictAction, LogicalConflictTarget, LogicalOnConflict, LogicalPlan};
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
-    AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
-    ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, LogicalGroupingSet,
+    ProjectNode, ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode, WindowNode,
 };
 use super::validate::{PlanError, PlanResult};
 
@@ -645,8 +645,8 @@ impl PlanBuilder {
         input: LogicalPlan,
         select: &SelectStatement,
     ) -> PlanResult<LogicalPlan> {
-        let group_by: Vec<LogicalExpr> =
-            select.group_by.iter().map(|e| self.build_expr(e)).collect::<PlanResult<_>>()?;
+        // Convert GROUP BY clause to logical expressions and grouping sets
+        let (group_by, grouping_sets) = self.build_group_by_clause(&select.group_by)?;
 
         // Extract aggregate expressions from projection - pre-allocate based on projection size
         let mut aggregates = Vec::with_capacity(select.projection.len());
@@ -656,10 +656,74 @@ impl PlanBuilder {
             }
         }
 
-        Ok(LogicalPlan::Aggregate {
-            node: Box::new(AggregateNode::new(group_by, aggregates)),
-            input: Box::new(input),
-        })
+        let agg_node = if grouping_sets.is_empty() {
+            AggregateNode::new(group_by, aggregates)
+        } else {
+            AggregateNode::with_grouping_sets(group_by, aggregates, grouping_sets)
+        };
+
+        Ok(LogicalPlan::Aggregate { node: Box::new(agg_node), input: Box::new(input) })
+    }
+
+    /// Converts a GROUP BY clause to logical expressions and grouping sets.
+    fn build_group_by_clause(
+        &mut self,
+        clause: &GroupByClause,
+    ) -> PlanResult<(Vec<LogicalExpr>, Vec<LogicalGroupingSet>)> {
+        match clause {
+            GroupByClause::Simple(exprs) => {
+                let logical_exprs: Vec<LogicalExpr> =
+                    exprs.iter().map(|e| self.build_expr(e)).collect::<PlanResult<_>>()?;
+                Ok((logical_exprs, vec![]))
+            }
+            GroupByClause::Rollup(exprs) | GroupByClause::Cube(exprs) => {
+                // Get base expressions
+                let logical_exprs: Vec<LogicalExpr> =
+                    exprs.iter().map(|e| self.build_expr(e)).collect::<PlanResult<_>>()?;
+
+                // Expand to grouping sets
+                let grouping_sets = clause.expand_grouping_sets();
+                let logical_grouping_sets: Vec<LogicalGroupingSet> = grouping_sets
+                    .into_iter()
+                    .map(|gs| {
+                        let exprs: Vec<LogicalExpr> = gs
+                            .exprs()
+                            .iter()
+                            .map(|e| self.build_expr(e))
+                            .collect::<PlanResult<_>>()?;
+                        Ok(LogicalGroupingSet::new(exprs))
+                    })
+                    .collect::<PlanResult<_>>()?;
+
+                Ok((logical_exprs, logical_grouping_sets))
+            }
+            GroupByClause::GroupingSets(sets) => {
+                // Collect all unique expressions across all grouping sets
+                let mut all_exprs: Vec<LogicalExpr> = Vec::new();
+                let mut seen_exprs = std::collections::HashSet::new();
+
+                let logical_grouping_sets: Vec<LogicalGroupingSet> = sets
+                    .iter()
+                    .map(|gs| {
+                        let exprs: Vec<LogicalExpr> = gs
+                            .exprs()
+                            .iter()
+                            .map(|e| {
+                                let key = format!("{e:?}");
+                                let logical = self.build_expr(e)?;
+                                if seen_exprs.insert(key) {
+                                    all_exprs.push(logical.clone());
+                                }
+                                Ok(logical)
+                            })
+                            .collect::<PlanResult<_>>()?;
+                        Ok(LogicalGroupingSet::new(exprs))
+                    })
+                    .collect::<PlanResult<_>>()?;
+
+                Ok((all_exprs, logical_grouping_sets))
+            }
+        }
     }
 
     /// Collects aggregate expressions from an expression tree.
@@ -759,6 +823,8 @@ impl PlanBuilder {
             "BOOL_AND" => Some(AggregateFunction::BoolAnd),
             "BOOL_OR" => Some(AggregateFunction::BoolOr),
             "EVERY" => Some(AggregateFunction::BoolAnd), // SQL standard synonym for BOOL_AND
+            // Grouping set function
+            "GROUPING" => Some(AggregateFunction::Grouping),
             _ => None,
         }
     }
@@ -3367,7 +3433,7 @@ impl PlanBuilder {
         }
 
         // Collect from GROUP BY
-        for expr in &select.group_by {
+        for expr in select.group_by.base_expressions() {
             Self::collect_columns_from_expr(expr, &mut columns);
         }
 

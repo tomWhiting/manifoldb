@@ -25,7 +25,7 @@ use crate::plan::logical::{
     CreateTriggerNode, CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode,
     DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode, ExpandDirection, ExpandLength,
     GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode,
-    GraphSetNode, JoinType, LogicalExpr, LogicalOnConflict, ProcedureCallNode,
+    GraphSetNode, JoinType, LogicalExpr, LogicalGroupingSet, LogicalOnConflict, ProcedureCallNode,
     ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType, SetTransactionNode, SortOrder,
     TruncateTableNode,
 };
@@ -1013,14 +1013,20 @@ impl WindowExecNode {
 // ============================================================================
 
 /// Hash-based aggregation node.
+///
+/// Supports both simple GROUP BY and advanced grouping operations
+/// (ROLLUP, CUBE, GROUPING SETS).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HashAggregateNode {
-    /// GROUP BY expressions.
+    /// GROUP BY expressions (base columns).
     pub group_by: Vec<LogicalExpr>,
     /// Aggregate expressions.
     pub aggregates: Vec<LogicalExpr>,
     /// Optional HAVING clause.
     pub having: Option<LogicalExpr>,
+    /// Grouping sets for ROLLUP/CUBE/GROUPING SETS.
+    /// Empty for simple GROUP BY.
+    pub grouping_sets: Vec<LogicalGroupingSet>,
     /// Estimated cost.
     pub cost: Cost,
 }
@@ -1029,7 +1035,17 @@ impl HashAggregateNode {
     /// Creates a new hash aggregate node.
     #[must_use]
     pub fn new(group_by: Vec<LogicalExpr>, aggregates: Vec<LogicalExpr>) -> Self {
-        Self { group_by, aggregates, having: None, cost: Cost::default() }
+        Self { group_by, aggregates, having: None, grouping_sets: vec![], cost: Cost::default() }
+    }
+
+    /// Creates a new hash aggregate node with grouping sets.
+    #[must_use]
+    pub fn with_grouping_sets(
+        group_by: Vec<LogicalExpr>,
+        aggregates: Vec<LogicalExpr>,
+        grouping_sets: Vec<LogicalGroupingSet>,
+    ) -> Self {
+        Self { group_by, aggregates, having: None, grouping_sets, cost: Cost::default() }
     }
 
     /// Sets the HAVING clause.
@@ -1041,9 +1057,15 @@ impl HashAggregateNode {
 
     /// Sets the cost estimate.
     #[must_use]
-    pub const fn with_cost(mut self, cost: Cost) -> Self {
+    pub fn with_cost(mut self, cost: Cost) -> Self {
         self.cost = cost;
         self
+    }
+
+    /// Returns true if this uses grouping sets.
+    #[must_use]
+    pub fn has_grouping_sets(&self) -> bool {
+        !self.grouping_sets.is_empty()
     }
 }
 

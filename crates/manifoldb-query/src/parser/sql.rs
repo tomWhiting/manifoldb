@@ -16,11 +16,11 @@ use crate::ast::{
     CreateTriggerStatement, CreateViewStatement, DataType, DeleteStatement, DropFunctionStatement,
     DropIndexStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
     DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
-    FunctionLanguage, FunctionParameter, FunctionVolatility, Identifier, IndexColumn, InsertSource,
-    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal,
-    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
-    PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
-    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
+    FunctionLanguage, FunctionParameter, FunctionVolatility, GroupByClause, GroupingSet,
+    Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
+    JoinCondition, JoinType, Literal, NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode,
+    ParameterRef, PartitionBy, PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement,
+    RollbackTransaction, SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
     SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
     TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
     TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity, TruncateTableStatement,
@@ -386,12 +386,7 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
 
     let where_clause = select.selection.map(convert_expr).transpose()?;
 
-    let group_by = match select.group_by {
-        sp::GroupByExpr::Expressions(exprs, _) => {
-            exprs.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?
-        }
-        sp::GroupByExpr::All(_) => return Err(ParseError::Unsupported("GROUP BY ALL".to_string())),
-    };
+    let group_by = convert_group_by(select.group_by)?;
 
     let having = select.having.map(convert_expr).transpose()?;
 
@@ -591,6 +586,184 @@ fn convert_function_args(args: sp::FunctionArguments) -> ParseResult<Vec<Expr>> 
             })
             .collect::<ParseResult<Vec<_>>>(),
     }
+}
+
+/// Converts a GROUP BY clause, handling ROLLUP, CUBE, and GROUPING SETS.
+fn convert_group_by(group_by: sp::GroupByExpr) -> ParseResult<GroupByClause> {
+    match group_by {
+        sp::GroupByExpr::All(_) => Err(ParseError::Unsupported("GROUP BY ALL".to_string())),
+        sp::GroupByExpr::Expressions(exprs, _modifiers) => {
+            // Check if we have any ROLLUP, CUBE, or GROUPING SETS expressions
+            // If there's exactly one ROLLUP/CUBE/GROUPING SETS, we use that form
+            // Otherwise, we have a simple GROUP BY or a mix
+
+            if exprs.is_empty() {
+                return Ok(GroupByClause::Simple(vec![]));
+            }
+
+            // Check for ROLLUP, CUBE, or GROUPING SETS as the expression type
+            // sqlparser represents these as special Expr variants
+            if exprs.len() == 1 {
+                if let Some(result) = try_convert_grouping_expr(&exprs[0])? {
+                    return Ok(result);
+                }
+            }
+
+            // Check if any expression is a grouping expression
+            // In that case, we need to expand into GROUPING SETS
+            let mut has_grouping = false;
+            for expr in &exprs {
+                if matches!(expr, sp::Expr::Rollup(_) | sp::Expr::Cube(_) | sp::Expr::GroupingSets(_))
+                {
+                    has_grouping = true;
+                    break;
+                }
+            }
+
+            if has_grouping {
+                // Mix of regular columns and grouping expressions
+                // Convert to GROUPING SETS by combining all
+                let mut all_sets: Vec<GroupingSet> = Vec::new();
+                for expr in exprs {
+                    match expr {
+                        sp::Expr::Rollup(sets) => {
+                            let converted = convert_rollup_to_grouping_sets(&sets)?;
+                            if all_sets.is_empty() {
+                                all_sets = converted;
+                            } else {
+                                all_sets = cross_product_grouping_sets(&all_sets, &converted);
+                            }
+                        }
+                        sp::Expr::Cube(sets) => {
+                            let converted = convert_cube_to_grouping_sets(&sets)?;
+                            if all_sets.is_empty() {
+                                all_sets = converted;
+                            } else {
+                                all_sets = cross_product_grouping_sets(&all_sets, &converted);
+                            }
+                        }
+                        sp::Expr::GroupingSets(sets) => {
+                            let converted = convert_grouping_sets_expr(&sets)?;
+                            if all_sets.is_empty() {
+                                all_sets = converted;
+                            } else {
+                                all_sets = cross_product_grouping_sets(&all_sets, &converted);
+                            }
+                        }
+                        _ => {
+                            let e = convert_expr(expr)?;
+                            if all_sets.is_empty() {
+                                all_sets.push(GroupingSet::new(vec![e]));
+                            } else {
+                                // Add this expression to every grouping set
+                                for set in &mut all_sets {
+                                    set.0.push(e.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(GroupByClause::GroupingSets(all_sets))
+            } else {
+                // Simple GROUP BY with no grouping expressions
+                let converted: Vec<Expr> =
+                    exprs.into_iter().map(convert_expr).collect::<ParseResult<_>>()?;
+                Ok(GroupByClause::Simple(converted))
+            }
+        }
+    }
+}
+
+/// Try to convert a single expression to a grouping clause.
+fn try_convert_grouping_expr(expr: &sp::Expr) -> ParseResult<Option<GroupByClause>> {
+    match expr {
+        sp::Expr::Rollup(sets) => {
+            let exprs = convert_grouping_set_elements(sets)?;
+            Ok(Some(GroupByClause::Rollup(exprs)))
+        }
+        sp::Expr::Cube(sets) => {
+            let exprs = convert_grouping_set_elements(sets)?;
+            Ok(Some(GroupByClause::Cube(exprs)))
+        }
+        sp::Expr::GroupingSets(sets) => {
+            let grouping_sets = convert_grouping_sets_expr(sets)?;
+            Ok(Some(GroupByClause::GroupingSets(grouping_sets)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Converts the inner elements of ROLLUP/CUBE (which are Vec<Vec<Expr>>) to Vec<Expr>.
+/// Each inner Vec represents a composite grouping element that should be treated as a single unit.
+fn convert_grouping_set_elements(sets: &[Vec<sp::Expr>]) -> ParseResult<Vec<Expr>> {
+    let mut result = Vec::with_capacity(sets.len());
+    for set in sets {
+        if set.len() == 1 {
+            // Single expression
+            result.push(convert_expr(set[0].clone())?);
+        } else {
+            // Multiple expressions in a composite - we treat them as a tuple
+            // This is for ROLLUP((a, b), c) where (a, b) is a composite element
+            let tuple_exprs: Vec<Expr> =
+                set.iter().map(|e| convert_expr(e.clone())).collect::<ParseResult<_>>()?;
+            result.push(Expr::Tuple(tuple_exprs));
+        }
+    }
+    Ok(result)
+}
+
+/// Converts GROUPING SETS expression to Vec<GroupingSet>.
+fn convert_grouping_sets_expr(sets: &[Vec<sp::Expr>]) -> ParseResult<Vec<GroupingSet>> {
+    let mut result = Vec::with_capacity(sets.len());
+    for set in sets {
+        let exprs: Vec<Expr> =
+            set.iter().map(|e| convert_expr(e.clone())).collect::<ParseResult<_>>()?;
+        result.push(GroupingSet::new(exprs));
+    }
+    Ok(result)
+}
+
+/// Expands ROLLUP to grouping sets for when we need to combine with other expressions.
+fn convert_rollup_to_grouping_sets(sets: &[Vec<sp::Expr>]) -> ParseResult<Vec<GroupingSet>> {
+    let exprs = convert_grouping_set_elements(sets)?;
+    let n = exprs.len();
+    let mut result = Vec::with_capacity(n + 1);
+    // ROLLUP(a, b, c) -> [(a, b, c), (a, b), (a), ()]
+    for i in (0..=n).rev() {
+        result.push(GroupingSet::new(exprs[..i].to_vec()));
+    }
+    Ok(result)
+}
+
+/// Expands CUBE to grouping sets for when we need to combine with other expressions.
+fn convert_cube_to_grouping_sets(sets: &[Vec<sp::Expr>]) -> ParseResult<Vec<GroupingSet>> {
+    let exprs = convert_grouping_set_elements(sets)?;
+    let n = exprs.len();
+    let mut result = Vec::with_capacity(1 << n);
+    // CUBE(a, b) -> [(a, b), (a), (b), ()]
+    for mask in (0..(1 << n)).rev() {
+        let mut set_exprs = Vec::new();
+        for (i, expr) in exprs.iter().enumerate() {
+            if mask & (1 << (n - 1 - i)) != 0 {
+                set_exprs.push(expr.clone());
+            }
+        }
+        result.push(GroupingSet::new(set_exprs));
+    }
+    Ok(result)
+}
+
+/// Cross-product of two grouping set lists - combines each set from left with each from right.
+fn cross_product_grouping_sets(left: &[GroupingSet], right: &[GroupingSet]) -> Vec<GroupingSet> {
+    let mut result = Vec::with_capacity(left.len() * right.len());
+    for l in left {
+        for r in right {
+            let mut combined = l.0.clone();
+            combined.extend(r.0.iter().cloned());
+            result.push(GroupingSet::new(combined));
+        }
+    }
+    result
 }
 
 /// Converts a table alias.

@@ -2408,6 +2408,10 @@ pub enum AggregateFunction {
     /// `BOOL_OR(expr)` - returns true if ANY non-NULL value is true.
     /// SQL: BOOL_OR
     BoolOr,
+    /// `GROUPING(column)` - returns 1 if column is aggregated (part of a super-aggregate row)
+    /// or 0 if it's a regular grouping column.
+    /// Used with ROLLUP, CUBE, and GROUPING SETS to identify subtotal rows.
+    Grouping,
 }
 
 impl fmt::Display for AggregateFunction {
@@ -2434,6 +2438,7 @@ impl fmt::Display for AggregateFunction {
             Self::VectorCentroid => "VECTOR_CENTROID",
             Self::BoolAnd => "BOOL_AND",
             Self::BoolOr => "BOOL_OR",
+            Self::Grouping => "GROUPING",
         };
         write!(f, "{name}")
     }

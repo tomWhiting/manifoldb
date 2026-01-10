@@ -976,18 +976,33 @@ impl PhysicalPlanner {
         let input_plan = self.plan(input);
         let input_rows = input_plan.cost().cardinality();
 
-        // Estimate output groups
-        let group_count = if node.group_by.is_empty() {
+        // Estimate output groups - for grouping sets, multiply by number of sets
+        let base_group_count = if node.group_by.is_empty() {
             1 // Simple aggregation returns one row
         } else {
             // Estimate distinct values (rough heuristic)
             (input_rows as f64).sqrt().ceil() as usize
         };
 
+        let group_count = if node.has_grouping_sets() {
+            // Each grouping set produces its own set of groups
+            base_group_count * node.grouping_sets.len().max(1)
+        } else {
+            base_group_count
+        };
+
         let cost = self.cost_model.hash_aggregate_cost(input_rows, group_count);
 
-        let mut agg_node =
-            HashAggregateNode::new(node.group_by.clone(), node.aggregates.clone()).with_cost(cost);
+        let mut agg_node = if node.has_grouping_sets() {
+            HashAggregateNode::with_grouping_sets(
+                node.group_by.clone(),
+                node.aggregates.clone(),
+                node.grouping_sets.clone(),
+            )
+            .with_cost(cost)
+        } else {
+            HashAggregateNode::new(node.group_by.clone(), node.aggregates.clone()).with_cost(cost)
+        };
 
         if let Some(having) = &node.having {
             agg_node = agg_node.with_having(having.clone());
