@@ -46,7 +46,7 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Transaction Execution†** - Session API with BEGIN/COMMIT/ROLLBACK, SAVEPOINT support (24 tests)
 - ✅ **Cypher Spatial Functions†** - Point type, point(), point.distance() (haversine), point.withinBBox() (17 tests)
 - ✅ **Physical Join Operators†** - IndexNestedLoopJoinOp, SortMergeJoinOp, HAVING clause enhancement
-- ✅ **Utility Statements†** - EXPLAIN ANALYZE, ANALYZE, COPY, SET/SHOW (VACUUM/RESET pending sqlparser 0.60)
+- ✅ **Utility Statements†** - EXPLAIN ANALYZE, ANALYZE, COPY, SET/SHOW, VACUUM/RESET (sqlparser 0.60)
 
 ### Remaining Work (10 Meta-Tasks)
 
@@ -65,7 +65,7 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
 | 9 | Cypher Pattern Extensions | 5 | Low | Label expressions, multi-type rels, quantified paths |
 | 10 | Small Completions Bundle | 6 | Low | Array subscript, temporal arithmetic, etc. |
 
-**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. A separate task exists for upgrading sqlparser to 0.60 (enables VACUUM/RESET parsing).
+**Note:** Task #6 addresses view expansion and correlated CALL { } subqueries. sqlparser upgraded to 0.60 (Jan 2026).
 
 ---
 
@@ -147,8 +147,8 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] `GraphDelete` - DELETE nodes/edges ✅ Jan 2026
   - [x] `DetachDelete` - DETACH DELETE ✅ Jan 2026 (part of GraphDelete)
   - [x] `Foreach` - Cypher FOREACH iteration ✅ Jan 2026
-- [ ] Add type system for plan nodes (input/output schemas)
-- [ ] Implement plan validation and sanity checks
+- [x] Add type system for plan nodes (input/output schemas) ✅ Jan 2026
+- [x] Implement plan validation and sanity checks ✅ Jan 2026
 
 #### 1.2 Expression System Completion
 **Goal:** Complete expression evaluation for both languages.
@@ -159,8 +159,8 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] Map projections `node{.prop1, .prop2}` ✅ Jan 2026
   - [x] Pattern expressions (for EXISTS subqueries) ✅ Jan 2026
   - [ ] Temporal literals and operations
-  - [ ] Spatial point literals
-- [ ] Implement expression type inference
+  - [x] Spatial point literals ✅ Jan 2026
+- [x] Implement expression type inference ✅ Jan 2026
 - [ ] Add expression simplification/optimization
 
 ---
@@ -206,11 +206,11 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] SAVEPOINT/RELEASE SAVEPOINT/ROLLBACK TO ✅ Jan 2026
   - [x] SET TRANSACTION ISOLATION LEVEL ✅ Jan 2026
 
-- [ ] **Utility Statements**
-  - [ ] EXPLAIN ANALYZE with options
-  - [ ] VACUUM/ANALYZE
-  - [ ] COPY (import/export)
-  - [ ] SET/SHOW/RESET session variables
+- [x] **Utility Statements** ✅ Jan 2026
+  - [x] EXPLAIN ANALYZE with options ✅ Jan 2026
+  - [x] VACUUM/ANALYZE ✅ Jan 2026
+  - [x] COPY (import/export) ✅ Jan 2026
+  - [x] SET/SHOW/RESET session variables ✅ Jan 2026
 
 #### 2.2 Function Library
 **Goal:** Implement PostgreSQL-compatible function library.
@@ -260,14 +260,14 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] percent_rank, cume_dist ✅ Jan 2026
   - [x] Any aggregate as window function ✅ Jan 2026
 
-- [x] **JSON Functions** (Tier 2) - Core functions complete ✅ Jan 2026
-  - [ ] Operators: ->, ->>, #>, #>>, @>, <@, ?, ?|, ?&
+- [x] **JSON Functions** (Tier 2) - Complete ✅ Jan 2026
+  - [x] Operators: ->, ->>, #>, #>>, @>, <@, ?, ?|, ?& ✅ Jan 2026
   - [x] json_extract_path, jsonb_extract_path ✅ Jan 2026
   - [x] json_build_object, json_build_array ✅ Jan 2026
-  - [ ] json_each, json_each_text
-  - [ ] json_array_elements
+  - [x] json_each, json_each_text ✅ Jan 2026
+  - [x] json_array_elements ✅ Jan 2026
   - [x] jsonb_set, jsonb_insert, jsonb_strip_nulls ✅ Jan 2026
-  - [ ] jsonb_path_query, jsonb_path_exists
+  - [x] jsonb_path_query, jsonb_path_exists ✅ Jan 2026
 
 - [x] **Array Functions** (Tier 2) - Core functions complete ✅ Jan 2026
   - [x] array_length, cardinality ✅ Jan 2026
@@ -303,9 +303,9 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] Cycle detection
   - [ ] Depth/breadth-first ordering
 
-- [ ] **IndexNestedLoopJoinOp** - Index-accelerated joins
-- [ ] **SortMergeJoinOp** - Sort-merge join implementation
-- [ ] **HashAggregateOp** - Complete HAVING support (already partial)
+- [x] **IndexNestedLoopJoinOp** - Index-accelerated joins ✅ Jan 2026
+- [x] **SortMergeJoinOp** - Sort-merge join implementation ✅ Jan 2026
+- [x] **HashAggregateOp** - Complete HAVING support ✅ Jan 2026
 
 ---
 
@@ -322,9 +322,9 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] DELETE and DETACH DELETE ✅ Jan 2026 - Full execution
   - [x] FOREACH ✅ Jan 2026 - Full execution complete
 
-- [ ] **Reading Clauses**
-  - [ ] MANDATORY MATCH (optional, Neo4j extension)
-  - [ ] Full label expressions (:Label1|Label2, :Label1&Label2)
+- [x] **Reading Clauses** ✅ Jan 2026
+  - [x] MANDATORY MATCH (Neo4j extension) ✅ Jan 2026
+  - [x] Full label expressions (:Label1|Label2, :Label1&Label2, :!Label) ✅ Jan 2026
 
 - [x] **Path Functions** - Complete ✅ Jan 2026
   - [x] shortestPath() pattern function ✅ Jan 2026
@@ -336,10 +336,10 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] COUNT { } subquery ✅ Jan 2026 - Full execution
   - [x] CALL { } subquery (inline) ✅ Jan 2026 - Uncorrelated execution complete (correlated WITH binding pending)
 
-- [ ] **Advanced Patterns**
-  - [ ] Quantified path patterns (GQL)
-  - [ ] Path pattern assignment
-  - [ ] Multiple relationship types in pattern
+- [x] **Advanced Patterns** ✅ Jan 2026
+  - [x] Quantified path patterns (GQL) ✅ Jan 2026
+  - [x] Path pattern assignment ✅ Jan 2026
+  - [x] Multiple relationship types in pattern ✅ Jan 2026
 
 #### 3.2 Expression Extensions
 **Goal:** Support all Cypher expression forms.
@@ -386,10 +386,10 @@ The following meta-tasks cover the remaining items needed for full SQL/Cypher co
   - [x] datetime.truncate ✅ Jan 2026
   - [ ] Temporal arithmetic
 
-- [ ] **Spatial Functions** (Tier 3)
-  - [ ] point construction
-  - [ ] point.distance
-  - [ ] point.withinBBox
+- [x] **Spatial Functions** (Tier 3) ✅ Jan 2026
+  - [x] point construction ✅ Jan 2026
+  - [x] point.distance (haversine) ✅ Jan 2026
+  - [x] point.withinBBox ✅ Jan 2026
 
 #### 3.4 Logical Plan Generation
 **Goal:** Generate correct logical plans from Cypher AST.
