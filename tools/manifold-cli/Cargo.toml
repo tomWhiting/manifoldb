@@ -43,6 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "6"
 humantime = "2"
 hex = "0.4"
+chrono = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5"

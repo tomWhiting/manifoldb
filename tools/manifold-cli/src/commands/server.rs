@@ -6,19 +6,43 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::error::{CliError, Result};
 use crate::ServerCommands;
+
+/// Server state persisted to disk.
+#[derive(Debug, Serialize, Deserialize)]
+struct ServerState {
+    /// Process ID of the running server.
+    pid: i32,
+    /// Port the server is listening on.
+    port: u16,
+    /// Host the server is bound to.
+    host: String,
+    /// Path to the database file.
+    database: String,
+    /// Timestamp when the server was started.
+    started_at: String,
+}
 
 /// Default data directory path (~/.local/share/manifoldb/).
 ///
 /// Uses ~/.local/share/manifoldb/ on all platforms for consistency.
 fn data_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".local/share/manifoldb")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local/share/manifoldb")
 }
 
-/// PID file path.
+/// PID file path (legacy, kept for compatibility).
 fn pid_file() -> PathBuf {
     data_dir().join("server.pid")
+}
+
+/// State file path.
+fn state_file() -> PathBuf {
+    data_dir().join("server.state")
 }
 
 /// Default database path.
@@ -36,6 +60,26 @@ fn ensure_data_dir() -> Result<PathBuf> {
     let dir = data_dir();
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Write server state to disk.
+fn write_state(state: &ServerState) -> Result<()> {
+    let content = serde_json::to_string_pretty(state)?;
+    fs::write(state_file(), content)?;
+    Ok(())
+}
+
+/// Read server state from disk.
+fn read_state() -> Result<ServerState> {
+    let content = fs::read_to_string(state_file())?;
+    let state: ServerState = serde_json::from_str(&content)?;
+    Ok(state)
+}
+
+/// Delete server state file.
+fn delete_state() {
+    let _ = fs::remove_file(state_file());
+    let _ = fs::remove_file(pid_file()); // Clean up legacy PID file too
 }
 
 /// Run a server subcommand.
@@ -112,25 +156,25 @@ fn start_foreground(database: &Path, host: &str, port: u16, quiet: bool) -> Resu
 fn start_background(database: &Path, host: &str, port: u16, quiet: bool) -> Result<()> {
     use daemonize::Daemonize;
 
-    let pid = pid_file();
+    let pid_path = pid_file();
     let log = log_file();
 
     let stdout = File::create(&log)?;
     let stderr = stdout.try_clone()?;
 
     let db_str = database.to_str().ok_or(CliError::InvalidPath)?.to_string();
-    let host = host.to_string();
+    let host_str = host.to_string();
 
     if !quiet {
         println!("Starting ManifoldDB server in background...");
         println!("Database: {}", database.display());
         println!("Listening on http://{}:{}", host, port);
-        println!("PID file: {}", pid.display());
+        println!("State file: {}", state_file().display());
         println!("Log file: {}", log.display());
     }
 
     let daemonize = Daemonize::new()
-        .pid_file(&pid)
+        .pid_file(&pid_path)
         .chown_pid_file(true)
         .working_directory(data_dir())
         .stdout(stdout)
@@ -138,6 +182,18 @@ fn start_background(database: &Path, host: &str, port: u16, quiet: bool) -> Resu
 
     match daemonize.start() {
         Ok(()) => {
+            // Write state file with server configuration
+            let pid = std::process::id() as i32;
+            let state = ServerState {
+                pid,
+                port,
+                host: host_str.clone(),
+                database: db_str.clone(),
+                started_at: chrono::Utc::now().to_rfc3339(),
+            };
+            // Best effort - don't fail if we can't write state
+            let _ = write_state(&state);
+
             // Initialize logging in daemon
             tracing_subscriber::fmt()
                 .with_env_filter(
@@ -147,7 +203,9 @@ fn start_background(database: &Path, host: &str, port: u16, quiet: bool) -> Resu
                 .init();
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move { manifold_server::server::run(&db_str, &host, port).await })?;
+            rt.block_on(async move {
+                manifold_server::server::run(&db_str, &host_str, port).await
+            })?;
             Ok(())
         }
         Err(e) => Err(CliError::Daemon(e.to_string())),
@@ -179,7 +237,7 @@ fn stop(quiet: bool) -> Result<()> {
     // Wait for graceful shutdown
     for _ in 0..50 {
         if !is_process_running(pid) {
-            let _ = fs::remove_file(pid_file());
+            delete_state();
             if !quiet {
                 println!("Server stopped.");
             }
@@ -190,7 +248,7 @@ fn stop(quiet: bool) -> Result<()> {
 
     // Force kill
     send_signal(pid, SignalType::Kill)?;
-    let _ = fs::remove_file(pid_file());
+    delete_state();
 
     if !quiet {
         println!("Server forcefully terminated.");
@@ -202,22 +260,44 @@ fn stop(quiet: bool) -> Result<()> {
 /// Check server status.
 fn status(json_output: bool) -> Result<()> {
     let running = is_running()?;
-    let pid = if running { read_pid().ok() } else { None };
+    let state = read_state().ok();
 
     if json_output {
-        let status = serde_json::json!({
-            "running": running,
-            "pid": pid,
-            "pid_file": pid_file().to_string_lossy(),
-            "data_dir": data_dir().to_string_lossy(),
-            "default_database": default_database().to_string_lossy(),
-            "log_file": log_file().to_string_lossy(),
-        });
+        let status = if let Some(ref s) = state {
+            serde_json::json!({
+                "running": running,
+                "pid": s.pid,
+                "host": s.host,
+                "port": s.port,
+                "database": s.database,
+                "started_at": s.started_at,
+                "data_dir": data_dir().to_string_lossy(),
+                "log_file": log_file().to_string_lossy(),
+            })
+        } else {
+            serde_json::json!({
+                "running": running,
+                "pid": null,
+                "host": null,
+                "port": null,
+                "database": null,
+                "started_at": null,
+                "data_dir": data_dir().to_string_lossy(),
+                "default_database": default_database().to_string_lossy(),
+                "log_file": log_file().to_string_lossy(),
+            })
+        };
         println!("{}", serde_json::to_string_pretty(&status)?);
     } else if running {
-        println!("Server is running (PID: {})", pid.unwrap_or(0));
+        if let Some(ref s) = state {
+            println!("Server is running (PID: {})", s.pid);
+            println!("Listening on: http://{}:{}", s.host, s.port);
+            println!("Database: {}", s.database);
+            println!("Started at: {}", s.started_at);
+        } else {
+            println!("Server is running");
+        }
         println!("Data directory: {}", data_dir().display());
-        println!("PID file: {}", pid_file().display());
         println!("Log file: {}", log_file().display());
     } else {
         println!("Server is not running");
@@ -228,12 +308,39 @@ fn status(json_output: bool) -> Result<()> {
 }
 
 /// Restart the server.
+///
+/// If the server is running, uses saved settings (port, host, database) unless
+/// explicitly overridden via CLI arguments. This allows `manifold server restart`
+/// to maintain the same configuration.
 fn restart(database: Option<&Path>, host: &str, port: u16, quiet: bool) -> Result<()> {
-    if is_running()? {
+    // Read saved state before stopping (if server is running)
+    let saved_state = if is_running()? {
+        read_state().ok()
+    } else {
+        None
+    };
+
+    // Stop the server if running
+    if saved_state.is_some() {
         stop(quiet)?;
         std::thread::sleep(Duration::from_millis(500));
     }
-    start(database, host, port, true, quiet)
+
+    // Use saved settings as defaults, but allow CLI overrides
+    // CLI defaults are "127.0.0.1" and 4000, so we check against those
+    let (final_host, final_port, final_db) = if let Some(ref state) = saved_state {
+        // Use saved values unless CLI provided non-default values
+        let use_host = if host == "127.0.0.1" { &state.host } else { host };
+        let use_port = if port == 4000 { state.port } else { port };
+        let use_db = database
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&state.database));
+        (use_host.to_string(), use_port, Some(use_db))
+    } else {
+        (host.to_string(), port, database.map(PathBuf::from))
+    };
+
+    start(final_db.as_deref(), &final_host, final_port, true, quiet)
 }
 
 /// Install as system service.
