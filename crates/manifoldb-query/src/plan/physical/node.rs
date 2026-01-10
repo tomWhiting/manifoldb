@@ -879,25 +879,33 @@ pub struct LimitExecNode {
     pub limit: Option<usize>,
     /// Rows to skip.
     pub offset: Option<usize>,
+    /// Whether to include ties (rows with equal ORDER BY values).
+    pub with_ties: bool,
 }
 
 impl LimitExecNode {
     /// Creates a limit-only node.
     #[must_use]
     pub const fn limit(n: usize) -> Self {
-        Self { limit: Some(n), offset: None }
+        Self { limit: Some(n), offset: None, with_ties: false }
     }
 
     /// Creates an offset-only node.
     #[must_use]
     pub const fn offset(n: usize) -> Self {
-        Self { limit: None, offset: Some(n) }
+        Self { limit: None, offset: Some(n), with_ties: false }
     }
 
     /// Creates a limit with offset node.
     #[must_use]
     pub const fn limit_offset(limit: usize, offset: usize) -> Self {
-        Self { limit: Some(limit), offset: Some(offset) }
+        Self { limit: Some(limit), offset: Some(offset), with_ties: false }
+    }
+
+    /// Creates a limit with WITH TIES.
+    #[must_use]
+    pub const fn with_ties(n: usize) -> Self {
+        Self { limit: Some(n), offset: None, with_ties: true }
     }
 }
 

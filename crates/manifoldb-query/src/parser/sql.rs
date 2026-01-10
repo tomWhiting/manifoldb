@@ -13,13 +13,13 @@ use crate::ast::{
     CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CopyDestination,
     CopyDirection, CopyFormat, CopyOptions, CopySource, CopyStatement, CopyTarget,
     CreateFunctionStatement, CreateIndexStatement, CreateSchemaStatement, CreateTableStatement,
-    CreateTriggerStatement, CreateViewStatement, DataType, DeleteStatement, DropFunctionStatement,
-    DropIndexStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
-    DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
-    FunctionLanguage, FunctionParameter, FunctionVolatility, GroupByClause, GroupingSet,
-    Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
-    JoinCondition, JoinType, Literal, MergeAction, MergeClause, MergeMatchType, MergeSqlStatement,
-    NamedWindowDefinition, OnConflict, OrderByExpr,
+    CreateTriggerStatement, CreateViewStatement, DataType, DeleteStatement, DistinctClause,
+    DropFunctionStatement, DropIndexStatement, DropSchemaStatement, DropTableStatement,
+    DropTriggerStatement, DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr,
+    FetchClause, FunctionCall, FunctionLanguage, FunctionParameter, FunctionVolatility,
+    GroupByClause, GroupingSet, Identifier, IndexColumn, InsertSource, InsertStatement,
+    IsolationLevel, JoinClause, JoinCondition, JoinType, Literal, MergeAction, MergeClause,
+    MergeMatchType, MergeSqlStatement, NamedWindowDefinition, OnConflict, OrderByExpr,
     ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
     ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
     SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
@@ -351,6 +351,14 @@ fn convert_query(query: sp::Query) -> ParseResult<SelectStatement> {
         }
     }
 
+    // Handle FETCH clause (standard SQL alternative to LIMIT with WITH TIES support)
+    if let Some(fetch) = query.fetch {
+        if let Some(quantity) = fetch.quantity {
+            result.fetch =
+                Some(FetchClause::new(convert_expr(quantity)?, fetch.with_ties, fetch.percent));
+        }
+    }
+
     // Add WITH clauses to the result
     result.with_clauses = with_clauses;
 
@@ -401,11 +409,13 @@ fn convert_cte_materialized(
 /// Converts a sqlparser Select to our `SelectStatement`.
 fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
     let distinct = match select.distinct {
-        Some(sp::Distinct::Distinct) => true,
-        Some(sp::Distinct::On(_)) => {
-            return Err(ParseError::Unsupported("DISTINCT ON".to_string()))
+        Some(sp::Distinct::Distinct) => DistinctClause::All,
+        Some(sp::Distinct::On(exprs)) => {
+            let on_exprs: Vec<Expr> =
+                exprs.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
+            DistinctClause::On(on_exprs)
         }
-        None => false,
+        None => DistinctClause::None,
     };
 
     let projection =
@@ -442,6 +452,7 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
         order_by: vec![],
         limit: None,
         offset: None,
+        fetch: None,
         set_op: None,
     })
 }
@@ -547,6 +558,7 @@ fn convert_table_factor(factor: sp::TableFactor) -> ParseResult<TableRef> {
         sp::TableFactor::Table { name, alias, .. } => Ok(TableRef::Table {
             name: convert_object_name(name),
             alias: alias.map(convert_table_alias),
+            sample: None, // TABLESAMPLE not yet supported in sqlparser
         }),
         sp::TableFactor::Derived { subquery, alias, lateral } => {
             let alias =
@@ -1518,7 +1530,7 @@ fn convert_update(
     returning: Option<Vec<sp::SelectItem>>,
 ) -> ParseResult<UpdateStatement> {
     let table_ref = convert_table_with_joins(table)?;
-    let TableRef::Table { name: table_name, alias } = table_ref else {
+    let TableRef::Table { name: table_name, alias, .. } = table_ref else {
         return Err(ParseError::Unsupported("complex UPDATE target".to_string()));
     };
 
@@ -1562,7 +1574,7 @@ fn convert_delete(delete: sp::Delete) -> ParseResult<DeleteStatement> {
     };
 
     let table_ref = convert_table_with_joins(from_table)?;
-    let TableRef::Table { name: table_name, alias } = table_ref else {
+    let TableRef::Table { name: table_name, alias, .. } = table_ref else {
         return Err(ParseError::Unsupported("complex DELETE target".to_string()));
     };
 
@@ -1599,7 +1611,9 @@ fn convert_merge(
 ) -> ParseResult<MergeSqlStatement> {
     let target = convert_table_factor(table)?;
     let (target, target_alias) = match target {
-        TableRef::Table { name, alias } => (TableRef::Table { name, alias: None }, alias),
+        TableRef::Table { name, alias, sample } => {
+            (TableRef::Table { name, alias: None, sample }, alias)
+        }
         other => (other, None),
     };
 

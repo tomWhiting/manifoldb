@@ -21,7 +21,7 @@ use super::operators::{
     graph_remove::GraphRemoveOp,
     graph_set::GraphSetOp,
     join::{HashJoinOp, IndexNestedLoopJoinOp, MergeJoinOp, NestedLoopJoinOp, SortMergeJoinOp},
-    limit::LimitOp,
+    limit::{LimitOp, LimitWithTiesOp},
     project::ProjectOp,
     recursive_cte::RecursiveCTEOp,
     scan::{FullScanOp, IndexRangeScanOp, IndexScanOp},
@@ -223,7 +223,13 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
 
         PhysicalPlan::Limit { node, input } => {
             let input_op = build_operator_tree(input)?;
-            Ok(Box::new(LimitOp::new(node.limit, node.offset, input_op)))
+            if node.with_ties {
+                // WITH TIES requires keeping the last ORDER BY value to compare
+                // For now, we'll create a LimitWithTiesOp
+                Ok(Box::new(LimitWithTiesOp::new(node.limit, node.offset, input_op)))
+            } else {
+                Ok(Box::new(LimitOp::new(node.limit, node.offset, input_op)))
+            }
         }
 
         PhysicalPlan::HashDistinct { on_columns, input, .. } => {

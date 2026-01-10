@@ -286,32 +286,55 @@ impl SortNode {
 
 /// A limit node.
 ///
-/// Represents LIMIT and OFFSET clauses.
+/// Represents LIMIT, OFFSET, and FETCH clauses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitNode {
     /// Maximum number of rows to return.
     pub limit: Option<usize>,
     /// Number of rows to skip.
     pub offset: Option<usize>,
+    /// Whether to include ties (rows with equal ORDER BY values).
+    /// Used with FETCH FIRST ... WITH TIES.
+    pub with_ties: bool,
+    /// Whether this is a percentage limit (FETCH FIRST N PERCENT).
+    /// Note: Percentage limits are converted to absolute limits during planning.
+    pub percent: bool,
 }
 
 impl LimitNode {
     /// Creates a limit-only node.
     #[must_use]
     pub const fn limit(n: usize) -> Self {
-        Self { limit: Some(n), offset: None }
+        Self { limit: Some(n), offset: None, with_ties: false, percent: false }
     }
 
     /// Creates an offset-only node.
     #[must_use]
     pub const fn offset(n: usize) -> Self {
-        Self { limit: None, offset: Some(n) }
+        Self { limit: None, offset: Some(n), with_ties: false, percent: false }
     }
 
     /// Creates a limit with offset node.
     #[must_use]
     pub const fn limit_offset(limit: usize, offset: usize) -> Self {
-        Self { limit: Some(limit), offset: Some(offset) }
+        Self { limit: Some(limit), offset: Some(offset), with_ties: false, percent: false }
+    }
+
+    /// Creates a limit node with WITH TIES.
+    #[must_use]
+    pub const fn with_ties(n: usize) -> Self {
+        Self { limit: Some(n), offset: None, with_ties: true, percent: false }
+    }
+
+    /// Creates a new limit node with all options.
+    #[must_use]
+    pub const fn new(
+        limit: Option<usize>,
+        offset: Option<usize>,
+        with_ties: bool,
+        percent: bool,
+    ) -> Self {
+        Self { limit, offset, with_ties, percent }
     }
 }
 

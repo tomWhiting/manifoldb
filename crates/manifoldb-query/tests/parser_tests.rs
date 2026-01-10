@@ -8,8 +8,8 @@
 //! - Error handling
 
 use manifoldb_query::ast::{
-    BinaryOp, DataType, EdgeDirection, EdgeLength, Expr, GroupByClause, InsertSource, JoinType,
-    Literal, ParameterRef, SelectItem, Statement, TableRef,
+    BinaryOp, DataType, DistinctClause, EdgeDirection, EdgeLength, Expr, GroupByClause,
+    InsertSource, JoinType, Literal, ParameterRef, SelectItem, Statement, TableRef,
 };
 use manifoldb_query::error::ParseError;
 use manifoldb_query::parser::{parse_single_statement, parse_sql, ExtendedParser};
@@ -109,7 +109,119 @@ mod standard_sql {
         let stmt = parse_single_statement("SELECT DISTINCT name FROM users").unwrap();
         match stmt {
             Statement::Select(select) => {
-                assert!(select.distinct);
+                assert!(matches!(select.distinct, DistinctClause::All));
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_select_distinct_on_single_column() {
+        let stmt = parse_single_statement(
+            "SELECT DISTINCT ON (category) * FROM products ORDER BY category, price",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let DistinctClause::On(exprs) = &select.distinct {
+                    assert_eq!(exprs.len(), 1);
+                } else {
+                    panic!("expected DISTINCT ON clause");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_select_distinct_on_multiple_columns() {
+        let stmt = parse_single_statement(
+            "SELECT DISTINCT ON (region, category) region, category, price FROM products ORDER BY region, category, price",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                if let DistinctClause::On(exprs) = &select.distinct {
+                    assert_eq!(exprs.len(), 2);
+                } else {
+                    panic!("expected DISTINCT ON clause with 2 expressions");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_fetch_first_n_rows() {
+        let stmt = parse_single_statement("SELECT * FROM users FETCH FIRST 10 ROWS ONLY").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.fetch.is_some());
+                let fetch = select.fetch.unwrap();
+                assert!(!fetch.with_ties);
+                assert!(!fetch.percent);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_fetch_next_n_rows() {
+        let stmt = parse_single_statement("SELECT * FROM users FETCH NEXT 5 ROWS ONLY").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.fetch.is_some());
+                let fetch = select.fetch.unwrap();
+                assert!(!fetch.with_ties);
+                assert!(!fetch.percent);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_fetch_first_with_ties() {
+        let stmt = parse_single_statement(
+            "SELECT * FROM products ORDER BY price FETCH FIRST 5 ROWS WITH TIES",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.fetch.is_some());
+                let fetch = select.fetch.unwrap();
+                assert!(fetch.with_ties);
+                assert!(!fetch.percent);
+                // WITH TIES requires ORDER BY
+                assert!(!select.order_by.is_empty());
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_fetch_first_percent() {
+        let stmt =
+            parse_single_statement("SELECT * FROM users FETCH FIRST 10 PERCENT ROWS ONLY").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.fetch.is_some());
+                let fetch = select.fetch.unwrap();
+                assert!(!fetch.with_ties);
+                assert!(fetch.percent);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_offset_with_fetch() {
+        let stmt =
+            parse_single_statement("SELECT * FROM users OFFSET 10 ROWS FETCH FIRST 5 ROWS ONLY")
+                .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.offset.is_some());
+                assert!(select.fetch.is_some());
             }
             _ => panic!("expected SELECT"),
         }

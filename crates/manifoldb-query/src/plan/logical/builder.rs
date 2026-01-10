@@ -24,15 +24,15 @@ use crate::ast::{
     CreateCollectionStatement, CreateFunctionStatement, CreateGraphStatement, CreateIndexStatement,
     CreateNodeRef, CreatePattern, CreateSchemaStatement, CreateTableStatement,
     CreateTriggerStatement, CreateViewStatement, DeleteGraphStatement, DeleteStatement,
-    DropCollectionStatement, DropFunctionStatement, DropIndexStatement, DropSchemaStatement,
-    DropTableStatement, DropTriggerStatement, DropViewStatement, Expr,
-    ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, GroupByClause, InsertSource,
-    InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
-    MatchStatement, MergeAction as AstMergeAction, MergeClause as AstMergeClause,
-    MergeGraphStatement, MergeMatchType as AstMergeMatchType, MergePattern, MergeSqlStatement,
-    PathPattern, PropertyCondition, RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement,
-    SetAction as AstSetAction, SetGraphStatement, SetOperation, SetOperator, Statement, TableRef,
-    UpdateStatement, WindowFunction, YieldItem,
+    DistinctClause, DropCollectionStatement, DropFunctionStatement, DropIndexStatement,
+    DropSchemaStatement, DropTableStatement, DropTriggerStatement, DropViewStatement, Expr,
+    FetchClause, ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, GroupByClause,
+    InsertSource, InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType,
+    MapProjectionItem, MatchStatement, MergeAction as AstMergeAction,
+    MergeClause as AstMergeClause, MergeGraphStatement, MergeMatchType as AstMergeMatchType,
+    MergePattern, MergeSqlStatement, PathPattern, PropertyCondition, RemoveGraphStatement,
+    RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction, SetGraphStatement,
+    SetOperation, SetOperator, Statement, TableRef, UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -57,8 +57,9 @@ use super::node::{
 };
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
-    AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, LogicalGroupingSet,
-    ProjectNode, ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode,
+    LogicalGroupingSet, ProjectNode, ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode,
+    WindowNode,
 };
 use super::validate::{PlanError, PlanResult};
 
@@ -471,9 +472,20 @@ impl PlanBuilder {
         let projection = self.build_projection(&select.projection)?;
         plan = LogicalPlan::Project { node: ProjectNode::new(projection), input: Box::new(plan) };
 
-        // Handle DISTINCT
-        if select.distinct {
-            plan = plan.distinct();
+        // Handle DISTINCT / DISTINCT ON
+        match &select.distinct {
+            DistinctClause::None => {}
+            DistinctClause::All => {
+                plan = plan.distinct();
+            }
+            DistinctClause::On(exprs) => {
+                let on_columns: Vec<LogicalExpr> =
+                    exprs.iter().map(|e| self.build_expr(e)).collect::<PlanResult<Vec<_>>>()?;
+                plan = LogicalPlan::Distinct {
+                    node: DistinctNode::on(on_columns),
+                    input: Box::new(plan),
+                };
+            }
         }
 
         // Add ORDER BY
@@ -482,8 +494,8 @@ impl PlanBuilder {
             plan = LogicalPlan::Sort { node: SortNode::new(order_by), input: Box::new(plan) };
         }
 
-        // Add LIMIT/OFFSET
-        plan = self.apply_limit_offset(plan, &select.limit, &select.offset)?;
+        // Add LIMIT/OFFSET and FETCH
+        plan = self.apply_limit_offset_fetch(plan, &select.limit, &select.offset, &select.fetch)?;
 
         // Handle set operations (UNION, INTERSECT, EXCEPT)
         if let Some(set_op) = &select.set_op {
@@ -543,7 +555,13 @@ impl PlanBuilder {
     /// Builds plan from a table reference.
     fn build_table_ref(&mut self, table_ref: &TableRef) -> PlanResult<LogicalPlan> {
         match table_ref {
-            TableRef::Table { name, alias } => {
+            TableRef::Table { name, alias, sample } => {
+                // TABLESAMPLE is parsed but not yet implemented in execution
+                if sample.is_some() {
+                    return Err(PlanError::Unsupported(
+                        "TABLESAMPLE is not yet implemented".to_string(),
+                    ));
+                }
                 let table_name =
                     name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
@@ -1261,23 +1279,32 @@ impl PlanBuilder {
             .collect()
     }
 
-    /// Applies LIMIT and OFFSET to a plan.
-    fn apply_limit_offset(
+    /// Applies LIMIT, OFFSET, and FETCH to a plan.
+    fn apply_limit_offset_fetch(
         &self,
         plan: LogicalPlan,
         limit: &Option<Expr>,
         offset: &Option<Expr>,
+        fetch: &Option<FetchClause>,
     ) -> PlanResult<LogicalPlan> {
         let limit_val = if let Some(l) = limit { Some(self.expr_to_usize(l)?) } else { None };
 
         let offset_val = if let Some(o) = offset { Some(self.expr_to_usize(o)?) } else { None };
 
-        if limit_val.is_none() && offset_val.is_none() {
+        // Handle FETCH clause (takes precedence over LIMIT if both specified)
+        let (final_limit, with_ties, percent) = if let Some(fetch) = fetch {
+            let fetch_count = self.expr_to_usize(&fetch.count)?;
+            (Some(fetch_count), fetch.with_ties, fetch.percent)
+        } else {
+            (limit_val, false, false)
+        };
+
+        if final_limit.is_none() && offset_val.is_none() {
             return Ok(plan);
         }
 
         Ok(LogicalPlan::Limit {
-            node: LimitNode { limit: limit_val, offset: offset_val },
+            node: LimitNode::new(final_limit, offset_val, with_ties, percent),
             input: Box::new(plan),
         })
     }
