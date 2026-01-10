@@ -30,28 +30,26 @@ impl SubscriptionRoot {
         let pubsub = ctx.data::<PubSub>()?;
         let receiver = pubsub.subscribe();
 
-        let stream = BroadcastStream::new(receiver)
-            .filter_map(move |result| {
-                let labels_filter = labels.clone();
-                match result {
-                    Ok(GraphChangeEvent::Node(event)) => {
-                        // Apply label filter if specified
-                        if let Some(ref filter_labels) = labels_filter {
-                            let event_labels = event.labels();
-                            let matches =
-                                filter_labels.iter().any(|l| event_labels.contains(l));
-                            if !matches {
-                                return None;
-                            }
+        let stream = BroadcastStream::new(receiver).filter_map(move |result| {
+            let labels_filter = labels.clone();
+            match result {
+                Ok(GraphChangeEvent::Node(event)) => {
+                    // Apply label filter if specified
+                    if let Some(ref filter_labels) = labels_filter {
+                        let event_labels = event.labels();
+                        let matches = filter_labels.iter().any(|l| event_labels.contains(l));
+                        if !matches {
+                            return None;
                         }
-
-                        // Convert internal event to GraphQL event
-                        Some(convert_node_event(event))
                     }
-                    Ok(GraphChangeEvent::Edge(_)) => None,
-                    Err(_) => None, // Lagged, skip
+
+                    // Convert internal event to GraphQL event
+                    Some(convert_node_event(event))
                 }
-            });
+                Ok(GraphChangeEvent::Edge(_)) => None,
+                Err(_) => None, // Lagged, skip
+            }
+        });
 
         Ok(stream)
     }
@@ -68,26 +66,25 @@ impl SubscriptionRoot {
         let pubsub = ctx.data::<PubSub>()?;
         let receiver = pubsub.subscribe();
 
-        let stream = BroadcastStream::new(receiver)
-            .filter_map(move |result| {
-                let types_filter = types.clone();
-                match result {
-                    Ok(GraphChangeEvent::Edge(event)) => {
-                        // Apply type filter if specified
-                        if let Some(ref filter_types) = types_filter {
-                            let event_type = event.edge_type();
-                            if !filter_types.iter().any(|t| t == event_type) {
-                                return None;
-                            }
+        let stream = BroadcastStream::new(receiver).filter_map(move |result| {
+            let types_filter = types.clone();
+            match result {
+                Ok(GraphChangeEvent::Edge(event)) => {
+                    // Apply type filter if specified
+                    if let Some(ref filter_types) = types_filter {
+                        let event_type = event.edge_type();
+                        if !filter_types.iter().any(|t| t == event_type) {
+                            return None;
                         }
-
-                        // Convert internal event to GraphQL event
-                        Some(convert_edge_event(event))
                     }
-                    Ok(GraphChangeEvent::Node(_)) => None,
-                    Err(_) => None, // Lagged, skip
+
+                    // Convert internal event to GraphQL event
+                    Some(convert_edge_event(event))
                 }
-            });
+                Ok(GraphChangeEvent::Node(_)) => None,
+                Err(_) => None, // Lagged, skip
+            }
+        });
 
         Ok(stream)
     }
@@ -123,10 +120,7 @@ fn convert_edge_event(event: EdgeChangeEvent) -> EdgeEvent {
         EdgeChangeEvent::Created(edge) => EdgeEvent::Created(EdgeCreatedEvent { edge }),
         EdgeChangeEvent::Updated(edge) => EdgeEvent::Updated(EdgeUpdatedEvent { edge }),
         EdgeChangeEvent::Deleted { id, edge_type } => {
-            EdgeEvent::Deleted(EdgeDeletedEvent {
-                id: ID(id),
-                edge_type,
-            })
+            EdgeEvent::Deleted(EdgeDeletedEvent { id: ID(id), edge_type })
         }
     }
 }
@@ -150,10 +144,7 @@ fn convert_graph_event(event: GraphChangeEvent) -> GraphEvent {
             GraphEvent::EdgeUpdated(EdgeUpdatedEvent { edge })
         }
         GraphChangeEvent::Edge(EdgeChangeEvent::Deleted { id, edge_type }) => {
-            GraphEvent::EdgeDeleted(EdgeDeletedEvent {
-                id: ID(id),
-                edge_type,
-            })
+            GraphEvent::EdgeDeleted(EdgeDeletedEvent { id: ID(id), edge_type })
         }
     }
 }

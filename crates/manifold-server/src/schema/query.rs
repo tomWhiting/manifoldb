@@ -8,9 +8,8 @@ use async_graphql::{Context, Object, Result, ID};
 use manifoldb::Database;
 
 use super::types::{
-    CollectionInfo, Direction, DistanceMetricEnum, EdgeTypeInfo, GraphResult, GraphStats,
-    LabelInfo, Node, TableResult, VectorConfigInfo, VectorSearchInput, VectorSearchResult,
-    VectorTypeEnum,
+    CollectionInfo, Direction, EdgeTypeInfo, GraphResult, GraphStats, LabelInfo, Node, TableResult,
+    VectorSearchInput, VectorSearchResult,
 };
 use crate::convert;
 
@@ -233,41 +232,9 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
     let vectors = handle.vectors();
     let point_count = handle.count_points().unwrap_or(0);
 
-    let vector_configs: Vec<VectorConfigInfo> = vectors
-        .iter()
-        .map(|(vec_name, config)| {
-            let (vector_type, dimension) = match &config.vector_type {
-                manifoldb::collection::VectorType::Dense { dimension } => {
-                    (VectorTypeEnum::Dense, Some(*dimension as i32))
-                }
-                manifoldb::collection::VectorType::Sparse { .. } => (VectorTypeEnum::Sparse, None),
-                manifoldb::collection::VectorType::Multi { token_dim } => {
-                    (VectorTypeEnum::Multi, Some(*token_dim as i32))
-                }
-                manifoldb::collection::VectorType::Binary { bits } => {
-                    (VectorTypeEnum::Binary, Some(*bits as i32))
-                }
-            };
-
-            let distance_metric = match &config.distance {
-                manifoldb::collection::DistanceType::Dense(m) => match m {
-                    manifoldb::DistanceMetric::Cosine => DistanceMetricEnum::Cosine,
-                    manifoldb::DistanceMetric::DotProduct => DistanceMetricEnum::DotProduct,
-                    manifoldb::DistanceMetric::Euclidean => DistanceMetricEnum::Euclidean,
-                    manifoldb::DistanceMetric::Manhattan => DistanceMetricEnum::Manhattan,
-                    manifoldb::DistanceMetric::Chebyshev => DistanceMetricEnum::Chebyshev,
-                },
-                manifoldb::collection::DistanceType::Sparse(_) => DistanceMetricEnum::DotProduct,
-                manifoldb::collection::DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
-            };
-
-            VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
-        })
-        .collect();
-
     Ok(CollectionInfo {
         name: name.to_string(),
-        vectors: vector_configs,
+        vectors: convert::vector_configs_to_graphql(vectors),
         point_count: point_count as i32,
     })
 }

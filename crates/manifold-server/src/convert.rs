@@ -4,11 +4,14 @@
 //! and the GraphQL schema types.
 
 use async_graphql::{Json, Result, ID};
-use manifoldb::{QueryResult as DbQueryResult, Value};
+use manifoldb::collection::{DistanceType, VectorConfig, VectorType};
+use manifoldb::{DistanceMetric, QueryResult as DbQueryResult, Value};
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::schema::{Edge, GraphResult, Node, TableResult};
+use crate::schema::{
+    DistanceMetricEnum, Edge, GraphResult, Node, TableResult, VectorConfigInfo, VectorTypeEnum,
+};
 
 /// Convert a ManifoldDB Value to a serde_json Value.
 pub fn value_to_json(value: &Value) -> serde_json::Value {
@@ -155,4 +158,33 @@ fn extract_graph_elements(
         }
         _ => {}
     }
+}
+
+/// Convert ManifoldDB vector configs to GraphQL VectorConfigInfo.
+pub fn vector_configs_to_graphql(vectors: &HashMap<String, VectorConfig>) -> Vec<VectorConfigInfo> {
+    vectors
+        .iter()
+        .map(|(vec_name, config)| {
+            let (vector_type, dimension) = match &config.vector_type {
+                VectorType::Dense { dimension } => (VectorTypeEnum::Dense, Some(*dimension as i32)),
+                VectorType::Sparse { .. } => (VectorTypeEnum::Sparse, None),
+                VectorType::Multi { token_dim } => (VectorTypeEnum::Multi, Some(*token_dim as i32)),
+                VectorType::Binary { bits } => (VectorTypeEnum::Binary, Some(*bits as i32)),
+            };
+
+            let distance_metric = match &config.distance {
+                DistanceType::Dense(m) => match m {
+                    DistanceMetric::Cosine => DistanceMetricEnum::Cosine,
+                    DistanceMetric::DotProduct => DistanceMetricEnum::DotProduct,
+                    DistanceMetric::Euclidean => DistanceMetricEnum::Euclidean,
+                    DistanceMetric::Manhattan => DistanceMetricEnum::Manhattan,
+                    DistanceMetric::Chebyshev => DistanceMetricEnum::Chebyshev,
+                },
+                DistanceType::Sparse(_) => DistanceMetricEnum::DotProduct,
+                DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
+            };
+
+            VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
+        })
+        .collect()
 }

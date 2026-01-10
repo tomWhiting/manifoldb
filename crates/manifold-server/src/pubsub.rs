@@ -115,8 +115,6 @@ impl Default for PubSub {
 
 impl std::fmt::Debug for PubSub {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PubSub")
-            .field("subscriber_count", &self.sender.receiver_count())
-            .finish()
+        f.debug_struct("PubSub").field("subscriber_count", &self.sender.receiver_count()).finish()
     }
 }

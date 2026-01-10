@@ -9,7 +9,7 @@ use manifoldb::{Database, DistanceMetric, Entity, EntityId};
 
 use super::types::{
     CollectionInfo, CreateCollectionInput, CreateEdgeInput, CreateNodeInput, DistanceMetricEnum,
-    Edge, Node, QueryResult, UpsertVectorInput, VectorConfigInfo, VectorTypeEnum,
+    Edge, Node, QueryResult, UpsertVectorInput,
 };
 use crate::convert;
 use crate::pubsub::{EdgeChangeEvent, NodeChangeEvent, PubSub};
@@ -91,10 +91,7 @@ impl MutationRoot {
         let node_info = node_graph.nodes.into_iter().next();
 
         // Also get connected edges before deletion
-        let edges_query = format!(
-            "MATCH (n)-[r]-() WHERE id(n) = {} RETURN r",
-            id.as_str()
-        );
+        let edges_query = format!("MATCH (n)-[r]-() WHERE id(n) = {} RETURN r", id.as_str());
         let edges_result = db.query(&edges_query)?;
         let edges_graph = convert::query_result_to_graph(&edges_result)?;
 
@@ -157,11 +154,8 @@ impl MutationRoot {
         let db = ctx.data::<Arc<Database>>()?;
         let pubsub = ctx.data::<PubSub>()?;
 
-        let query = format!(
-            "MATCH (n) WHERE id(n) = {} SET n += {} RETURN n",
-            id.as_str(),
-            properties.0
-        );
+        let query =
+            format!("MATCH (n) WHERE id(n) = {} SET n += {} RETURN n", id.as_str(), properties.0);
 
         let result = db.query(&query)?;
 
@@ -214,45 +208,9 @@ impl MutationRoot {
         let vectors = handle.vectors();
         let point_count = handle.count_points().unwrap_or(0);
 
-        let vector_configs: Vec<VectorConfigInfo> = vectors
-            .iter()
-            .map(|(vec_name, config)| {
-                let (vector_type, dimension) = match &config.vector_type {
-                    manifoldb::collection::VectorType::Dense { dimension } => {
-                        (VectorTypeEnum::Dense, Some(*dimension as i32))
-                    }
-                    manifoldb::collection::VectorType::Sparse { .. } => {
-                        (VectorTypeEnum::Sparse, None)
-                    }
-                    manifoldb::collection::VectorType::Multi { token_dim } => {
-                        (VectorTypeEnum::Multi, Some(*token_dim as i32))
-                    }
-                    manifoldb::collection::VectorType::Binary { bits } => {
-                        (VectorTypeEnum::Binary, Some(*bits as i32))
-                    }
-                };
-
-                let distance_metric = match &config.distance {
-                    manifoldb::collection::DistanceType::Dense(m) => match m {
-                        DistanceMetric::Cosine => DistanceMetricEnum::Cosine,
-                        DistanceMetric::DotProduct => DistanceMetricEnum::DotProduct,
-                        DistanceMetric::Euclidean => DistanceMetricEnum::Euclidean,
-                        DistanceMetric::Manhattan => DistanceMetricEnum::Manhattan,
-                        DistanceMetric::Chebyshev => DistanceMetricEnum::Chebyshev,
-                    },
-                    manifoldb::collection::DistanceType::Sparse(_) => {
-                        DistanceMetricEnum::DotProduct
-                    }
-                    manifoldb::collection::DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
-                };
-
-                VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
-            })
-            .collect();
-
         Ok(CollectionInfo {
             name: input.name,
-            vectors: vector_configs,
+            vectors: convert::vector_configs_to_graphql(vectors),
             point_count: point_count as i32,
         })
     }
@@ -281,12 +239,10 @@ impl MutationRoot {
                 .map(EntityId::new)
                 .map_err(|_| async_graphql::Error::new(format!("Invalid ID: {}", id_str)))?
         } else {
-            // Generate a new ID using current timestamp + random component
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(1);
-            EntityId::new(ts)
+            // Generate a new ID using UUID v7 (time-ordered with random component)
+            let uuid = uuid::Uuid::now_v7();
+            // Use lower 64 bits which contains timestamp + random data
+            EntityId::new(uuid.as_u128() as u64)
         };
 
         // Build the entity
