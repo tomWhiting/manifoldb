@@ -50,7 +50,7 @@ use super::graph::{
     GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
     GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, ShortestPathNode,
 };
-use super::node::LogicalPlan;
+use super::node::{LogicalConflictAction, LogicalConflictTarget, LogicalOnConflict, LogicalPlan};
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
     AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
@@ -1701,7 +1701,41 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Insert { table, columns, input: Box::new(input), returning })
+        // Build the ON CONFLICT clause if present
+        let on_conflict = if let Some(ref oc) = insert.on_conflict {
+            let target = match &oc.target {
+                crate::ast::ConflictTarget::Columns(cols) => {
+                    LogicalConflictTarget::Columns(cols.iter().map(|c| c.name.clone()).collect())
+                }
+                crate::ast::ConflictTarget::Constraint(name) => {
+                    LogicalConflictTarget::Constraint(name.name.clone())
+                }
+            };
+
+            let action = match &oc.action {
+                crate::ast::ConflictAction::DoNothing => LogicalConflictAction::DoNothing,
+                crate::ast::ConflictAction::DoUpdate { assignments, where_clause } => {
+                    let logical_assignments: Vec<(String, LogicalExpr)> = assignments
+                        .iter()
+                        .map(|a| Ok((a.column.name.clone(), self.build_expr(&a.value)?)))
+                        .collect::<PlanResult<_>>()?;
+
+                    let logical_where =
+                        if let Some(w) = where_clause { Some(self.build_expr(w)?) } else { None };
+
+                    LogicalConflictAction::DoUpdate {
+                        assignments: logical_assignments,
+                        where_clause: logical_where,
+                    }
+                }
+            };
+
+            Some(LogicalOnConflict { target, action })
+        } else {
+            None
+        };
+
+        Ok(LogicalPlan::Insert { table, columns, input: Box::new(input), on_conflict, returning })
     }
 
     /// Builds an UPDATE plan.

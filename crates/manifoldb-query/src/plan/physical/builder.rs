@@ -389,8 +389,8 @@ impl PhysicalPlanner {
             LogicalPlan::HybridSearch { node, input } => self.plan_hybrid_search(node, input),
 
             // DML nodes
-            LogicalPlan::Insert { table, columns, input, returning } => {
-                self.plan_insert(table, columns, input, returning)
+            LogicalPlan::Insert { table, columns, input, on_conflict, returning } => {
+                self.plan_insert(table, columns, input, on_conflict, returning)
             }
             LogicalPlan::Update { table, assignments, filter, returning } => {
                 self.plan_update(table, assignments, filter, returning)
@@ -1568,6 +1568,7 @@ impl PhysicalPlanner {
         table: &str,
         columns: &[String],
         input: &LogicalPlan,
+        on_conflict: &Option<crate::plan::logical::LogicalOnConflict>,
         returning: &[LogicalExpr],
     ) -> PhysicalPlan {
         let input_plan = self.plan(input);
@@ -1577,6 +1578,7 @@ impl PhysicalPlanner {
         PhysicalPlan::Insert {
             table: table.to_string(),
             columns: columns.to_vec(),
+            on_conflict: on_conflict.clone(),
             returning: returning.to_vec(),
             cost,
             input: Box::new(input_plan),

@@ -25,8 +25,9 @@ use crate::plan::logical::{
     CreateTriggerNode, CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode,
     DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode, ExpandDirection, ExpandLength,
     GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode,
-    GraphSetNode, JoinType, LogicalExpr, ProcedureCallNode, ReleaseSavepointNode, RollbackNode,
-    SavepointNode, SetOpType, SetTransactionNode, SortOrder, TruncateTableNode,
+    GraphSetNode, JoinType, LogicalExpr, LogicalOnConflict, ProcedureCallNode,
+    ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType, SetTransactionNode, SortOrder,
+    TruncateTableNode,
 };
 
 use super::cost::Cost;
@@ -300,6 +301,8 @@ pub enum PhysicalPlan {
         table: String,
         /// Column names.
         columns: Vec<String>,
+        /// ON CONFLICT clause for upsert behavior.
+        on_conflict: Option<LogicalOnConflict>,
         /// Returning columns.
         returning: Vec<LogicalExpr>,
         /// Estimated cost.

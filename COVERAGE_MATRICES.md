@@ -292,8 +292,8 @@ These feature groups can be implemented independently:
 | Column list | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | INSERT ... SELECT | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | DEFAULT VALUES | ✓ | ✓ | ✓ | | | | Needs physical |
-| ON CONFLICT DO NOTHING | ✓ | ✓ | ✓ | | | | Needs physical |
-| ON CONFLICT DO UPDATE | ✓ | ✓ | ✓ | | | | Needs physical |
+| ON CONFLICT DO NOTHING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| ON CONFLICT DO UPDATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | RETURNING | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 
 ## 1.5 UPDATE Statement

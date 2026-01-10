@@ -1895,3 +1895,153 @@ fn test_cte_shadows_table() {
     let id_idx = result.column_index("id").expect("id column not found");
     assert_eq!(result.rows()[0].get(id_idx), Some(&Value::Int(999)));
 }
+
+// ============================================================================
+// INSERT ON CONFLICT (Upsert) Tests
+// ============================================================================
+
+#[test]
+fn test_insert_on_conflict_do_nothing() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data
+    db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+        .expect("initial insert failed");
+
+    // Insert with ON CONFLICT DO NOTHING - should skip the conflicting row
+    let affected = db
+        .execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice Updated', 35) ON CONFLICT (id) DO NOTHING")
+        .expect("upsert failed");
+    assert_eq!(affected, 0, "Should not insert any rows when conflict exists");
+
+    // Verify original data is unchanged
+    let result = db.query("SELECT * FROM users WHERE id = 1").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let name_idx = result.column_index("name").expect("name column not found");
+    let age_idx = result.column_index("age").expect("age column not found");
+
+    // Original values should be preserved
+    assert_eq!(result.rows()[0].get(name_idx), Some(&Value::String("Alice".to_string())));
+    assert_eq!(result.rows()[0].get(age_idx), Some(&Value::Int(30)));
+}
+
+#[test]
+fn test_insert_on_conflict_do_nothing_no_conflict() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data
+    db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+        .expect("initial insert failed");
+
+    // Insert with ON CONFLICT DO NOTHING but with no conflict - should insert
+    let affected = db
+        .execute(
+            "INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25) ON CONFLICT (id) DO NOTHING",
+        )
+        .expect("upsert failed");
+    assert_eq!(affected, 1, "Should insert one row when no conflict");
+
+    // Verify both rows exist
+    let result = db.query("SELECT * FROM users ORDER BY id").expect("query failed");
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_insert_on_conflict_do_update() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data
+    db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+        .expect("initial insert failed");
+
+    // Insert with ON CONFLICT DO UPDATE - should update the existing row
+    let affected = db
+        .execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 35) ON CONFLICT (id) DO UPDATE SET age = 35")
+        .expect("upsert failed");
+    assert_eq!(affected, 1, "Should update one row when conflict exists");
+
+    // Verify data was updated
+    let result = db.query("SELECT * FROM users WHERE id = 1").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let age_idx = result.column_index("age").expect("age column not found");
+    assert_eq!(result.rows()[0].get(age_idx), Some(&Value::Int(35)));
+}
+
+#[test]
+fn test_insert_on_conflict_do_update_multiple_columns() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data
+    db.execute(
+        "INSERT INTO users (id, name, age, email) VALUES (1, 'Alice', 30, 'old@example.com')",
+    )
+    .expect("initial insert failed");
+
+    // Update multiple columns on conflict
+    let affected = db
+        .execute("INSERT INTO users (id, name, age, email) VALUES (1, 'Alice', 35, 'new@example.com') ON CONFLICT (id) DO UPDATE SET age = 35, email = 'new@example.com'")
+        .expect("upsert failed");
+    assert_eq!(affected, 1);
+
+    // Verify both columns were updated
+    let result = db.query("SELECT * FROM users WHERE id = 1").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let age_idx = result.column_index("age").expect("age column not found");
+    let email_idx = result.column_index("email").expect("email column not found");
+
+    assert_eq!(result.rows()[0].get(age_idx), Some(&Value::Int(35)));
+    assert_eq!(
+        result.rows()[0].get(email_idx),
+        Some(&Value::String("new@example.com".to_string()))
+    );
+}
+
+#[test]
+fn test_insert_on_conflict_multiple_rows() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data
+    db.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+        .expect("initial insert failed");
+    db.execute("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
+        .expect("initial insert failed");
+
+    // Insert multiple rows, some conflicting, some new
+    // Row id=1 conflicts (skip), id=3 is new (insert)
+    let affected = db
+        .execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice Updated', 35), (3, 'Charlie', 40) ON CONFLICT (id) DO NOTHING")
+        .expect("upsert failed");
+    assert_eq!(affected, 1, "Should insert one new row and skip the conflicting one");
+
+    // Verify total count
+    let result = db.query("SELECT * FROM users ORDER BY id").expect("query failed");
+    assert_eq!(result.len(), 3);
+}
+
+#[test]
+fn test_insert_on_conflict_multi_column_key() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Insert initial data with composite key
+    db.execute("INSERT INTO orders (user_id, product_id, quantity) VALUES (1, 100, 5)")
+        .expect("initial insert failed");
+
+    // Try to insert with same composite key - should skip
+    let affected = db
+        .execute("INSERT INTO orders (user_id, product_id, quantity) VALUES (1, 100, 10) ON CONFLICT (user_id, product_id) DO NOTHING")
+        .expect("upsert failed");
+    assert_eq!(affected, 0, "Should skip when composite key conflicts");
+
+    // Insert with different composite key - should insert
+    let affected = db
+        .execute("INSERT INTO orders (user_id, product_id, quantity) VALUES (1, 101, 3) ON CONFLICT (user_id, product_id) DO NOTHING")
+        .expect("upsert failed");
+    assert_eq!(affected, 1, "Should insert when composite key doesn't conflict");
+
+    // Verify total count
+    let result = db.query("SELECT * FROM orders").expect("query failed");
+    assert_eq!(result.len(), 2);
+}

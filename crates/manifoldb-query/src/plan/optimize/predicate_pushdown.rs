@@ -198,12 +198,13 @@ impl PredicatePushdown {
             }
 
             // For DML operations, apply predicates above
-            LogicalPlan::Insert { table, columns, input, returning } => {
+            LogicalPlan::Insert { table, columns, input, on_conflict, returning } => {
                 let optimized_input = self.push_down(*input, Vec::new());
                 let result = LogicalPlan::Insert {
                     table,
                     columns,
                     input: Box::new(optimized_input),
+                    on_conflict,
                     returning,
                 };
                 self.apply_predicates(result, predicates)
