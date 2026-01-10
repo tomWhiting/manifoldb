@@ -1038,7 +1038,11 @@ impl PhysicalPlanner {
         let input_plan = self.plan(input);
 
         PhysicalPlan::Limit {
-            node: LimitExecNode { limit: node.limit, offset: node.offset },
+            node: LimitExecNode {
+                limit: node.limit,
+                offset: node.offset,
+                with_ties: node.with_ties,
+            },
             input: Box::new(input_plan),
         }
     }

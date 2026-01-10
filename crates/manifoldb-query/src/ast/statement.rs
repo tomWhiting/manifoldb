@@ -823,13 +823,142 @@ impl Default for GroupByClause {
     }
 }
 
+/// DISTINCT clause type.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DistinctClause {
+    /// No DISTINCT.
+    #[default]
+    None,
+    /// SELECT DISTINCT (removes all duplicates).
+    All,
+    /// SELECT DISTINCT ON (expr, ...).
+    ///
+    /// PostgreSQL extension that returns the first row for each distinct
+    /// value of the expressions. Must be used with ORDER BY where the
+    /// DISTINCT ON expressions are the leftmost ORDER BY expressions.
+    ///
+    /// # Example
+    /// ```sql
+    /// SELECT DISTINCT ON (department) department, name, salary
+    /// FROM employees
+    /// ORDER BY department, salary DESC;
+    /// ```
+    On(Vec<Expr>),
+}
+
+impl DistinctClause {
+    /// Returns true if any form of DISTINCT is specified.
+    #[must_use]
+    pub const fn is_distinct(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
+/// FETCH clause for limiting results.
+///
+/// Standard SQL syntax for limiting results, supports WITH TIES.
+///
+/// # Example
+/// ```sql
+/// SELECT name, score
+/// FROM students
+/// ORDER BY score DESC
+/// FETCH FIRST 3 ROWS WITH TIES;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct FetchClause {
+    /// Number of rows to fetch.
+    pub count: Expr,
+    /// Whether to include ties (rows with equal ORDER BY values).
+    pub with_ties: bool,
+    /// Whether PERCENT is specified (fetch percentage of rows).
+    pub percent: bool,
+}
+
+impl FetchClause {
+    /// Creates a new FETCH clause.
+    #[must_use]
+    pub const fn new(count: Expr, with_ties: bool, percent: bool) -> Self {
+        Self { count, with_ties, percent }
+    }
+
+    /// Creates a simple FETCH FIRST N ROWS ONLY clause.
+    #[must_use]
+    pub const fn first(count: Expr) -> Self {
+        Self { count, with_ties: false, percent: false }
+    }
+
+    /// Creates a FETCH FIRST N ROWS WITH TIES clause.
+    #[must_use]
+    pub const fn with_ties(count: Expr) -> Self {
+        Self { count, with_ties: true, percent: false }
+    }
+}
+
+/// TABLESAMPLE clause for random sampling.
+///
+/// # Example
+/// ```sql
+/// SELECT * FROM large_table TABLESAMPLE BERNOULLI(10);
+/// SELECT * FROM large_table TABLESAMPLE SYSTEM(5) REPEATABLE(42);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableSampleClause {
+    /// Sampling method (BERNOULLI or SYSTEM).
+    pub method: TableSampleMethod,
+    /// Sample percentage (0-100).
+    pub percentage: Expr,
+    /// Optional seed for reproducible sampling.
+    pub seed: Option<Expr>,
+}
+
+impl TableSampleClause {
+    /// Creates a new TABLESAMPLE clause.
+    #[must_use]
+    pub const fn new(method: TableSampleMethod, percentage: Expr, seed: Option<Expr>) -> Self {
+        Self { method, percentage, seed }
+    }
+
+    /// Creates a BERNOULLI sample clause.
+    #[must_use]
+    pub const fn bernoulli(percentage: Expr) -> Self {
+        Self { method: TableSampleMethod::Bernoulli, percentage, seed: None }
+    }
+
+    /// Creates a SYSTEM sample clause.
+    #[must_use]
+    pub const fn system(percentage: Expr) -> Self {
+        Self { method: TableSampleMethod::System, percentage, seed: None }
+    }
+}
+
+/// Table sampling method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableSampleMethod {
+    /// BERNOULLI sampling: Each row is included with the specified probability.
+    /// Results in a truly random sample but may be slower for large tables.
+    Bernoulli,
+    /// SYSTEM sampling: Samples at the block/page level.
+    /// Faster but may have some clustering effects.
+    System,
+}
+
+impl std::fmt::Display for TableSampleMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bernoulli => write!(f, "BERNOULLI"),
+            Self::System => write!(f, "SYSTEM"),
+        }
+    }
+}
+
 /// A SELECT statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectStatement {
     /// Common Table Expressions (WITH clause).
     pub with_clauses: Vec<WithClause>,
-    /// Whether DISTINCT is specified.
-    pub distinct: bool,
+    /// DISTINCT clause (none, all, or on specific expressions).
+    pub distinct: DistinctClause,
     /// The projection (SELECT list).
     pub projection: Vec<SelectItem>,
     /// The FROM clause.
@@ -860,6 +989,8 @@ pub struct SelectStatement {
     pub limit: Option<Expr>,
     /// Optional OFFSET clause.
     pub offset: Option<Expr>,
+    /// Optional FETCH clause (standard SQL alternative to LIMIT with WITH TIES support).
+    pub fetch: Option<FetchClause>,
     /// Set operations (UNION, INTERSECT, EXCEPT).
     pub set_op: Option<Box<SetOperation>>,
 }
@@ -870,7 +1001,7 @@ impl SelectStatement {
     pub fn new(projection: Vec<SelectItem>) -> Self {
         Self {
             with_clauses: vec![],
-            distinct: false,
+            distinct: DistinctClause::None,
             projection,
             from: vec![],
             match_clause: None,
@@ -883,6 +1014,7 @@ impl SelectStatement {
             order_by: vec![],
             limit: None,
             offset: None,
+            fetch: None,
             set_op: None,
         }
     }
@@ -1058,7 +1190,7 @@ impl MatchStatement {
 
         SelectStatement {
             with_clauses: vec![], // MATCH statements don't have CTEs
-            distinct: self.distinct,
+            distinct: if self.distinct { DistinctClause::All } else { DistinctClause::None },
             projection,
             from: vec![], // Graph patterns don't need a FROM clause
             match_clause: Some(self.pattern.clone()),
@@ -1071,6 +1203,7 @@ impl MatchStatement {
             order_by: self.order_by.clone(),
             limit: self.limit.clone(),
             offset: self.skip.clone(), // Cypher SKIP = SQL OFFSET
+            fetch: None,
             set_op: None,
         }
     }
@@ -1324,6 +1457,7 @@ impl From<Expr> for SelectItem {
 }
 
 /// A table reference in a FROM clause.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableRef {
     /// A simple table reference.
@@ -1332,6 +1466,8 @@ pub enum TableRef {
         name: QualifiedName,
         /// Optional alias.
         alias: Option<TableAlias>,
+        /// Optional TABLESAMPLE clause for random sampling.
+        sample: Option<TableSampleClause>,
     },
     /// A subquery.
     Subquery {
@@ -1381,13 +1517,23 @@ impl TableRef {
     /// Creates a simple table reference.
     #[must_use]
     pub fn table(name: impl Into<QualifiedName>) -> Self {
-        Self::Table { name: name.into(), alias: None }
+        Self::Table { name: name.into(), alias: None, sample: None }
     }
 
     /// Creates an aliased table reference.
     #[must_use]
     pub fn aliased(name: impl Into<QualifiedName>, alias: impl Into<TableAlias>) -> Self {
-        Self::Table { name: name.into(), alias: Some(alias.into()) }
+        Self::Table { name: name.into(), alias: Some(alias.into()), sample: None }
+    }
+
+    /// Creates a table reference with TABLESAMPLE.
+    #[must_use]
+    pub fn with_sample(
+        name: impl Into<QualifiedName>,
+        alias: Option<TableAlias>,
+        sample: TableSampleClause,
+    ) -> Self {
+        Self::Table { name: name.into(), alias, sample: Some(sample) }
     }
 
     /// Creates a lateral subquery reference.

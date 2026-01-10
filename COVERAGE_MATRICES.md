@@ -160,7 +160,7 @@ These feature groups can be implemented independently:
 | SELECT * | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | SELECT table.* | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | SELECT DISTINCT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| SELECT DISTINCT ON | | | | | | | PostgreSQL extension |
+| SELECT DISTINCT ON | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - PostgreSQL extension |
 | Column aliases (AS) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | **FROM Clause** |
 | Single table | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
@@ -169,6 +169,8 @@ These feature groups can be implemented independently:
 | Table function | ✓ | ✓ | | | | | Parsed only |
 | LATERAL subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Uses CallSubqueryOp |
 | VALUES clause | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
+| TABLESAMPLE BERNOULLI | ✓ | ✓ | | | | | Parsed (Jan 2026) - AST types ready, needs planning |
+| TABLESAMPLE SYSTEM | ✓ | ✓ | | | | | Parsed (Jan 2026) - AST types ready, needs planning |
 | **JOIN Types** |
 | INNER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | LEFT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
@@ -218,8 +220,9 @@ These feature groups can be implemented independently:
 | **LIMIT/OFFSET** |
 | LIMIT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | OFFSET | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| FETCH FIRST n ROWS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| WITH TIES | | | | | | | Not implemented |
+| FETCH FIRST n ROWS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Standard SQL syntax |
+| FETCH ... WITH TIES | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - LimitWithTiesOp |
+| FETCH ... PERCENT | ✓ | ✓ | ✓ | ✓ | | | Parsed, needs planning support |
 | **Set Operations** |
 | UNION | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | UNION ALL | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |

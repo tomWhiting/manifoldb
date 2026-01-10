@@ -1013,7 +1013,7 @@ mod tests {
     #[test]
     fn invalid_empty_limit() {
         let plan = LogicalPlan::Limit {
-            node: LimitNode { limit: None, offset: None },
+            node: LimitNode { limit: None, offset: None, with_ties: false, percent: false },
             input: Box::new(LogicalPlan::scan("users")),
         };
         assert!(matches!(validate_plan(&plan), Err(PlanError::InvalidLimit(_))));
