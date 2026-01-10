@@ -1241,24 +1241,11 @@ impl PhysicalPlanner {
         }
 
         // Fall back to nested loop join
-        // For USING/NATURAL joins with no columns (shouldn't happen normally),
-        // synthesize the condition if needed
-        let effective_condition = if node.using_columns.is_empty() {
-            node.condition.clone()
-        } else {
-            // Synthesize equijoin condition from USING columns for nested loop fallback
-            let conditions: Vec<LogicalExpr> = node
-                .using_columns
-                .iter()
-                .map(|col| LogicalExpr::column(col).eq(LogicalExpr::column(col)))
-                .collect();
-            conditions.into_iter().reduce(|acc, cond| acc.and(cond))
-        };
-
+        // Note: USING joins are always handled by hash join above, so we use the original condition
         let cost = self.cost_model.nested_loop_cost(left_rows, right_rows, output_rows);
 
         PhysicalPlan::NestedLoopJoin {
-            node: NestedLoopJoinNode::new(node.join_type, effective_condition).with_cost(cost),
+            node: NestedLoopJoinNode::new(node.join_type, node.condition.clone()).with_cost(cost),
             left: Box::new(left_plan),
             right: Box::new(right_plan),
         }
