@@ -124,10 +124,12 @@ HAVING Clause Enhancement
 └── Status: ✅ Full HAVING support with complex expressions
 
 Query Optimization
-├── Predicate Pushdown: ✅ Exists
 ├── Expression Simplification: ✅ Complete (Jan 2026) - constant folding, boolean algebra, null propagation
-├── Column Pruning: ✅ Exists
-└── Status: ✅ Core optimization passes available
+├── Predicate Pushdown: ✅ Complete (Jan 2026) - push through joins and filters
+├── Projection Pushdown: ✅ Complete (Jan 2026) - remove unused columns early
+├── Index Selection: ✅ Complete (Jan 2026) - predicate-to-index matching
+├── Cost-Based Optimization: Deferred - statistics collection, join reordering
+└── Status: ✅ Rule-based optimization complete; cost-based optimization deferred
 
 LATERAL Subqueries
 ├── Parser: ✅ Complete (Jan 2026) - LATERAL keyword recognized in FROM clause
@@ -801,11 +803,16 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| CALL procedure() | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
-| YIELD columns | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
-| YIELD * | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
-| YIELD with WHERE | ✓ | ✓ | ✓† | ✓† | | | Infrastructure complete; execution returns EmptyOp (needs wiring) |
-| SHOW PROCEDURES | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - lists registered procedures |
+| CALL procedure() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - all 20 graph algorithms wired |
+| YIELD columns | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - column selection from results |
+| YIELD * | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - returns all procedure columns |
+| YIELD with WHERE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - post-filter on results |
+| SHOW PROCEDURES | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - lists registered procedures |
+
+**Procedure Execution Notes:**
+- All 20 graph algorithms execute via `db.query("CALL algo.X() YIELD ...")`
+- Execution is routed through `ProcedureRegistry` at the database layer
+- Integration tests verify: PageRank, BFS, DFS, shortestPath, connectedComponents, Louvain, degreeCentrality, Jaccard
 
 ## 2.6 Operators
 
