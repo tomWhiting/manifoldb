@@ -240,12 +240,22 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
 
         PhysicalPlan::HashAggregate { node, input } => {
             let input_op = build_operator_tree(input)?;
-            Ok(Box::new(HashAggregateOp::new(
-                node.group_by.clone(),
-                node.aggregates.clone(),
-                node.having.clone(),
-                input_op,
-            )))
+            if node.has_grouping_sets() {
+                Ok(Box::new(HashAggregateOp::new_with_grouping_sets(
+                    node.group_by.clone(),
+                    node.aggregates.clone(),
+                    node.having.clone(),
+                    node.grouping_sets.clone(),
+                    input_op,
+                )))
+            } else {
+                Ok(Box::new(HashAggregateOp::new(
+                    node.group_by.clone(),
+                    node.aggregates.clone(),
+                    node.having.clone(),
+                    input_op,
+                )))
+            }
         }
 
         PhysicalPlan::SortMergeAggregate { node, input } => {

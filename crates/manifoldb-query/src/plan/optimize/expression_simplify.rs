@@ -115,6 +115,7 @@ impl ExpressionSimplify {
                         group_by: simplified_group_by,
                         aggregates: simplified_aggregates,
                         having: simplified_having,
+                        grouping_sets: node.grouping_sets,
                     }),
                     input: Box::new(optimized_input),
                 }

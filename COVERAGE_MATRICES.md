@@ -196,9 +196,10 @@ These feature groups can be implemented independently:
 | Basic grouping | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Multiple columns | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Expressions | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| ROLLUP | | | | | | | Not implemented |
-| CUBE | | | | | | | Not implemented |
-| GROUPING SETS | | | | | | | Not implemented |
+| ROLLUP | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| CUBE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| GROUPING SETS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| GROUPING() function | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | GROUP BY ALL | | | | | | | Not implemented |
 | **HAVING Clause** |
 | Basic HAVING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Complex expressions |

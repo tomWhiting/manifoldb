@@ -8,8 +8,8 @@
 //! - Error handling
 
 use manifoldb_query::ast::{
-    BinaryOp, DataType, EdgeDirection, EdgeLength, Expr, InsertSource, JoinType, Literal,
-    ParameterRef, SelectItem, Statement, TableRef,
+    BinaryOp, DataType, EdgeDirection, EdgeLength, Expr, GroupByClause, InsertSource, JoinType,
+    Literal, ParameterRef, SelectItem, Statement, TableRef,
 };
 use manifoldb_query::error::ParseError;
 use manifoldb_query::parser::{parse_single_statement, parse_sql, ExtendedParser};
@@ -161,6 +161,122 @@ mod standard_sql {
             Statement::Select(select) => {
                 assert_eq!(select.group_by.len(), 1);
                 assert!(select.having.is_some());
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_group_by_rollup() {
+        let stmt = parse_single_statement(
+            "SELECT region, product, SUM(sales) FROM orders GROUP BY ROLLUP(region, product)",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => match &select.group_by {
+                GroupByClause::Rollup(exprs) => {
+                    assert_eq!(exprs.len(), 2);
+                }
+                _ => panic!("expected ROLLUP clause"),
+            },
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_group_by_cube() {
+        let stmt = parse_single_statement(
+            "SELECT region, product, SUM(sales) FROM orders GROUP BY CUBE(region, product)",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => match &select.group_by {
+                GroupByClause::Cube(exprs) => {
+                    assert_eq!(exprs.len(), 2);
+                }
+                _ => panic!("expected CUBE clause"),
+            },
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_group_by_grouping_sets() {
+        let stmt = parse_single_statement(
+            "SELECT region, product, SUM(sales) FROM orders GROUP BY GROUPING SETS ((region), (product), ())",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                match &select.group_by {
+                    GroupByClause::GroupingSets(sets) => {
+                        assert_eq!(sets.len(), 3);
+                        // First set has one expression (region)
+                        assert_eq!(sets[0].exprs().len(), 1);
+                        // Second set has one expression (product)
+                        assert_eq!(sets[1].exprs().len(), 1);
+                        // Third set is empty (grand total)
+                        assert!(sets[2].is_empty());
+                    }
+                    _ => panic!("expected GROUPING SETS clause"),
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_rollup_expand_grouping_sets() {
+        // Test that ROLLUP correctly expands to grouping sets
+        let stmt =
+            parse_single_statement("SELECT a, b, COUNT(*) FROM t GROUP BY ROLLUP(a, b)").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                let sets = select.group_by.expand_grouping_sets();
+                // ROLLUP(a, b) expands to: (a, b), (a), ()
+                assert_eq!(sets.len(), 3);
+                assert_eq!(sets[0].exprs().len(), 2); // (a, b)
+                assert_eq!(sets[1].exprs().len(), 1); // (a)
+                assert!(sets[2].is_empty()); // ()
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_cube_expand_grouping_sets() {
+        // Test that CUBE correctly expands to grouping sets
+        let stmt =
+            parse_single_statement("SELECT a, b, COUNT(*) FROM t GROUP BY CUBE(a, b)").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                let sets = select.group_by.expand_grouping_sets();
+                // CUBE(a, b) expands to: (a, b), (a), (b), ()
+                assert_eq!(sets.len(), 4);
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_grouping_function() {
+        // Test GROUPING() function with ROLLUP
+        let stmt = parse_single_statement(
+            "SELECT region, GROUPING(region), SUM(sales) FROM orders GROUP BY ROLLUP(region)",
+        )
+        .unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                // Should have 3 projections
+                assert_eq!(select.projection.len(), 3);
+                // Second projection should be GROUPING(region) function
+                if let SelectItem::Expr { expr: Expr::Function(func), .. } = &select.projection[1] {
+                    let name = func.name.parts.last().map(|p| &p.name).unwrap();
+                    assert_eq!(name.to_uppercase(), "GROUPING");
+                    assert_eq!(func.args.len(), 1);
+                } else {
+                    panic!("expected GROUPING function");
+                }
             }
             _ => panic!("expected SELECT"),
         }

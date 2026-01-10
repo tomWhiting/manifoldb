@@ -24,22 +24,30 @@ use crate::exec::context::ExecutionContext;
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
 use crate::exec::row::{Row, Schema};
-use crate::plan::logical::{AggregateFunction, LogicalExpr};
+use crate::plan::logical::{AggregateFunction, LogicalExpr, LogicalGroupingSet};
 
 /// Hash-based aggregate operator.
 ///
 /// Groups rows by key expressions and computes aggregates.
+/// Supports ROLLUP, CUBE, and GROUPING SETS via multiple aggregation passes.
 pub struct HashAggregateOp {
     /// Base operator state.
     base: OperatorBase,
-    /// GROUP BY expressions.
+    /// GROUP BY expressions (all base columns).
     group_by: Vec<LogicalExpr>,
     /// Aggregate expressions.
     aggregates: Vec<LogicalExpr>,
     /// Optional HAVING clause.
     having: Option<LogicalExpr>,
+    /// Grouping sets for ROLLUP/CUBE/GROUPING SETS.
+    /// Empty for simple GROUP BY.
+    grouping_sets: Vec<LogicalGroupingSet>,
     /// Input operator.
     input: BoxedOperator,
+    /// Cached input rows for multi-pass aggregation (only used with grouping sets).
+    cached_input: Vec<Row>,
+    /// Whether input has been cached.
+    input_cached: bool,
     /// Aggregation state: group key -> accumulators.
     groups: HashMap<Vec<u8>, GroupState>,
     /// Results iterator (consumes rows without cloning).
@@ -61,6 +69,18 @@ impl HashAggregateOp {
         having: Option<LogicalExpr>,
         input: BoxedOperator,
     ) -> Self {
+        Self::new_with_grouping_sets(group_by, aggregates, having, vec![], input)
+    }
+
+    /// Creates a new hash aggregate operator with grouping sets.
+    #[must_use]
+    pub fn new_with_grouping_sets(
+        group_by: Vec<LogicalExpr>,
+        aggregates: Vec<LogicalExpr>,
+        having: Option<LogicalExpr>,
+        grouping_sets: Vec<LogicalGroupingSet>,
+        input: BoxedOperator,
+    ) -> Self {
         // Build output schema - pre-allocate for group_by + aggregates
         let mut columns = Vec::with_capacity(group_by.len() + aggregates.len());
         for (i, expr) in group_by.iter().enumerate() {
@@ -79,13 +99,43 @@ impl HashAggregateOp {
             group_by,
             aggregates,
             having,
+            grouping_sets,
             input,
+            cached_input: Vec::new(),
+            input_cached: false,
             groups: HashMap::with_capacity(INITIAL_GROUPS_CAPACITY),
             results_iter: Vec::new().into_iter(),
             aggregated: false,
             key_buffer: Vec::with_capacity(64), // Pre-allocate for typical key sizes
             max_rows_in_memory: 0,              // Set in open() from context
         }
+    }
+
+    /// Returns true if this operator uses grouping sets.
+    #[must_use]
+    pub fn has_grouping_sets(&self) -> bool {
+        !self.grouping_sets.is_empty()
+    }
+
+    /// Computes the group key values for a row using specific grouping set expressions.
+    fn compute_group_values_for_set(
+        &self,
+        row: &Row,
+        set_exprs: &[LogicalExpr],
+    ) -> OperatorResult<Vec<Value>> {
+        // For each base group_by column, check if it's in this grouping set
+        // If not, return NULL; if yes, evaluate it
+        let mut values = Vec::with_capacity(self.group_by.len());
+        for base_expr in &self.group_by {
+            // Check if this base expression is in the current grouping set
+            let in_set = set_exprs.iter().any(|e| format!("{e:?}") == format!("{base_expr:?}"));
+            if in_set {
+                values.push(evaluate_expr(base_expr, row)?);
+            } else {
+                values.push(Value::Null);
+            }
+        }
+        Ok(values)
     }
 
     /// Computes the group key values for a row.
@@ -95,7 +145,11 @@ impl HashAggregateOp {
 
     /// Aggregates all input rows.
     fn aggregate_all(&mut self) -> OperatorResult<()> {
-        // Use a local buffer to work around borrow checker issues
+        if self.has_grouping_sets() {
+            return self.aggregate_all_with_grouping_sets();
+        }
+
+        // Simple GROUP BY - use the existing logic
         let mut key_buffer = std::mem::take(&mut self.key_buffer);
 
         while let Some(row) = self.input.next()? {
@@ -204,12 +258,142 @@ impl HashAggregateOp {
         self.aggregated = true;
         Ok(())
     }
+
+    /// Aggregates input rows with grouping sets (ROLLUP/CUBE/GROUPING SETS).
+    ///
+    /// For each grouping set, we perform a separate aggregation pass
+    /// and union all results together. Columns not in the current grouping
+    /// set are set to NULL.
+    fn aggregate_all_with_grouping_sets(&mut self) -> OperatorResult<()> {
+        // First, cache all input rows since we need to process them multiple times
+        if !self.input_cached {
+            while let Some(row) = self.input.next()? {
+                self.cached_input.push(row);
+            }
+            self.input_cached = true;
+        }
+
+        let schema = self.base.schema();
+        let mut all_results: Vec<Row> = Vec::new();
+        let mut key_buffer = std::mem::take(&mut self.key_buffer);
+
+        // Process each grouping set
+        for grouping_set in &self.grouping_sets {
+            // Clear groups for this grouping set
+            self.groups.clear();
+
+            // Process each cached row for this grouping set
+            for row in &self.cached_input {
+                // Compute the group key based on this grouping set's expressions
+                key_buffer.clear();
+                for base_expr in &self.group_by {
+                    // Check if this expression is in the current grouping set
+                    let in_set =
+                        grouping_set.0.iter().any(|e| format!("{e:?}") == format!("{base_expr:?}"));
+                    if in_set {
+                        let value = evaluate_expr(base_expr, row)?;
+                        encode_value(&value, &mut key_buffer);
+                    } else {
+                        // NULL for expressions not in this grouping set
+                        encode_value(&Value::Null, &mut key_buffer);
+                    }
+                }
+
+                // Check memory limits
+                let is_new_group = !self.groups.contains_key(&key_buffer);
+                if is_new_group
+                    && self.max_rows_in_memory > 0
+                    && self.groups.len() >= self.max_rows_in_memory
+                {
+                    self.key_buffer = key_buffer;
+                    return Err(ParseError::QueryTooLarge {
+                        actual: self.groups.len() + 1,
+                        limit: self.max_rows_in_memory,
+                    });
+                }
+
+                // Get or create group state
+                let state = if let Some(state) = self.groups.get_mut(&key_buffer) {
+                    state
+                } else {
+                    let group_values = self.compute_group_values_for_set(row, &grouping_set.0)?;
+                    self.groups
+                        .entry(key_buffer.clone())
+                        .or_insert_with(|| GroupState::new(group_values, self.aggregates.len()))
+                };
+
+                // Update each aggregate
+                for (i, agg_expr) in self.aggregates.iter().enumerate() {
+                    if let LogicalExpr::AggregateFunction { func, args, distinct: _, filter } =
+                        agg_expr
+                    {
+                        // Check FILTER clause before updating accumulator
+                        let passes_filter = filter.as_ref().map_or(true, |filter_expr| {
+                            matches!(evaluate_expr(filter_expr, row), Ok(Value::Bool(true)))
+                        });
+
+                        if passes_filter {
+                            let is_wildcard =
+                                args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                            let arg_values: Vec<Value> = args
+                                .iter()
+                                .map(|a| evaluate_expr(a, row))
+                                .collect::<Result<_, _>>()?;
+                            state.accumulators[i].update(func, &arg_values, is_wildcard);
+                        }
+                    }
+                }
+            }
+
+            // Build result rows for this grouping set
+            for state in self.groups.values() {
+                let mut values = state.group_values.clone();
+                for acc in &state.accumulators {
+                    values.push(acc.result());
+                }
+
+                let row = Row::new(Arc::clone(&schema), values);
+
+                // Apply HAVING filter
+                if let Some(having) = &self.having {
+                    let result =
+                        evaluate_having_expr(having, &row, &self.aggregates, self.group_by.len())?;
+                    if !matches!(result, Value::Bool(true)) {
+                        continue;
+                    }
+                }
+
+                all_results.push(row);
+            }
+        }
+
+        // Handle empty grouping sets list (shouldn't happen, but be safe)
+        if self.grouping_sets.is_empty() && self.groups.is_empty() && self.group_by.is_empty() {
+            let mut values = Vec::new();
+            for agg_expr in &self.aggregates {
+                if let LogicalExpr::AggregateFunction { func, .. } = agg_expr {
+                    values.push(Accumulator::new().default_for(func));
+                } else {
+                    values.push(Value::Null);
+                }
+            }
+            let row = Row::new(Arc::clone(&schema), values);
+            all_results.push(row);
+        }
+
+        self.key_buffer = key_buffer;
+        self.results_iter = all_results.into_iter();
+        self.aggregated = true;
+        Ok(())
+    }
 }
 
 impl Operator for HashAggregateOp {
     fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
         self.input.open(ctx)?;
         self.groups.clear();
+        self.cached_input.clear();
+        self.input_cached = false;
         self.results_iter = Vec::new().into_iter();
         self.aggregated = false;
         self.max_rows_in_memory = ctx.max_rows_in_memory();
@@ -695,6 +879,10 @@ impl Accumulator {
                 };
                 self.bool_result = Some(self.bool_result.unwrap_or(false) || b);
             }
+            AggregateFunction::Grouping => {
+                // GROUPING() is computed specially during grouping set execution,
+                // not through normal aggregation. This accumulate call is a no-op.
+            }
         }
     }
 
@@ -845,6 +1033,11 @@ impl Accumulator {
                 // Returns NULL if no non-NULL values were seen
                 self.bool_result.map(Value::Bool).unwrap_or(Value::Null)
             }
+            Some(AggregateFunction::Grouping) => {
+                // GROUPING() result is computed during grouping set execution,
+                // not here. Return 0 as fallback.
+                Value::Int(0)
+            }
             None => {
                 // Fallback for unknown or unset function type
                 if self.min.is_some() {
@@ -876,6 +1069,7 @@ impl Accumulator {
             AggregateFunction::JsonObjectAgg | AggregateFunction::JsonbObjectAgg => Value::Null,
             AggregateFunction::VectorAvg | AggregateFunction::VectorCentroid => Value::Null,
             AggregateFunction::BoolAnd | AggregateFunction::BoolOr => Value::Null,
+            AggregateFunction::Grouping => Value::Int(0),
         }
     }
 }

@@ -458,6 +458,196 @@ impl WithClause {
     }
 }
 
+/// A single grouping set, representing one set of columns to group by.
+///
+/// In standard GROUP BY, you have one grouping set with all columns.
+/// ROLLUP, CUBE, and GROUPING SETS allow multiple grouping sets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupingSet(pub Vec<Expr>);
+
+impl GroupingSet {
+    /// Creates a new grouping set from expressions.
+    #[must_use]
+    pub fn new(exprs: Vec<Expr>) -> Self {
+        Self(exprs)
+    }
+
+    /// Creates an empty grouping set (grand total row).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(vec![])
+    }
+
+    /// Returns true if this is the empty grouping set (grand total).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the expressions in this grouping set.
+    #[must_use]
+    pub fn exprs(&self) -> &[Expr] {
+        &self.0
+    }
+}
+
+/// The GROUP BY clause with support for ROLLUP, CUBE, and GROUPING SETS.
+///
+/// This represents the various forms of GROUP BY:
+/// - `GROUP BY a, b` - Simple grouping by columns
+/// - `GROUP BY ROLLUP(a, b)` - Hierarchical subtotals: (a,b), (a), ()
+/// - `GROUP BY CUBE(a, b)` - All combinations: (a,b), (a), (b), ()
+/// - `GROUP BY GROUPING SETS ((a), (b), ())` - Explicit sets
+#[derive(Debug, Clone, PartialEq)]
+pub enum GroupByClause {
+    /// Simple GROUP BY with one or more expressions.
+    ///
+    /// Example: `GROUP BY department, category`
+    Simple(Vec<Expr>),
+
+    /// ROLLUP generates hierarchical subtotals.
+    ///
+    /// `ROLLUP(a, b, c)` generates grouping sets:
+    /// - (a, b, c) - most detailed
+    /// - (a, b)    - subtotal by a, b
+    /// - (a)       - subtotal by a
+    /// - ()        - grand total
+    ///
+    /// The number of grouping sets is N + 1 where N is the number of expressions.
+    Rollup(Vec<Expr>),
+
+    /// CUBE generates all possible combinations.
+    ///
+    /// `CUBE(a, b)` generates grouping sets:
+    /// - (a, b) - both columns
+    /// - (a)    - just a
+    /// - (b)    - just b
+    /// - ()     - grand total
+    ///
+    /// The number of grouping sets is 2^N where N is the number of expressions.
+    Cube(Vec<Expr>),
+
+    /// Explicit GROUPING SETS with user-defined grouping combinations.
+    ///
+    /// `GROUPING SETS ((a, b), (a), ())` generates exactly those grouping sets.
+    GroupingSets(Vec<GroupingSet>),
+}
+
+impl GroupByClause {
+    /// Returns true if this is an empty GROUP BY clause.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Simple(exprs) => exprs.is_empty(),
+            Self::Rollup(exprs) => exprs.is_empty(),
+            Self::Cube(exprs) => exprs.is_empty(),
+            Self::GroupingSets(sets) => sets.is_empty(),
+        }
+    }
+
+    /// Returns the number of base expressions in the GROUP BY clause.
+    ///
+    /// For Simple, ROLLUP, and CUBE, this is the number of expressions.
+    /// For GROUPING SETS, this counts unique expressions across all sets.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Simple(exprs) | Self::Rollup(exprs) | Self::Cube(exprs) => exprs.len(),
+            Self::GroupingSets(sets) => {
+                let mut seen = std::collections::HashSet::new();
+                for set in sets {
+                    for expr in &set.0 {
+                        seen.insert(format!("{expr:?}"));
+                    }
+                }
+                seen.len()
+            }
+        }
+    }
+
+    /// Expands to the full list of grouping sets.
+    ///
+    /// This is used during planning to determine all the grouping combinations
+    /// that need to be computed.
+    #[must_use]
+    pub fn expand_grouping_sets(&self) -> Vec<GroupingSet> {
+        match self {
+            Self::Simple(exprs) => {
+                if exprs.is_empty() {
+                    vec![]
+                } else {
+                    vec![GroupingSet::new(exprs.clone())]
+                }
+            }
+            Self::Rollup(exprs) => {
+                // ROLLUP(a, b, c) -> [(a,b,c), (a,b), (a), ()]
+                let mut sets = Vec::with_capacity(exprs.len() + 1);
+                for i in (0..=exprs.len()).rev() {
+                    sets.push(GroupingSet::new(exprs[..i].to_vec()));
+                }
+                sets
+            }
+            Self::Cube(exprs) => {
+                // CUBE(a, b) -> [(a,b), (a), (b), ()]
+                // Generate all 2^N combinations using bit masking
+                let n = exprs.len();
+                let mut sets = Vec::with_capacity(1 << n);
+                // Iterate from all columns to none (most detailed to grand total)
+                for mask in (0..(1 << n)).rev() {
+                    let mut set_exprs = Vec::new();
+                    for (i, expr) in exprs.iter().enumerate() {
+                        if mask & (1 << (n - 1 - i)) != 0 {
+                            set_exprs.push(expr.clone());
+                        }
+                    }
+                    sets.push(GroupingSet::new(set_exprs));
+                }
+                sets
+            }
+            Self::GroupingSets(sets) => sets.clone(),
+        }
+    }
+
+    /// Returns the base expressions (before expansion).
+    ///
+    /// For ROLLUP and CUBE, these are the input expressions.
+    /// For GROUPING SETS, returns all unique expressions across all sets.
+    /// For Simple, returns the GROUP BY expressions.
+    #[must_use]
+    pub fn base_expressions(&self) -> Vec<&Expr> {
+        match self {
+            Self::Simple(exprs) | Self::Rollup(exprs) | Self::Cube(exprs) => exprs.iter().collect(),
+            Self::GroupingSets(sets) => {
+                // Collect unique expressions from all sets
+                let mut seen = std::collections::HashSet::new();
+                let mut result = Vec::new();
+                for set in sets {
+                    for expr in &set.0 {
+                        // Use debug representation for uniqueness check
+                        let key = format!("{expr:?}");
+                        if seen.insert(key) {
+                            result.push(expr);
+                        }
+                    }
+                }
+                result
+            }
+        }
+    }
+
+    /// Returns whether this clause uses advanced grouping (ROLLUP/CUBE/GROUPING SETS).
+    #[must_use]
+    pub fn is_advanced(&self) -> bool {
+        !matches!(self, Self::Simple(_))
+    }
+}
+
+impl Default for GroupByClause {
+    fn default() -> Self {
+        Self::Simple(vec![])
+    }
+}
+
 /// A SELECT statement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectStatement {
@@ -481,8 +671,8 @@ pub struct SelectStatement {
     pub optional_match_clauses: Vec<GraphPattern>,
     /// Optional WHERE clause.
     pub where_clause: Option<Expr>,
-    /// Optional GROUP BY clause.
-    pub group_by: Vec<Expr>,
+    /// Optional GROUP BY clause with support for ROLLUP, CUBE, and GROUPING SETS.
+    pub group_by: GroupByClause,
     /// Optional HAVING clause.
     pub having: Option<Expr>,
     /// Named window definitions (WINDOW clause).
@@ -502,7 +692,7 @@ pub struct SelectStatement {
 impl SelectStatement {
     /// Creates a new SELECT statement with the given projection.
     #[must_use]
-    pub const fn new(projection: Vec<SelectItem>) -> Self {
+    pub fn new(projection: Vec<SelectItem>) -> Self {
         Self {
             with_clauses: vec![],
             distinct: false,
@@ -512,7 +702,7 @@ impl SelectStatement {
             mandatory_match: false,
             optional_match_clauses: vec![],
             where_clause: None,
-            group_by: vec![],
+            group_by: GroupByClause::default(),
             having: None,
             named_windows: vec![],
             order_by: vec![],
@@ -700,7 +890,7 @@ impl MatchStatement {
             mandatory_match: false, // Cypher MATCH is not mandatory by default
             optional_match_clauses: vec![], // TODO: Add support for OPTIONAL MATCH in standalone Cypher
             where_clause: self.where_clause.clone(),
-            group_by: vec![],
+            group_by: GroupByClause::default(),
             having: None,
             named_windows: vec![],
             order_by: self.order_by.clone(),
