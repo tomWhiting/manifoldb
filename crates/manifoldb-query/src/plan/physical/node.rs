@@ -328,6 +328,9 @@ pub enum PhysicalPlan {
         table: String,
         /// Assignments.
         assignments: Vec<(String, LogicalExpr)>,
+        /// Optional source plan (for UPDATE ... FROM).
+        /// When present, the update uses rows from the source joined with target.
+        source: Option<Box<PhysicalPlan>>,
         /// Filter predicate.
         filter: Option<LogicalExpr>,
         /// Returning columns.
@@ -340,6 +343,9 @@ pub enum PhysicalPlan {
     Delete {
         /// Target table.
         table: String,
+        /// Optional source plan (for DELETE ... USING).
+        /// When present, the delete uses rows from the source joined with target.
+        source: Option<Box<PhysicalPlan>>,
         /// Filter predicate.
         filter: Option<LogicalExpr>,
         /// Returning columns.
@@ -2588,8 +2594,6 @@ impl PhysicalPlan {
             | Self::Values { .. }
             | Self::Empty { .. }
             | Self::BindingsSeed { .. }
-            | Self::Update { .. }
-            | Self::Delete { .. }
             | Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
@@ -2662,6 +2666,11 @@ impl PhysicalPlan {
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter().collect(),
 
+            // DML operations with optional source (UPDATE FROM, DELETE USING)
+            Self::Update { source, .. } | Self::Delete { source, .. } => {
+                source.as_ref().map_or(vec![], |s| vec![s.as_ref()])
+            }
+
             // Graph DML operations (optional input)
             Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {
                 input.as_ref().map_or(vec![], |i| vec![i.as_ref()])
@@ -2690,8 +2699,6 @@ impl PhysicalPlan {
             | Self::Values { .. }
             | Self::Empty { .. }
             | Self::BindingsSeed { .. }
-            | Self::Update { .. }
-            | Self::Delete { .. }
             | Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
@@ -2763,6 +2770,11 @@ impl PhysicalPlan {
 
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter_mut().collect(),
+
+            // DML operations with optional source (UPDATE FROM, DELETE USING)
+            Self::Update { source, .. } | Self::Delete { source, .. } => {
+                source.as_mut().map_or(vec![], |s| vec![s.as_mut()])
+            }
 
             // Graph DML operations (optional input)
             Self::GraphCreate { input, .. } | Self::GraphMerge { input, .. } => {

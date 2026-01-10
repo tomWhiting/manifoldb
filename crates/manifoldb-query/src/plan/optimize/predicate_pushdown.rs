@@ -211,14 +211,23 @@ impl PredicatePushdown {
             }
 
             // Update and Delete can have their filters combined
-            LogicalPlan::Update { table, assignments, filter, returning } => {
-                let combined = self.combine_with_existing(filter, predicates);
-                LogicalPlan::Update { table, assignments, filter: combined, returning }
+            // For UPDATE FROM / DELETE USING, also push down into source
+            LogicalPlan::Update { table, assignments, source, filter, returning } => {
+                let combined = self.combine_with_existing(filter, predicates.clone());
+                let optimized_source = source.map(|s| Box::new(self.push_down(*s, predicates)));
+                LogicalPlan::Update {
+                    table,
+                    assignments,
+                    source: optimized_source,
+                    filter: combined,
+                    returning,
+                }
             }
 
-            LogicalPlan::Delete { table, filter, returning } => {
-                let combined = self.combine_with_existing(filter, predicates);
-                LogicalPlan::Delete { table, filter: combined, returning }
+            LogicalPlan::Delete { table, source, filter, returning } => {
+                let combined = self.combine_with_existing(filter, predicates.clone());
+                let optimized_source = source.map(|s| Box::new(self.push_down(*s, predicates)));
+                LogicalPlan::Delete { table, source: optimized_source, filter: combined, returning }
             }
 
             // MERGE SQL - push predicates into source

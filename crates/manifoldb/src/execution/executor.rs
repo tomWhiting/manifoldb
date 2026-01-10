@@ -181,10 +181,12 @@ pub fn execute_statement<T: Transaction>(
         LogicalPlan::Insert { table, columns, input, on_conflict, .. } => {
             execute_insert(tx, table, columns, input, on_conflict.as_ref(), &ctx)
         }
-        LogicalPlan::Update { table, assignments, filter, .. } => {
-            execute_update(tx, table, assignments, filter, &ctx)
+        LogicalPlan::Update { table, assignments, source, filter, .. } => {
+            execute_update(tx, table, assignments, source, filter, &ctx)
         }
-        LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+        LogicalPlan::Delete { table, source, filter, .. } => {
+            execute_delete(tx, table, source, filter, &ctx)
+        }
         LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
             execute_merge_sql(tx, target_table, source, on_condition, clauses, &ctx)
         }
@@ -382,10 +384,12 @@ pub fn execute_prepared_statement<T: Transaction>(
         LogicalPlan::Insert { table, columns, input, on_conflict, .. } => {
             execute_insert(tx, table, columns, input, on_conflict.as_ref(), &ctx)
         }
-        LogicalPlan::Update { table, assignments, filter, .. } => {
-            execute_update(tx, table, assignments, filter, &ctx)
+        LogicalPlan::Update { table, assignments, source, filter, .. } => {
+            execute_update(tx, table, assignments, source, filter, &ctx)
         }
-        LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+        LogicalPlan::Delete { table, source, filter, .. } => {
+            execute_delete(tx, table, source, filter, &ctx)
+        }
         LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
             execute_merge_sql(tx, target_table, source, on_condition, clauses, &ctx)
         }
@@ -2457,14 +2461,19 @@ fn value_to_vector_data(value: &Value) -> Option<manifoldb_vector::types::Vector
 }
 
 /// Execute an UPDATE statement.
+///
+/// For UPDATE ... FROM, the source plan provides rows that are joined with the target
+/// table using the WHERE clause. The update only affects target rows that match the join.
 fn execute_update<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     table: &str,
     assignments: &[(String, LogicalExpr)],
+    source: &Option<Box<LogicalPlan>>,
     filter: &Option<LogicalExpr>,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
     use crate::collection::{CollectionManager, CollectionName};
+    use std::collections::HashSet;
 
     // Check if this is a collection with named vectors
     let collection = CollectionName::new(table)
@@ -2472,104 +2481,203 @@ fn execute_update<T: Transaction>(
         .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
 
     // Get all entities with this label
-    let entities = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
+    let target_entities: Vec<Entity> = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
+
+    // For UPDATE ... FROM, execute source and find matching target rows
+    let (matched_target_ids, source_rows): (HashSet<manifoldb_core::EntityId>, Vec<Entity>) =
+        if let Some(source_plan) = source {
+            // Execute the source plan
+            let source_entities = execute_logical_plan(tx, source_plan, ctx)?;
+
+            // Find target entities that match the join condition (WHERE clause)
+            let mut matched_ids = HashSet::new();
+            for target in &target_entities {
+                for source_entity in &source_entities {
+                    // Create a merged entity for evaluating the WHERE clause
+                    // Properties are added with both simple and qualified names
+                    let mut merged = target.clone();
+
+                    // Add target properties with table-qualified names (e.g., "orders.customer_id")
+                    for (key, value) in &target.properties {
+                        merged.properties.insert(format!("{table}.{key}"), value.clone());
+                    }
+
+                    // Add source properties (both simple and qualified if source has label)
+                    for (key, value) in &source_entity.properties {
+                        // Add with simple name
+                        merged.properties.insert(key.clone(), value.clone());
+                        // Add with qualified name if source has labels
+                        if let Some(first_label) = source_entity.labels.first() {
+                            merged
+                                .properties
+                                .insert(format!("{}.{key}", first_label.as_str()), value.clone());
+                        }
+                    }
+
+                    // Check if the join condition (WHERE clause) matches
+                    let matches = match filter {
+                        Some(pred) => evaluate_predicate(pred, &merged, ctx),
+                        None => true, // If no WHERE clause, match all (cartesian product behavior)
+                    };
+
+                    if matches {
+                        matched_ids.insert(target.id);
+                        break; // Only need to match once per target
+                    }
+                }
+            }
+            (matched_ids, source_entities)
+        } else {
+            // Simple UPDATE without FROM - match based on filter only
+            let mut matched_ids = HashSet::new();
+            for entity in &target_entities {
+                let matches = match filter {
+                    Some(pred) => evaluate_predicate(pred, entity, ctx),
+                    None => true,
+                };
+                if matches {
+                    matched_ids.insert(entity.id);
+                }
+            }
+            (matched_ids, Vec::new())
+        };
 
     let mut count = 0;
 
-    for entity in entities {
-        // Check if entity matches filter
-        let matches = match filter {
-            Some(pred) => evaluate_predicate(pred, &entity, ctx),
-            None => true,
+    for entity in target_entities {
+        if !matched_target_ids.contains(&entity.id) {
+            continue;
+        }
+
+        // Clone the old entity before modifying
+        let old_entity = entity.clone();
+        let mut updated_entity = entity;
+
+        // Collect vectors to update separately (for collections)
+        let mut vectors_to_update: Vec<(String, manifoldb_vector::types::VectorData)> = Vec::new();
+
+        // For UPDATE FROM, create a merged context with source columns
+        // For expression evaluation, we need to provide source row values
+        let eval_entity = if source_rows.is_empty() {
+            updated_entity.clone()
+        } else {
+            // Find matching source row for this target
+            let mut merged = updated_entity.clone();
+
+            // Add target properties with table-qualified names
+            for (key, value) in &updated_entity.properties {
+                merged.properties.insert(format!("{table}.{key}"), value.clone());
+            }
+
+            for source_entity in &source_rows {
+                // Create a test merge to check if this source row matches
+                let mut test_merged = merged.clone();
+                for (key, value) in &source_entity.properties {
+                    test_merged.properties.insert(key.clone(), value.clone());
+                    if let Some(first_label) = source_entity.labels.first() {
+                        test_merged
+                            .properties
+                            .insert(format!("{}.{key}", first_label.as_str()), value.clone());
+                    }
+                }
+
+                // Check if the join condition matches
+                let matches = match filter {
+                    Some(pred) => evaluate_predicate(pred, &test_merged, ctx),
+                    None => true,
+                };
+
+                if matches {
+                    // Use this merged entity for assignments
+                    merged = test_merged;
+                    break;
+                }
+            }
+            merged
         };
 
-        if matches {
-            // Clone the old entity before modifying
-            let old_entity = entity.clone();
-            let mut updated_entity = entity;
+        // Apply assignments and collect new values for constraint validation
+        let mut new_values: HashMap<String, Value> = HashMap::new();
+        for (col, expr) in assignments {
+            let value = evaluate_expr(expr, &eval_entity, ctx);
 
-            // Collect vectors to update separately (for collections)
-            let mut vectors_to_update: Vec<(String, manifoldb_vector::types::VectorData)> =
-                Vec::new();
-
-            // Apply assignments and collect new values for constraint validation
-            let mut new_values: HashMap<String, Value> = HashMap::new();
-            for (col, expr) in assignments {
-                let value = evaluate_expr(expr, &updated_entity, ctx);
-
-                // For collections, check if this column is a named vector
-                if let Some(ref coll) = collection {
-                    if coll.has_vector(col) {
-                        // Convert Value to VectorData and update separately
-                        if let Some(vector_data) = value_to_vector_data(&value) {
-                            vectors_to_update.push((col.clone(), vector_data));
-                        }
-                        // Remove from entity properties (if it was there)
-                        updated_entity.properties.remove(col);
-                        continue;
-                    }
-                }
-
-                new_values.insert(col.clone(), value.clone());
-                updated_entity.set_property(col, value);
-            }
-
-            // Validate constraints for the updated values
-            super::constraints::ConstraintValidator::validate_update(
-                tx,
-                table,
-                &old_entity,
-                &new_values,
-                ctx,
-            )
-            .map_err(|e| Error::Execution(e.to_string()))?;
-
-            tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
-
-            // Update property indexes for this entity
-            super::index_maintenance::EntityIndexMaintenance::on_update(
-                tx,
-                &old_entity,
-                &updated_entity,
-            )
-            .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
-
-            // For collections: update vectors via CollectionVectorProvider
+            // For collections, check if this column is a named vector
             if let Some(ref coll) = collection {
-                if let Some(provider) = ctx.collection_vector_provider() {
-                    for (vector_name, vector_data) in vectors_to_update {
-                        provider
-                            .upsert_vector(
-                                coll.id(),
-                                updated_entity.id,
-                                table,
-                                &vector_name,
-                                &vector_data,
-                            )
-                            .map_err(|e| Error::Execution(format!("vector storage failed: {e}")))?;
+                if coll.has_vector(col) {
+                    // Convert Value to VectorData and update separately
+                    if let Some(vector_data) = value_to_vector_data(&value) {
+                        vectors_to_update.push((col.clone(), vector_data));
                     }
+                    // Remove from entity properties (if it was there)
+                    updated_entity.properties.remove(col);
+                    continue;
                 }
-            } else {
-                // For regular tables: update HNSW indexes via legacy mechanism
-                crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
-                    .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
             }
 
-            count += 1;
+            new_values.insert(col.clone(), value.clone());
+            updated_entity.set_property(col, value);
         }
+
+        // Validate constraints for the updated values
+        super::constraints::ConstraintValidator::validate_update(
+            tx,
+            table,
+            &old_entity,
+            &new_values,
+            ctx,
+        )
+        .map_err(|e| Error::Execution(e.to_string()))?;
+
+        tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
+
+        // Update property indexes for this entity
+        super::index_maintenance::EntityIndexMaintenance::on_update(
+            tx,
+            &old_entity,
+            &updated_entity,
+        )
+        .map_err(|e| Error::Execution(format!("property index update failed: {e}")))?;
+
+        // For collections: update vectors via CollectionVectorProvider
+        if let Some(ref coll) = collection {
+            if let Some(provider) = ctx.collection_vector_provider() {
+                for (vector_name, vector_data) in vectors_to_update {
+                    provider
+                        .upsert_vector(
+                            coll.id(),
+                            updated_entity.id,
+                            table,
+                            &vector_name,
+                            &vector_data,
+                        )
+                        .map_err(|e| Error::Execution(format!("vector storage failed: {e}")))?;
+                }
+            }
+        } else {
+            // For regular tables: update HNSW indexes via legacy mechanism
+            crate::vector::update_entity_in_indexes(tx, &updated_entity, Some(&old_entity))
+                .map_err(|e| Error::Execution(format!("vector index update failed: {e}")))?;
+        }
+
+        count += 1;
     }
 
     Ok(count)
 }
 
 /// Execute a DELETE statement.
+///
+/// For DELETE ... USING, the source plan provides rows that are joined with the target
+/// table using the WHERE clause. The delete only affects target rows that match the join.
 fn execute_delete<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     table: &str,
+    source: &Option<Box<LogicalPlan>>,
     filter: &Option<LogicalExpr>,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
     use crate::collection::{CollectionManager, CollectionName};
+    use std::collections::HashSet;
 
     // Check if this is a collection with named vectors
     let collection = CollectionName::new(table)
@@ -2577,43 +2685,97 @@ fn execute_delete<T: Transaction>(
         .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
 
     // Get all entities with this label
-    let entities = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
+    let target_entities: Vec<Entity> = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
+
+    // For DELETE ... USING, execute source and find matching target rows
+    let matched_target_ids: HashSet<manifoldb_core::EntityId> = if let Some(source_plan) = source {
+        // Execute the source plan
+        let source_entities = execute_logical_plan(tx, source_plan, ctx)?;
+
+        // Find target entities that match the join condition (WHERE clause)
+        let mut matched_ids = HashSet::new();
+        for target in &target_entities {
+            for source_entity in &source_entities {
+                // Create a merged entity for evaluating the WHERE clause
+                // Properties are added with both simple and qualified names
+                let mut merged = target.clone();
+
+                // Add target properties with table-qualified names (e.g., "orders.customer_id")
+                for (key, value) in &target.properties {
+                    merged.properties.insert(format!("{table}.{key}"), value.clone());
+                }
+
+                // Add source properties (both simple and qualified if source has labels)
+                for (key, value) in &source_entity.properties {
+                    // Add with simple name
+                    merged.properties.insert(key.clone(), value.clone());
+                    // Add with qualified name if source has labels
+                    if let Some(first_label) = source_entity.labels.first() {
+                        merged
+                            .properties
+                            .insert(format!("{}.{key}", first_label.as_str()), value.clone());
+                    }
+                }
+
+                // Check if the join condition (WHERE clause) matches
+                let matches = match filter {
+                    Some(pred) => evaluate_predicate(pred, &merged, ctx),
+                    None => true, // If no WHERE clause, match all (cartesian product behavior)
+                };
+
+                if matches {
+                    matched_ids.insert(target.id);
+                    break; // Only need to match once per target
+                }
+            }
+        }
+        matched_ids
+    } else {
+        // Simple DELETE without USING - match based on filter only
+        let mut matched_ids = HashSet::new();
+        for entity in &target_entities {
+            let matches = match filter {
+                Some(pred) => evaluate_predicate(pred, entity, ctx),
+                None => true,
+            };
+            if matches {
+                matched_ids.insert(entity.id);
+            }
+        }
+        matched_ids
+    };
 
     let mut count = 0;
 
-    for entity in entities {
-        // Check if entity matches filter
-        let matches = match filter {
-            Some(pred) => evaluate_predicate(pred, &entity, ctx),
-            None => true,
-        };
-
-        if matches {
-            // Validate foreign key constraints before deleting
-            // (check that no other table references this row)
-            super::constraints::ConstraintValidator::validate_delete(tx, table, &entity)
-                .map_err(|e| Error::Execution(e.to_string()))?;
-
-            // Remove from property indexes before deleting
-            super::index_maintenance::EntityIndexMaintenance::on_delete(tx, &entity)
-                .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
-
-            // For collections: delete all vectors via CollectionVectorProvider
-            if let Some(ref coll) = collection {
-                if let Some(provider) = ctx.collection_vector_provider() {
-                    provider
-                        .delete_entity_vectors(coll.id(), entity.id, table)
-                        .map_err(|e| Error::Execution(format!("vector deletion failed: {e}")))?;
-                }
-            } else {
-                // For regular tables: remove from HNSW indexes before deleting
-                crate::vector::remove_entity_from_indexes(tx, &entity)
-                    .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
-            }
-
-            tx.delete_entity(entity.id).map_err(Error::Transaction)?;
-            count += 1;
+    for entity in target_entities {
+        if !matched_target_ids.contains(&entity.id) {
+            continue;
         }
+
+        // Validate foreign key constraints before deleting
+        // (check that no other table references this row)
+        super::constraints::ConstraintValidator::validate_delete(tx, table, &entity)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+
+        // Remove from property indexes before deleting
+        super::index_maintenance::EntityIndexMaintenance::on_delete(tx, &entity)
+            .map_err(|e| Error::Execution(format!("property index removal failed: {e}")))?;
+
+        // For collections: delete all vectors via CollectionVectorProvider
+        if let Some(ref coll) = collection {
+            if let Some(provider) = ctx.collection_vector_provider() {
+                provider
+                    .delete_entity_vectors(coll.id(), entity.id, table)
+                    .map_err(|e| Error::Execution(format!("vector deletion failed: {e}")))?;
+            }
+        } else {
+            // For regular tables: remove from HNSW indexes before deleting
+            crate::vector::remove_entity_from_indexes(tx, &entity)
+                .map_err(|e| Error::Execution(format!("vector index removal failed: {e}")))?;
+        }
+
+        tx.delete_entity(entity.id).map_err(Error::Transaction)?;
+        count += 1;
     }
 
     Ok(count)

@@ -1838,6 +1838,10 @@ impl PlanBuilder {
     }
 
     /// Builds an UPDATE plan.
+    ///
+    /// Handles both simple UPDATE and UPDATE ... FROM (multi-table update).
+    /// For UPDATE ... FROM, the source tables are joined together and passed
+    /// as the source input to the Update node.
     fn build_update(&mut self, update: &UpdateStatement) -> PlanResult<LogicalPlan> {
         let table =
             update.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
@@ -1850,6 +1854,19 @@ impl PlanBuilder {
 
         let filter =
             if let Some(w) = &update.where_clause { Some(self.build_expr(w)?) } else { None };
+
+        // Build source plan from FROM clause if present
+        let source = if update.from.is_empty() {
+            None
+        } else {
+            // Build the source tables and join them together (cross join for multiple tables)
+            let mut source_plan = self.build_table_ref(&update.from[0])?;
+            for table_ref in &update.from[1..] {
+                let right = self.build_table_ref(table_ref)?;
+                source_plan = source_plan.cross_join(right);
+            }
+            Some(Box::new(source_plan))
+        };
 
         let returning = update
             .returning
@@ -1871,16 +1888,33 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Update { table, assignments, filter, returning })
+        Ok(LogicalPlan::Update { table, assignments, source, filter, returning })
     }
 
     /// Builds a DELETE plan.
+    ///
+    /// Handles both simple DELETE and DELETE ... USING (multi-table delete).
+    /// For DELETE ... USING, the source tables are joined together and passed
+    /// as the source input to the Delete node.
     fn build_delete(&mut self, delete: &DeleteStatement) -> PlanResult<LogicalPlan> {
         let table =
             delete.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
         let filter =
             if let Some(w) = &delete.where_clause { Some(self.build_expr(w)?) } else { None };
+
+        // Build source plan from USING clause if present
+        let source = if delete.using.is_empty() {
+            None
+        } else {
+            // Build the source tables and join them together (cross join for multiple tables)
+            let mut source_plan = self.build_table_ref(&delete.using[0])?;
+            for table_ref in &delete.using[1..] {
+                let right = self.build_table_ref(table_ref)?;
+                source_plan = source_plan.cross_join(right);
+            }
+            Some(Box::new(source_plan))
+        };
 
         let returning = delete
             .returning
@@ -1902,7 +1936,7 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<_>>()?;
 
-        Ok(LogicalPlan::Delete { table, filter, returning })
+        Ok(LogicalPlan::Delete { table, source, filter, returning })
     }
 
     /// Builds a logical plan from a SQL MERGE statement.

@@ -273,7 +273,10 @@ pub enum LogicalPlan {
         table: String,
         /// Assignments (column, value).
         assignments: Vec<(String, LogicalExpr)>,
-        /// Filter for rows to update.
+        /// Optional source tables (for UPDATE ... FROM).
+        /// When present, the update uses rows from the source joined with target.
+        source: Option<Box<LogicalPlan>>,
+        /// Filter for rows to update (WHERE clause).
         filter: Option<LogicalExpr>,
         /// Whether to return updated rows.
         returning: Vec<LogicalExpr>,
@@ -283,7 +286,10 @@ pub enum LogicalPlan {
     Delete {
         /// Target table name.
         table: String,
-        /// Filter for rows to delete.
+        /// Optional source tables (for DELETE ... USING).
+        /// When present, the delete uses rows from the source joined with target.
+        source: Option<Box<LogicalPlan>>,
+        /// Filter for rows to delete (WHERE clause).
         filter: Option<LogicalExpr>,
         /// Whether to return deleted rows.
         returning: Vec<LogicalExpr>,
@@ -651,8 +657,10 @@ impl LogicalPlan {
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter().collect(),
 
-            // DML without input
-            Self::Update { .. } | Self::Delete { .. } => vec![],
+            // DML with optional source input
+            Self::Update { source: Some(source), .. }
+            | Self::Delete { source: Some(source), .. } => vec![source.as_ref()],
+            Self::Update { source: None, .. } | Self::Delete { source: None, .. } => vec![],
 
             // DDL nodes (no inputs)
             Self::CreateTable(_)
@@ -749,8 +757,10 @@ impl LogicalPlan {
             // N-ary nodes
             Self::Union { inputs, .. } => inputs.iter_mut().collect(),
 
-            // DML without input
-            Self::Update { .. } | Self::Delete { .. } => vec![],
+            // DML with optional source input
+            Self::Update { source: Some(source), .. }
+            | Self::Delete { source: Some(source), .. } => vec![source.as_mut()],
+            Self::Update { source: None, .. } | Self::Delete { source: None, .. } => vec![],
 
             // DDL nodes (no inputs)
             Self::CreateTable(_)

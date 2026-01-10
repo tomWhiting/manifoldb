@@ -393,11 +393,11 @@ impl PhysicalPlanner {
             LogicalPlan::Insert { table, columns, input, on_conflict, returning } => {
                 self.plan_insert(table, columns, input, on_conflict, returning)
             }
-            LogicalPlan::Update { table, assignments, filter, returning } => {
-                self.plan_update(table, assignments, filter, returning)
+            LogicalPlan::Update { table, assignments, source, filter, returning } => {
+                self.plan_update(table, assignments, source, filter, returning)
             }
-            LogicalPlan::Delete { table, filter, returning } => {
-                self.plan_delete(table, filter, returning)
+            LogicalPlan::Delete { table, source, filter, returning } => {
+                self.plan_delete(table, source, filter, returning)
             }
             LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
                 self.plan_merge_sql(target_table, source, on_condition, clauses)
@@ -1694,17 +1694,27 @@ impl PhysicalPlanner {
         &self,
         table: &str,
         assignments: &[(String, LogicalExpr)],
+        source: &Option<Box<LogicalPlan>>,
         filter: &Option<LogicalExpr>,
         returning: &[LogicalExpr],
     ) -> PhysicalPlan {
         let row_count = self.catalog.get_row_count(table);
         let affected =
             if filter.is_some() { (row_count as f64 * 0.1).ceil() as usize } else { row_count };
-        let cost = Cost::new(affected as f64 * 3.0, affected);
+
+        // Plan the source if present (for UPDATE ... FROM)
+        let source_plan = source.as_ref().map(|s| Box::new(self.plan(s)));
+
+        // Include source plan cost if present
+        let base_cost = affected as f64 * 3.0;
+        let total_cost =
+            if let Some(ref sp) = source_plan { base_cost + sp.cost().value() } else { base_cost };
+        let cost = Cost::new(total_cost, affected);
 
         PhysicalPlan::Update {
             table: table.to_string(),
             assignments: assignments.to_vec(),
+            source: source_plan,
             filter: filter.clone(),
             returning: returning.to_vec(),
             cost,
@@ -1714,16 +1724,26 @@ impl PhysicalPlanner {
     fn plan_delete(
         &self,
         table: &str,
+        source: &Option<Box<LogicalPlan>>,
         filter: &Option<LogicalExpr>,
         returning: &[LogicalExpr],
     ) -> PhysicalPlan {
         let row_count = self.catalog.get_row_count(table);
         let affected =
             if filter.is_some() { (row_count as f64 * 0.1).ceil() as usize } else { row_count };
-        let cost = Cost::new(affected as f64 * 2.0, affected);
+
+        // Plan the source if present (for DELETE ... USING)
+        let source_plan = source.as_ref().map(|s| Box::new(self.plan(s)));
+
+        // Include source plan cost if present
+        let base_cost = affected as f64 * 2.0;
+        let total_cost =
+            if let Some(ref sp) = source_plan { base_cost + sp.cost().value() } else { base_cost };
+        let cost = Cost::new(total_cost, affected);
 
         PhysicalPlan::Delete {
             table: table.to_string(),
+            source: source_plan,
             filter: filter.clone(),
             returning: returning.to_vec(),
             cost,
