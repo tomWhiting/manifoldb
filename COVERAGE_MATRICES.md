@@ -392,20 +392,20 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | EXPLAIN | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | EXPLAIN ANALYZE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - executes plan with stats |
 | ANALYZE TABLE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - placeholder execution |
-| VACUUM | | ✓ | ✓ | ✓ | ✓ | | AST defined, not parsed by sqlparser 0.52 |
+| VACUUM | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - parsing with sqlparser 0.60 |
 | COPY TO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - export with CSV/TEXT |
 | COPY FROM | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - import with CSV/TEXT |
 | SET | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - session variables |
 | SET LOCAL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - transaction-scoped |
 | SHOW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - view variable values |
 | SHOW ALL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| RESET | | ✓ | ✓ | ✓ | ✓ | | AST defined, not parsed by sqlparser 0.52 |
+| RESET | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - parsing with sqlparser 0.60 |
 
 **Utility Statement Notes:**
 - EXPLAIN ANALYZE supports FORMAT TEXT/JSON/XML/YAML, BUFFERS, TIMING, VERBOSE, COSTS options
-- VACUUM is fully modeled but sqlparser 0.52 doesn't parse it; use PostgreSQL dialect extensions if needed
+- VACUUM supports FULL option; parsed with sqlparser 0.60
 - COPY supports CSV/TEXT/BINARY formats with HEADER, DELIMITER, QUOTE, ESCAPE options
-- SET/SHOW/RESET handle session configuration variables
+- SET/SHOW/RESET handle session configuration variables; RESET supports ALL and specific variables
 
 ## 1.11 Data Types
 

@@ -2,6 +2,12 @@
 //!
 //! This module provides validation for logical query plans,
 //! catching errors before execution.
+//!
+//! # Validation Levels
+//!
+//! - [`validate_plan`]: Basic structural validation (no schema needed)
+//! - [`validate_with_schema`]: Full validation including type checking
+//! - [`check_no_cycles`]: Sanity check for cyclic dependencies
 
 // Allow long validation function - it's a big match but straightforward
 #![allow(clippy::too_many_lines)]
@@ -10,8 +16,12 @@
 
 use thiserror::Error;
 
+use super::expr::LogicalExpr;
 use super::node::LogicalPlan;
 use super::relational::JoinType;
+use super::schema::SchemaCatalog;
+use super::type_infer::TypeError;
+use super::types::{PlanType, TypeContext};
 
 /// Errors that can occur during plan validation.
 #[derive(Debug, Error)]
@@ -72,6 +82,30 @@ pub enum PlanError {
     /// Cyclic dependency in plan.
     #[error("cyclic dependency detected")]
     CyclicDependency,
+
+    /// Type inference error.
+    #[error("type error: {0}")]
+    TypeError(#[from] TypeError),
+
+    /// Expression returns wrong type.
+    #[error("expression type error: expected {expected}, found {found}")]
+    ExpressionTypeMismatch {
+        /// The expected type.
+        expected: PlanType,
+        /// The actual type found.
+        found: PlanType,
+    },
+
+    /// Incompatible schema in set operation.
+    #[error("incompatible schemas in {operation}: left has {left_count} columns, right has {right_count} columns")]
+    SchemaColumnCountMismatch {
+        /// The operation (UNION, INTERSECT, etc.).
+        operation: String,
+        /// Number of columns on the left.
+        left_count: usize,
+        /// Number of columns on the right.
+        right_count: usize,
+    },
 }
 
 /// Result type for plan operations.
@@ -462,6 +496,315 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Validates a logical plan with schema information.
+///
+/// This performs full validation including:
+/// - Structural validation (same as [`validate_plan`])
+/// - Column reference validation (ensures columns exist)
+/// - Type checking for expressions
+/// - Schema compatibility for set operations
+///
+/// # Arguments
+///
+/// * `plan` - The logical plan to validate
+/// * `catalog` - A catalog for looking up table schemas
+///
+/// # Example
+///
+/// ```ignore
+/// use manifoldb_query::plan::logical::{LogicalPlan, validate_with_schema, EmptyCatalog};
+///
+/// let plan = LogicalPlan::scan("users")
+///     .filter(LogicalExpr::column("age").gt(LogicalExpr::integer(21)));
+///
+/// validate_with_schema(&plan, &EmptyCatalog)?;
+/// ```
+pub fn validate_with_schema(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) -> PlanResult<()> {
+    // First do structural validation
+    validate_plan(plan)?;
+
+    // Then do schema-aware validation
+    validate_schema_recursive(plan, catalog)
+}
+
+/// Recursively validates schema information through the plan tree.
+fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) -> PlanResult<()> {
+    match plan {
+        LogicalPlan::Filter { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+
+            // Validate that the filter predicate is well-typed and returns boolean
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            let pred_type = node.predicate.infer_type(&ctx)?;
+            if !matches!(pred_type, PlanType::Boolean | PlanType::Any | PlanType::Null) {
+                return Err(PlanError::ExpressionTypeMismatch {
+                    expected: PlanType::Boolean,
+                    found: pred_type,
+                });
+            }
+        }
+
+        LogicalPlan::Project { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+
+            // Validate that all projection expressions are well-typed
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            for expr in &node.exprs {
+                validate_expression(expr, &ctx)?;
+            }
+        }
+
+        LogicalPlan::Aggregate { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+
+            // Validate group by expressions
+            for expr in &node.group_by {
+                validate_expression(expr, &ctx)?;
+            }
+
+            // Validate aggregate expressions
+            for expr in &node.aggregates {
+                validate_expression(expr, &ctx)?;
+            }
+        }
+
+        LogicalPlan::Sort { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            for sort_order in &node.order_by {
+                validate_expression(&sort_order.expr, &ctx)?;
+            }
+        }
+
+        LogicalPlan::Join { node, left, right } => {
+            validate_schema_recursive(left, catalog)?;
+            validate_schema_recursive(right, catalog)?;
+
+            // Validate join condition if present
+            if let Some(ref condition) = node.condition {
+                let left_schema = left.output_schema(catalog)?;
+                let right_schema = right.output_schema(catalog)?;
+                let combined = left_schema.merge(&right_schema);
+                let ctx = TypeContext::with_schema(combined);
+                let cond_type = condition.infer_type(&ctx)?;
+                if !matches!(cond_type, PlanType::Boolean | PlanType::Any | PlanType::Null) {
+                    return Err(PlanError::ExpressionTypeMismatch {
+                        expected: PlanType::Boolean,
+                        found: cond_type,
+                    });
+                }
+            }
+        }
+
+        LogicalPlan::SetOp { node, left, right } => {
+            validate_schema_recursive(left, catalog)?;
+            validate_schema_recursive(right, catalog)?;
+
+            // Validate that both sides have the same number of columns
+            let left_schema = left.output_schema(catalog)?;
+            let right_schema = right.output_schema(catalog)?;
+            if left_schema.len() != right_schema.len() {
+                return Err(PlanError::SchemaColumnCountMismatch {
+                    operation: format!("{:?}", node.op_type),
+                    left_count: left_schema.len(),
+                    right_count: right_schema.len(),
+                });
+            }
+        }
+
+        LogicalPlan::Union { inputs, .. } => {
+            if inputs.is_empty() {
+                return Ok(());
+            }
+
+            for input in inputs {
+                validate_schema_recursive(input, catalog)?;
+            }
+
+            // Validate all inputs have the same column count
+            let first_schema = inputs[0].output_schema(catalog)?;
+            for (i, input) in inputs.iter().enumerate().skip(1) {
+                let schema = input.output_schema(catalog)?;
+                if schema.len() != first_schema.len() {
+                    return Err(PlanError::SchemaColumnCountMismatch {
+                        operation: format!("UNION (input {})", i + 1),
+                        left_count: first_schema.len(),
+                        right_count: schema.len(),
+                    });
+                }
+            }
+        }
+
+        // Recurse through other plan nodes
+        LogicalPlan::Scan(_) | LogicalPlan::Values(_) | LogicalPlan::Empty { .. } => {
+            // Leaf nodes - no further validation needed
+        }
+
+        LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input, .. }
+        | LogicalPlan::Alias { input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+        }
+
+        LogicalPlan::Window { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            for (expr, _) in &node.window_exprs {
+                validate_expression(expr, &ctx)?;
+            }
+        }
+
+        LogicalPlan::Unwind { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            // Validate the list expression
+            let list_type = node.list_expr.infer_type(&ctx)?;
+            if !list_type.is_collection() && !matches!(list_type, PlanType::Any) {
+                return Err(PlanError::TypeMismatch {
+                    expected: "list or array".to_string(),
+                    actual: format!("{}", list_type),
+                });
+            }
+        }
+
+        LogicalPlan::RecursiveCTE { initial, recursive, .. } => {
+            validate_schema_recursive(initial, catalog)?;
+            validate_schema_recursive(recursive, catalog)?;
+        }
+
+        LogicalPlan::CallSubquery { subquery, input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+            validate_schema_recursive(subquery, catalog)?;
+        }
+
+        // Graph operations
+        LogicalPlan::Expand { input, .. }
+        | LogicalPlan::PathScan { input, .. }
+        | LogicalPlan::ShortestPath { input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+        }
+
+        // Vector operations
+        LogicalPlan::AnnSearch { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            validate_expression(&node.query_vector, &ctx)?;
+        }
+
+        LogicalPlan::VectorDistance { node, input } => {
+            validate_schema_recursive(input, catalog)?;
+            let input_schema = input.output_schema(catalog)?;
+            let ctx = TypeContext::with_schema(input_schema);
+            validate_expression(&node.left, &ctx)?;
+            validate_expression(&node.right, &ctx)?;
+        }
+
+        LogicalPlan::HybridSearch { input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+        }
+
+        // DML operations
+        LogicalPlan::Insert { input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+        }
+
+        LogicalPlan::Update { filter, .. } => {
+            if let Some(ref f) = filter {
+                // We don't have the table schema here without catalog lookup
+                // So we just do basic validation
+                let ctx = TypeContext::new();
+                let filter_type = f.infer_type(&ctx)?;
+                if !matches!(filter_type, PlanType::Boolean | PlanType::Any | PlanType::Null) {
+                    return Err(PlanError::ExpressionTypeMismatch {
+                        expected: PlanType::Boolean,
+                        found: filter_type,
+                    });
+                }
+            }
+        }
+
+        LogicalPlan::Delete { filter, .. } => {
+            if let Some(ref f) = filter {
+                let ctx = TypeContext::new();
+                let filter_type = f.infer_type(&ctx)?;
+                if !matches!(filter_type, PlanType::Boolean | PlanType::Any | PlanType::Null) {
+                    return Err(PlanError::ExpressionTypeMismatch {
+                        expected: PlanType::Boolean,
+                        found: filter_type,
+                    });
+                }
+            }
+        }
+
+        // DDL operations - no schema validation needed
+        LogicalPlan::CreateTable(_)
+        | LogicalPlan::AlterTable(_)
+        | LogicalPlan::DropTable(_)
+        | LogicalPlan::CreateIndex(_)
+        | LogicalPlan::DropIndex(_)
+        | LogicalPlan::CreateCollection(_)
+        | LogicalPlan::DropCollection(_)
+        | LogicalPlan::CreateView(_)
+        | LogicalPlan::DropView(_) => {}
+
+        // Graph DML
+        LogicalPlan::GraphCreate { input, .. } | LogicalPlan::GraphMerge { input, .. } => {
+            if let Some(input) = input {
+                validate_schema_recursive(input, catalog)?;
+            }
+        }
+
+        LogicalPlan::GraphSet { input, .. }
+        | LogicalPlan::GraphDelete { input, .. }
+        | LogicalPlan::GraphRemove { input, .. }
+        | LogicalPlan::GraphForeach { input, .. } => {
+            validate_schema_recursive(input, catalog)?;
+        }
+
+        // Procedure calls - no schema validation
+        LogicalPlan::ProcedureCall(_) => {}
+
+        // Transaction control - no schema validation
+        LogicalPlan::BeginTransaction(_)
+        | LogicalPlan::Commit(_)
+        | LogicalPlan::Rollback(_)
+        | LogicalPlan::Savepoint(_)
+        | LogicalPlan::ReleaseSavepoint(_)
+        | LogicalPlan::SetTransaction(_) => {}
+
+        // Utility statements
+        LogicalPlan::ExplainAnalyze(node) => {
+            validate_schema_recursive(&node.input, catalog)?;
+        }
+
+        LogicalPlan::Vacuum(_)
+        | LogicalPlan::Analyze(_)
+        | LogicalPlan::Copy(_)
+        | LogicalPlan::SetSession(_)
+        | LogicalPlan::Show(_)
+        | LogicalPlan::Reset(_) => {}
+    }
+
+    Ok(())
+}
+
+/// Validates an expression in the given type context.
+fn validate_expression(expr: &LogicalExpr, ctx: &TypeContext) -> PlanResult<()> {
+    // Try to infer the type - this will catch unknown columns, etc.
+    let _ = expr.infer_type(ctx)?;
     Ok(())
 }
 

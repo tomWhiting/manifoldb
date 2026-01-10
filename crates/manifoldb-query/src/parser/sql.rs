@@ -16,11 +16,11 @@ use crate::ast::{
     DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall, Identifier,
     IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause, JoinCondition,
     JoinType, Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName,
-    ReleaseSavepointStatement, RollbackTransaction, SavepointStatement, SelectItem,
+    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
     SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
     SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
     TransactionAccessMode, TransactionStatement, UnaryOp, UpdateStatement, UtilityStatement,
-    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -172,6 +172,14 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
             let analyze_stmt =
                 convert_analyze(analyze.table_name, analyze.partitions, analyze.columns)?;
             Ok(Statement::Utility(Box::new(UtilityStatement::Analyze(analyze_stmt))))
+        }
+        sp::Statement::Vacuum(vacuum) => {
+            let vacuum_stmt = convert_vacuum(vacuum)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Vacuum(vacuum_stmt))))
+        }
+        sp::Statement::Reset(reset) => {
+            let reset_stmt = convert_reset(reset)?;
+            Ok(Statement::Utility(Box::new(UtilityStatement::Reset(reset_stmt))))
         }
         // Transaction control statements
         sp::Statement::StartTransaction { modes, begin, .. } => {
@@ -1679,6 +1687,34 @@ fn convert_analyze(
     Ok(AnalyzeStatement { table, columns })
 }
 
+/// Converts a VACUUM statement.
+fn convert_vacuum(vacuum: sp::VacuumStatement) -> ParseResult<VacuumStatement> {
+    let table = vacuum.table_name.map(convert_object_name);
+
+    // sqlparser's VacuumStatement doesn't have analyze or columns fields,
+    // but it does have full. Our VacuumStatement supports analyze for VACUUM ANALYZE.
+    Ok(VacuumStatement {
+        full: vacuum.full,
+        analyze: false, // Standard VACUUM doesn't combine with ANALYZE in sqlparser
+        table,
+        columns: vec![],
+    })
+}
+
+/// Converts a RESET statement.
+fn convert_reset(reset: sp::ResetStatement) -> ParseResult<ResetStatement> {
+    let name = match reset.reset {
+        sp::Reset::ALL => None,
+        sp::Reset::ConfigurationParameter(name) => {
+            // Join multi-part names
+            let name_str = name.0.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(".");
+            Some(Identifier::new(name_str))
+        }
+    };
+
+    Ok(ResetStatement { name })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2379,5 +2415,110 @@ mod tests {
         assert!(matches!(&stmts[2], Statement::Transaction(TransactionStatement::Savepoint(_))));
         assert!(matches!(&stmts[3], Statement::Transaction(TransactionStatement::Rollback(_))));
         assert!(matches!(&stmts[4], Statement::Transaction(TransactionStatement::Commit)));
+    }
+
+    // =====================
+    // VACUUM Tests
+    // =====================
+
+    #[test]
+    fn parse_vacuum() {
+        let stmt = parse_single_statement("VACUUM").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Vacuum(vacuum) => {
+                    assert!(!vacuum.full);
+                    assert!(!vacuum.analyze);
+                    assert!(vacuum.table.is_none());
+                    assert!(vacuum.columns.is_empty());
+                }
+                _ => panic!("expected VACUUM"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_vacuum_table() {
+        let stmt = parse_single_statement("VACUUM users").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Vacuum(vacuum) => {
+                    assert!(!vacuum.full);
+                    assert!(!vacuum.analyze);
+                    assert_eq!(
+                        vacuum.table.as_ref().map(|t| t.to_string()),
+                        Some("users".to_string())
+                    );
+                }
+                _ => panic!("expected VACUUM"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_vacuum_full() {
+        let stmt = parse_single_statement("VACUUM FULL users").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Vacuum(vacuum) => {
+                    assert!(vacuum.full);
+                    assert!(!vacuum.analyze);
+                    assert_eq!(
+                        vacuum.table.as_ref().map(|t| t.to_string()),
+                        Some("users".to_string())
+                    );
+                }
+                _ => panic!("expected VACUUM"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
+    }
+
+    // =====================
+    // RESET Tests
+    // =====================
+
+    #[test]
+    fn parse_reset_all() {
+        let stmt = parse_single_statement("RESET ALL").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Reset(reset) => {
+                    assert!(reset.name.is_none());
+                }
+                _ => panic!("expected RESET"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_reset_variable() {
+        let stmt = parse_single_statement("RESET timezone").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Reset(reset) => {
+                    assert_eq!(reset.name.as_ref().map(|n| n.name.as_str()), Some("timezone"));
+                }
+                _ => panic!("expected RESET"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
+    }
+
+    #[test]
+    fn parse_reset_search_path() {
+        let stmt = parse_single_statement("RESET search_path").unwrap();
+        match stmt {
+            Statement::Utility(utility) => match *utility {
+                UtilityStatement::Reset(reset) => {
+                    assert_eq!(reset.name.as_ref().map(|n| n.name.as_str()), Some("search_path"));
+                }
+                _ => panic!("expected RESET"),
+            },
+            _ => panic!("expected Utility statement"),
+        }
     }
 }
