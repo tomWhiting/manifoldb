@@ -320,14 +320,14 @@ These feature groups can be implemented independently:
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| MERGE INTO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - uses sqlparser-rs |
-| WHEN MATCHED UPDATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| WHEN MATCHED DELETE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| WHEN NOT MATCHED INSERT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| WHEN NOT MATCHED BY SOURCE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| Multiple WHEN clauses | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| Conditional clauses (AND) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| Subquery source | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| MERGE INTO | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN MATCHED UPDATE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN MATCHED DELETE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN NOT MATCHED INSERT | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN NOT MATCHED BY SOURCE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Multiple WHEN clauses | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Conditional clauses (AND) | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Subquery source | ✓ | ✓ | ✓ | ✓ | | ✓ | Execution not implemented |
 
 ## 1.8 DDL Statements
 
