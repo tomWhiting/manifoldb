@@ -2,7 +2,7 @@
 //!
 //! These types represent the data structures exposed through the GraphQL API.
 
-use async_graphql::{Enum, InputObject, Json, SimpleObject, ID};
+use async_graphql::{Enum, InputObject, Json, SimpleObject, Union, ID};
 
 // =============================================================================
 // Vector/Collection Types
@@ -247,4 +247,93 @@ pub struct CreateEdgeInput {
     pub edge_type: String,
     /// Properties as a JSON object.
     pub properties: Option<Json<serde_json::Value>>,
+}
+
+// =============================================================================
+// Subscription Event Types
+// =============================================================================
+
+/// Event emitted when a node is created.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct NodeCreatedEvent {
+    /// The created node.
+    pub node: Node,
+}
+
+/// Event emitted when a node is updated.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct NodeUpdatedEvent {
+    /// The updated node.
+    pub node: Node,
+}
+
+/// Event emitted when a node is deleted.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct NodeDeletedEvent {
+    /// The ID of the deleted node.
+    pub id: ID,
+    /// The labels the node had before deletion.
+    pub labels: Vec<String>,
+}
+
+/// A node change event (created, updated, or deleted).
+#[derive(Union, Clone, Debug)]
+pub enum NodeEvent {
+    /// A node was created.
+    Created(NodeCreatedEvent),
+    /// A node was updated.
+    Updated(NodeUpdatedEvent),
+    /// A node was deleted.
+    Deleted(NodeDeletedEvent),
+}
+
+/// Event emitted when an edge is created.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EdgeCreatedEvent {
+    /// The created edge.
+    pub edge: Edge,
+}
+
+/// Event emitted when an edge is updated.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EdgeUpdatedEvent {
+    /// The updated edge.
+    pub edge: Edge,
+}
+
+/// Event emitted when an edge is deleted.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EdgeDeletedEvent {
+    /// The ID of the deleted edge.
+    pub id: ID,
+    /// The type of the deleted edge.
+    pub edge_type: String,
+}
+
+/// An edge change event (created, updated, or deleted).
+#[derive(Union, Clone, Debug)]
+pub enum EdgeEvent {
+    /// An edge was created.
+    Created(EdgeCreatedEvent),
+    /// An edge was updated.
+    Updated(EdgeUpdatedEvent),
+    /// An edge was deleted.
+    Deleted(EdgeDeletedEvent),
+}
+
+/// A graph change event (any node or edge change).
+#[derive(Union, Clone, Debug)]
+pub enum GraphEvent {
+    /// A node was created.
+    NodeCreated(NodeCreatedEvent),
+    /// A node was updated.
+    NodeUpdated(NodeUpdatedEvent),
+    /// A node was deleted.
+    NodeDeleted(NodeDeletedEvent),
+    /// An edge was created.
+    EdgeCreated(EdgeCreatedEvent),
+    /// An edge was updated.
+    EdgeUpdated(EdgeUpdatedEvent),
+    /// An edge was deleted.
+    EdgeDeleted(EdgeDeletedEvent),
 }

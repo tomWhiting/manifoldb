@@ -4,23 +4,31 @@
 //! - [`types`] - GraphQL type definitions (Node, Edge, TableResult, etc.)
 //! - [`query`] - Query resolvers (sql, cypher, stats, etc.)
 //! - [`mutation`] - Mutation resolvers (execute, createNode, etc.)
+//! - [`subscription`] - Subscription resolvers (nodeChanges, edgeChanges, etc.)
 
 mod mutation;
 mod query;
-mod types;
+mod subscription;
+pub mod types;
 
-use async_graphql::{EmptySubscription, Schema};
+use async_graphql::Schema;
 use manifoldb::Database;
 use std::sync::Arc;
 
+use crate::pubsub::PubSub;
+
 pub use mutation::MutationRoot;
 pub use query::QueryRoot;
+pub use subscription::SubscriptionRoot;
 pub use types::*;
 
 /// The GraphQL schema type for the ManifoldDB server.
-pub type AppSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
+pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 
-/// Create a new GraphQL schema with the given database.
-pub fn create_schema(db: Database) -> AppSchema {
-    Schema::build(QueryRoot, MutationRoot, EmptySubscription).data(Arc::new(db)).finish()
+/// Create a new GraphQL schema with the given database and pub-sub hub.
+pub fn create_schema(db: Database, pubsub: PubSub) -> AppSchema {
+    Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
+        .data(Arc::new(db))
+        .data(pubsub)
+        .finish()
 }
