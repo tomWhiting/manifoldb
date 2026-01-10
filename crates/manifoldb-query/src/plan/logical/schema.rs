@@ -323,8 +323,6 @@ impl LogicalPlan {
             | Self::CreateIndex(_)
             | Self::AlterIndex(_)
             | Self::DropIndex(_)
-            | Self::AlterIndex(_)
-            | Self::TruncateTable(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)

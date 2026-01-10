@@ -1853,8 +1853,6 @@ fn execute_logical_plan<T: Transaction>(
         | LogicalPlan::CreateIndex(_)
         | LogicalPlan::AlterIndex(_)
         | LogicalPlan::DropIndex(_)
-        | LogicalPlan::AlterIndex(_)
-        | LogicalPlan::TruncateTable(_)
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)

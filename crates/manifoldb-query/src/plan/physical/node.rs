@@ -356,12 +356,6 @@ pub enum PhysicalPlan {
     /// DROP INDEX operation.
     DropIndex(DropIndexNode),
 
-    /// ALTER INDEX operation.
-    AlterIndex(AlterIndexNode),
-
-    /// TRUNCATE TABLE operation.
-    TruncateTable(TruncateTableNode),
-
     /// CREATE COLLECTION operation.
     CreateCollection(CreateCollectionNode),
 
@@ -2449,8 +2443,6 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::AlterIndex(_)
             | Self::DropIndex(_)
-            | Self::AlterIndex(_)
-            | Self::TruncateTable(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
@@ -2551,8 +2543,6 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::AlterIndex(_)
             | Self::DropIndex(_)
-            | Self::AlterIndex(_)
-            | Self::TruncateTable(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
@@ -2720,8 +2710,6 @@ impl PhysicalPlan {
             Self::CreateIndex(_) => "CreateIndex",
             Self::AlterIndex(_) => "AlterIndex",
             Self::DropIndex(_) => "DropIndex",
-            Self::AlterIndex(_) => "AlterIndex",
-            Self::TruncateTable(_) => "TruncateTable",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
             Self::CreateView(_) => "CreateView",
@@ -2801,8 +2789,6 @@ impl PhysicalPlan {
             | Self::CreateIndex(_)
             | Self::AlterIndex(_)
             | Self::DropIndex(_)
-            | Self::AlterIndex(_)
-            | Self::TruncateTable(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
@@ -3266,32 +3252,6 @@ impl DisplayTree<'_> {
                 write!(f, "DropIndex: {}", node.names.join(", "))?;
                 if node.if_exists {
                     write!(f, " IF EXISTS")?;
-                }
-            }
-            PhysicalPlan::AlterIndex(node) => {
-                write!(f, "AlterIndex: {}", node.name)?;
-                if node.if_exists {
-                    write!(f, " IF EXISTS")?;
-                }
-                match &node.action {
-                    crate::plan::logical::AlterIndexAction::RenameIndex { new_name } => {
-                        write!(f, " RENAME TO {}", new_name)?;
-                    }
-                    crate::plan::logical::AlterIndexAction::SetOptions { options } => {
-                        write!(f, " SET ({} options)", options.len())?;
-                    }
-                    crate::plan::logical::AlterIndexAction::ResetOptions { options } => {
-                        write!(f, " RESET ({} options)", options.len())?;
-                    }
-                }
-            }
-            PhysicalPlan::TruncateTable(node) => {
-                write!(f, "TruncateTable: {}", node.names.join(", "))?;
-                if node.restart_identity {
-                    write!(f, " RESTART IDENTITY")?;
-                }
-                if node.cascade {
-                    write!(f, " CASCADE")?;
                 }
             }
             PhysicalPlan::CreateCollection(node) => {

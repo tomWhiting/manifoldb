@@ -399,14 +399,6 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
-        LogicalPlan::TruncateTable(node) => {
-            if node.names.is_empty() {
-                return Err(PlanError::Unsupported(
-                    "TRUNCATE TABLE requires table name".to_string(),
-                ));
-            }
-        }
-
         LogicalPlan::CreateCollection(node) => {
             if node.name.is_empty() {
                 return Err(PlanError::Unsupported(
@@ -849,8 +841,6 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         | LogicalPlan::CreateIndex(_)
         | LogicalPlan::AlterIndex(_)
         | LogicalPlan::DropIndex(_)
-        | LogicalPlan::AlterIndex(_)
-        | LogicalPlan::TruncateTable(_)
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)

@@ -101,12 +101,6 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             // Index operations don't directly reference tables
         }
 
-        LogicalPlan::TruncateTable(node) => {
-            for name in &node.names {
-                tables.push(name.clone());
-            }
-        }
-
         LogicalPlan::Project { input, .. }
         | LogicalPlan::Filter { input, .. }
         | LogicalPlan::Sort { input, .. }
