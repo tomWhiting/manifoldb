@@ -2,7 +2,7 @@
 //!
 //! This module defines the top-level statement types for parsed queries.
 
-use super::expr::{Expr, Identifier, OrderByExpr, QualifiedName};
+use super::expr::{Expr, Identifier, NamedWindowDefinition, OrderByExpr, QualifiedName};
 use super::pattern::GraphPattern;
 
 /// A parsed SQL statement.
@@ -483,6 +483,10 @@ pub struct SelectStatement {
     pub group_by: Vec<Expr>,
     /// Optional HAVING clause.
     pub having: Option<Expr>,
+    /// Named window definitions (WINDOW clause).
+    ///
+    /// Example: `WINDOW w AS (PARTITION BY department ORDER BY hire_date)`
+    pub named_windows: Vec<NamedWindowDefinition>,
     /// Optional ORDER BY clause.
     pub order_by: Vec<OrderByExpr>,
     /// Optional LIMIT clause.
@@ -508,6 +512,7 @@ impl SelectStatement {
             where_clause: None,
             group_by: vec![],
             having: None,
+            named_windows: vec![],
             order_by: vec![],
             limit: None,
             offset: None,
@@ -695,6 +700,7 @@ impl MatchStatement {
             where_clause: self.where_clause.clone(),
             group_by: vec![],
             having: None,
+            named_windows: vec![],
             order_by: self.order_by.clone(),
             limit: self.limit.clone(),
             offset: self.skip.clone(), // Cypher SKIP = SQL OFFSET

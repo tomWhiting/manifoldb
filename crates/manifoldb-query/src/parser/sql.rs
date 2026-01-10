@@ -17,15 +17,15 @@ use crate::ast::{
     DropIndexStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
     DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
     FunctionLanguage, FunctionParameter, FunctionVolatility, Identifier, IndexColumn, InsertSource,
-    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal, OnConflict,
-    OrderByExpr, ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
-    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
-    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
-    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
-    TruncateCascade, TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement,
-    UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec,
-    WithClause,
+    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal,
+    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
+    PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
+    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
+    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
+    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
+    TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity, TruncateTableStatement,
+    UnaryOp, UpdateStatement, UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -395,6 +395,13 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
 
     let having = select.having.map(convert_expr).transpose()?;
 
+    // Parse named window definitions (WINDOW clause)
+    let named_windows = select
+        .named_window
+        .into_iter()
+        .map(convert_named_window)
+        .collect::<ParseResult<Vec<_>>>()?;
+
     Ok(SelectStatement {
         with_clauses: vec![], // CTEs are handled at the Query level, not Select level
         distinct,
@@ -406,6 +413,7 @@ fn convert_select(select: sp::Select) -> ParseResult<SelectStatement> {
         where_clause,
         group_by,
         having,
+        named_windows,
         order_by: vec![],
         limit: None,
         offset: None,
@@ -1071,6 +1079,9 @@ fn convert_call(func: sp::Function) -> ParseResult<CallStatement> {
 fn convert_window_spec(spec: sp::WindowType) -> ParseResult<WindowSpec> {
     match spec {
         sp::WindowType::WindowSpec(spec) => {
+            // Handle reference to a named window
+            let window_name = spec.window_name.map(convert_ident);
+
             let partition_by =
                 spec.partition_by.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
 
@@ -1082,10 +1093,54 @@ fn convert_window_spec(spec: sp::WindowType) -> ParseResult<WindowSpec> {
 
             let frame = spec.window_frame.map(convert_window_frame).transpose()?;
 
-            Ok(WindowSpec { partition_by, order_by, frame })
+            Ok(WindowSpec { window_name, partition_by, order_by, frame })
         }
-        sp::WindowType::NamedWindow(_) => {
-            Err(ParseError::Unsupported("named window reference".to_string()))
+        sp::WindowType::NamedWindow(name) => {
+            // Direct reference to a named window (e.g., `OVER w`)
+            Ok(WindowSpec {
+                window_name: Some(convert_ident(name)),
+                partition_by: vec![],
+                order_by: vec![],
+                frame: None,
+            })
+        }
+    }
+}
+
+/// Converts a named window definition (from WINDOW clause).
+fn convert_named_window(def: sp::NamedWindowDefinition) -> ParseResult<NamedWindowDefinition> {
+    let name = convert_ident(def.0);
+    match def.1 {
+        sp::NamedWindowExpr::NamedWindow(base_name) => {
+            // Window that references another named window: WINDOW w AS prev_window
+            Ok(NamedWindowDefinition {
+                name,
+                base_window: Some(convert_ident(base_name)),
+                spec: WindowSpec {
+                    window_name: None,
+                    partition_by: vec![],
+                    order_by: vec![],
+                    frame: None,
+                },
+            })
+        }
+        sp::NamedWindowExpr::WindowSpec(spec) => {
+            // Window with full specification: WINDOW w AS (PARTITION BY ...)
+            let window_name = spec.window_name.map(convert_ident);
+            let partition_by =
+                spec.partition_by.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?;
+            let order_by = spec
+                .order_by
+                .into_iter()
+                .map(convert_order_by_expr)
+                .collect::<ParseResult<Vec<_>>>()?;
+            let frame = spec.window_frame.map(convert_window_frame).transpose()?;
+
+            Ok(NamedWindowDefinition {
+                name,
+                base_window: window_name,
+                spec: WindowSpec { window_name: None, partition_by, order_by, frame },
+            })
         }
     }
 }
@@ -1101,7 +1156,9 @@ fn convert_window_frame(frame: sp::WindowFrame) -> ParseResult<WindowFrame> {
     let start = convert_window_frame_bound(frame.start_bound)?;
     let end = frame.end_bound.map(convert_window_frame_bound).transpose()?;
 
-    Ok(WindowFrame { units, start, end })
+    // Note: sqlparser doesn't support frame exclusion yet (TBD in their codebase)
+    // We'll set it to None for now and add support when sqlparser implements it
+    Ok(WindowFrame { units, start, end, exclusion: None })
 }
 
 /// Converts a window frame bound.

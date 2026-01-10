@@ -344,8 +344,14 @@ pub enum PhysicalPlan {
     /// DROP TABLE operation.
     DropTable(DropTableNode),
 
+    /// TRUNCATE TABLE operation.
+    TruncateTable(TruncateTableNode),
+
     /// CREATE INDEX operation.
     CreateIndex(CreateIndexNode),
+
+    /// ALTER INDEX operation.
+    AlterIndex(AlterIndexNode),
 
     /// DROP INDEX operation.
     DropIndex(DropIndexNode),
@@ -905,6 +911,8 @@ pub struct WindowFunctionExpr {
     /// Window frame specification for controlling which rows are included in calculations.
     /// If None, uses the default frame based on function type and ORDER BY presence.
     pub frame: Option<WindowFrame>,
+    /// Optional FILTER clause to conditionally include rows in window computation.
+    pub filter: Option<Box<LogicalExpr>>,
     /// Output column alias.
     pub alias: String,
 }
@@ -925,6 +933,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
             alias: alias.into(),
         }
     }
@@ -946,6 +955,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
             alias: alias.into(),
         }
     }
@@ -959,6 +969,7 @@ impl WindowFunctionExpr {
         partition_by: Vec<LogicalExpr>,
         order_by: Vec<SortOrder>,
         frame: Option<WindowFrame>,
+        filter: Option<LogicalExpr>,
         alias: impl Into<String>,
     ) -> Self {
         Self {
@@ -968,6 +979,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame,
+            filter: filter.map(Box::new),
             alias: alias.into(),
         }
     }
@@ -2433,7 +2445,9 @@ impl PhysicalPlan {
             | Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::AlterIndex(_)
             | Self::TruncateTable(_)
@@ -2533,7 +2547,9 @@ impl PhysicalPlan {
             | Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::AlterIndex(_)
             | Self::TruncateTable(_)
@@ -2700,7 +2716,9 @@ impl PhysicalPlan {
             Self::CreateTable(_) => "CreateTable",
             Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
+            Self::TruncateTable(_) => "TruncateTable",
             Self::CreateIndex(_) => "CreateIndex",
+            Self::AlterIndex(_) => "AlterIndex",
             Self::DropIndex(_) => "DropIndex",
             Self::AlterIndex(_) => "AlterIndex",
             Self::TruncateTable(_) => "TruncateTable",
@@ -2779,7 +2797,9 @@ impl PhysicalPlan {
             Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::AlterIndex(_)
             | Self::TruncateTable(_)
@@ -3218,6 +3238,15 @@ impl DisplayTree<'_> {
                     write!(f, " CASCADE")?;
                 }
             }
+            PhysicalPlan::TruncateTable(node) => {
+                write!(f, "TruncateTable: {}", node.names.join(", "))?;
+                if node.restart_identity {
+                    write!(f, " RESTART IDENTITY")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
             PhysicalPlan::CreateIndex(node) => {
                 write!(f, "CreateIndex: {} ON {}", node.name, node.table)?;
                 if node.unique {
@@ -3225,6 +3254,12 @@ impl DisplayTree<'_> {
                 }
                 if let Some(method) = &node.using {
                     write!(f, " USING {method}")?;
+                }
+            }
+            PhysicalPlan::AlterIndex(node) => {
+                write!(f, "AlterIndex: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
                 }
             }
             PhysicalPlan::DropIndex(node) => {

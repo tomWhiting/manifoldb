@@ -161,9 +161,14 @@ impl ExpressionSimplify {
             }
 
             // Aggregate functions - simplify arguments
-            LogicalExpr::AggregateFunction { func, args, distinct } => {
+            LogicalExpr::AggregateFunction { func, args, distinct, .. } => {
                 let simplified_args = args.into_iter().map(|a| self.simplify_expr(a)).collect();
-                LogicalExpr::AggregateFunction { func, args: simplified_args, distinct }
+                LogicalExpr::AggregateFunction {
+                    func,
+                    args: simplified_args,
+                    distinct,
+                    filter: None,
+                }
             }
 
             // Cast - simplify inner expression

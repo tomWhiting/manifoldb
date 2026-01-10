@@ -298,7 +298,7 @@ impl WindowOp {
     }
 
     /// Computes FIRST_VALUE, LAST_VALUE, and NTH_VALUE window functions.
-    /// These functions respect window frame specifications.
+    /// These functions respect window frame specifications and exclusions.
     fn compute_frame_value(
         &self,
         rows: &[Row],
@@ -322,29 +322,40 @@ impl WindowOp {
                 partition_end,
             );
 
+            // Collect non-excluded frame positions, respecting FILTER clause
+            let valid_positions: Vec<usize> = (frame_start..frame_end)
+                .filter(|&pos| {
+                    // Check frame exclusion
+                    if self.is_excluded_by_frame(
+                        rows,
+                        indices,
+                        expr,
+                        sorted_pos,
+                        pos,
+                        partition_end,
+                    ) {
+                        return false;
+                    }
+                    // Check FILTER clause
+                    if let Some(filter) = &expr.filter {
+                        let row_idx = indices[pos];
+                        match evaluate_expr(filter, &rows[row_idx]) {
+                            Ok(Value::Bool(true)) => true,
+                            _ => false, // Filter out if not true (including NULL)
+                        }
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
             // Determine which row to get the value from within the frame
             let target_sorted_pos = match &expr.func {
-                WindowFunction::FirstValue => {
-                    if frame_start < frame_end {
-                        Some(frame_start)
-                    } else {
-                        None
-                    }
-                }
-                WindowFunction::LastValue => {
-                    if frame_end > frame_start {
-                        Some(frame_end - 1)
-                    } else {
-                        None
-                    }
-                }
+                WindowFunction::FirstValue => valid_positions.first().copied(),
+                WindowFunction::LastValue => valid_positions.last().copied(),
                 WindowFunction::NthValue { n } => {
-                    let nth_pos = frame_start + (*n as usize) - 1; // n is 1-indexed
-                    if nth_pos < frame_end {
-                        Some(nth_pos)
-                    } else {
-                        None
-                    }
+                    let nth_index = (*n as usize).saturating_sub(1); // n is 1-indexed
+                    valid_positions.get(nth_index).copied()
                 }
                 _ => unreachable!(),
             };
@@ -392,8 +403,31 @@ impl WindowOp {
                 partition_end,
             );
 
-            // Collect values in the frame
+            // Collect values in the frame, respecting frame exclusion and FILTER clause
             let frame_values: Vec<Value> = (frame_start..frame_end)
+                .filter(|&pos| {
+                    // Check frame exclusion
+                    if self.is_excluded_by_frame(
+                        rows,
+                        indices,
+                        expr,
+                        sorted_pos,
+                        pos,
+                        partition_end,
+                    ) {
+                        return false;
+                    }
+                    // Check FILTER clause
+                    if let Some(filter) = &expr.filter {
+                        let row_idx = indices[pos];
+                        match evaluate_expr(filter, &rows[row_idx]) {
+                            Ok(Value::Bool(true)) => true,
+                            _ => false, // Filter out if not true (including NULL)
+                        }
+                    } else {
+                        true
+                    }
+                })
                 .map(|pos| {
                     let row_idx = indices[pos];
                     if let Some(arg) = &expr.arg {
@@ -418,6 +452,72 @@ impl WindowOp {
 
             window_values[idx] = result;
         }
+    }
+
+    /// Checks if a row should be excluded from the frame based on the exclusion clause.
+    ///
+    /// Exclusion modes:
+    /// - EXCLUDE NO OTHERS: Don't exclude any rows (default)
+    /// - EXCLUDE CURRENT ROW: Exclude the current row from the frame
+    /// - EXCLUDE GROUP: Exclude the current row and all its peers (same ORDER BY values)
+    /// - EXCLUDE TIES: Exclude peers of the current row, but not the current row itself
+    fn is_excluded_by_frame(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        current_pos: usize,
+        frame_pos: usize,
+        partition_end: usize,
+    ) -> bool {
+        use crate::ast::WindowFrameExclusion;
+
+        let exclusion = match &expr.frame {
+            Some(frame) => frame.exclusion,
+            None => return false, // No exclusion by default
+        };
+
+        match exclusion {
+            None | Some(WindowFrameExclusion::NoOthers) => false,
+            Some(WindowFrameExclusion::CurrentRow) => frame_pos == current_pos,
+            Some(WindowFrameExclusion::Group) => {
+                // Exclude the current row and all its peers
+                self.are_peers(rows, indices, expr, current_pos, frame_pos, partition_end)
+            }
+            Some(WindowFrameExclusion::Ties) => {
+                // Exclude peers, but not the current row itself
+                frame_pos != current_pos
+                    && self.are_peers(rows, indices, expr, current_pos, frame_pos, partition_end)
+            }
+        }
+    }
+
+    /// Checks if two rows are peers (have the same ORDER BY values).
+    fn are_peers(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        pos1: usize,
+        pos2: usize,
+        _partition_end: usize,
+    ) -> bool {
+        if expr.order_by.is_empty() {
+            // Without ORDER BY, all rows are peers
+            return true;
+        }
+
+        let idx1 = indices[pos1];
+        let idx2 = indices[pos2];
+
+        for sort_order in &expr.order_by {
+            let val1 = evaluate_expr(&sort_order.expr, &rows[idx1]).unwrap_or(Value::Null);
+            let val2 = evaluate_expr(&sort_order.expr, &rows[idx2]).unwrap_or(Value::Null);
+            if val1 != val2 {
+                return false;
+            }
+        }
+        true
     }
 
     /// Computes COUNT over a set of values.
@@ -787,6 +887,7 @@ impl WindowOp {
                     units: WindowFrameUnits::Range,
                     start: WindowFrameBound::UnboundedPreceding,
                     end: Some(WindowFrameBound::CurrentRow),
+                    exclusion: None,
                 }
             }
         };
@@ -794,62 +895,97 @@ impl WindowOp {
         // Get the end bound (default to same as start if not BETWEEN)
         let end_bound = frame.end.clone().unwrap_or_else(|| frame.start.clone());
 
-        // Compute frame start
+        // Compute frame start based on frame units
         let frame_start = match &frame.start {
             WindowFrameBound::UnboundedPreceding => partition_start,
-            WindowFrameBound::CurrentRow => {
-                if frame.units == WindowFrameUnits::Rows {
-                    sorted_pos
-                } else {
-                    // RANGE: find first row with same ORDER BY value
+            WindowFrameBound::CurrentRow => match frame.units {
+                WindowFrameUnits::Rows => sorted_pos,
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    // RANGE/GROUPS: find first row with same ORDER BY value
                     self.find_peers_start(rows, indices, expr, sorted_pos, partition_start)
                 }
-            }
+            },
             WindowFrameBound::Preceding(n_expr) => {
                 let n = self.eval_bound_offset(n_expr);
-                if frame.units == WindowFrameUnits::Rows {
-                    sorted_pos.saturating_sub(n).max(partition_start)
-                } else {
-                    // RANGE: find rows within n value difference
-                    self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                match frame.units {
+                    WindowFrameUnits::Rows => sorted_pos.saturating_sub(n).max(partition_start),
+                    WindowFrameUnits::Range => {
+                        // RANGE: find rows within n value difference
+                        self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                    }
+                    WindowFrameUnits::Groups => {
+                        // GROUPS: go back n peer groups
+                        self.find_groups_start(rows, indices, expr, sorted_pos, partition_start, n)
+                    }
                 }
             }
             WindowFrameBound::Following(n_expr) => {
                 let n = self.eval_bound_offset(n_expr);
-                if frame.units == WindowFrameUnits::Rows {
-                    (sorted_pos + n).min(partition_end)
-                } else {
-                    self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                match frame.units {
+                    WindowFrameUnits::Rows => (sorted_pos + n).min(partition_end),
+                    WindowFrameUnits::Range => {
+                        self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                    }
+                    WindowFrameUnits::Groups => {
+                        // GROUPS: go forward n peer groups
+                        self.find_groups_end(rows, indices, expr, sorted_pos, partition_end, n)
+                    }
                 }
             }
             WindowFrameBound::UnboundedFollowing => partition_end,
         };
 
-        // Compute frame end (exclusive)
+        // Compute frame end (exclusive) based on frame units
         let frame_end = match &end_bound {
             WindowFrameBound::UnboundedFollowing => partition_end,
-            WindowFrameBound::CurrentRow => {
-                if frame.units == WindowFrameUnits::Rows {
-                    (sorted_pos + 1).min(partition_end)
-                } else {
-                    // RANGE: find last row with same ORDER BY value + 1
+            WindowFrameBound::CurrentRow => match frame.units {
+                WindowFrameUnits::Rows => (sorted_pos + 1).min(partition_end),
+                WindowFrameUnits::Range | WindowFrameUnits::Groups => {
+                    // RANGE/GROUPS: find last row with same ORDER BY value + 1
                     self.find_peers_end(rows, indices, expr, sorted_pos, partition_end)
                 }
-            }
+            },
             WindowFrameBound::Following(n_expr) => {
                 let n = self.eval_bound_offset(n_expr);
-                if frame.units == WindowFrameUnits::Rows {
-                    (sorted_pos + n + 1).min(partition_end)
-                } else {
-                    self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                match frame.units {
+                    WindowFrameUnits::Rows => (sorted_pos + n + 1).min(partition_end),
+                    WindowFrameUnits::Range => {
+                        self.find_range_end(rows, indices, expr, sorted_pos, partition_end, n)
+                    }
+                    WindowFrameUnits::Groups => {
+                        // GROUPS: go forward n peer groups and include all of them
+                        self.find_groups_end_inclusive(
+                            rows,
+                            indices,
+                            expr,
+                            sorted_pos,
+                            partition_end,
+                            n,
+                        )
+                    }
                 }
             }
             WindowFrameBound::Preceding(n_expr) => {
                 let n = self.eval_bound_offset(n_expr);
-                if frame.units == WindowFrameUnits::Rows {
-                    (sorted_pos.saturating_sub(n) + 1).max(partition_start)
-                } else {
-                    self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                match frame.units {
+                    WindowFrameUnits::Rows => {
+                        (sorted_pos.saturating_sub(n) + 1).max(partition_start)
+                    }
+                    WindowFrameUnits::Range => {
+                        self.find_range_start(rows, indices, expr, sorted_pos, partition_start, n)
+                    }
+                    WindowFrameUnits::Groups => {
+                        // GROUPS: go back n peer groups (end bound means last row of that group + 1)
+                        self.find_groups_end_at_preceding(
+                            rows,
+                            indices,
+                            expr,
+                            sorted_pos,
+                            partition_start,
+                            partition_end,
+                            n,
+                        )
+                    }
                 }
             }
             WindowFrameBound::UnboundedPreceding => partition_start,
@@ -1065,6 +1201,141 @@ impl WindowOp {
         } else {
             cmp_low != Ordering::Greater && cmp_high != Ordering::Less
         }
+    }
+
+    /// Finds the start position for GROUPS with a preceding offset.
+    ///
+    /// GROUPS mode counts peer groups (rows with the same ORDER BY value).
+    /// This finds the start of the peer group that is `offset` groups before the current row.
+    fn find_groups_start(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_start: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() || offset == 0 {
+            // No ordering means all rows are peers; offset 0 means current group
+            return self.find_peers_start(rows, indices, expr, sorted_pos, partition_start);
+        }
+
+        // Find the start of the current peer group
+        let current_group_start =
+            self.find_peers_start(rows, indices, expr, sorted_pos, partition_start);
+
+        // Go backwards, counting peer groups
+        let mut groups_remaining = offset;
+        let mut pos = current_group_start;
+
+        while groups_remaining > 0 && pos > partition_start {
+            // Move to previous row
+            pos -= 1;
+            // Find the start of that peer group
+            pos = self.find_peers_start(rows, indices, expr, pos, partition_start);
+            groups_remaining -= 1;
+        }
+
+        pos
+    }
+
+    /// Finds the start position for GROUPS with a following offset (for frame start).
+    ///
+    /// This finds the start of the peer group that is `offset` groups after the current row.
+    fn find_groups_end(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_end: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() || offset == 0 {
+            return self.find_peers_start(rows, indices, expr, sorted_pos, partition_end);
+        }
+
+        // Find the end of the current peer group
+        let mut pos = self.find_peers_end(rows, indices, expr, sorted_pos, partition_end);
+
+        // Go forwards, counting peer groups
+        let mut groups_remaining = offset;
+
+        while groups_remaining > 0 && pos < partition_end {
+            // We're now at the start of the next group; find the start
+            let group_start = pos;
+            groups_remaining -= 1;
+            if groups_remaining == 0 {
+                return group_start;
+            }
+            // Find the end of this group
+            pos = self.find_peers_end(rows, indices, expr, pos, partition_end);
+        }
+
+        pos
+    }
+
+    /// Finds the end position (exclusive) for GROUPS with a following offset.
+    ///
+    /// This includes all rows in the peer group that is `offset` groups after the current row.
+    fn find_groups_end_inclusive(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_end: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_end;
+        }
+
+        // Find the end of the current peer group
+        let mut pos = self.find_peers_end(rows, indices, expr, sorted_pos, partition_end);
+
+        // Go forwards, counting peer groups
+        let mut groups_remaining = offset;
+
+        while groups_remaining > 0 && pos < partition_end {
+            groups_remaining -= 1;
+            // Find the end of this group
+            pos = self.find_peers_end(rows, indices, expr, pos, partition_end);
+        }
+
+        pos
+    }
+
+    /// Finds the end position for GROUPS with a preceding offset (for frame end bound).
+    ///
+    /// When the end bound is "N PRECEDING", we find the end of the group that is N groups
+    /// before the current row.
+    fn find_groups_end_at_preceding(
+        &self,
+        rows: &[Row],
+        indices: &[usize],
+        expr: &WindowFunctionExpr,
+        sorted_pos: usize,
+        partition_start: usize,
+        partition_end: usize,
+        offset: usize,
+    ) -> usize {
+        if expr.order_by.is_empty() {
+            return partition_end;
+        }
+
+        if offset == 0 {
+            // 0 PRECEDING means end of current group
+            return self.find_peers_end(rows, indices, expr, sorted_pos, partition_end);
+        }
+
+        // Find the start of the target group (N groups preceding)
+        let group_start =
+            self.find_groups_start(rows, indices, expr, sorted_pos, partition_start, offset);
+
+        // Find the end of that group
+        self.find_peers_end(rows, indices, expr, group_start, partition_end)
     }
 
     /// Builds partition ranges for sorted indices.
@@ -1742,6 +2013,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -1751,6 +2023,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "last_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1791,6 +2064,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -1800,6 +2074,7 @@ mod tests {
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "lowest_in_dept",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1849,6 +2124,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -1858,6 +2134,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "second_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1896,6 +2173,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         // Try to get 5th value when there are only 2 rows
@@ -1906,6 +2184,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "fifth_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -1946,6 +2225,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -1955,6 +2235,7 @@ mod tests {
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "second_in_dept",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2049,6 +2330,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::UnboundedPreceding,
             end: Some(WindowFrameBound::CurrentRow),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2058,6 +2340,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "first_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2104,6 +2387,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::CurrentRow,
             end: Some(WindowFrameBound::UnboundedFollowing),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2113,6 +2397,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "last_name",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2160,6 +2445,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
             end: Some(WindowFrameBound::CurrentRow),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2169,6 +2455,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "first_in_window",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2220,6 +2507,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::CurrentRow,
             end: Some(WindowFrameBound::Following(Box::new(Expr::Literal(Literal::Integer(1))))),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2229,6 +2517,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "last_in_window",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2280,6 +2569,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
             end: Some(WindowFrameBound::Following(Box::new(Expr::Literal(Literal::Integer(1))))),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2289,6 +2579,7 @@ mod tests {
             vec![],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "second_in_window",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2340,6 +2631,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
             end: Some(WindowFrameBound::CurrentRow),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2349,6 +2641,7 @@ mod tests {
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::desc(LogicalExpr::column("salary"))],
             frame,
+            None,
             "prev_or_current",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2453,6 +2746,7 @@ mod tests {
             units: WindowFrameUnits::Rows,
             start: WindowFrameBound::Preceding(Box::new(Expr::Literal(Literal::Integer(1)))),
             end: Some(WindowFrameBound::CurrentRow),
+            exclusion: None,
         });
 
         let window_expr = WindowFunctionExpr::with_frame(
@@ -2462,6 +2756,7 @@ mod tests {
             vec![],
             vec![SortOrder::asc(LogicalExpr::column("date"))],
             frame,
+            None,
             "moving_avg",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2650,6 +2945,7 @@ mod tests {
             vec![LogicalExpr::column("dept")],
             vec![SortOrder::asc(LogicalExpr::column("date"))],
             None,
+            None,
             "dept_running_total",
         );
         let mut op = WindowOp::new(vec![window_expr], input);
@@ -2789,6 +3085,7 @@ mod tests {
             None,
             vec![],
             vec![], // No ORDER BY = entire partition as frame
+            None,
             None,
             "total_avg",
         );

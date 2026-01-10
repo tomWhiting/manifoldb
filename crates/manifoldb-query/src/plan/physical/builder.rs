@@ -403,7 +403,9 @@ impl PhysicalPlanner {
             LogicalPlan::CreateTable(node) => PhysicalPlan::CreateTable(node.clone()),
             LogicalPlan::AlterTable(node) => PhysicalPlan::AlterTable(node.clone()),
             LogicalPlan::DropTable(node) => PhysicalPlan::DropTable(node.clone()),
+            LogicalPlan::TruncateTable(node) => PhysicalPlan::TruncateTable(node.clone()),
             LogicalPlan::CreateIndex(node) => PhysicalPlan::CreateIndex(node.clone()),
+            LogicalPlan::AlterIndex(node) => PhysicalPlan::AlterIndex(node.clone()),
             LogicalPlan::DropIndex(node) => PhysicalPlan::DropIndex(node.clone()),
             LogicalPlan::AlterIndex(node) => PhysicalPlan::AlterIndex(node.clone()),
             LogicalPlan::TruncateTable(node) => PhysicalPlan::TruncateTable(node.clone()),
@@ -1118,6 +1120,7 @@ impl PhysicalPlanner {
                     partition_by,
                     order_by,
                     frame,
+                    filter,
                 } = expr
                 {
                     Some(WindowFunctionExpr::with_frame(
@@ -1127,6 +1130,7 @@ impl PhysicalPlanner {
                         partition_by.clone(),
                         order_by.clone(),
                         frame.clone(),
+                        filter.as_ref().map(|f| (**f).clone()),
                         alias.clone(),
                     ))
                 } else {

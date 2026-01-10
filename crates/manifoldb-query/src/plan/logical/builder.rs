@@ -133,13 +133,21 @@ pub struct PlanBuilder {
     /// When a view is referenced, it is expanded to its defining query.
     /// Views have lower precedence than CTEs (CTEs shadow views).
     view_definitions: HashMap<String, ViewDefinition>,
+    /// Named window definitions for the current query.
+    /// These are defined in the WINDOW clause and can be referenced by name in OVER clauses.
+    named_windows: HashMap<String, ast::NamedWindowDefinition>,
 }
 
 impl PlanBuilder {
     /// Creates a new plan builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { alias_counter: 0, cte_scope_stack: Vec::new(), view_definitions: HashMap::new() }
+        Self {
+            alias_counter: 0,
+            cte_scope_stack: Vec::new(),
+            view_definitions: HashMap::new(),
+            named_windows: HashMap::new(),
+        }
     }
 
     /// Looks up a CTE by name, searching from innermost scope outward.
@@ -675,10 +683,15 @@ impl PlanBuilder {
                             .collect::<PlanResult<Vec<_>>>()?
                     };
 
+                    // Build optional filter clause
+                    let filter =
+                        func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
                     aggregates.push(LogicalExpr::AggregateFunction {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
+                        filter,
                     });
                 } else {
                     // Check arguments for nested aggregates
@@ -867,6 +880,9 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<Vec<_>>>()?;
 
+        // Build optional filter clause
+        let filter = func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
         // Parse the window function type and build the expression
         match name.as_str() {
             // Ranking functions (no arguments)
@@ -877,6 +893,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter,
             }),
             "RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::Rank,
@@ -885,6 +902,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter,
             }),
             "DENSE_RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::DenseRank,
@@ -893,6 +911,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter,
             }),
 
             // Value functions (require argument)
@@ -907,6 +926,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "LEAD" => {
@@ -920,6 +940,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "FIRST_VALUE" => {
@@ -931,6 +952,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "LAST_VALUE" => {
@@ -942,6 +964,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "NTH_VALUE" => {
@@ -954,6 +977,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
 
@@ -971,6 +995,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "SUM" => {
@@ -982,6 +1007,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "AVG" => {
@@ -993,6 +1019,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "MIN" => {
@@ -1004,6 +1031,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "MAX" => {
@@ -1015,6 +1043,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
 
@@ -1028,6 +1057,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter,
                 })
             }
             "PERCENT_RANK" => Ok(LogicalExpr::WindowFunction {
@@ -1037,6 +1067,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter,
             }),
             "CUME_DIST" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::CumeDist,
@@ -1045,6 +1076,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter,
             }),
 
             _ => Err(PlanError::Unsupported(format!("window function: {name}"))),
@@ -2654,10 +2686,15 @@ impl PlanBuilder {
                             .collect::<PlanResult<Vec<_>>>()?
                     };
 
+                    // Build optional filter clause
+                    let filter =
+                        func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
                     return Ok(LogicalExpr::AggregateFunction {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
+                        filter,
                     });
                 }
 

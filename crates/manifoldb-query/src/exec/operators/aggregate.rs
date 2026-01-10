@@ -132,13 +132,28 @@ impl HashAggregateOp {
 
             // Update each aggregate
             for (i, agg_expr) in self.aggregates.iter().enumerate() {
-                if let LogicalExpr::AggregateFunction { func, args, distinct: _ } = agg_expr {
-                    let is_wildcard =
-                        args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
-                    // Evaluate all arguments
-                    let arg_values: Vec<Value> =
-                        args.iter().map(|a| evaluate_expr(a, &row)).collect::<Result<_, _>>()?;
-                    state.accumulators[i].update(func, &arg_values, is_wildcard);
+                if let LogicalExpr::AggregateFunction { func, args, distinct: _, filter } = agg_expr
+                {
+                    // Check FILTER clause before updating accumulator
+                    let passes_filter = if let Some(filter_expr) = filter {
+                        match evaluate_expr(filter_expr, &row) {
+                            Ok(Value::Bool(true)) => true,
+                            _ => false, // Filter out if not true (including NULL)
+                        }
+                    } else {
+                        true
+                    };
+
+                    if passes_filter {
+                        let is_wildcard =
+                            args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                        // Evaluate all arguments
+                        let arg_values: Vec<Value> = args
+                            .iter()
+                            .map(|a| evaluate_expr(a, &row))
+                            .collect::<Result<_, _>>()?;
+                        state.accumulators[i].update(func, &arg_values, is_wildcard);
+                    }
                 }
             }
         }
@@ -1026,13 +1041,14 @@ fn evaluate_having_expr(
 ) -> OperatorResult<Value> {
     match expr {
         // Handle aggregate function references by looking up the computed value
-        LogicalExpr::AggregateFunction { func, args, distinct } => {
+        LogicalExpr::AggregateFunction { func, args, distinct, .. } => {
             // Find matching aggregate in the aggregates list
             for (i, agg) in aggregates.iter().enumerate() {
                 if let LogicalExpr::AggregateFunction {
                     func: agg_func,
                     args: agg_args,
                     distinct: agg_distinct,
+                    ..
                 } = agg
                 {
                     if func == agg_func && distinct == agg_distinct && args_match(args, agg_args) {

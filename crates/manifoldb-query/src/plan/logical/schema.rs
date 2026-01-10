@@ -319,7 +319,9 @@ impl LogicalPlan {
 
             Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::AlterIndex(_)
             | Self::TruncateTable(_)

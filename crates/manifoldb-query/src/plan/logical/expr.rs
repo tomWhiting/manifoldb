@@ -73,6 +73,9 @@ pub enum LogicalExpr {
         args: Vec<LogicalExpr>,
         /// Whether DISTINCT is specified.
         distinct: bool,
+        /// Optional FILTER clause.
+        /// Example: `COUNT(*) FILTER (WHERE status = 'active')`
+        filter: Option<Box<LogicalExpr>>,
     },
 
     /// A CAST expression.
@@ -203,6 +206,9 @@ pub enum LogicalExpr {
         /// If None, uses the default frame (RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         /// when ORDER BY is present, or the entire partition otherwise).
         frame: Option<WindowFrame>,
+        /// Optional FILTER clause.
+        /// Example: `COUNT(*) FILTER (WHERE status = 'active') OVER (...)`
+        filter: Option<Box<LogicalExpr>>,
     },
 
     /// Cypher list comprehension expression.
@@ -706,37 +712,67 @@ impl LogicalExpr {
     /// Creates a COUNT aggregate.
     #[must_use]
     pub fn count(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Count, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::Count,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a SUM aggregate.
     #[must_use]
     pub fn sum(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Sum, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::Sum,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates an AVG aggregate.
     #[must_use]
     pub fn avg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Avg, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::Avg,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a MIN aggregate.
     #[must_use]
     pub fn min(expr: Self) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Min, args: vec![expr], distinct: false }
+        Self::AggregateFunction {
+            func: AggregateFunction::Min,
+            args: vec![expr],
+            distinct: false,
+            filter: None,
+        }
     }
 
     /// Creates a MAX aggregate.
     #[must_use]
     pub fn max(expr: Self) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::Max, args: vec![expr], distinct: false }
+        Self::AggregateFunction {
+            func: AggregateFunction::Max,
+            args: vec![expr],
+            distinct: false,
+            filter: None,
+        }
     }
 
     /// Creates an ARRAY_AGG aggregate.
     #[must_use]
     pub fn array_agg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::ArrayAgg, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::ArrayAgg,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a STRING_AGG aggregate.
@@ -746,19 +782,30 @@ impl LogicalExpr {
             func: AggregateFunction::StringAgg,
             args: vec![expr, delimiter],
             distinct,
+            filter: None,
         }
     }
 
     /// Creates a sample standard deviation aggregate (STDDEV).
     #[must_use]
     pub fn stddev_samp(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::StddevSamp, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::StddevSamp,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a population standard deviation aggregate (STDDEV_POP).
     #[must_use]
     pub fn stddev_pop(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::StddevPop, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::StddevPop,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a sample variance aggregate (VARIANCE).
@@ -768,13 +815,19 @@ impl LogicalExpr {
             func: AggregateFunction::VarianceSamp,
             args: vec![expr],
             distinct,
+            filter: None,
         }
     }
 
     /// Creates a population variance aggregate (VAR_POP).
     #[must_use]
     pub fn variance_pop(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::VariancePop, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::VariancePop,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a continuous percentile aggregate (percentileCont).
@@ -785,6 +838,7 @@ impl LogicalExpr {
             func: AggregateFunction::PercentileCont,
             args: vec![percentile, expr],
             distinct: false,
+            filter: None,
         }
     }
 
@@ -796,6 +850,7 @@ impl LogicalExpr {
             func: AggregateFunction::PercentileDisc,
             args: vec![percentile, expr],
             distinct: false,
+            filter: None,
         }
     }
 
@@ -805,7 +860,12 @@ impl LogicalExpr {
     /// Example: `SELECT json_agg(name) FROM users;` returns `["Alice", "Bob", "Charlie"]`
     #[must_use]
     pub fn json_agg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::JsonAgg, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::JsonAgg,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a JSONB_AGG aggregate.
@@ -813,7 +873,12 @@ impl LogicalExpr {
     /// Aggregates values into a JSONB array (same as JSON_AGG in our implementation).
     #[must_use]
     pub fn jsonb_agg(expr: Self, distinct: bool) -> Self {
-        Self::AggregateFunction { func: AggregateFunction::JsonbAgg, args: vec![expr], distinct }
+        Self::AggregateFunction {
+            func: AggregateFunction::JsonbAgg,
+            args: vec![expr],
+            distinct,
+            filter: None,
+        }
     }
 
     /// Creates a JSON_OBJECT_AGG aggregate.
@@ -826,6 +891,7 @@ impl LogicalExpr {
             func: AggregateFunction::JsonObjectAgg,
             args: vec![key, value],
             distinct,
+            filter: None,
         }
     }
 
@@ -838,6 +904,7 @@ impl LogicalExpr {
             func: AggregateFunction::JsonbObjectAgg,
             args: vec![key, value],
             distinct,
+            filter: None,
         }
     }
 
@@ -851,6 +918,7 @@ impl LogicalExpr {
             func: AggregateFunction::BoolAnd,
             args: vec![expr],
             distinct: false,
+            filter: None,
         }
     }
 
@@ -864,6 +932,7 @@ impl LogicalExpr {
             func: AggregateFunction::BoolOr,
             args: vec![expr],
             distinct: false,
+            filter: None,
         }
     }
 
@@ -889,6 +958,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -902,6 +972,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -915,6 +986,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -939,6 +1011,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -963,6 +1036,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -978,6 +1052,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -993,6 +1068,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -1013,6 +1089,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
         }
     }
 
@@ -1034,6 +1111,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame,
+            filter: None,
         }
     }
 
@@ -1055,6 +1133,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame,
+            filter: None,
         }
     }
 
@@ -1076,6 +1155,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame,
+            filter: None,
         }
     }
 
@@ -1096,6 +1176,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame,
+            filter: None,
         }
     }
 
@@ -1116,6 +1197,7 @@ impl LogicalExpr {
             partition_by,
             order_by,
             frame,
+            filter: None,
         }
     }
 
@@ -1267,7 +1349,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::AggregateFunction { func, args, distinct } => {
+            Self::AggregateFunction { func, args, distinct, .. } => {
                 write!(f, "{func}(")?;
                 if *distinct {
                     write!(f, "DISTINCT ")?;
@@ -1349,7 +1431,15 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, ")")
             }
-            Self::WindowFunction { func, arg, default_value, partition_by, order_by, frame } => {
+            Self::WindowFunction {
+                func,
+                arg,
+                default_value,
+                partition_by,
+                order_by,
+                frame,
+                ..
+            } => {
                 // Print function name and arguments
                 match func {
                     WindowFunction::RowNumber

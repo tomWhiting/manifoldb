@@ -55,9 +55,13 @@ Window Functions
 ├── WindowOp physical operator: ✅ Complete
 ├── Ranking functions (ROW_NUMBER, RANK, DENSE_RANK): ✅ Complete
 ├── Value functions (LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE): ✅ Complete
-├── Frame clause (ROWS/RANGE BETWEEN): ✅ Complete
+├── Frame clause (ROWS/RANGE/GROUPS BETWEEN): ✅ Complete (Jan 2026)
+├── Frame exclusion (EXCLUDE CURRENT ROW/GROUP/TIES): ✅ Complete (Jan 2026)
+├── Named window definitions (WINDOW w AS): ✅ Complete (Jan 2026)
+├── FILTER clause on window functions: ✅ Complete (Jan 2026)
+├── FILTER clause on aggregates: ✅ Complete (Jan 2026)
 ├── Aggregate as window (SUM, AVG, COUNT, MIN, MAX OVER): ✅ Complete (Jan 2026)
-└── Status: ✅ All core window functions complete (Jan 2026)
+└── Status: ✅ All SQL-2003 window function features complete (Jan 2026)
 
 Recursive CTEs
 ├── Depends on: Non-recursive CTEs (exists)
@@ -242,19 +246,23 @@ These feature groups can be implemented independently:
 | OVER () | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | PARTITION BY | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | ORDER BY in OVER | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
-| Named windows | | | | | | | Not implemented |
+| Named windows (WINDOW w AS) | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 - window inheritance |
 | **Frame Clause** |
 | ROWS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | RANGE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| GROUPS | | | | | | | Not implemented |
+| GROUPS | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 - peer group counting |
 | UNBOUNDED PRECEDING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | n PRECEDING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | CURRENT ROW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | n FOLLOWING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
 | UNBOUNDED FOLLOWING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
-| EXCLUDE CURRENT ROW | | | | | | | Not implemented |
-| EXCLUDE GROUP | | | | | | | Not implemented |
-| EXCLUDE TIES | | | | | | | Not implemented |
+| EXCLUDE CURRENT ROW | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| EXCLUDE GROUP | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| EXCLUDE TIES | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| EXCLUDE NO OTHERS | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 (default) |
+| **FILTER Clause** |
+| FILTER on window functions | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
+| FILTER on aggregates | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl Jan 2026 |
 | **Ranking Functions** |
 | row_number() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
 | rank() | ✓ | ✓ | ✓† | ✓† | ✓† | ✓† | Agent impl |
@@ -1049,7 +1057,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
 | CTEs | 10 | 6 | 0 | 4 |
-| Window Functions | 25 | 22 | 1 | 2 |
+| Window Functions | 32 | 30 | 0 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 44 | 32 | 3 | 9 |
 | Transactions | 8 | 8 | 0 | 0 |

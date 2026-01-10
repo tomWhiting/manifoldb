@@ -83,6 +83,12 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             }
         }
 
+        LogicalPlan::TruncateTable(node) => {
+            for name in &node.names {
+                tables.push(name.clone());
+            }
+        }
+
         LogicalPlan::AlterTable(node) => {
             tables.push(node.name.clone());
         }
