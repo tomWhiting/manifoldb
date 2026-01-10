@@ -261,6 +261,8 @@ pub enum LogicalPlan {
         columns: Vec<String>,
         /// The input providing rows to insert.
         input: Box<LogicalPlan>,
+        /// ON CONFLICT clause for upsert behavior.
+        on_conflict: Option<LogicalOnConflict>,
         /// Whether to return inserted rows.
         returning: Vec<LogicalExpr>,
     },
@@ -1449,6 +1451,76 @@ impl fmt::Display for LogicalPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.display_tree())
     }
+}
+
+// ========== ON CONFLICT Types ==========
+
+/// ON CONFLICT clause for INSERT statements (logical plan version).
+///
+/// This represents the PostgreSQL-style upsert syntax:
+/// - `ON CONFLICT DO NOTHING` - skip conflicting rows
+/// - `ON CONFLICT DO UPDATE SET ...` - update existing rows
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogicalOnConflict {
+    /// The conflict target (columns or constraint).
+    pub target: LogicalConflictTarget,
+    /// The action to take on conflict.
+    pub action: LogicalConflictAction,
+}
+
+impl LogicalOnConflict {
+    /// Creates a new ON CONFLICT DO NOTHING clause.
+    #[must_use]
+    pub fn do_nothing(target: LogicalConflictTarget) -> Self {
+        Self { target, action: LogicalConflictAction::DoNothing }
+    }
+
+    /// Creates a new ON CONFLICT DO UPDATE clause.
+    #[must_use]
+    pub fn do_update(
+        target: LogicalConflictTarget,
+        assignments: Vec<(String, LogicalExpr)>,
+        where_clause: Option<LogicalExpr>,
+    ) -> Self {
+        Self { target, action: LogicalConflictAction::DoUpdate { assignments, where_clause } }
+    }
+}
+
+/// Target for ON CONFLICT clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogicalConflictTarget {
+    /// Specific columns that form a unique constraint.
+    Columns(Vec<String>),
+    /// A named constraint.
+    Constraint(String),
+}
+
+impl LogicalConflictTarget {
+    /// Creates a column-based conflict target.
+    #[must_use]
+    pub fn columns(cols: Vec<String>) -> Self {
+        Self::Columns(cols)
+    }
+
+    /// Creates a constraint-based conflict target.
+    #[must_use]
+    pub fn constraint(name: impl Into<String>) -> Self {
+        Self::Constraint(name.into())
+    }
+}
+
+/// Action for ON CONFLICT clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalConflictAction {
+    /// DO NOTHING - skip conflicting rows.
+    DoNothing,
+    /// DO UPDATE SET ... - update existing rows.
+    DoUpdate {
+        /// The assignments (column, expression).
+        assignments: Vec<(String, LogicalExpr)>,
+        /// Optional WHERE clause for the update.
+        where_clause: Option<LogicalExpr>,
+    },
 }
 
 #[cfg(test)]

@@ -168,8 +168,8 @@ pub fn execute_statement<T: Transaction>(
 
     // Execute based on the statement type
     match &logical_plan {
-        LogicalPlan::Insert { table, columns, input, .. } => {
-            execute_insert(tx, table, columns, input, &ctx)
+        LogicalPlan::Insert { table, columns, input, on_conflict, .. } => {
+            execute_insert(tx, table, columns, input, on_conflict.as_ref(), &ctx)
         }
         LogicalPlan::Update { table, assignments, filter, .. } => {
             execute_update(tx, table, assignments, filter, &ctx)
@@ -366,8 +366,8 @@ pub fn execute_prepared_statement<T: Transaction>(
 
     // Execute based on the statement type
     match stmt.logical_plan() {
-        LogicalPlan::Insert { table, columns, input, .. } => {
-            execute_insert(tx, table, columns, input, &ctx)
+        LogicalPlan::Insert { table, columns, input, on_conflict, .. } => {
+            execute_insert(tx, table, columns, input, on_conflict.as_ref(), &ctx)
         }
         LogicalPlan::Update { table, assignments, filter, .. } => {
             execute_update(tx, table, assignments, filter, &ctx)
@@ -1937,9 +1937,11 @@ fn execute_insert<T: Transaction>(
     table: &str,
     columns: &[String],
     input: &LogicalPlan,
+    on_conflict: Option<&manifoldb_query::plan::logical::LogicalOnConflict>,
     ctx: &ExecutionContext,
 ) -> Result<u64> {
     use crate::collection::{CollectionManager, CollectionName};
+    use manifoldb_query::plan::logical::LogicalConflictAction;
     use manifoldb_vector::types::VectorData;
 
     let mut count = 0;
@@ -1970,14 +1972,10 @@ fn execute_insert<T: Transaction>(
     // Extract values from the input plan
     if let LogicalPlan::Values(values_node) = input {
         for row_exprs in &values_node.rows {
-            // Create a new entity with the table name as label
-            let mut entity = tx.create_entity().map_err(Error::Transaction)?;
-            entity = entity.with_label(table);
-
-            // Collect vectors to store separately (for collections)
+            // First evaluate all values for this row
+            let mut row_values: HashMap<String, Value> = HashMap::new();
             let mut vectors_to_store: Vec<(String, VectorData)> = Vec::new();
 
-            // Set properties from columns and values
             for (i, col) in resolved_columns.iter().enumerate() {
                 if let Some(expr) = row_exprs.get(i) {
                     let value = evaluate_literal_expr(expr, ctx)?;
@@ -1994,8 +1992,112 @@ fn execute_insert<T: Transaction>(
                         }
                     }
 
-                    entity = entity.with_property(col, value);
+                    row_values.insert(col.clone(), value);
                 }
+            }
+
+            // Check for conflicts if ON CONFLICT is specified
+            let (existing_entity, conflict_found) = if let Some(oc) = on_conflict {
+                find_conflicting_entity(tx, table, &oc.target, &row_values)?
+            } else {
+                (None, false)
+            };
+
+            // Handle conflict based on the action
+            if conflict_found {
+                match on_conflict {
+                    Some(oc) => match &oc.action {
+                        LogicalConflictAction::DoNothing => {
+                            // Skip this row - don't increment count
+                            continue;
+                        }
+                        LogicalConflictAction::DoUpdate { assignments, where_clause } => {
+                            // Update the existing entity
+                            if let Some(existing) = existing_entity {
+                                // Check WHERE clause if present
+                                let should_update = if let Some(where_expr) = where_clause {
+                                    evaluate_predicate(where_expr, &existing, ctx)
+                                } else {
+                                    true
+                                };
+
+                                if should_update {
+                                    // Clone before modification for index maintenance
+                                    let old_entity = existing.clone();
+                                    let mut new_entity = existing;
+
+                                    // Apply assignments
+                                    for (col, expr) in assignments {
+                                        let value = evaluate_expr(expr, &new_entity, ctx);
+                                        new_entity.properties.insert(col.clone(), value);
+                                    }
+
+                                    // Store updated entity
+                                    tx.put_entity(&new_entity).map_err(Error::Transaction)?;
+
+                                    // Update property indexes
+                                    super::index_maintenance::EntityIndexMaintenance::on_update(
+                                        tx,
+                                        &old_entity,
+                                        &new_entity,
+                                    )
+                                    .map_err(|e| {
+                                        Error::Execution(format!(
+                                            "property index update failed: {e}"
+                                        ))
+                                    })?;
+
+                                    // For collections: update vectors
+                                    if let Some(ref coll) = collection {
+                                        if let Some(provider) = ctx.collection_vector_provider() {
+                                            for (vector_name, vector_data) in &vectors_to_store {
+                                                provider
+                                                    .upsert_vector(
+                                                        coll.id(),
+                                                        new_entity.id,
+                                                        table,
+                                                        vector_name,
+                                                        vector_data,
+                                                    )
+                                                    .map_err(|e| {
+                                                        Error::Execution(format!(
+                                                            "vector storage failed: {e}"
+                                                        ))
+                                                    })?;
+                                            }
+                                        }
+                                    } else {
+                                        crate::vector::update_entity_in_indexes(
+                                            tx,
+                                            &new_entity,
+                                            None,
+                                        )
+                                        .map_err(|e| {
+                                            Error::Execution(format!(
+                                                "vector index update failed: {e}"
+                                            ))
+                                        })?;
+                                    }
+
+                                    count += 1;
+                                }
+                            }
+                            continue;
+                        }
+                    },
+                    None => {
+                        // No ON CONFLICT - this shouldn't happen due to the if let above
+                    }
+                }
+            }
+
+            // No conflict - proceed with normal insert
+            let mut entity = tx.create_entity().map_err(Error::Transaction)?;
+            entity = entity.with_label(table);
+
+            // Set properties from row values
+            for (col, value) in row_values {
+                entity = entity.with_property(&col, value);
             }
 
             tx.put_entity(&entity).map_err(Error::Transaction)?;
@@ -2024,6 +2126,63 @@ fn execute_insert<T: Transaction>(
     }
 
     Ok(count)
+}
+
+/// Find an existing entity that conflicts with the row being inserted.
+///
+/// Returns (Some(entity), true) if a conflict is found, (None, false) otherwise.
+fn find_conflicting_entity<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    table: &str,
+    target: &manifoldb_query::plan::logical::LogicalConflictTarget,
+    row_values: &HashMap<String, Value>,
+) -> Result<(Option<Entity>, bool)> {
+    use manifoldb_query::plan::logical::LogicalConflictTarget;
+
+    match target {
+        LogicalConflictTarget::Columns(columns) => {
+            // Find an entity where all conflict columns match
+            let entities = tx.iter_entities(Some(table)).map_err(Error::Transaction)?;
+
+            for entity in entities {
+                let mut all_match = true;
+
+                for col in columns {
+                    let existing_value = entity.properties.get(col);
+                    let new_value = row_values.get(col);
+
+                    match (existing_value, new_value) {
+                        (Some(existing), Some(new)) if existing == new => {
+                            // Values match, continue checking
+                        }
+                        (None, None) => {
+                            // Both null, considered a match
+                        }
+                        _ => {
+                            // Values don't match
+                            all_match = false;
+                            break;
+                        }
+                    }
+                }
+
+                if all_match {
+                    return Ok((Some(entity), true));
+                }
+            }
+
+            Ok((None, false))
+        }
+        LogicalConflictTarget::Constraint(_constraint_name) => {
+            // For constraint-based conflict detection, we would need to look up
+            // the constraint definition and find the associated columns.
+            // For now, return an error indicating this is not yet supported.
+            Err(Error::Execution(
+                "ON CONFLICT with constraint name is not yet supported. Use column list instead."
+                    .to_string(),
+            ))
+        }
+    }
 }
 
 /// Convert a Value to VectorData if it's a vector type.

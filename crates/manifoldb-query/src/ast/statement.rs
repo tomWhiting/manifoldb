@@ -711,6 +711,7 @@ impl MatchStatement {
 
 /// An item in a RETURN clause.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Expr is large but boxing would add complexity
 pub enum ReturnItem {
     /// A wildcard (*) - return all bound variables.
     Wildcard,
@@ -1233,6 +1234,7 @@ pub enum ConflictTarget {
 
 /// Action for ON CONFLICT.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // DoNothing is intentionally small, boxing would add complexity
 pub enum ConflictAction {
     /// DO NOTHING.
     DoNothing,
