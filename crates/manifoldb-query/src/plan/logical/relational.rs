@@ -443,6 +443,11 @@ impl UnwindNode {
 /// - **Recursive query**: Executed repeatedly, referencing the CTE itself,
 ///   until no new rows are produced
 ///
+/// # Advanced Features
+///
+/// - **SEARCH clause**: Controls traversal order (depth-first or breadth-first)
+/// - **CYCLE clause**: Detects cycles in the recursion
+///
 /// # Example SQL
 ///
 /// ```sql
@@ -456,6 +461,8 @@ impl UnwindNode {
 ///     FROM employees e
 ///     JOIN hierarchy h ON e.manager_id = h.id
 /// )
+/// SEARCH DEPTH FIRST BY id SET ordercol
+/// CYCLE id SET is_cycle USING path_array
 /// SELECT * FROM hierarchy;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,19 +477,138 @@ pub struct RecursiveCTENode {
     /// Maximum number of iterations allowed (safety limit).
     /// None means use system default (typically 1000).
     pub max_iterations: Option<usize>,
+    /// Search order configuration (SEARCH DEPTH/BREADTH FIRST).
+    pub search_config: Option<CteSearchConfig>,
+    /// Cycle detection configuration (CYCLE clause).
+    pub cycle_config: Option<CteCycleConfig>,
+}
+
+/// Search order configuration for recursive CTEs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CteSearchConfig {
+    /// The search order (depth-first or breadth-first).
+    pub order: CteSearchOrder,
+    /// Columns to use for ordering within each level.
+    pub by_columns: Vec<String>,
+    /// Name of the sequence column to add.
+    pub set_column: String,
+}
+
+/// Search order type for recursive CTEs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CteSearchOrder {
+    /// Depth-first search - explore branches completely before backtracking.
+    DepthFirst,
+    /// Breadth-first search - explore all nodes at current level first.
+    BreadthFirst,
+}
+
+/// Cycle detection configuration for recursive CTEs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CteCycleConfig {
+    /// Columns to check for cycle detection.
+    pub columns: Vec<String>,
+    /// Name of the boolean column indicating if a cycle was detected.
+    pub mark_column: String,
+    /// Optional path array column for storing the traversal path.
+    pub path_column: Option<String>,
 }
 
 impl RecursiveCTENode {
     /// Creates a new recursive CTE node.
     #[must_use]
     pub fn new(name: impl Into<String>, columns: Vec<String>, union_all: bool) -> Self {
-        Self { name: name.into(), columns, union_all, max_iterations: None }
+        Self {
+            name: name.into(),
+            columns,
+            union_all,
+            max_iterations: None,
+            search_config: None,
+            cycle_config: None,
+        }
     }
 
     /// Sets the maximum number of iterations.
     #[must_use]
-    pub const fn with_max_iterations(mut self, max: usize) -> Self {
+    pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = Some(max);
+        self
+    }
+
+    /// Sets the search configuration (SEARCH clause).
+    #[must_use]
+    pub fn with_search(mut self, config: CteSearchConfig) -> Self {
+        self.search_config = Some(config);
+        self
+    }
+
+    /// Sets the cycle detection configuration (CYCLE clause).
+    #[must_use]
+    pub fn with_cycle(mut self, config: CteCycleConfig) -> Self {
+        self.cycle_config = Some(config);
+        self
+    }
+
+    /// Returns true if depth-first search is configured.
+    #[must_use]
+    pub fn is_depth_first(&self) -> bool {
+        matches!(
+            self.search_config,
+            Some(CteSearchConfig { order: CteSearchOrder::DepthFirst, .. })
+        )
+    }
+
+    /// Returns true if breadth-first search is configured.
+    #[must_use]
+    pub fn is_breadth_first(&self) -> bool {
+        matches!(
+            self.search_config,
+            Some(CteSearchConfig { order: CteSearchOrder::BreadthFirst, .. })
+        )
+    }
+
+    /// Returns true if cycle detection is enabled.
+    #[must_use]
+    pub fn has_cycle_detection(&self) -> bool {
+        self.cycle_config.is_some()
+    }
+}
+
+impl CteSearchConfig {
+    /// Creates a new search configuration.
+    #[must_use]
+    pub fn new(
+        order: CteSearchOrder,
+        by_columns: Vec<String>,
+        set_column: impl Into<String>,
+    ) -> Self {
+        Self { order, by_columns, set_column: set_column.into() }
+    }
+
+    /// Creates a depth-first search configuration.
+    #[must_use]
+    pub fn depth_first(by_columns: Vec<String>, set_column: impl Into<String>) -> Self {
+        Self::new(CteSearchOrder::DepthFirst, by_columns, set_column)
+    }
+
+    /// Creates a breadth-first search configuration.
+    #[must_use]
+    pub fn breadth_first(by_columns: Vec<String>, set_column: impl Into<String>) -> Self {
+        Self::new(CteSearchOrder::BreadthFirst, by_columns, set_column)
+    }
+}
+
+impl CteCycleConfig {
+    /// Creates a new cycle detection configuration.
+    #[must_use]
+    pub fn new(columns: Vec<String>, mark_column: impl Into<String>) -> Self {
+        Self { columns, mark_column: mark_column.into(), path_column: None }
+    }
+
+    /// Sets the path column for storing the traversal path.
+    #[must_use]
+    pub fn with_path_column(mut self, path_column: impl Into<String>) -> Self {
+        self.path_column = Some(path_column.into());
         self
     }
 }

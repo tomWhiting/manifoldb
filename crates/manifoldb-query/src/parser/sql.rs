@@ -4,7 +4,7 @@
 //! as the foundation, with custom transformations to our AST types.
 
 use sqlparser::ast as sp;
-use sqlparser::dialect::GenericDialect;
+use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
@@ -39,7 +39,7 @@ pub fn parse_sql(sql: &str) -> ParseResult<Vec<Statement>> {
         return Err(ParseError::EmptyQuery);
     }
 
-    let dialect = GenericDialect {};
+    let dialect = PostgreSqlDialect {};
     let statements = Parser::parse_sql(&dialect, sql)?;
 
     statements.into_iter().map(convert_statement).collect()
@@ -363,9 +363,33 @@ fn convert_with_clause(with: sp::With) -> ParseResult<Vec<WithClause>> {
                 cte.alias.columns.into_iter().map(|col| convert_ident(col.name)).collect();
             let query = convert_query(*cte.query)?;
 
-            Ok(WithClause { name, columns, query: Box::new(query), recursive })
+            // Convert materialization hint
+            let materialized = convert_cte_materialized(cte.materialized);
+
+            Ok(WithClause {
+                name,
+                columns,
+                query: Box::new(query),
+                recursive,
+                materialized,
+                search_clause: None, // TODO: Parse from sqlparser when supported
+                cycle_clause: None,  // TODO: Parse from sqlparser when supported
+            })
         })
         .collect()
+}
+
+/// Converts a sqlparser CTE materialization hint.
+fn convert_cte_materialized(
+    materialized: Option<sp::CteAsMaterialized>,
+) -> crate::ast::MaterializationHint {
+    match materialized {
+        Some(sp::CteAsMaterialized::Materialized) => crate::ast::MaterializationHint::Materialized,
+        Some(sp::CteAsMaterialized::NotMaterialized) => {
+            crate::ast::MaterializationHint::NotMaterialized
+        }
+        None => crate::ast::MaterializationHint::Unspecified,
+    }
 }
 
 /// Converts a sqlparser Select to our `SelectStatement`.

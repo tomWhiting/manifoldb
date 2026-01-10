@@ -13,17 +13,18 @@
 use super::cost::{Cost, CostModel};
 use super::node::{
     AnalyzeExecNode, BruteForceSearchNode, CallSubqueryExecNode, CopyExecFormat, CopyExecNode,
-    ExplainAnalyzeExecNode, ExplainExecFormat, FilterExecNode, FullScanNode, GraphExpandExecNode,
-    GraphPathScanExecNode, HashAggregateNode, HashJoinNode, HnswSearchNode,
-    HybridSearchComponentNode, HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode,
-    IndexScanNode, JoinOrder, LimitExecNode, NestedLoopJoinNode, PhysicalPlan,
-    PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ResetExecNode,
-    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, ShowProceduresExecNode, SortExecNode,
-    UnwindExecNode, VacuumExecNode, WindowExecNode, WindowFunctionExpr,
+    CteCycleExecConfig, CteSearchExecConfig, ExplainAnalyzeExecNode, ExplainExecFormat,
+    FilterExecNode, FullScanNode, GraphExpandExecNode, GraphPathScanExecNode, HashAggregateNode,
+    HashJoinNode, HnswSearchNode, HybridSearchComponentNode,
+    HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode, IndexScanNode, JoinOrder,
+    LimitExecNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
+    ProjectExecNode, RecursiveCTEExecNode, ResetExecNode, SetSessionExecNode, ShortestPathExecNode,
+    ShowExecNode, ShowProceduresExecNode, SortExecNode, UnwindExecNode, VacuumExecNode,
+    WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
-    AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
-    LogicalPlan, PathScanNode, RecursiveCTENode, ScanNode, ScoreCombinationMethod,
+    AggregateNode, AnnSearchNode, CteSearchOrder, ExpandNode, HybridSearchNode, JoinNode, JoinType,
+    LogicalExpr, LogicalPlan, PathScanNode, RecursiveCTENode, ScanNode, ScoreCombinationMethod,
     ShortestPathNode, UnwindNode,
 };
 use crate::plan::optimize::{AccessType, IndexCandidate, IndexSelector};
@@ -1087,12 +1088,53 @@ impl PhysicalPlanner {
         let max_iterations =
             node.max_iterations.unwrap_or(RecursiveCTEExecNode::DEFAULT_MAX_ITERATIONS);
 
+        // Convert search config from logical to physical
+        let search_config = node.search_config.as_ref().map(|config| {
+            // Resolve column names to indices in the CTE output
+            let by_column_indices: Vec<usize> = config
+                .by_columns
+                .iter()
+                .filter_map(|col| node.columns.iter().position(|c| c == col))
+                .collect();
+            // The set column is added at the end
+            let set_column_index = node.columns.len();
+            CteSearchExecConfig::new(
+                matches!(config.order, CteSearchOrder::DepthFirst),
+                by_column_indices,
+                set_column_index,
+            )
+        });
+
+        // Convert cycle config from logical to physical
+        let cycle_config = node.cycle_config.as_ref().map(|config| {
+            // Resolve column names to indices in the CTE output
+            let column_indices: Vec<usize> = config
+                .columns
+                .iter()
+                .filter_map(|col| node.columns.iter().position(|c| c == col))
+                .collect();
+            // The mark column is added at the end (after search column if present)
+            let mark_column_index =
+                node.columns.len() + if node.search_config.is_some() { 1 } else { 0 };
+            // Path column is after mark column if present
+            let path_column_index = config.path_column.as_ref().map(|_| mark_column_index + 1);
+            CteCycleExecConfig { column_indices, mark_column_index, path_column_index }
+        });
+
+        let mut exec_node =
+            RecursiveCTEExecNode::new(&node.name, node.columns.clone(), node.union_all)
+                .with_max_iterations(max_iterations)
+                .with_cost(cost);
+
+        if let Some(search) = search_config {
+            exec_node = exec_node.with_search(search);
+        }
+        if let Some(cycle) = cycle_config {
+            exec_node = exec_node.with_cycle(cycle);
+        }
+
         PhysicalPlan::RecursiveCTE {
-            node: Box::new(
-                RecursiveCTEExecNode::new(&node.name, node.columns.clone(), node.union_all)
-                    .with_max_iterations(max_iterations)
-                    .with_cost(cost),
-            ),
+            node: Box::new(exec_node),
             initial: Box::new(initial_plan),
             recursive: Box::new(recursive_plan),
         }

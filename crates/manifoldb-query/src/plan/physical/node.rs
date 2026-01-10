@@ -2116,8 +2116,34 @@ pub struct RecursiveCTEExecNode {
     pub union_all: bool,
     /// Maximum number of iterations allowed (safety limit).
     pub max_iterations: usize,
+    /// Search configuration (SEARCH DEPTH/BREADTH FIRST).
+    pub search_config: Option<CteSearchExecConfig>,
+    /// Cycle detection configuration (CYCLE clause).
+    pub cycle_config: Option<CteCycleExecConfig>,
     /// Estimated cost.
     pub cost: Cost,
+}
+
+/// Search configuration for recursive CTE execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CteSearchExecConfig {
+    /// The search order (depth-first or breadth-first).
+    pub depth_first: bool,
+    /// Column indices to use for ordering within each level.
+    pub by_column_indices: Vec<usize>,
+    /// Index of the sequence column to add.
+    pub set_column_index: usize,
+}
+
+/// Cycle detection configuration for recursive CTE execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CteCycleExecConfig {
+    /// Column indices to check for cycle detection.
+    pub column_indices: Vec<usize>,
+    /// Index of the boolean column indicating if a cycle was detected.
+    pub mark_column_index: usize,
+    /// Optional index of the path array column.
+    pub path_column_index: Option<usize>,
 }
 
 impl RecursiveCTEExecNode {
@@ -2132,21 +2158,90 @@ impl RecursiveCTEExecNode {
             columns,
             union_all,
             max_iterations: Self::DEFAULT_MAX_ITERATIONS,
+            search_config: None,
+            cycle_config: None,
             cost: Cost::default(),
         }
     }
 
     /// Sets the maximum number of iterations.
     #[must_use]
-    pub const fn with_max_iterations(mut self, max: usize) -> Self {
+    pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
+        self
+    }
+
+    /// Sets the search configuration.
+    #[must_use]
+    pub fn with_search(mut self, config: CteSearchExecConfig) -> Self {
+        self.search_config = Some(config);
+        self
+    }
+
+    /// Sets the cycle detection configuration.
+    #[must_use]
+    pub fn with_cycle(mut self, config: CteCycleExecConfig) -> Self {
+        self.cycle_config = Some(config);
         self
     }
 
     /// Sets the cost estimate.
     #[must_use]
-    pub const fn with_cost(mut self, cost: Cost) -> Self {
+    pub fn with_cost(mut self, cost: Cost) -> Self {
         self.cost = cost;
+        self
+    }
+
+    /// Returns true if depth-first search is configured.
+    #[must_use]
+    pub fn is_depth_first(&self) -> bool {
+        self.search_config.as_ref().is_some_and(|c| c.depth_first)
+    }
+
+    /// Returns true if breadth-first search is configured.
+    #[must_use]
+    pub fn is_breadth_first(&self) -> bool {
+        self.search_config.as_ref().is_some_and(|c| !c.depth_first)
+    }
+
+    /// Returns true if cycle detection is enabled.
+    #[must_use]
+    pub fn has_cycle_detection(&self) -> bool {
+        self.cycle_config.is_some()
+    }
+}
+
+impl CteSearchExecConfig {
+    /// Creates a new search configuration.
+    #[must_use]
+    pub fn new(depth_first: bool, by_column_indices: Vec<usize>, set_column_index: usize) -> Self {
+        Self { depth_first, by_column_indices, set_column_index }
+    }
+
+    /// Creates a depth-first search configuration.
+    #[must_use]
+    pub fn depth_first(by_column_indices: Vec<usize>, set_column_index: usize) -> Self {
+        Self::new(true, by_column_indices, set_column_index)
+    }
+
+    /// Creates a breadth-first search configuration.
+    #[must_use]
+    pub fn breadth_first(by_column_indices: Vec<usize>, set_column_index: usize) -> Self {
+        Self::new(false, by_column_indices, set_column_index)
+    }
+}
+
+impl CteCycleExecConfig {
+    /// Creates a new cycle detection configuration.
+    #[must_use]
+    pub fn new(column_indices: Vec<usize>, mark_column_index: usize) -> Self {
+        Self { column_indices, mark_column_index, path_column_index: None }
+    }
+
+    /// Sets the path column index.
+    #[must_use]
+    pub fn with_path_column(mut self, path_column_index: usize) -> Self {
+        self.path_column_index = Some(path_column_index);
         self
     }
 }
