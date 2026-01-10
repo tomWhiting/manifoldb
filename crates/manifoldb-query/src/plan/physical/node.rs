@@ -337,6 +337,20 @@ pub enum PhysicalPlan {
         cost: Cost,
     },
 
+    /// SQL MERGE operation (conditional INSERT/UPDATE/DELETE).
+    MergeSql {
+        /// Target table.
+        target_table: String,
+        /// Source plan (table or subquery).
+        source: Box<PhysicalPlan>,
+        /// Join condition between source and target.
+        on_condition: LogicalExpr,
+        /// WHEN clauses specifying actions.
+        clauses: Vec<crate::plan::logical::LogicalMergeClause>,
+        /// Estimated cost.
+        cost: Cost,
+    },
+
     // ========== DDL Operations ==========
     /// CREATE TABLE operation.
     CreateTable(CreateTableNode),
@@ -2483,6 +2497,7 @@ impl PhysicalPlan {
             | Self::GraphPathScan { input, .. }
             | Self::ShortestPath { input, .. }
             | Self::Insert { input, .. }
+            | Self::MergeSql { source: input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
             | Self::GraphRemove { input, .. }
@@ -2583,6 +2598,7 @@ impl PhysicalPlan {
             | Self::GraphPathScan { input, .. }
             | Self::ShortestPath { input, .. }
             | Self::Insert { input, .. }
+            | Self::MergeSql { source: input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
             | Self::GraphRemove { input, .. }
@@ -2706,6 +2722,7 @@ impl PhysicalPlan {
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
+            Self::MergeSql { .. } => "MergeSql",
             Self::CreateTable(_) => "CreateTable",
             Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
@@ -2784,6 +2801,7 @@ impl PhysicalPlan {
             Self::Insert { cost, .. } => *cost,
             Self::Update { cost, .. } => *cost,
             Self::Delete { cost, .. } => *cost,
+            Self::MergeSql { cost, .. } => *cost,
             // DDL and procedure operations have zero query cost
             Self::CreateTable(_)
             | Self::AlterTable(_)
@@ -3203,6 +3221,15 @@ impl DisplayTree<'_> {
             }
             PhysicalPlan::Delete { table, cost, .. } => {
                 write!(f, "Delete: {} (cost: {:.2})", table, cost.value())?;
+            }
+            PhysicalPlan::MergeSql { target_table, clauses, cost, .. } => {
+                write!(
+                    f,
+                    "MergeSql: {} ({} clauses) (cost: {:.2})",
+                    target_table,
+                    clauses.len(),
+                    cost.value()
+                )?;
             }
             PhysicalPlan::CreateTable(node) => {
                 write!(f, "CreateTable: {}", node.name)?;

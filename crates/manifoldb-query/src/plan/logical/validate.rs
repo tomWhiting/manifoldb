@@ -335,6 +335,18 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::MergeSql { target_table, source, clauses, .. } => {
+            validate_plan(source)?;
+            if target_table.is_empty() {
+                return Err(PlanError::UnknownTable("empty target table name".to_string()));
+            }
+            if clauses.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "MERGE must have at least one WHEN clause".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::CreateTable(node) => {
             if node.name.is_empty() {
                 return Err(PlanError::UnknownTable("empty table name".to_string()));
@@ -830,6 +842,19 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
                         found: filter_type,
                     });
                 }
+            }
+        }
+
+        LogicalPlan::MergeSql { source, on_condition, .. } => {
+            validate_schema_recursive(source, catalog)?;
+            // Validate on_condition is boolean
+            let ctx = TypeContext::new();
+            let cond_type = on_condition.infer_type(&ctx)?;
+            if !matches!(cond_type, PlanType::Boolean | PlanType::Any | PlanType::Null) {
+                return Err(PlanError::ExpressionTypeMismatch {
+                    expected: PlanType::Boolean,
+                    found: cond_type,
+                });
             }
         }
 

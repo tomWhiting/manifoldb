@@ -221,6 +221,18 @@ impl PredicatePushdown {
                 LogicalPlan::Delete { table, filter: combined, returning }
             }
 
+            // MERGE SQL - push predicates into source
+            LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
+                let optimized_source = self.push_down(*source, Vec::new());
+                let result = LogicalPlan::MergeSql {
+                    target_table,
+                    source: Box::new(optimized_source),
+                    on_condition,
+                    clauses,
+                };
+                self.apply_predicates(result, predicates)
+            }
+
             // Leaf nodes without filter support
             LogicalPlan::Values(node) => {
                 self.apply_predicates(LogicalPlan::Values(node), predicates)

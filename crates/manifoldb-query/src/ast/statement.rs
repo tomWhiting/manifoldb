@@ -20,6 +20,8 @@ pub enum Statement {
     Update(Box<UpdateStatement>),
     /// DELETE statement (boxed - 304 bytes unboxed).
     Delete(Box<DeleteStatement>),
+    /// SQL MERGE statement (boxed - conditional insert/update/delete).
+    MergeSql(Box<MergeSqlStatement>),
     /// CREATE TABLE statement.
     CreateTable(CreateTableStatement),
     /// ALTER TABLE statement.
@@ -1357,6 +1359,177 @@ impl DeleteStatement {
         self.returning = items;
         self
     }
+}
+
+// ============================================================================
+// MERGE Statement (SQL Standard)
+// ============================================================================
+
+/// A SQL MERGE statement.
+///
+/// MERGE combines INSERT, UPDATE, and DELETE into a single statement based on
+/// whether rows match between source and target tables.
+///
+/// # Syntax
+///
+/// ```sql
+/// MERGE INTO target_table [AS alias]
+/// USING source ON join_condition
+/// WHEN MATCHED [AND condition] THEN UPDATE SET ...
+/// WHEN MATCHED [AND condition] THEN DELETE
+/// WHEN NOT MATCHED [AND condition] THEN INSERT ...
+/// ```
+///
+/// # Example
+///
+/// ```sql
+/// MERGE INTO inventory AS i
+/// USING daily_sales AS s ON i.product_id = s.product_id
+/// WHEN MATCHED AND s.quantity <= i.stock THEN
+///     UPDATE SET stock = i.stock - s.quantity
+/// WHEN MATCHED THEN DELETE
+/// WHEN NOT MATCHED THEN
+///     INSERT (product_id, stock) VALUES (s.product_id, s.quantity)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeSqlStatement {
+    /// The target table being modified.
+    pub target: TableRef,
+    /// Optional alias for the target table.
+    pub target_alias: Option<TableAlias>,
+    /// The source table or subquery to merge from.
+    pub source: TableRef,
+    /// The join condition between source and target.
+    pub on_condition: Expr,
+    /// The WHEN clauses defining match actions.
+    pub clauses: Vec<MergeClause>,
+}
+
+impl MergeSqlStatement {
+    /// Creates a new MERGE statement.
+    #[must_use]
+    pub fn new(target: TableRef, source: TableRef, on_condition: Expr) -> Self {
+        Self { target, target_alias: None, source, on_condition, clauses: vec![] }
+    }
+
+    /// Sets the target table alias.
+    #[must_use]
+    pub fn with_target_alias(mut self, alias: TableAlias) -> Self {
+        self.target_alias = Some(alias);
+        self
+    }
+
+    /// Adds a WHEN clause.
+    #[must_use]
+    pub fn with_clause(mut self, clause: MergeClause) -> Self {
+        self.clauses.push(clause);
+        self
+    }
+
+    /// Sets all WHEN clauses.
+    #[must_use]
+    pub fn with_clauses(mut self, clauses: Vec<MergeClause>) -> Self {
+        self.clauses = clauses;
+        self
+    }
+}
+
+/// A WHEN clause in a MERGE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeClause {
+    /// Whether this is a MATCHED or NOT MATCHED clause.
+    pub match_type: MergeMatchType,
+    /// Optional additional condition for the clause.
+    pub condition: Option<Expr>,
+    /// The action to perform.
+    pub action: MergeAction,
+}
+
+impl MergeClause {
+    /// Creates a new WHEN MATCHED clause with an UPDATE action.
+    #[must_use]
+    pub fn matched_update(assignments: Vec<Assignment>) -> Self {
+        Self {
+            match_type: MergeMatchType::Matched,
+            condition: None,
+            action: MergeAction::Update { assignments },
+        }
+    }
+
+    /// Creates a new WHEN MATCHED clause with a DELETE action.
+    #[must_use]
+    pub fn matched_delete() -> Self {
+        Self { match_type: MergeMatchType::Matched, condition: None, action: MergeAction::Delete }
+    }
+
+    /// Creates a new WHEN NOT MATCHED clause with an INSERT action.
+    #[must_use]
+    pub fn not_matched_insert(columns: Vec<Identifier>, values: Vec<Expr>) -> Self {
+        Self {
+            match_type: MergeMatchType::NotMatched,
+            condition: None,
+            action: MergeAction::Insert { columns, values },
+        }
+    }
+
+    /// Creates a new WHEN NOT MATCHED BY SOURCE clause with a DELETE action.
+    #[must_use]
+    pub fn not_matched_by_source_delete() -> Self {
+        Self {
+            match_type: MergeMatchType::NotMatchedBySource,
+            condition: None,
+            action: MergeAction::Delete,
+        }
+    }
+
+    /// Creates a new WHEN NOT MATCHED BY SOURCE clause with an UPDATE action.
+    #[must_use]
+    pub fn not_matched_by_source_update(assignments: Vec<Assignment>) -> Self {
+        Self {
+            match_type: MergeMatchType::NotMatchedBySource,
+            condition: None,
+            action: MergeAction::Update { assignments },
+        }
+    }
+
+    /// Adds a condition to this clause.
+    #[must_use]
+    pub fn with_condition(mut self, condition: Expr) -> Self {
+        self.condition = Some(condition);
+        self
+    }
+}
+
+/// The match type for a MERGE WHEN clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMatchType {
+    /// WHEN MATCHED - source row matches target row.
+    Matched,
+    /// WHEN NOT MATCHED (BY TARGET) - source row has no match in target.
+    NotMatched,
+    /// WHEN NOT MATCHED BY SOURCE - target row has no match in source.
+    NotMatchedBySource,
+}
+
+/// The action to perform in a MERGE WHEN clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergeAction {
+    /// UPDATE SET ... action.
+    Update {
+        /// The column assignments for the update.
+        assignments: Vec<Assignment>,
+    },
+    /// DELETE action.
+    Delete,
+    /// INSERT (columns) VALUES (values) action.
+    Insert {
+        /// Target columns for the insert.
+        columns: Vec<Identifier>,
+        /// Values to insert.
+        values: Vec<Expr>,
+    },
+    /// DO NOTHING action (skip the row).
+    DoNothing,
 }
 
 /// A CREATE TABLE statement.

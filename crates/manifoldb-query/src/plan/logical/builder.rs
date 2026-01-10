@@ -28,10 +28,11 @@ use crate::ast::{
     DropTableStatement, DropTriggerStatement, DropViewStatement, Expr,
     ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
     InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
-    MatchStatement, MergeGraphStatement, MergePattern, PathPattern, PropertyCondition,
-    RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement, SetAction as AstSetAction,
-    SetGraphStatement, SetOperation, SetOperator, Statement, TableRef, UpdateStatement,
-    WindowFunction, YieldItem,
+    MatchStatement, MergeAction as AstMergeAction, MergeClause as AstMergeClause,
+    MergeGraphStatement, MergeMatchType as AstMergeMatchType, MergePattern, MergeSqlStatement,
+    PathPattern, PropertyCondition, RemoveGraphStatement, RemoveItem, SelectItem, SelectStatement,
+    SetAction as AstSetAction, SetGraphStatement, SetOperation, SetOperator, Statement, TableRef,
+    UpdateStatement, WindowFunction, YieldItem,
 };
 
 use super::ddl::{
@@ -50,7 +51,10 @@ use super::graph::{
     GraphDeleteNode, GraphForeachAction, GraphForeachNode, GraphMergeNode, GraphRemoveAction,
     GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, ShortestPathNode,
 };
-use super::node::{LogicalConflictAction, LogicalConflictTarget, LogicalOnConflict, LogicalPlan};
+use super::node::{
+    LogicalConflictAction, LogicalConflictTarget, LogicalMergeAction, LogicalMergeClause,
+    LogicalMergeMatchType, LogicalOnConflict, LogicalPlan,
+};
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
     AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
@@ -260,6 +264,7 @@ impl PlanBuilder {
             Statement::Transaction(txn) => self.build_transaction(txn),
             Statement::ExplainAnalyze(explain) => self.build_explain_analyze(explain),
             Statement::Utility(utility) => self.build_utility(utility),
+            Statement::MergeSql(merge) => self.build_merge_sql(merge),
         }
     }
 
@@ -1805,6 +1810,71 @@ impl PlanBuilder {
             .collect::<PlanResult<_>>()?;
 
         Ok(LogicalPlan::Delete { table, filter, returning })
+    }
+
+    /// Builds a logical plan from a SQL MERGE statement.
+    fn build_merge_sql(&mut self, merge: &MergeSqlStatement) -> PlanResult<LogicalPlan> {
+        // Extract target table name
+        let target_table = match &merge.target {
+            TableRef::Table { name, .. } => {
+                name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".")
+            }
+            _ => {
+                return Err(PlanError::Unsupported(
+                    "MERGE target must be a table reference".to_string(),
+                ))
+            }
+        };
+
+        // Build source plan from TableRef
+        let source = self.build_table_ref(&merge.source)?;
+
+        // Build the ON condition
+        let on_condition = self.build_expr(&merge.on_condition)?;
+
+        // Convert WHEN clauses
+        let clauses = merge
+            .clauses
+            .iter()
+            .map(|c| self.build_merge_clause(c))
+            .collect::<PlanResult<Vec<_>>>()?;
+
+        Ok(LogicalPlan::MergeSql { target_table, source: Box::new(source), on_condition, clauses })
+    }
+
+    /// Converts an AST MERGE clause to a logical MERGE clause.
+    fn build_merge_clause(&mut self, clause: &AstMergeClause) -> PlanResult<LogicalMergeClause> {
+        let match_type = match clause.match_type {
+            AstMergeMatchType::Matched => LogicalMergeMatchType::Matched,
+            AstMergeMatchType::NotMatched => LogicalMergeMatchType::NotMatched,
+            AstMergeMatchType::NotMatchedBySource => LogicalMergeMatchType::NotMatchedBySource,
+        };
+
+        let condition = clause.condition.as_ref().map(|e| self.build_expr(e)).transpose()?;
+
+        let action = match &clause.action {
+            AstMergeAction::Update { assignments } => {
+                let logical_assignments = assignments
+                    .iter()
+                    .map(|a| {
+                        let col = a.column.name.clone();
+                        let expr = self.build_expr(&a.value)?;
+                        Ok((col, expr))
+                    })
+                    .collect::<PlanResult<Vec<_>>>()?;
+                LogicalMergeAction::Update { assignments: logical_assignments }
+            }
+            AstMergeAction::Delete => LogicalMergeAction::Delete,
+            AstMergeAction::Insert { columns, values } => {
+                let logical_columns: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+                let logical_values =
+                    values.iter().map(|e| self.build_expr(e)).collect::<PlanResult<Vec<_>>>()?;
+                LogicalMergeAction::Insert { columns: logical_columns, values: logical_values }
+            }
+            AstMergeAction::DoNothing => LogicalMergeAction::DoNothing,
+        };
+
+        Ok(LogicalMergeClause { match_type, condition, action })
     }
 
     /// Builds a CREATE TABLE plan.

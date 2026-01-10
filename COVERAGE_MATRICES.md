@@ -320,9 +320,14 @@ These feature groups can be implemented independently:
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| MERGE INTO | | | | | | | Not implemented |
-| WHEN MATCHED | | | | | | | Not implemented |
-| WHEN NOT MATCHED | | | | | | | Not implemented |
+| MERGE INTO | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN MATCHED UPDATE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN MATCHED DELETE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN NOT MATCHED INSERT | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| WHEN NOT MATCHED BY SOURCE | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Multiple WHEN clauses | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Conditional clauses (AND) | ✓ | ✓ | ✓ | ✓ | | | Execution not implemented |
+| Subquery source | ✓ | ✓ | ✓ | ✓ | | ✓ | Execution not implemented |
 
 ## 1.8 DDL Statements
 

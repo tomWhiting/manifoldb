@@ -17,15 +17,16 @@ use crate::ast::{
     DropIndexStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
     DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
     FunctionLanguage, FunctionParameter, FunctionVolatility, Identifier, IndexColumn, InsertSource,
-    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal,
-    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
-    PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
-    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
-    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
-    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
-    TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity, TruncateTableStatement,
-    UnaryOp, UpdateStatement, UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowSpec, WithClause,
+    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal, MergeAction,
+    MergeClause, MergeMatchType, MergeSqlStatement, NamedWindowDefinition, OnConflict, OrderByExpr,
+    ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
+    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
+    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
+    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
+    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
+    TruncateCascade, TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement,
+    UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec,
+    WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -247,6 +248,10 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         sp::Statement::DropTrigger(drop_trigger) => {
             let drop_stmt = convert_drop_trigger(drop_trigger)?;
             Ok(Statement::DropTrigger(drop_stmt))
+        }
+        sp::Statement::Merge { table, source, on, clauses, .. } => {
+            let merge_stmt = convert_merge(table, source, *on, clauses)?;
+            Ok(Statement::MergeSql(Box::new(merge_stmt)))
         }
         _ => Err(ParseError::Unsupported(format!("statement type: {stmt:?}"))),
     }
@@ -1383,6 +1388,79 @@ fn convert_delete(delete: sp::Delete) -> ParseResult<DeleteStatement> {
         where_clause,
         returning,
     })
+}
+
+/// Converts a SQL MERGE statement.
+fn convert_merge(
+    table: sp::TableFactor,
+    source: sp::TableFactor,
+    on: sp::Expr,
+    clauses: Vec<sp::MergeClause>,
+) -> ParseResult<MergeSqlStatement> {
+    let target = convert_table_factor(table)?;
+    let (target, target_alias) = match target {
+        TableRef::Table { name, alias } => (TableRef::Table { name, alias: None }, alias),
+        other => (other, None),
+    };
+
+    let source = convert_table_factor(source)?;
+    let on_condition = convert_expr(on)?;
+
+    let converted_clauses =
+        clauses.into_iter().map(convert_merge_clause).collect::<ParseResult<Vec<_>>>()?;
+
+    Ok(MergeSqlStatement { target, target_alias, source, on_condition, clauses: converted_clauses })
+}
+
+/// Converts a single MERGE WHEN clause.
+fn convert_merge_clause(clause: sp::MergeClause) -> ParseResult<MergeClause> {
+    let match_type = match clause.clause_kind {
+        sp::MergeClauseKind::Matched => MergeMatchType::Matched,
+        sp::MergeClauseKind::NotMatched => MergeMatchType::NotMatched,
+        sp::MergeClauseKind::NotMatchedByTarget => MergeMatchType::NotMatched,
+        sp::MergeClauseKind::NotMatchedBySource => MergeMatchType::NotMatchedBySource,
+    };
+
+    let condition = clause.predicate.map(convert_expr).transpose()?;
+
+    let action = convert_merge_action(clause.action)?;
+
+    Ok(MergeClause { match_type, condition, action })
+}
+
+/// Converts a MERGE action (INSERT, UPDATE, DELETE).
+fn convert_merge_action(action: sp::MergeAction) -> ParseResult<MergeAction> {
+    match action {
+        sp::MergeAction::Insert(insert_expr) => {
+            let columns = insert_expr.columns.into_iter().map(convert_ident).collect();
+
+            let values = match insert_expr.kind {
+                sp::MergeInsertKind::Values(values) => {
+                    // Extract values from the first row
+                    values
+                        .rows
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| ParseError::MissingClause("VALUES".to_string()))?
+                        .into_iter()
+                        .map(convert_expr)
+                        .collect::<ParseResult<Vec<_>>>()?
+                }
+                sp::MergeInsertKind::Row => {
+                    // ROW is used in BigQuery - treat as empty values (use defaults)
+                    vec![]
+                }
+            };
+
+            Ok(MergeAction::Insert { columns, values })
+        }
+        sp::MergeAction::Update { assignments, .. } => {
+            let converted_assignments =
+                assignments.into_iter().map(convert_assignment).collect::<ParseResult<Vec<_>>>()?;
+            Ok(MergeAction::Update { assignments: converted_assignments })
+        }
+        sp::MergeAction::Delete { .. } => Ok(MergeAction::Delete),
+    }
 }
 
 /// Converts a CREATE TABLE statement.

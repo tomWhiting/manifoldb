@@ -60,7 +60,10 @@ pub use graph::{
     GraphRemoveNode, GraphSetAction, GraphSetNode, MergePatternSpec, PathScanNode, PathStep,
     ShortestPathNode, ShortestPathWeight,
 };
-pub use node::{LogicalConflictAction, LogicalConflictTarget, LogicalOnConflict, LogicalPlan};
+pub use node::{
+    LogicalConflictAction, LogicalConflictTarget, LogicalMergeAction, LogicalMergeClause,
+    LogicalMergeMatchType, LogicalOnConflict, LogicalPlan,
+};
 pub use procedure::{ProcedureCallNode, YieldColumn};
 pub use relational::{
     AggregateNode, CallSubqueryNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode,

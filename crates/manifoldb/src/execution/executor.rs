@@ -2172,6 +2172,9 @@ fn execute_logical_plan<T: Transaction>(
             // Utility statements are handled at the session level, not here
             Ok(Vec::new())
         }
+
+        // MERGE SQL is handled separately by execute_merge_sql
+        LogicalPlan::MergeSql { .. } => Ok(Vec::new()),
     }
 }
 
