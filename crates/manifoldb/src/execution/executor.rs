@@ -19,7 +19,8 @@ use manifoldb_query::plan::logical::ViewDefinition;
 use manifoldb_query::plan::logical::{
     AlterIndexNode, AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode,
     CreateViewNode, DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, JoinType,
-    LogicalExpr, ProjectNode, SetOpNode, TruncateTableNode, UnionNode, ValuesNode,
+    LogicalExpr, LogicalMergeAction, LogicalMergeClause, LogicalMergeMatchType, ProjectNode,
+    SetOpNode, TruncateTableNode, UnionNode, ValuesNode,
 };
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
@@ -184,6 +185,9 @@ pub fn execute_statement<T: Transaction>(
             execute_update(tx, table, assignments, filter, &ctx)
         }
         LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+        LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
+            execute_merge_sql(tx, target_table, source, on_condition, clauses, &ctx)
+        }
 
         // DDL statements
         LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
@@ -382,6 +386,9 @@ pub fn execute_prepared_statement<T: Transaction>(
             execute_update(tx, table, assignments, filter, &ctx)
         }
         LogicalPlan::Delete { table, filter, .. } => execute_delete(tx, table, filter, &ctx),
+        LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
+            execute_merge_sql(tx, target_table, source, on_condition, clauses, &ctx)
+        }
 
         // DDL statements
         LogicalPlan::CreateTable(node) => execute_create_table(tx, node),
@@ -2590,6 +2597,488 @@ fn execute_delete<T: Transaction>(
     Ok(count)
 }
 
+/// Execute a SQL MERGE statement.
+///
+/// MERGE performs conditional INSERT, UPDATE, or DELETE operations based on
+/// whether rows from the source match rows in the target table.
+///
+/// # Algorithm
+///
+/// 1. Execute the source query to get source rows
+/// 2. Get all target entities
+/// 3. For each source row, check if it matches any target row (ON condition)
+/// 4. Apply WHEN MATCHED clauses to matched pairs
+/// 5. Apply WHEN NOT MATCHED clauses to unmatched source rows
+/// 6. Apply WHEN NOT MATCHED BY SOURCE clauses to unmatched target rows
+fn execute_merge_sql<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    target_table: &str,
+    source: &LogicalPlan,
+    on_condition: &LogicalExpr,
+    clauses: &[LogicalMergeClause],
+    ctx: &ExecutionContext,
+) -> Result<u64> {
+    use std::collections::HashSet;
+
+    // Check if target is a collection with named vectors
+    use crate::collection::{CollectionManager, CollectionName};
+    let collection = CollectionName::new(target_table)
+        .ok()
+        .and_then(|name| CollectionManager::get(tx, &name).ok().flatten());
+
+    // Execute the source plan to get source entities
+    let source_entities = execute_logical_plan(tx, source, ctx)?;
+
+    // Get all target entities - collect into a Vec so we can iterate multiple times
+    let target_entities: Vec<Entity> =
+        tx.iter_entities(Some(target_table)).map_err(Error::Transaction)?;
+
+    // Track which target entities have been matched (and potentially modified)
+    let mut matched_target_ids: HashSet<manifoldb_core::EntityId> = HashSet::new();
+
+    let mut count = 0u64;
+
+    // Process each source row
+    for source_entity in &source_entities {
+        // Create a merged entity for evaluating the ON condition
+        // This combines source and target properties for condition evaluation
+        let mut found_match = false;
+
+        for target_entity in &target_entities {
+            // Create a combined entity for evaluating conditions
+            // Uses both table names as prefixes for qualified column access
+            let merged_entity =
+                create_merged_entity_with_aliases(source_entity, target_entity, target_table);
+
+            // Evaluate the ON condition
+            if evaluate_predicate(on_condition, &merged_entity, ctx) {
+                found_match = true;
+                matched_target_ids.insert(target_entity.id);
+
+                // Find the first WHEN MATCHED clause that applies
+                for clause in clauses {
+                    if clause.match_type != LogicalMergeMatchType::Matched {
+                        continue;
+                    }
+
+                    // Check additional condition if present
+                    let condition_met = match &clause.condition {
+                        Some(cond) => evaluate_predicate(cond, &merged_entity, ctx),
+                        None => true,
+                    };
+
+                    if condition_met {
+                        // Execute the action
+                        match &clause.action {
+                            LogicalMergeAction::Update { assignments } => {
+                                let old_entity = target_entity.clone();
+                                let mut updated_entity = target_entity.clone();
+
+                                // Collect vectors to update separately (for collections)
+                                let mut vectors_to_update: Vec<(
+                                    String,
+                                    manifoldb_vector::types::VectorData,
+                                )> = Vec::new();
+
+                                for (col, expr) in assignments {
+                                    // Evaluate expression in context of merged entity
+                                    let value = evaluate_expr(expr, &merged_entity, ctx);
+
+                                    // For collections, check if this column is a named vector
+                                    if let Some(ref coll) = collection {
+                                        if coll.has_vector(col) {
+                                            if let Some(vector_data) = value_to_vector_data(&value)
+                                            {
+                                                vectors_to_update.push((col.clone(), vector_data));
+                                            }
+                                            updated_entity.properties.remove(col);
+                                            continue;
+                                        }
+                                    }
+
+                                    updated_entity.set_property(col, value);
+                                }
+
+                                tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
+
+                                // Update property indexes
+                                super::index_maintenance::EntityIndexMaintenance::on_update(
+                                    tx,
+                                    &old_entity,
+                                    &updated_entity,
+                                )
+                                .map_err(|e| {
+                                    Error::Execution(format!("property index update failed: {e}"))
+                                })?;
+
+                                // Update vectors for collections
+                                if let Some(ref coll) = collection {
+                                    if let Some(provider) = ctx.collection_vector_provider() {
+                                        for (vector_name, vector_data) in vectors_to_update {
+                                            provider
+                                                .upsert_vector(
+                                                    coll.id(),
+                                                    updated_entity.id,
+                                                    target_table,
+                                                    &vector_name,
+                                                    &vector_data,
+                                                )
+                                                .map_err(|e| {
+                                                    Error::Execution(format!(
+                                                        "vector storage failed: {e}"
+                                                    ))
+                                                })?;
+                                        }
+                                    }
+                                } else {
+                                    // For regular tables: update HNSW indexes
+                                    crate::vector::update_entity_in_indexes(
+                                        tx,
+                                        &updated_entity,
+                                        Some(&old_entity),
+                                    )
+                                    .map_err(|e| {
+                                        Error::Execution(format!("vector index update failed: {e}"))
+                                    })?;
+                                }
+
+                                count += 1;
+                            }
+                            LogicalMergeAction::Delete => {
+                                // Remove from property indexes
+                                super::index_maintenance::EntityIndexMaintenance::on_delete(
+                                    tx,
+                                    target_entity,
+                                )
+                                .map_err(|e| {
+                                    Error::Execution(format!("property index removal failed: {e}"))
+                                })?;
+
+                                // Delete vectors for collections
+                                if let Some(ref coll) = collection {
+                                    if let Some(provider) = ctx.collection_vector_provider() {
+                                        provider
+                                            .delete_entity_vectors(
+                                                coll.id(),
+                                                target_entity.id,
+                                                target_table,
+                                            )
+                                            .map_err(|e| {
+                                                Error::Execution(format!(
+                                                    "vector deletion failed: {e}"
+                                                ))
+                                            })?;
+                                    }
+                                } else {
+                                    crate::vector::remove_entity_from_indexes(tx, target_entity)
+                                        .map_err(|e| {
+                                            Error::Execution(format!(
+                                                "vector index removal failed: {e}"
+                                            ))
+                                        })?;
+                                }
+
+                                tx.delete_entity(target_entity.id).map_err(Error::Transaction)?;
+                                count += 1;
+                            }
+                            LogicalMergeAction::DoNothing => {
+                                // Do nothing, but count as processed
+                            }
+                            LogicalMergeAction::Insert { .. } => {
+                                // INSERT is not valid for WHEN MATCHED
+                                return Err(Error::Execution(
+                                    "INSERT action is not valid for WHEN MATCHED clause"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+
+                        // Only apply the first matching clause
+                        break;
+                    }
+                }
+
+                // Only process the first matching target row per source row
+                break;
+            }
+        }
+
+        // If no match found, apply WHEN NOT MATCHED clauses
+        if !found_match {
+            for clause in clauses {
+                if clause.match_type != LogicalMergeMatchType::NotMatched {
+                    continue;
+                }
+
+                // Check additional condition if present
+                let condition_met = match &clause.condition {
+                    Some(cond) => evaluate_predicate(cond, source_entity, ctx),
+                    None => true,
+                };
+
+                if condition_met {
+                    match &clause.action {
+                        LogicalMergeAction::Insert { columns, values } => {
+                            // Create a new entity with a new ID from the transaction
+                            let mut new_entity = tx.create_entity().map_err(Error::Transaction)?;
+                            new_entity = new_entity.with_label(target_table);
+
+                            // Collect vectors to store separately (for collections)
+                            let mut vectors_to_store: Vec<(
+                                String,
+                                manifoldb_vector::types::VectorData,
+                            )> = Vec::new();
+
+                            for (col, expr) in columns.iter().zip(values.iter()) {
+                                let value = evaluate_expr(expr, source_entity, ctx);
+
+                                // For collections, check if this column is a named vector
+                                if let Some(ref coll) = collection {
+                                    if coll.has_vector(col) {
+                                        if let Some(vector_data) = value_to_vector_data(&value) {
+                                            vectors_to_store.push((col.clone(), vector_data));
+                                        }
+                                        continue;
+                                    }
+                                }
+
+                                new_entity = new_entity.with_property(col, value);
+                            }
+
+                            tx.put_entity(&new_entity).map_err(Error::Transaction)?;
+
+                            // Update property indexes
+                            super::index_maintenance::EntityIndexMaintenance::on_insert(
+                                tx,
+                                &new_entity,
+                            )
+                            .map_err(|e| {
+                                Error::Execution(format!("property index insert failed: {e}"))
+                            })?;
+
+                            // Store vectors for collections
+                            if let Some(ref coll) = collection {
+                                if let Some(provider) = ctx.collection_vector_provider() {
+                                    for (vector_name, vector_data) in vectors_to_store {
+                                        provider
+                                            .upsert_vector(
+                                                coll.id(),
+                                                new_entity.id,
+                                                target_table,
+                                                &vector_name,
+                                                &vector_data,
+                                            )
+                                            .map_err(|e| {
+                                                Error::Execution(format!(
+                                                    "vector storage failed: {e}"
+                                                ))
+                                            })?;
+                                    }
+                                }
+                            } else {
+                                crate::vector::update_entity_in_indexes(tx, &new_entity, None)
+                                    .map_err(|e| {
+                                        Error::Execution(format!("vector index insert failed: {e}"))
+                                    })?;
+                            }
+
+                            count += 1;
+                        }
+                        LogicalMergeAction::DoNothing => {
+                            // Do nothing
+                        }
+                        _ => {
+                            return Err(Error::Execution(
+                                "Only INSERT or DO NOTHING is valid for WHEN NOT MATCHED clause"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+
+                    // Only apply the first matching clause
+                    break;
+                }
+            }
+        }
+    }
+
+    // Process WHEN NOT MATCHED BY SOURCE clauses (target rows not in source)
+    let has_not_matched_by_source =
+        clauses.iter().any(|c| c.match_type == LogicalMergeMatchType::NotMatchedBySource);
+
+    if has_not_matched_by_source {
+        for target_entity in &target_entities {
+            if matched_target_ids.contains(&target_entity.id) {
+                continue; // Already matched, skip
+            }
+
+            for clause in clauses {
+                if clause.match_type != LogicalMergeMatchType::NotMatchedBySource {
+                    continue;
+                }
+
+                // Check additional condition if present
+                let condition_met = match &clause.condition {
+                    Some(cond) => evaluate_predicate(cond, target_entity, ctx),
+                    None => true,
+                };
+
+                if condition_met {
+                    match &clause.action {
+                        LogicalMergeAction::Update { assignments } => {
+                            let old_entity = target_entity.clone();
+                            let mut updated_entity = target_entity.clone();
+
+                            let mut vectors_to_update: Vec<(
+                                String,
+                                manifoldb_vector::types::VectorData,
+                            )> = Vec::new();
+
+                            for (col, expr) in assignments {
+                                let value = evaluate_expr(expr, target_entity, ctx);
+
+                                if let Some(ref coll) = collection {
+                                    if coll.has_vector(col) {
+                                        if let Some(vector_data) = value_to_vector_data(&value) {
+                                            vectors_to_update.push((col.clone(), vector_data));
+                                        }
+                                        updated_entity.properties.remove(col);
+                                        continue;
+                                    }
+                                }
+
+                                updated_entity.set_property(col, value);
+                            }
+
+                            tx.put_entity(&updated_entity).map_err(Error::Transaction)?;
+
+                            super::index_maintenance::EntityIndexMaintenance::on_update(
+                                tx,
+                                &old_entity,
+                                &updated_entity,
+                            )
+                            .map_err(|e| {
+                                Error::Execution(format!("property index update failed: {e}"))
+                            })?;
+
+                            if let Some(ref coll) = collection {
+                                if let Some(provider) = ctx.collection_vector_provider() {
+                                    for (vector_name, vector_data) in vectors_to_update {
+                                        provider
+                                            .upsert_vector(
+                                                coll.id(),
+                                                updated_entity.id,
+                                                target_table,
+                                                &vector_name,
+                                                &vector_data,
+                                            )
+                                            .map_err(|e| {
+                                                Error::Execution(format!(
+                                                    "vector storage failed: {e}"
+                                                ))
+                                            })?;
+                                    }
+                                }
+                            } else {
+                                crate::vector::update_entity_in_indexes(
+                                    tx,
+                                    &updated_entity,
+                                    Some(&old_entity),
+                                )
+                                .map_err(|e| {
+                                    Error::Execution(format!("vector index update failed: {e}"))
+                                })?;
+                            }
+
+                            count += 1;
+                        }
+                        LogicalMergeAction::Delete => {
+                            super::index_maintenance::EntityIndexMaintenance::on_delete(
+                                tx,
+                                target_entity,
+                            )
+                            .map_err(|e| {
+                                Error::Execution(format!("property index removal failed: {e}"))
+                            })?;
+
+                            if let Some(ref coll) = collection {
+                                if let Some(provider) = ctx.collection_vector_provider() {
+                                    provider
+                                        .delete_entity_vectors(
+                                            coll.id(),
+                                            target_entity.id,
+                                            target_table,
+                                        )
+                                        .map_err(|e| {
+                                            Error::Execution(format!("vector deletion failed: {e}"))
+                                        })?;
+                                }
+                            } else {
+                                crate::vector::remove_entity_from_indexes(tx, target_entity)
+                                    .map_err(|e| {
+                                        Error::Execution(format!(
+                                            "vector index removal failed: {e}"
+                                        ))
+                                    })?;
+                            }
+
+                            tx.delete_entity(target_entity.id).map_err(Error::Transaction)?;
+                            count += 1;
+                        }
+                        LogicalMergeAction::DoNothing => {
+                            // Do nothing
+                        }
+                        LogicalMergeAction::Insert { .. } => {
+                            return Err(Error::Execution(
+                                "INSERT is not valid for WHEN NOT MATCHED BY SOURCE clause"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+/// Create a merged entity combining source and target for condition evaluation.
+///
+/// This is used in MERGE statements to evaluate the ON condition and WHEN clause
+/// conditions where both source and target columns may be referenced.
+///
+/// The merged entity contains:
+/// - All target properties under their original names and with "target." prefix
+/// - All source properties under their original names (if no collision) and with "source." prefix
+fn create_merged_entity_with_aliases(
+    source: &Entity,
+    target: &Entity,
+    target_table: &str,
+) -> Entity {
+    let mut merged = target.clone();
+
+    // Add target properties with "target." prefix for qualified access (e.g., target.id)
+    for (key, value) in &target.properties {
+        merged.properties.insert(format!("target.{}", key), value.clone());
+        merged.properties.insert(format!("{}.{}", target_table, key), value.clone());
+    }
+
+    // Add source properties with "source." prefix for qualified access
+    // Also add without prefix if no collision with target
+    for (key, value) in &source.properties {
+        merged.properties.insert(format!("source.{}", key), value.clone());
+        // Don't override target properties - source is secondary context for unqualified names
+        if !merged.properties.contains_key(key) {
+            merged.properties.insert(key.clone(), value.clone());
+        }
+    }
+
+    merged
+}
+
 /// Check if a logical plan contains a JOIN node.
 fn contains_join(plan: &LogicalPlan) -> bool {
     match plan {
@@ -3689,12 +4178,23 @@ fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) ->
     match expr {
         LogicalExpr::Literal(lit) => literal_to_value(lit),
 
-        LogicalExpr::Column { name, .. } => {
+        LogicalExpr::Column { qualifier, name } => {
             if name == "_rowid" {
                 Value::Int(entity.id.as_u64() as i64)
             } else {
+                // Try qualified name first (e.g., "target.id"), then unqualified
+                let prop_value = if let Some(q) = qualifier {
+                    // Try "qualifier.name" format (e.g., "target.id")
+                    let qualified_name = format!("{}.{}", q, name);
+                    entity
+                        .get_property(&qualified_name)
+                        .cloned()
+                        .or_else(|| entity.get_property(name).cloned())
+                } else {
+                    entity.get_property(name).cloned()
+                };
                 // Missing properties return NULL - this is intentional for sparse property model
-                entity.get_property(name).cloned().unwrap_or(Value::Null)
+                prop_value.unwrap_or(Value::Null)
             }
         }
 

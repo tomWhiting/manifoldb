@@ -2045,3 +2045,303 @@ fn test_insert_on_conflict_multi_column_key() {
     let result = db.query("SELECT * FROM orders").expect("query failed");
     assert_eq!(result.len(), 2);
 }
+
+// ============================================================================
+// SQL MERGE Statement Tests
+// ============================================================================
+
+#[test]
+fn test_merge_insert_when_not_matched() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table with initial data
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, value) VALUES (2, 'Bob', 200)")
+        .expect("insert failed");
+
+    // Create source table with new data
+    db.execute("INSERT INTO source (id, name, value) VALUES (3, 'Charlie', 300)")
+        .expect("insert failed");
+
+    // MERGE: insert when not matched
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN NOT MATCHED THEN INSERT (id, name, value) VALUES (source.id, source.name, source.value)",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 1, "Should insert one new row");
+
+    // Verify target has 3 rows now
+    let result = db.query("SELECT * FROM target ORDER BY id").expect("query failed");
+    assert_eq!(result.len(), 3);
+
+    // Verify Charlie was inserted
+    let name_idx = result.column_index("name").expect("name column not found");
+    assert_eq!(result.rows()[2].get(name_idx), Some(&Value::String("Charlie".to_string())));
+}
+
+#[test]
+fn test_merge_update_when_matched() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table with initial data
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, value) VALUES (2, 'Bob', 200)")
+        .expect("insert failed");
+
+    // Create source table with updated data
+    db.execute("INSERT INTO source (id, name, value) VALUES (1, 'Alice', 150)")
+        .expect("insert failed");
+
+    // MERGE: update when matched
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED THEN UPDATE SET value = source.value",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 1, "Should update one row");
+
+    // Verify Alice's value was updated
+    let result = db.query("SELECT * FROM target WHERE id = 1").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let value_idx = result.column_index("value").expect("value column not found");
+    assert_eq!(result.rows()[0].get(value_idx), Some(&Value::Int(150)));
+}
+
+#[test]
+fn test_merge_delete_when_matched() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table with initial data
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, value) VALUES (2, 'Bob', 200)")
+        .expect("insert failed");
+
+    // Create source table with matching id (marking for deletion)
+    db.execute("INSERT INTO source (id) VALUES (1)").expect("insert failed");
+
+    // MERGE: delete when matched
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED THEN DELETE",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 1, "Should delete one row");
+
+    // Verify only Bob remains
+    let result = db.query("SELECT * FROM target").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let name_idx = result.column_index("name").expect("name column not found");
+    assert_eq!(result.rows()[0].get(name_idx), Some(&Value::String("Bob".to_string())));
+}
+
+#[test]
+fn test_merge_combined_update_and_insert() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table with initial data
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, value) VALUES (2, 'Bob', 200)")
+        .expect("insert failed");
+
+    // Create source table with:
+    // - id=1 exists in target (should update)
+    // - id=3 doesn't exist in target (should insert)
+    db.execute("INSERT INTO source (id, name, value) VALUES (1, 'Alice', 150)")
+        .expect("insert failed");
+    db.execute("INSERT INTO source (id, name, value) VALUES (3, 'Charlie', 300)")
+        .expect("insert failed");
+
+    // MERGE: update when matched, insert when not matched
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED THEN UPDATE SET value = source.value
+             WHEN NOT MATCHED THEN INSERT (id, name, value) VALUES (source.id, source.name, source.value)",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 2, "Should affect 2 rows (1 update + 1 insert)");
+
+    // Verify target has 3 rows
+    let result = db.query("SELECT * FROM target ORDER BY id").expect("query failed");
+    assert_eq!(result.len(), 3);
+
+    // Verify Alice's value was updated
+    let value_idx = result.column_index("value").expect("value column not found");
+    assert_eq!(result.rows()[0].get(value_idx), Some(&Value::Int(150)));
+
+    // Verify Charlie was inserted
+    let name_idx = result.column_index("name").expect("name column not found");
+    assert_eq!(result.rows()[2].get(name_idx), Some(&Value::String("Charlie".to_string())));
+    assert_eq!(result.rows()[2].get(value_idx), Some(&Value::Int(300)));
+}
+
+#[test]
+fn test_merge_with_conditional_when_matched() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, value) VALUES (2, 'Bob', 200)")
+        .expect("insert failed");
+
+    // Create source table with values to conditionally update
+    db.execute("INSERT INTO source (id, value) VALUES (1, 50)").expect("insert failed");
+    db.execute("INSERT INTO source (id, value) VALUES (2, 300)").expect("insert failed");
+
+    // MERGE: update only when source value > 100
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED AND source.value > 100 THEN UPDATE SET value = source.value",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 1, "Should update only one row (where source.value > 100)");
+
+    // Verify Alice's value unchanged (source.value = 50 <= 100)
+    let result = db.query("SELECT * FROM target WHERE id = 1").expect("query failed");
+    let value_idx = result.column_index("value").expect("value column not found");
+    assert_eq!(result.rows()[0].get(value_idx), Some(&Value::Int(100)));
+
+    // Verify Bob's value was updated (source.value = 300 > 100)
+    let result = db.query("SELECT * FROM target WHERE id = 2").expect("query failed");
+    let value_idx = result.column_index("value").expect("value column not found");
+    assert_eq!(result.rows()[0].get(value_idx), Some(&Value::Int(300)));
+}
+
+#[test]
+fn test_merge_with_subquery_source() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table
+    db.execute("INSERT INTO target (id, name, value) VALUES (1, 'Alice', 100)")
+        .expect("insert failed");
+
+    // Create staging table
+    db.execute("INSERT INTO staging (id, name, value, active) VALUES (1, 'Alice', 150, true)")
+        .expect("insert failed");
+    db.execute("INSERT INTO staging (id, name, value, active) VALUES (2, 'Bob', 200, true)")
+        .expect("insert failed");
+    db.execute("INSERT INTO staging (id, name, value, active) VALUES (3, 'Charlie', 300, false)")
+        .expect("insert failed");
+
+    // MERGE using a subquery as source (only active rows)
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING (SELECT * FROM staging WHERE active = true) AS source ON target.id = source.id
+             WHEN MATCHED THEN UPDATE SET value = source.value
+             WHEN NOT MATCHED THEN INSERT (id, name, value) VALUES (source.id, source.name, source.value)",
+        )
+        .expect("merge failed");
+    assert_eq!(
+        affected, 2,
+        "Should affect 2 rows (1 update + 1 insert, excluding inactive Charlie)"
+    );
+
+    // Verify target has 2 rows (Alice updated, Bob inserted, Charlie not included)
+    let result = db.query("SELECT * FROM target ORDER BY id").expect("query failed");
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_merge_no_matching_rows() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table
+    db.execute("INSERT INTO target (id, name) VALUES (1, 'Alice')").expect("insert failed");
+
+    // Create source table with no matching ids
+    db.execute("INSERT INTO source (id, name) VALUES (2, 'Bob')").expect("insert failed");
+
+    // MERGE: only update clause, no matching rows
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED THEN UPDATE SET name = source.name",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 0, "Should not affect any rows when no matches");
+
+    // Target unchanged
+    let result = db.query("SELECT * FROM target").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_merge_empty_source() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table
+    db.execute("INSERT INTO target (id, name) VALUES (1, 'Alice')").expect("insert failed");
+
+    // Create empty source table
+    db.execute("CREATE TABLE source (id BIGINT, name TEXT)").expect("create table failed");
+
+    // MERGE with empty source
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED THEN UPDATE SET name = source.name
+             WHEN NOT MATCHED THEN INSERT (id, name) VALUES (source.id, source.name)",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 0, "Should not affect any rows with empty source");
+
+    // Target unchanged
+    let result = db.query("SELECT * FROM target").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_merge_multiple_when_matched_clauses() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create target table with status
+    db.execute("INSERT INTO target (id, name, status, value) VALUES (1, 'Alice', 'active', 100)")
+        .expect("insert failed");
+    db.execute("INSERT INTO target (id, name, status, value) VALUES (2, 'Bob', 'inactive', 200)")
+        .expect("insert failed");
+
+    // Create source table
+    db.execute("INSERT INTO source (id, value) VALUES (1, 150)").expect("insert failed");
+    db.execute("INSERT INTO source (id, value) VALUES (2, 250)").expect("insert failed");
+
+    // MERGE with multiple WHEN MATCHED clauses (first matching wins)
+    // Only update active rows, delete inactive rows
+    let affected = db
+        .execute(
+            "MERGE INTO target
+             USING source ON target.id = source.id
+             WHEN MATCHED AND status = 'active' THEN UPDATE SET value = source.value
+             WHEN MATCHED AND status = 'inactive' THEN DELETE",
+        )
+        .expect("merge failed");
+    assert_eq!(affected, 2, "Should affect 2 rows (1 update + 1 delete)");
+
+    // Verify only Alice remains with updated value
+    let result = db.query("SELECT * FROM target").expect("query failed");
+    assert_eq!(result.len(), 1);
+
+    let name_idx = result.column_index("name").expect("name column not found");
+    let value_idx = result.column_index("value").expect("value column not found");
+    assert_eq!(result.rows()[0].get(name_idx), Some(&Value::String("Alice".to_string())));
+    assert_eq!(result.rows()[0].get(value_idx), Some(&Value::Int(150)));
+}
