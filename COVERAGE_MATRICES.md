@@ -166,6 +166,8 @@ These feature groups can be implemented independently:
 | IN (subquery) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - NULL semantics |
 | EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | NOT EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
+| Scalar subquery in WHERE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - e.g. `WHERE price > (SELECT AVG(price) FROM products)` |
+| Scalar subquery in SELECT | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - e.g. `SELECT name, (SELECT MAX(price) FROM products) AS max_price` |
 | LIKE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | ILIKE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | SIMILAR TO | ✓ | ✓ | | | | | Parsed only |
@@ -207,10 +209,11 @@ These feature groups can be implemented independently:
 
 | Feature | P | A | L | O | E | T | Notes |
 |---------|---|---|---|---|---|---|-------|
-| Basic WITH | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| Multiple CTEs | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| Column aliases | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| CTE reference in main | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
+| Basic WITH | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - basic CTE execution |
+| Multiple CTEs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - chained CTEs |
+| Column aliases | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| CTE reference in main | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - multiple refs supported |
+| CTE shadowing tables | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - CTE takes precedence over base table |
 | WITH RECURSIVE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete† |
 | SEARCH DEPTH FIRST | | | | | | | Not implemented |
 | SEARCH BREADTH FIRST | | | | | | | Not implemented |

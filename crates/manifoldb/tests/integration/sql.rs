@@ -1551,3 +1551,347 @@ fn test_json_agg_mixed_types() {
         panic!("Expected JSON string result, got {:?}", result.rows()[0].get(0));
     }
 }
+
+// ============================================================================
+// View Expansion Tests
+// ============================================================================
+
+#[test]
+fn test_view_expansion_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a table with data
+    db.execute("INSERT INTO employees (id, name, dept) VALUES (1, 'Alice', 'Engineering')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (id, name, dept) VALUES (2, 'Bob', 'Sales')")
+        .expect("insert failed");
+    db.execute("INSERT INTO employees (id, name, dept) VALUES (3, 'Charlie', 'Engineering')")
+        .expect("insert failed");
+
+    // Create a view
+    db.execute(
+        "CREATE VIEW engineering_staff AS SELECT * FROM employees WHERE dept = 'Engineering'",
+    )
+    .expect("create view failed");
+
+    // Query the view
+    let result = db.query("SELECT * FROM engineering_staff").expect("query failed");
+
+    // Should have 2 rows (Alice and Charlie)
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_view_expansion_with_alias() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a table with data
+    db.execute("INSERT INTO items (id, name) VALUES (1, 'Item A')").expect("insert failed");
+    db.execute("INSERT INTO items (id, name) VALUES (2, 'Item B')").expect("insert failed");
+
+    // Create a view
+    db.execute("CREATE VIEW all_items AS SELECT * FROM items").expect("create view failed");
+
+    // Query with alias
+    let result = db.query("SELECT i.id, i.name FROM all_items AS i").expect("query failed");
+
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_view_in_join() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create tables with data
+    db.execute("INSERT INTO orders (id, customer_id, total) VALUES (1, 100, 50)")
+        .expect("insert failed");
+    db.execute("INSERT INTO orders (id, customer_id, total) VALUES (2, 100, 75)")
+        .expect("insert failed");
+    db.execute("INSERT INTO orders (id, customer_id, total) VALUES (3, 200, 30)")
+        .expect("insert failed");
+
+    db.execute("INSERT INTO customers (id, name) VALUES (100, 'Alice')").expect("insert failed");
+    db.execute("INSERT INTO customers (id, name) VALUES (200, 'Bob')").expect("insert failed");
+
+    // Create a view for high-value orders
+    db.execute("CREATE VIEW high_value_orders AS SELECT * FROM orders WHERE total > 40")
+        .expect("create view failed");
+
+    // Join with the view
+    let result = db
+        .query(
+            "SELECT c.name, o.total
+             FROM customers c
+             JOIN high_value_orders o ON c.id = o.customer_id",
+        )
+        .expect("query failed");
+
+    // Should have 2 rows (Alice's orders at 50 and 75)
+    assert_eq!(result.len(), 2);
+}
+
+// ============================================================================
+// Uncorrelated Subquery Tests
+// ============================================================================
+
+#[test]
+fn test_exists_uncorrelated_subquery() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create tables with data
+    db.execute("INSERT INTO products (id, name) VALUES (1, 'Widget')").expect("insert failed");
+    db.execute("INSERT INTO products (id, name) VALUES (2, 'Gadget')").expect("insert failed");
+
+    db.execute("INSERT INTO orders (id, product_id) VALUES (1, 1)").expect("insert failed");
+
+    // Uncorrelated EXISTS - returns all products if any order exists
+    let result = db
+        .query("SELECT * FROM products WHERE EXISTS (SELECT 1 FROM orders)")
+        .expect("query failed");
+
+    // Both products returned because orders table has data
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_exists_uncorrelated_empty() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create products table with data
+    db.execute("INSERT INTO products (id, name) VALUES (1, 'Widget')").expect("insert failed");
+
+    // Create an empty orders table explicitly (don't insert any data)
+    db.execute("CREATE TABLE orders (id BIGINT, product_id BIGINT)").expect("create table failed");
+
+    // First verify the empty orders table returns 0 rows
+    let empty_check = db.query("SELECT * FROM orders").expect("query failed");
+    assert_eq!(empty_check.len(), 0, "orders table should be empty");
+
+    // Empty orders table - EXISTS should return false
+    let result = db
+        .query("SELECT * FROM products WHERE EXISTS (SELECT 1 FROM orders)")
+        .expect("query failed");
+
+    // No products returned because orders table is empty
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_not_exists_uncorrelated() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create products table with data
+    db.execute("INSERT INTO products (id, name) VALUES (1, 'Widget')").expect("insert failed");
+
+    // Create an empty orders table explicitly (don't insert any data)
+    db.execute("CREATE TABLE orders (id BIGINT, product_id BIGINT)").expect("create table failed");
+
+    // Empty orders table - NOT EXISTS should return true
+    let result = db
+        .query("SELECT * FROM products WHERE NOT EXISTS (SELECT 1 FROM orders)")
+        .expect("query failed");
+
+    // All products returned because orders table is empty
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_in_subquery_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create tables with data
+    db.execute("INSERT INTO products (id, name) VALUES (1, 'Widget')").expect("insert failed");
+    db.execute("INSERT INTO products (id, name) VALUES (2, 'Gadget')").expect("insert failed");
+    db.execute("INSERT INTO products (id, name) VALUES (3, 'Gizmo')").expect("insert failed");
+
+    db.execute("INSERT INTO orders (id, product_id) VALUES (1, 1)").expect("insert failed");
+    db.execute("INSERT INTO orders (id, product_id) VALUES (2, 3)").expect("insert failed");
+
+    // IN subquery - get products that have orders
+    let result = db
+        .query("SELECT * FROM products WHERE id IN (SELECT product_id FROM orders)")
+        .expect("query failed");
+
+    // Should return Widget and Gizmo (ids 1 and 3)
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_not_in_subquery() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create tables with data
+    db.execute("INSERT INTO products (id, name) VALUES (1, 'Widget')").expect("insert failed");
+    db.execute("INSERT INTO products (id, name) VALUES (2, 'Gadget')").expect("insert failed");
+    db.execute("INSERT INTO products (id, name) VALUES (3, 'Gizmo')").expect("insert failed");
+
+    db.execute("INSERT INTO orders (id, product_id) VALUES (1, 1)").expect("insert failed");
+    db.execute("INSERT INTO orders (id, product_id) VALUES (2, 3)").expect("insert failed");
+
+    // NOT IN subquery - get products that have NO orders
+    let result = db
+        .query("SELECT * FROM products WHERE id NOT IN (SELECT product_id FROM orders)")
+        .expect("query failed");
+
+    // Should return only Gadget (id 2)
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_scalar_subquery_in_select() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO products (id, name, price) VALUES (1, 'Widget', 10)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (id, name, price) VALUES (2, 'Gadget', 25)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (id, name, price) VALUES (3, 'Gizmo', 15)")
+        .expect("insert failed");
+
+    // Scalar subquery in SELECT to get max price
+    let result = db
+        .query("SELECT name, (SELECT MAX(price) FROM products) AS max_price FROM products")
+        .expect("query failed");
+
+    assert_eq!(result.len(), 3);
+    // Each row should have max_price = 25
+    if let Some(max_price_idx) = result.column_index("max_price") {
+        for row in result.rows() {
+            assert_eq!(row.get(max_price_idx), Some(&Value::Int(25)));
+        }
+    }
+}
+
+#[test]
+fn test_scalar_subquery_in_where() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO products (id, name, price) VALUES (1, 'Widget', 10)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (id, name, price) VALUES (2, 'Gadget', 25)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (id, name, price) VALUES (3, 'Gizmo', 15)")
+        .expect("insert failed");
+
+    // Scalar subquery in WHERE to find products priced above average
+    let result = db
+        .query("SELECT * FROM products WHERE price > (SELECT AVG(price) FROM products)")
+        .expect("query failed");
+
+    // Average is ~16.67, so only Gadget (25) should be returned
+    assert_eq!(result.len(), 1);
+}
+
+// ============================================================================
+// CTE Scoping Tests
+// ============================================================================
+
+#[test]
+fn test_cte_basic_execution() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO products (id, name, price) VALUES (1, 'Widget', 10)")
+        .expect("insert failed");
+    db.execute("INSERT INTO products (id, name, price) VALUES (2, 'Gadget', 25)")
+        .expect("insert failed");
+
+    // Use CTE
+    let result = db
+        .query(
+            "WITH expensive AS (SELECT * FROM products WHERE price > 15)
+             SELECT * FROM expensive",
+        )
+        .expect("query failed");
+
+    // Should return only Gadget
+    assert_eq!(result.len(), 1);
+}
+
+#[test]
+fn test_cte_multiple_references() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO numbers (n) VALUES (1)").expect("insert failed");
+    db.execute("INSERT INTO numbers (n) VALUES (2)").expect("insert failed");
+    db.execute("INSERT INTO numbers (n) VALUES (3)").expect("insert failed");
+
+    // CTE referenced twice
+    let result = db
+        .query(
+            "WITH nums AS (SELECT * FROM numbers)
+             SELECT a.n AS a, b.n AS b FROM nums a, nums b WHERE a.n < b.n",
+        )
+        .expect("query failed");
+
+    // Should return pairs: (1,2), (1,3), (2,3) = 3 rows
+    assert_eq!(result.len(), 3);
+}
+
+#[test]
+fn test_cte_chained() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO data (val) VALUES (5)").expect("insert failed");
+    db.execute("INSERT INTO data (val) VALUES (10)").expect("insert failed");
+
+    // Chained CTEs where second references first
+    let result = db
+        .query(
+            "WITH
+                step1 AS (SELECT val * 2 AS doubled FROM data),
+                step2 AS (SELECT doubled + 1 AS result FROM step1)
+             SELECT * FROM step2",
+        )
+        .expect("query failed");
+
+    assert_eq!(result.len(), 2);
+    // Values should be (5*2)+1=11 and (10*2)+1=21
+}
+
+#[test]
+fn test_cte_shadows_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("INSERT INTO users (id, name) VALUES (1, 'Real Alice')").expect("insert failed");
+
+    // First, EXPLAIN to see the plan
+    let explain = db
+        .query(
+            "EXPLAIN WITH users AS (SELECT 999 AS id, 'CTE User' AS name)
+             SELECT * FROM users",
+        )
+        .expect("explain failed");
+
+    println!("=== EXPLAIN ===");
+    for row in explain.rows() {
+        if let Some(val) = row.get(0) {
+            println!("{:?}", val);
+        }
+    }
+
+    // CTE with same name as table should shadow it
+    let result = db
+        .query(
+            "WITH users AS (SELECT 999 AS id, 'CTE User' AS name)
+             SELECT * FROM users",
+        )
+        .expect("query failed");
+
+    println!("=== RESULT ===");
+    println!("Row count: {}", result.len());
+    println!("Columns: {:?}", result.columns());
+    for (i, row) in result.rows().iter().enumerate() {
+        println!("Row {}: {:?}", i, row);
+    }
+
+    assert_eq!(result.len(), 1);
+    // Should get CTE data, not table data
+    let id_idx = result.column_index("id").expect("id column not found");
+    assert_eq!(result.rows()[0].get(id_idx), Some(&Value::Int(999)));
+}

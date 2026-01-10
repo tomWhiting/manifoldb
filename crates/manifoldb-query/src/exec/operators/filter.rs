@@ -17,6 +17,44 @@ use crate::plan::logical::{
 };
 use crate::plan::physical::PhysicalPlanner;
 
+/// Creates an execution context for correlated subquery execution.
+///
+/// This function creates a new context that inherits the graph accessor and mutator
+/// from the base context, and adds variable bindings from the outer row. This allows
+/// the subquery to reference columns from the outer query's current row.
+///
+/// # Arguments
+///
+/// * `base_ctx` - The base execution context (provides graph accessor, etc.)
+/// * `outer_row` - The current row from the outer query
+///
+/// # Example
+///
+/// For a correlated subquery like:
+/// ```sql
+/// SELECT * FROM employees e WHERE EXISTS (
+///     SELECT 1 FROM orders o WHERE o.employee_id = e.id
+/// )
+/// ```
+/// The outer row contains `e.id`, `e.name`, etc., and these become variable bindings
+/// in the subquery context so `e.id` can be resolved.
+fn create_correlated_context(base_ctx: &ExecutionContext, outer_row: &Row) -> ExecutionContext {
+    // Build variable bindings from all columns in the outer row
+    let mut bindings = std::collections::HashMap::new();
+    let schema = outer_row.schema();
+
+    for (i, col_name) in schema.columns().iter().enumerate() {
+        if let Some(value) = outer_row.get(i) {
+            bindings.insert((*col_name).to_string(), value.clone());
+        }
+    }
+
+    // Create context with bindings, preserving graph accessor and mutator
+    ExecutionContext::with_variable_bindings(bindings)
+        .with_graph(base_ctx.graph_arc())
+        .with_graph_mutator(base_ctx.graph_mutator_arc())
+}
+
 /// Filter operator.
 ///
 /// Evaluates a predicate for each input row and only passes through
@@ -65,9 +103,14 @@ impl Operator for FilterOp {
         self.input.open(ctx)?;
         // Capture the graph accessor for EXISTS/COUNT subquery evaluation
         self.graph = Some(ctx.graph_arc());
-        // Clone the execution context for SQL subquery execution
-        // Note: We create a new context with the same graph accessor
-        self.ctx = Some(ExecutionContext::new().with_graph(ctx.graph_arc()));
+        // Preserve the full execution context including variable_bindings for correlated subqueries
+        // This is critical for proper correlation: when a subquery references outer columns
+        // (e.g., `WHERE o.employee_id = e.id`), those bindings must be available during filtering
+        self.ctx = Some(
+            ExecutionContext::with_variable_bindings(ctx.variable_bindings().clone())
+                .with_graph(ctx.graph_arc())
+                .with_graph_mutator(ctx.graph_mutator_arc()),
+        );
         self.base.set_open();
         Ok(())
     }
@@ -184,7 +227,185 @@ pub fn evaluate_expr_with_subquery(
             evaluate_binary_op(&left_val, op, &right_val)
         }
 
-        // Delegate to the graph-aware evaluator for all other expressions
+        // Delegate to the context-aware evaluator for all other expressions
+        // This passes the context so column resolution can use variable_bindings
+        _ => evaluate_expr_with_context(expr, row, graph, ctx),
+    }
+}
+
+/// Evaluates a logical expression with context support for correlated subqueries.
+///
+/// This version of expression evaluation uses the execution context's variable_bindings
+/// as a fallback when a column is not found in the current row. This is essential for
+/// correlated subqueries where the inner query references columns from the outer query.
+///
+/// # Column Resolution Order
+///
+/// 1. Try to find the column in the current row
+/// 2. If not found, look in the context's variable_bindings
+/// 3. If still not found, return NULL
+///
+/// # Example
+///
+/// For a query like:
+/// ```sql
+/// SELECT * FROM employees e WHERE EXISTS (
+///     SELECT 1 FROM orders o WHERE o.employee_id = e.id
+/// )
+/// ```
+///
+/// When evaluating `o.employee_id = e.id` in the subquery:
+/// - `o.employee_id` is found in the subquery's current row
+/// - `e.id` is found in the context's variable_bindings (from the outer row)
+fn evaluate_expr_with_context(
+    expr: &LogicalExpr,
+    row: &Row,
+    graph: Option<&dyn GraphAccessor>,
+    ctx: &Option<ExecutionContext>,
+) -> OperatorResult<Value> {
+    match expr {
+        LogicalExpr::Literal(lit) => Ok(literal_to_value(lit)),
+
+        LogicalExpr::Column { qualifier, name } => {
+            // First, try to find in the current row using the standard logic
+            let value_from_row = if let Some(qual) = qualifier {
+                let qualified_name = format!("{}.{}", qual, name);
+                let direct_value =
+                    row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name));
+
+                // If we have a graph accessor and didn't find the qualified name directly,
+                // check if the qualifier refers to an entity ID column
+                if direct_value.is_none() {
+                    if let Some(graph) = graph {
+                        if let Some(entity_value) = row.get_by_name(qual) {
+                            if let Value::Int(id) = entity_value {
+                                let entity_id = EntityId::new(*id as u64);
+                                if let Ok(Some(properties)) = graph.get_entity_properties(entity_id)
+                                {
+                                    if let Some(prop_value) = properties.get(name) {
+                                        return Ok(prop_value.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                direct_value
+            } else {
+                // For unqualified names, also try finding a match that ends with ".name"
+                row.get_by_name(name).or_else(|| {
+                    let suffix = format!(".{}", name);
+                    row.schema()
+                        .columns()
+                        .iter()
+                        .find(|col| col.ends_with(&suffix))
+                        .and_then(|col| row.get_by_name(col))
+                })
+            };
+
+            // If found in row, return it
+            if let Some(value) = value_from_row {
+                return Ok(value.clone());
+            }
+
+            // If not found in row, try variable_bindings from the execution context
+            // This is how correlated subqueries resolve outer column references
+            if let Some(context) = ctx {
+                // Try qualified name first
+                if let Some(qual) = qualifier {
+                    let qualified_name = format!("{}.{}", qual, name);
+                    if let Some(value) = context.get_variable(&qualified_name) {
+                        return Ok(value.clone());
+                    }
+                    // Also try just the name part
+                    if let Some(value) = context.get_variable(name) {
+                        return Ok(value.clone());
+                    }
+                } else if let Some(value) = context.get_variable(name) {
+                    return Ok(value.clone());
+                }
+            }
+
+            // Not found anywhere - return NULL per SQL semantics
+            Ok(Value::Null)
+        }
+
+        // Recursively handle subexpressions with context
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let left_val = evaluate_expr_with_context(left, row, graph, ctx)?;
+            let right_val = evaluate_expr_with_context(right, row, graph, ctx)?;
+            evaluate_binary_op(&left_val, op, &right_val)
+        }
+
+        LogicalExpr::UnaryOp { op, operand } => {
+            let val = evaluate_expr_with_context(operand, row, graph, ctx)?;
+            evaluate_unary_op(op, &val)
+        }
+
+        LogicalExpr::InList { expr, list, negated } => {
+            let val = evaluate_expr_with_context(expr, row, graph, ctx)?;
+            let mut found = false;
+            for item in list {
+                let item_val = evaluate_expr_with_context(item, row, graph, ctx)?;
+                if values_equal(&val, &item_val) {
+                    found = true;
+                    break;
+                }
+            }
+            let result = if *negated { !found } else { found };
+            Ok(Value::Bool(result))
+        }
+
+        LogicalExpr::Between { expr, low, high, negated } => {
+            let val = evaluate_expr_with_context(expr, row, graph, ctx)?;
+            let low_val = evaluate_expr_with_context(low, row, graph, ctx)?;
+            let high_val = evaluate_expr_with_context(high, row, graph, ctx)?;
+            let in_range =
+                compare_values(&val, &low_val) >= 0 && compare_values(&val, &high_val) <= 0;
+            let result = if *negated { !in_range } else { in_range };
+            Ok(Value::Bool(result))
+        }
+
+        LogicalExpr::Case { operand, when_clauses, else_result } => {
+            if let Some(operand_expr) = operand {
+                let operand_val = evaluate_expr_with_context(operand_expr, row, graph, ctx)?;
+                for (when, then) in when_clauses {
+                    let when_val = evaluate_expr_with_context(when, row, graph, ctx)?;
+                    if values_equal(&operand_val, &when_val) {
+                        return evaluate_expr_with_context(then, row, graph, ctx);
+                    }
+                }
+            } else {
+                for (when, then) in when_clauses {
+                    let when_val = evaluate_expr_with_context(when, row, graph, ctx)?;
+                    if matches!(when_val, Value::Bool(true)) {
+                        return evaluate_expr_with_context(then, row, graph, ctx);
+                    }
+                }
+            }
+            if let Some(else_expr) = else_result {
+                evaluate_expr_with_context(else_expr, row, graph, ctx)
+            } else {
+                Ok(Value::Null)
+            }
+        }
+
+        LogicalExpr::Alias { expr, .. } => evaluate_expr_with_context(expr, row, graph, ctx),
+
+        LogicalExpr::Cast { expr, data_type: _ } => {
+            evaluate_expr_with_context(expr, row, graph, ctx)
+        }
+
+        LogicalExpr::ScalarFunction { func, args } => {
+            let arg_values: Vec<Value> = args
+                .iter()
+                .map(|a| evaluate_expr_with_context(a, row, graph, ctx))
+                .collect::<OperatorResult<Vec<_>>>()?;
+            evaluate_scalar_function(func, &arg_values)
+        }
+
+        // For all other expression types, delegate to the graph-aware evaluator
+        // These don't need context awareness (literals, parameters, aggregates, etc.)
         _ => evaluate_expr_with_graph(expr, row, graph),
     }
 }
@@ -1127,13 +1348,16 @@ fn execute_count_pattern(
 /// `Value::Bool(true)` if subquery returns any rows, `Value::Bool(false)` otherwise.
 fn evaluate_sql_exists_subquery(
     subquery: &LogicalPlan,
-    _outer_row: &Row,
+    outer_row: &Row,
     ctx: &Option<ExecutionContext>,
 ) -> OperatorResult<Value> {
     // Without an execution context, we cannot execute subqueries
-    let Some(ctx) = ctx else {
+    let Some(base_ctx) = ctx else {
         return Ok(Value::Bool(false));
     };
+
+    // Create a correlated context with outer row bindings
+    let subquery_ctx = create_correlated_context(base_ctx, outer_row);
 
     // Convert logical plan to physical plan
     let planner = PhysicalPlanner::new();
@@ -1141,7 +1365,7 @@ fn evaluate_sql_exists_subquery(
 
     // Build and execute the operator tree
     let mut op = build_operator_tree(&physical_plan)?;
-    op.open(ctx)?;
+    op.open(&subquery_ctx)?;
 
     // For EXISTS, we only need to check if there's at least one row
     let has_row = op.next()?.is_some();
@@ -1175,13 +1399,16 @@ fn evaluate_sql_in_subquery(
     val: &Value,
     subquery: &LogicalPlan,
     negated: bool,
-    _outer_row: &Row,
+    outer_row: &Row,
     ctx: &Option<ExecutionContext>,
 ) -> OperatorResult<Value> {
     // Without an execution context, we cannot execute subqueries
-    let Some(ctx) = ctx else {
+    let Some(base_ctx) = ctx else {
         return Ok(Value::Null);
     };
+
+    // Create a correlated context with outer row bindings
+    let subquery_ctx = create_correlated_context(base_ctx, outer_row);
 
     // Convert logical plan to physical plan
     let planner = PhysicalPlanner::new();
@@ -1189,7 +1416,7 @@ fn evaluate_sql_in_subquery(
 
     // Build and execute the operator tree
     let mut op = build_operator_tree(&physical_plan)?;
-    op.open(ctx)?;
+    op.open(&subquery_ctx)?;
 
     // Collect subquery results (first column only for IN)
     let mut found = false;
@@ -1255,13 +1482,16 @@ fn evaluate_sql_in_subquery(
 /// * `ctx` - Optional execution context (required for subquery execution)
 fn evaluate_sql_scalar_subquery(
     subquery: &LogicalPlan,
-    _outer_row: &Row,
+    outer_row: &Row,
     ctx: &Option<ExecutionContext>,
 ) -> OperatorResult<Value> {
     // Without an execution context, we cannot execute subqueries
-    let Some(ctx) = ctx else {
+    let Some(base_ctx) = ctx else {
         return Ok(Value::Null);
     };
+
+    // Create a correlated context with outer row bindings
+    let subquery_ctx = create_correlated_context(base_ctx, outer_row);
 
     // Convert logical plan to physical plan
     let planner = PhysicalPlanner::new();
@@ -1269,7 +1499,7 @@ fn evaluate_sql_scalar_subquery(
 
     // Build and execute the operator tree
     let mut op = build_operator_tree(&physical_plan)?;
-    op.open(ctx)?;
+    op.open(&subquery_ctx)?;
 
     // Get the first row
     let result = if let Some(row) = op.next()? {

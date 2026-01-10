@@ -548,8 +548,13 @@ pub enum Expr {
     /// A subquery expression.
     Subquery(Subquery),
 
-    /// EXISTS subquery.
-    Exists(Subquery),
+    /// EXISTS or NOT EXISTS subquery.
+    Exists {
+        /// The subquery to check for existence.
+        subquery: Subquery,
+        /// Whether NOT EXISTS (true) or EXISTS (false).
+        negated: bool,
+    },
 
     /// IN list: expr IN (val1, val2, ...).
     InList {

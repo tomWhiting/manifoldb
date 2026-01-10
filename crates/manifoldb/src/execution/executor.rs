@@ -19,7 +19,7 @@ use manifoldb_query::plan::logical::ViewDefinition;
 use manifoldb_query::plan::logical::{
     AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
     DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, JoinType, LogicalExpr,
-    SetOpNode, UnionNode,
+    ProjectNode, SetOpNode, UnionNode, ValuesNode,
 };
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
@@ -505,11 +505,13 @@ fn try_execute_from_physical<T: Transaction>(
             if let Some(result) = try_execute_from_physical(tx, input, logical, ctx)? {
                 // Apply the filter to the result
                 let schema = result.schema_arc();
+                let predicate = &node.predicate;
                 let filtered_rows: Vec<Row> = result
                     .into_rows()
                     .into_iter()
                     .filter(|row| {
-                        let val = evaluate_row_expr(&node.predicate, row);
+                        // Use transaction-aware subquery evaluation for EXISTS/IN/scalar subqueries
+                        let val = evaluate_row_expr_with_subquery_tx(tx, predicate, row, ctx);
                         matches!(val, Value::Bool(true))
                     })
                     .collect();
@@ -540,7 +542,7 @@ fn try_execute_from_physical<T: Transaction>(
                         let values: Vec<Value> = node
                             .exprs
                             .iter()
-                            .map(|expr| evaluate_expr_on_row(expr, row, &result_schema, ctx))
+                            .map(|expr| evaluate_expr_on_row_tx(tx, expr, row, &result_schema, ctx))
                             .collect();
                         Row::new(Arc::clone(&new_schema), values)
                     })
@@ -598,7 +600,7 @@ fn execute_physical_plan<T: Transaction>(
                         let values: Vec<Value> = node
                             .exprs
                             .iter()
-                            .map(|expr| evaluate_expr_on_row(expr, row, &result_schema, ctx))
+                            .map(|expr| evaluate_expr_on_row_tx(tx, expr, row, &result_schema, ctx))
                             .collect();
                         Row::new(Arc::clone(&new_schema), values)
                     })
@@ -615,6 +617,50 @@ fn execute_physical_plan<T: Transaction>(
             // Check if input contains a graph traversal - if so, execute through the graph path
             if contains_graph(input) {
                 return execute_graph_projection(tx, &node.exprs, input, ctx);
+            }
+
+            // Handle Values nodes specially (CTEs with literal values)
+            if let LogicalPlan::Values(values_node) = input.as_ref() {
+                return execute_values_projection(values_node, node, ctx);
+            }
+
+            // Handle nested projections (e.g., SELECT * FROM (SELECT 1 AS id))
+            // This is common for CTEs where the CTE has column aliases
+            if let LogicalPlan::Project { node: inner_node, input: inner_input } = input.as_ref() {
+                if let LogicalPlan::Values(values_node) = inner_input.as_ref() {
+                    // First execute the inner projection on the values
+                    let inner_result = execute_values_projection(values_node, inner_node, ctx)?;
+
+                    // Then apply the outer projection (typically SELECT *)
+                    let has_wildcard =
+                        node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+                    if has_wildcard {
+                        return Ok(inner_result);
+                    }
+
+                    // Apply outer projection
+                    let projected_columns: Vec<String> =
+                        node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+                    let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+                    let inner_schema = inner_result.schema_arc();
+
+                    let rows: Vec<Row> = inner_result
+                        .rows()
+                        .iter()
+                        .map(|row| {
+                            let values: Vec<Value> = node
+                                .exprs
+                                .iter()
+                                .map(|expr| {
+                                    evaluate_expr_on_row_tx(tx, expr, row, &inner_schema, ctx)
+                                })
+                                .collect();
+                            Row::new(Arc::clone(&new_schema), values)
+                        })
+                        .collect();
+
+                    return Ok(ResultSet::with_rows(new_schema, rows));
+                }
             }
 
             // First execute the input
@@ -639,8 +685,11 @@ fn execute_physical_plan<T: Transaction>(
                 let mut rows = Vec::new();
 
                 for entity in &input_result {
-                    let values: Vec<Value> =
-                        node.exprs.iter().map(|expr| evaluate_expr(expr, entity, ctx)).collect();
+                    let values: Vec<Value> = node
+                        .exprs
+                        .iter()
+                        .map(|expr| evaluate_expr_tx(tx, expr, entity, ctx))
+                        .collect();
                     rows.push(Row::new(Arc::clone(&schema), values));
                 }
 
@@ -1282,6 +1331,76 @@ fn compute_vector_distance(left: &Value, right: &Value, metric: &DistanceMetric)
     }
 }
 
+/// Execute a projection over a Values node (for CTEs with literal values).
+///
+/// This handles cases like `WITH cte AS (SELECT 1 AS id, 'name' AS name) SELECT * FROM cte`
+/// where the CTE input is a Values node containing literal expressions.
+fn execute_values_projection(
+    values_node: &ValuesNode,
+    project_node: &ProjectNode,
+    ctx: &ExecutionContext,
+) -> Result<ResultSet> {
+    // Get column names from the values node
+    let column_names = values_node.column_names.clone().unwrap_or_else(|| {
+        (0..values_node.rows.first().map(|r| r.len()).unwrap_or(0))
+            .map(|i| format!("col{}", i))
+            .collect()
+    });
+
+    // Build schema from the column names
+    let schema = Arc::new(Schema::new(column_names.clone()));
+
+    // Evaluate each row's expressions to produce actual values
+    let mut rows = Vec::new();
+    for row_exprs in &values_node.rows {
+        let values: Vec<Value> =
+            row_exprs.iter().map(|expr| evaluate_values_literal_expr(expr)).collect();
+        rows.push(Row::new(Arc::clone(&schema), values));
+    }
+
+    // If projection is a wildcard, return all columns
+    let has_wildcard = project_node.exprs.iter().any(|e| matches!(e, LogicalExpr::Wildcard));
+    if has_wildcard {
+        return Ok(ResultSet::with_rows(schema, rows));
+    }
+
+    // Apply projection
+    let projected_columns: Vec<String> =
+        project_node.exprs.iter().map(|e| expr_to_column_name(e)).collect();
+    let new_schema = Arc::new(Schema::new(projected_columns.clone()));
+
+    let projected_rows: Vec<Row> = rows
+        .iter()
+        .map(|row| {
+            let values: Vec<Value> = project_node
+                .exprs
+                .iter()
+                .map(|expr| evaluate_expr_on_row(expr, row, &schema, ctx))
+                .collect();
+            Row::new(Arc::clone(&new_schema), values)
+        })
+        .collect();
+
+    Ok(ResultSet::with_rows(new_schema, projected_rows))
+}
+
+/// Evaluate a literal expression to a Value (for Values node projection).
+fn evaluate_values_literal_expr(expr: &LogicalExpr) -> Value {
+    match expr {
+        LogicalExpr::Literal(lit) => match lit {
+            Literal::Integer(n) => Value::Int(*n),
+            Literal::Float(f) => Value::Float(*f),
+            Literal::String(s) => Value::String(s.clone()),
+            Literal::Boolean(b) => Value::Bool(*b),
+            Literal::Null => Value::Null,
+            Literal::Vector(v) => Value::Vector(v.clone()),
+            Literal::MultiVector(v) => Value::MultiVector(v.clone()),
+        },
+        LogicalExpr::Alias { expr, .. } => evaluate_values_literal_expr(expr),
+        _ => Value::Null,
+    }
+}
+
 /// Execute a projection over a graph traversal result.
 fn execute_graph_projection<T: Transaction>(
     tx: &DatabaseTransaction<T>,
@@ -1521,6 +1640,38 @@ fn evaluate_expr_on_row(
     }
 }
 
+/// Evaluate a logical expression on a row with transaction access for subqueries.
+///
+/// This version handles scalar subqueries and other expressions that require
+/// database access to evaluate.
+fn evaluate_expr_on_row_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    expr: &LogicalExpr,
+    row: &Row,
+    schema: &Arc<Schema>,
+    ctx: &ExecutionContext,
+) -> Value {
+    match expr {
+        // Scalar subquery - execute and return the result
+        LogicalExpr::Subquery(subquery) => evaluate_scalar_subquery_with_tx(tx, subquery, ctx),
+
+        // Binary operations - recursively evaluate operands
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let lval = evaluate_expr_on_row_tx(tx, left, row, schema, ctx);
+            let rval = evaluate_expr_on_row_tx(tx, right, row, schema, ctx);
+            evaluate_binary_op(op, &lval, &rval)
+        }
+
+        // Alias - unwrap and evaluate inner
+        LogicalExpr::Alias { expr: inner, .. } => {
+            evaluate_expr_on_row_tx(tx, inner, row, schema, ctx)
+        }
+
+        // For non-subquery expressions, delegate to the basic version
+        _ => evaluate_expr_on_row(expr, row, schema, ctx),
+    }
+}
+
 /// Collect all unique column names from a set of entities.
 fn collect_all_columns(entities: &[Entity]) -> Vec<String> {
     if entities.is_empty() {
@@ -1556,10 +1707,11 @@ fn execute_logical_plan<T: Transaction>(
         LogicalPlan::Filter { node, input } => {
             let entities = execute_logical_plan(tx, input, ctx)?;
 
-            // Filter entities based on predicate
+            // Filter entities based on predicate (use _with_tx for subquery support)
+            let predicate = &node.predicate;
             let filtered: Vec<Entity> = entities
                 .into_iter()
-                .filter(|entity| evaluate_predicate(&node.predicate, entity, ctx))
+                .filter(|entity| evaluate_predicate_with_tx(tx, predicate, entity, ctx))
                 .collect();
 
             Ok(filtered)
@@ -2214,9 +2366,10 @@ fn execute_join_input<T: Transaction>(
         }
         LogicalPlan::Filter { node, input } => {
             let (entities, alias) = execute_join_input(tx, input, ctx)?;
+            let predicate = &node.predicate;
             let filtered: Vec<Entity> = entities
                 .into_iter()
-                .filter(|entity| evaluate_predicate(&node.predicate, entity, ctx))
+                .filter(|entity| evaluate_predicate_with_tx(tx, predicate, entity, ctx))
                 .collect();
             Ok((filtered, alias))
         }
@@ -2426,6 +2579,123 @@ fn evaluate_row_expr(expr: &LogicalExpr, row: &Row) -> Value {
 
     // Use the operator's evaluate_expr which works with Row
     op_evaluate_expr(expr, row).unwrap_or(Value::Null)
+}
+
+/// Evaluate a logical expression against a row with subquery support.
+///
+/// This version properly handles EXISTS, IN subquery, and scalar subquery expressions
+/// by delegating to the filter operator's evaluate_expr_with_subquery function.
+///
+/// A new minimal execution context is created for subquery evaluation since the
+/// subquery functions create their own correlated contexts internally.
+fn evaluate_row_expr_with_subquery(
+    expr: &LogicalExpr,
+    row: &Row,
+    base_ctx: &ExecutionContext,
+) -> Value {
+    use manifoldb_query::exec::operators::filter::evaluate_expr_with_subquery;
+
+    // Create a minimal context for subquery evaluation that preserves graph accessors
+    // The subquery functions (evaluate_sql_exists_subquery, etc.) will create their
+    // own correlated contexts with outer row bindings
+    let subquery_ctx = ExecutionContext::new()
+        .with_graph(base_ctx.graph_arc())
+        .with_graph_mutator(base_ctx.graph_mutator_arc());
+
+    let ctx_opt: Option<ExecutionContext> = Some(subquery_ctx);
+
+    evaluate_expr_with_subquery(expr, row, None, &ctx_opt).unwrap_or(Value::Null)
+}
+
+/// Evaluate a logical expression against a row with transaction-based subquery support.
+///
+/// This version uses the transaction to execute subqueries against database tables,
+/// providing full support for EXISTS, IN, and scalar subqueries that reference tables.
+fn evaluate_row_expr_with_subquery_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    expr: &LogicalExpr,
+    row: &Row,
+    base_ctx: &ExecutionContext,
+) -> Value {
+    match expr {
+        // SQL EXISTS subquery - use transaction to execute against database
+        LogicalExpr::Exists { subquery, negated } => {
+            let result = evaluate_subquery_exists_with_tx(tx, subquery, base_ctx);
+            Value::Bool(if *negated { !result } else { result })
+        }
+
+        // SQL IN subquery - use transaction to execute against database
+        LogicalExpr::InSubquery { expr: inner_expr, subquery, negated } => {
+            let val = evaluate_row_expr_with_subquery_tx(tx, inner_expr, row, base_ctx);
+            if matches!(val, Value::Null) {
+                return Value::Null;
+            }
+            let result = evaluate_subquery_in_with_tx(tx, &val, subquery, base_ctx);
+            Value::Bool(if *negated { !result } else { result })
+        }
+
+        // SQL scalar subquery - use transaction to execute against database
+        LogicalExpr::Subquery(subquery) => evaluate_scalar_subquery_with_tx(tx, subquery, base_ctx),
+
+        // Binary operations - recursively handle subqueries in operands
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let lval = evaluate_row_expr_with_subquery_tx(tx, left, row, base_ctx);
+            let rval = evaluate_row_expr_with_subquery_tx(tx, right, row, base_ctx);
+            evaluate_binary_op(op, &lval, &rval)
+        }
+
+        // Unary operations
+        LogicalExpr::UnaryOp { op, operand } => {
+            let val = evaluate_row_expr_with_subquery_tx(tx, operand, row, base_ctx);
+            match op {
+                manifoldb_query::ast::UnaryOp::Not => match val {
+                    Value::Bool(b) => Value::Bool(!b),
+                    _ => Value::Null,
+                },
+                manifoldb_query::ast::UnaryOp::Neg => match val {
+                    Value::Int(i) => Value::Int(-i),
+                    Value::Float(f) => Value::Float(-f),
+                    _ => Value::Null,
+                },
+                manifoldb_query::ast::UnaryOp::IsNull => Value::Bool(matches!(val, Value::Null)),
+                manifoldb_query::ast::UnaryOp::IsNotNull => {
+                    Value::Bool(!matches!(val, Value::Null))
+                }
+            }
+        }
+
+        // Column reference - look up in the row
+        LogicalExpr::Column { name, qualifier } => {
+            let schema = row.schema();
+            // Try qualified name first if available
+            if let Some(q) = qualifier {
+                let qualified_name = format!("{}.{}", q, name);
+                if let Some(idx) = schema.index_of(&qualified_name) {
+                    return row.get(idx).cloned().unwrap_or(Value::Null);
+                }
+            }
+            // Then try just the column name
+            if let Some(idx) = schema.index_of(name) {
+                row.get(idx).cloned().unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            }
+        }
+
+        // Literal values
+        LogicalExpr::Literal(lit) => match lit {
+            Literal::Null => Value::Null,
+            Literal::Boolean(b) => Value::Bool(*b),
+            Literal::Integer(i) => Value::Int(*i),
+            Literal::Float(f) => Value::Float(*f),
+            Literal::String(s) => Value::String(s.clone()),
+            Literal::Vector(v) => Value::Vector(v.clone()),
+            Literal::MultiVector(v) => Value::MultiVector(v.clone()),
+        },
+
+        // For other expressions, fall back to the non-tx version
+        _ => evaluate_row_expr_with_subquery(expr, row, base_ctx),
+    }
 }
 
 /// Execute a CREATE TABLE statement.
@@ -2903,6 +3173,35 @@ fn evaluate_expr(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContext) ->
     }
 }
 
+/// Evaluate a logical expression against an entity with transaction access for subqueries.
+///
+/// This version handles scalar subqueries and other expressions that require
+/// database access to evaluate.
+fn evaluate_expr_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    expr: &LogicalExpr,
+    entity: &Entity,
+    ctx: &ExecutionContext,
+) -> Value {
+    match expr {
+        // Scalar subquery - execute and return the result
+        LogicalExpr::Subquery(subquery) => evaluate_scalar_subquery_with_tx(tx, subquery, ctx),
+
+        // Binary operations - recursively evaluate operands
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let lval = evaluate_expr_tx(tx, left, entity, ctx);
+            let rval = evaluate_expr_tx(tx, right, entity, ctx);
+            evaluate_binary_op(op, &lval, &rval)
+        }
+
+        // Alias - unwrap and evaluate inner
+        LogicalExpr::Alias { expr: inner, .. } => evaluate_expr_tx(tx, inner, entity, ctx),
+
+        // For non-subquery expressions, delegate to the basic version
+        _ => evaluate_expr(expr, entity, ctx),
+    }
+}
+
 /// Evaluate a literal expression (for INSERT VALUES).
 ///
 /// # Errors
@@ -2934,6 +3233,175 @@ fn literal_to_value(lit: &Literal) -> Value {
         Literal::Vector(v) => Value::Vector(v.clone()),
         Literal::MultiVector(v) => Value::MultiVector(v.clone()),
     }
+}
+
+/// Evaluate an EXISTS subquery, returning true if any rows are returned.
+///
+/// This version works without a transaction by using the operator tree.
+/// For queries that need to access database tables, use `evaluate_subquery_exists_with_tx`.
+fn evaluate_subquery_exists(subquery: &LogicalPlan, ctx: &ExecutionContext) -> bool {
+    use manifoldb_query::exec::build_operator_tree;
+    use manifoldb_query::plan::PhysicalPlanner;
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let Ok(mut op) = build_operator_tree(&physical_plan) else {
+        return false;
+    };
+
+    if op.open(ctx).is_err() {
+        return false;
+    }
+
+    // For EXISTS, we only need to check if there's at least one row
+    let has_row = op.next().ok().flatten().is_some();
+    let _ = op.close();
+
+    has_row
+}
+
+/// Evaluate an EXISTS subquery with transaction access for database table scans.
+fn evaluate_subquery_exists_with_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    subquery: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> bool {
+    // Execute the subquery using the main executor
+    let entities = match execute_logical_plan(tx, subquery, ctx) {
+        Ok(entities) => entities,
+        Err(_) => return false,
+    };
+
+    // EXISTS is true if there's at least one entity
+    !entities.is_empty()
+}
+
+/// Evaluate an IN subquery, returning true if the value matches any row.
+fn evaluate_subquery_in(val: &Value, subquery: &LogicalPlan, ctx: &ExecutionContext) -> bool {
+    use manifoldb_query::exec::build_operator_tree;
+    use manifoldb_query::plan::PhysicalPlanner;
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let Ok(mut op) = build_operator_tree(&physical_plan) else {
+        return false;
+    };
+
+    if op.open(ctx).is_err() {
+        return false;
+    }
+
+    // Check if the value matches any row in the subquery
+    let mut found = false;
+    while let Ok(Some(row)) = op.next() {
+        // Get the first column value from the row
+        if let Some(subquery_val) = row.get(0) {
+            if values_equal(val, subquery_val) {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    let _ = op.close();
+    found
+}
+
+/// Evaluate an IN subquery with transaction access for database table scans.
+fn evaluate_subquery_in_with_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    val: &Value,
+    subquery: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> bool {
+    use manifoldb_query::plan::PhysicalPlanner;
+
+    // Build physical plan for proper execution
+    let catalog = build_planner_catalog(tx).unwrap_or_default();
+    let planner = PhysicalPlanner::new().with_catalog(catalog);
+    let physical_plan = planner.plan(subquery);
+
+    // Execute through the physical plan path
+    let result = match execute_physical_plan(tx, &physical_plan, subquery, ctx) {
+        Ok(result) => result,
+        Err(_) => return false,
+    };
+
+    // Check if the value matches any row's first column
+    for row in result.rows() {
+        if let Some(row_val) = row.get(0) {
+            if values_equal(val, row_val) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Evaluate a scalar subquery, returning the single value or NULL.
+fn evaluate_scalar_subquery(subquery: &LogicalPlan, ctx: &ExecutionContext) -> Value {
+    use manifoldb_query::exec::build_operator_tree;
+    use manifoldb_query::plan::PhysicalPlanner;
+
+    // Convert logical plan to physical plan
+    let planner = PhysicalPlanner::new();
+    let physical_plan = planner.plan(subquery);
+
+    // Build and execute the operator tree
+    let Ok(mut op) = build_operator_tree(&physical_plan) else {
+        return Value::Null;
+    };
+
+    if op.open(ctx).is_err() {
+        return Value::Null;
+    }
+
+    // Get the first row
+    let result = if let Ok(Some(row)) = op.next() {
+        // Get the first column value
+        row.get(0).cloned().unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+
+    let _ = op.close();
+    result
+}
+
+/// Evaluate a scalar subquery with transaction access for database table scans.
+fn evaluate_scalar_subquery_with_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    subquery: &LogicalPlan,
+    ctx: &ExecutionContext,
+) -> Value {
+    use manifoldb_query::plan::PhysicalPlanner;
+
+    // Build physical plan for proper execution (including aggregates)
+    let catalog = build_planner_catalog(tx).unwrap_or_default();
+    let planner = PhysicalPlanner::new().with_catalog(catalog);
+    let physical_plan = planner.plan(subquery);
+
+    // Execute through the physical plan path to handle aggregates properly
+    let result = match execute_physical_plan(tx, &physical_plan, subquery, ctx) {
+        Ok(result) => result,
+        Err(_) => return Value::Null,
+    };
+
+    // Return the first column value of the first row
+    if let Some(row) = result.rows().first() {
+        if let Some(val) = row.get(0) {
+            return val.clone();
+        }
+    }
+
+    Value::Null
 }
 
 /// Evaluate a predicate expression to a boolean.
@@ -3055,7 +3523,201 @@ fn evaluate_predicate(expr: &LogicalExpr, entity: &Entity, ctx: &ExecutionContex
             }
         }
 
+        // SQL EXISTS subquery
+        LogicalExpr::Exists { subquery, negated } => {
+            // Execute the subquery using the operator tree
+            let result = evaluate_subquery_exists(subquery, ctx);
+            if *negated {
+                !result
+            } else {
+                result
+            }
+        }
+
+        // SQL IN subquery
+        LogicalExpr::InSubquery { expr, subquery, negated } => {
+            let val = evaluate_expr(expr, entity, ctx);
+            if matches!(val, Value::Null) {
+                return false; // NULL IN (...) is unknown, treated as false in WHERE
+            }
+            let result = evaluate_subquery_in(&val, subquery, ctx);
+            if *negated {
+                !result
+            } else {
+                result
+            }
+        }
+
+        // SQL scalar subquery
+        LogicalExpr::Subquery(subquery) => {
+            // Scalar subquery in predicate context is truthy if not null
+            let val = evaluate_scalar_subquery(subquery, ctx);
+            !matches!(val, Value::Null)
+        }
+
         _ => true, // Default to true for unhandled expressions
+    }
+}
+
+/// Evaluate a predicate expression to a boolean with transaction access for subqueries.
+///
+/// This version can execute SQL subqueries (EXISTS, IN, scalar) that need to access
+/// database tables. Use this version when you have a transaction available.
+fn evaluate_predicate_with_tx<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    expr: &LogicalExpr,
+    entity: &Entity,
+    ctx: &ExecutionContext,
+) -> bool {
+    match expr {
+        LogicalExpr::Literal(Literal::Boolean(b)) => *b,
+
+        LogicalExpr::BinaryOp { left, op, right } => {
+            let lval = evaluate_expr_tx(tx, left, entity, ctx);
+            let rval = evaluate_expr_tx(tx, right, entity, ctx);
+
+            use manifoldb_query::ast::BinaryOp;
+            match op {
+                BinaryOp::Eq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        values_equal(&lval, &rval)
+                    }
+                }
+                BinaryOp::NotEq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        !values_equal(&lval, &rval)
+                    }
+                }
+                BinaryOp::Lt => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        compare_values(&lval, &rval) == std::cmp::Ordering::Less
+                    }
+                }
+                BinaryOp::LtEq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        matches!(
+                            compare_values(&lval, &rval),
+                            std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+                        )
+                    }
+                }
+                BinaryOp::Gt => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        compare_values(&lval, &rval) == std::cmp::Ordering::Greater
+                    }
+                }
+                BinaryOp::GtEq => {
+                    if matches!(lval, Value::Null) || matches!(rval, Value::Null) {
+                        false
+                    } else {
+                        matches!(
+                            compare_values(&lval, &rval),
+                            std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+                        )
+                    }
+                }
+                BinaryOp::And => {
+                    evaluate_predicate_with_tx(tx, left, entity, ctx)
+                        && evaluate_predicate_with_tx(tx, right, entity, ctx)
+                }
+                BinaryOp::Or => {
+                    evaluate_predicate_with_tx(tx, left, entity, ctx)
+                        || evaluate_predicate_with_tx(tx, right, entity, ctx)
+                }
+                BinaryOp::Like => {
+                    if let (Value::String(s), Value::String(pattern)) = (&lval, &rval) {
+                        simple_like_match(s, pattern)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        }
+
+        LogicalExpr::UnaryOp { op, operand } => {
+            use manifoldb_query::ast::UnaryOp;
+            match op {
+                UnaryOp::Not => !evaluate_predicate_with_tx(tx, operand, entity, ctx),
+                UnaryOp::IsNull => {
+                    matches!(evaluate_expr_tx(tx, operand, entity, ctx), Value::Null)
+                }
+                UnaryOp::IsNotNull => {
+                    !matches!(evaluate_expr_tx(tx, operand, entity, ctx), Value::Null)
+                }
+                _ => false,
+            }
+        }
+
+        LogicalExpr::InList { expr, list, negated } => {
+            let val = evaluate_expr_tx(tx, expr, entity, ctx);
+            let in_list = list.iter().any(|item| {
+                let item_val = evaluate_expr_tx(tx, item, entity, ctx);
+                values_equal(&val, &item_val)
+            });
+            if *negated {
+                !in_list
+            } else {
+                in_list
+            }
+        }
+
+        LogicalExpr::Between { expr, low, high, negated } => {
+            let val = evaluate_expr_tx(tx, expr, entity, ctx);
+            let low_val = evaluate_expr_tx(tx, low, entity, ctx);
+            let high_val = evaluate_expr_tx(tx, high, entity, ctx);
+
+            let in_range = compare_values(&val, &low_val) != std::cmp::Ordering::Less
+                && compare_values(&val, &high_val) != std::cmp::Ordering::Greater;
+
+            if *negated {
+                !in_range
+            } else {
+                in_range
+            }
+        }
+
+        // SQL EXISTS subquery - use transaction to execute against database
+        LogicalExpr::Exists { subquery, negated } => {
+            let result = evaluate_subquery_exists_with_tx(tx, subquery, ctx);
+            if *negated {
+                !result
+            } else {
+                result
+            }
+        }
+
+        // SQL IN subquery - use transaction to execute against database
+        LogicalExpr::InSubquery { expr, subquery, negated } => {
+            let val = evaluate_expr_tx(tx, expr, entity, ctx);
+            if matches!(val, Value::Null) {
+                return false;
+            }
+            let result = evaluate_subquery_in_with_tx(tx, &val, subquery, ctx);
+            if *negated {
+                !result
+            } else {
+                result
+            }
+        }
+
+        // SQL scalar subquery - use transaction to execute against database
+        LogicalExpr::Subquery(subquery) => {
+            let val = evaluate_scalar_subquery_with_tx(tx, subquery, ctx);
+            !matches!(val, Value::Null)
+        }
+
+        _ => true,
     }
 }
 

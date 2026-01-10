@@ -587,9 +587,10 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
         sp::Expr::Subquery(query) => Ok(Expr::Subquery(crate::ast::expr::Subquery {
             query: Box::new(convert_query(*query)?),
         })),
-        sp::Expr::Exists { subquery, .. } => Ok(Expr::Exists(crate::ast::expr::Subquery {
-            query: Box::new(convert_query(*subquery)?),
-        })),
+        sp::Expr::Exists { subquery, negated } => Ok(Expr::Exists {
+            subquery: crate::ast::expr::Subquery { query: Box::new(convert_query(*subquery)?) },
+            negated,
+        }),
         sp::Expr::InList { expr, list, negated } => Ok(Expr::InList {
             expr: Box::new(convert_expr(*expr)?),
             list: list.into_iter().map(convert_expr).collect::<ParseResult<Vec<_>>>()?,
