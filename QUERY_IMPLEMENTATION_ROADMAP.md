@@ -47,6 +47,10 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **Cypher Spatial Functions†** - Point type, point(), point.distance() (haversine), point.withinBBox() (17 tests)
 - ✅ **Physical Join Operators†** - IndexNestedLoopJoinOp, SortMergeJoinOp, HAVING clause enhancement
 - ✅ **Utility Statements†** - EXPLAIN ANALYZE, ANALYZE, COPY, SET/SHOW, VACUUM/RESET (sqlparser 0.60)
+- ✅ **FILTER Clause Bug Fix** - SortMergeAggregateOp now respects FILTER (was only HashAggregateOp)
+- ✅ **NATURAL JOIN / JOIN USING** - Physical plan builder synthesizes HashJoin keys from using_columns
+- ✅ **Pattern Comprehension Execution** - Full graph traversal with filter/projection support
+- ✅ **INSERT ON CONFLICT (Upsert)** - DO NOTHING and DO UPDATE with column-based conflict target (constraint name TBD)
 
 ### Remaining Work (2 Meta-Tasks)
 
@@ -250,7 +254,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
   - [x] stddev, stddev_pop, variance, var_pop ✅ Complete (Jan 2026)
   - [x] percentileCont, percentileDisc ✅ Complete (Jan 2026)
   - [x] bool_and, bool_or, every ✅ Jan 2026
-  - [x] FILTER clause on aggregates ✅ Jan 2026 (**BUG:** SortMergeAggregateOp ignores filter - only HashAggregateOp works)
+  - [x] FILTER clause on aggregates ✅ Jan 2026 (HashAggregateOp + SortMergeAggregateOp)
 
 - [x] **Window Functions** (Tier 2) - Complete ✅ Jan 2026
   - [x] row_number, rank, dense_rank ✅ Jan 2026
@@ -346,7 +350,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 
 - [x] List comprehensions: `[x IN list WHERE pred | expr]` ✅ Jan 2026
 - [x] Map projections: `node{.prop1, .prop2, key: expr}` ✅ Jan 2026
-- [x] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]` ✅ Jan 2026 (parsed + logical plan; **execution returns empty placeholder**)
+- [x] Pattern comprehensions: `[(n)-[:REL]->(m) | m.name]` ✅ Jan 2026 (full execution with graph traversal)
 - [x] CASE expressions (simple and searched) ✅ Complete
 - [x] Parameter syntax ($param) ✅ Complete
 

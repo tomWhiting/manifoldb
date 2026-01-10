@@ -170,8 +170,8 @@ These feature groups can be implemented independently:
 | RIGHT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - SortMergeJoinOp |
 | FULL OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - SortMergeJoinOp |
 | CROSS JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| NATURAL JOIN | ✓ | ✓ | ✓ | | | | Needs physical op |
-| JOIN ... USING | ✓ | ✓ | ✓ | | | | Needs physical op |
+| NATURAL JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - HashJoin with synthesized keys |
+| JOIN ... USING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - HashJoin with synthesized keys |
 | JOIN ... ON | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Self join | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **WHERE Clause** |
@@ -292,8 +292,8 @@ These feature groups can be implemented independently:
 | Column list | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | INSERT ... SELECT | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | DEFAULT VALUES | ✓ | ✓ | ✓ | | | | Needs physical |
-| ON CONFLICT DO NOTHING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| ON CONFLICT DO UPDATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
+| ON CONFLICT DO NOTHING | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Column-based conflict target only |
+| ON CONFLICT DO UPDATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Column-based; constraint name target TBD |
 | RETURNING | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 
 ## 1.5 UPDATE Statement
@@ -544,7 +544,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | AVG | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | MIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | MAX | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
-| FILTER clause | ✓ | ✓ | ✓ | ✓ | ⚠️ | | **Partial** - HashAggregateOp works, SortMergeAggregateOp ignores filter (bug) |
+| FILTER clause | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Both HashAggregateOp and SortMergeAggregateOp |
 | array_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | string_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | json_agg | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
@@ -831,7 +831,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | List comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | List literal | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | Map projection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| Pattern comprehension | ✓ | ✓ | ✓ | | | | Parsed + logical plan; execution returns empty (placeholder) |
+| Pattern comprehension | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - Full graph traversal with filter/projection |
 | Parameters ($param) | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 
 ## 2.8 Scalar Functions
