@@ -19,9 +19,10 @@ use std::fmt;
 
 use super::ddl::{
     AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode,
-    CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode,
-    DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode,
-    DropTriggerNode, DropViewNode, TruncateTableNode,
+    CreateIndexNode, CreateMaterializedViewNode, CreateSchemaNode, CreateTableNode,
+    CreateTriggerNode, CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode,
+    DropMaterializedViewNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    RefreshMaterializedViewNode, TruncateTableNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
@@ -334,6 +335,15 @@ pub enum LogicalPlan {
 
     /// DROP VIEW operation.
     DropView(DropViewNode),
+
+    /// CREATE MATERIALIZED VIEW operation.
+    CreateMaterializedView(CreateMaterializedViewNode),
+
+    /// DROP MATERIALIZED VIEW operation.
+    DropMaterializedView(DropMaterializedViewNode),
+
+    /// REFRESH MATERIALIZED VIEW operation.
+    RefreshMaterializedView(RefreshMaterializedViewNode),
 
     /// CREATE SCHEMA operation.
     CreateSchema(CreateSchemaNode),
@@ -666,6 +676,9 @@ impl LogicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateMaterializedView(_)
+            | Self::DropMaterializedView(_)
+            | Self::RefreshMaterializedView(_)
             | Self::CreateSchema(_)
             | Self::AlterSchema(_)
             | Self::DropSchema(_)
@@ -764,6 +777,9 @@ impl LogicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateMaterializedView(_)
+            | Self::DropMaterializedView(_)
+            | Self::RefreshMaterializedView(_)
             | Self::CreateSchema(_)
             | Self::AlterSchema(_)
             | Self::DropSchema(_)
@@ -850,6 +866,9 @@ impl LogicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::CreateView(_) => "CreateView",
             Self::DropView(_) => "DropView",
+            Self::CreateMaterializedView(_) => "CreateMaterializedView",
+            Self::DropMaterializedView(_) => "DropMaterializedView",
+            Self::RefreshMaterializedView(_) => "RefreshMaterializedView",
             Self::CreateSchema(_) => "CreateSchema",
             Self::AlterSchema(_) => "AlterSchema",
             Self::DropSchema(_) => "DropSchema",
@@ -1209,6 +1228,31 @@ impl DisplayTree<'_> {
                 }
                 if node.cascade {
                     write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::CreateMaterializedView(node) => {
+                write!(f, "CreateMaterializedView: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                if !node.columns.is_empty() {
+                    let cols: Vec<_> = node.columns.iter().map(|c| c.name.as_str()).collect();
+                    write!(f, " ({})", cols.join(", "))?;
+                }
+            }
+            LogicalPlan::DropMaterializedView(node) => {
+                write!(f, "DropMaterializedView: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::RefreshMaterializedView(node) => {
+                write!(f, "RefreshMaterializedView: {}", node.name)?;
+                if node.concurrently {
+                    write!(f, " CONCURRENTLY")?;
                 }
             }
             LogicalPlan::CreateSchema(node) => {

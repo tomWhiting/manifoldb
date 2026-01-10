@@ -21,11 +21,12 @@ use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
     AlterIndexNode, AlterSchemaNode, AlterTableNode, BeginTransactionNode, CommitNode,
-    CreateCollectionNode, CreateFunctionNode, CreateIndexNode, CreateSchemaNode, CreateTableNode,
-    CreateTriggerNode, CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode,
-    DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode, ExpandDirection, ExpandLength,
-    GraphCreateNode, GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode,
-    GraphSetNode, JoinType, LogicalExpr, LogicalGroupingSet, LogicalOnConflict, ProcedureCallNode,
+    CreateCollectionNode, CreateFunctionNode, CreateIndexNode, CreateMaterializedViewNode,
+    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
+    DropFunctionNode, DropIndexNode, DropMaterializedViewNode, DropSchemaNode, DropTableNode,
+    DropTriggerNode, DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode,
+    GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr,
+    LogicalGroupingSet, LogicalOnConflict, ProcedureCallNode, RefreshMaterializedViewNode,
     ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType, SetTransactionNode, SortOrder,
     TruncateTableNode,
 };
@@ -395,6 +396,15 @@ pub enum PhysicalPlan {
 
     /// DROP VIEW operation.
     DropView(DropViewNode),
+
+    /// CREATE MATERIALIZED VIEW operation.
+    CreateMaterializedView(CreateMaterializedViewNode),
+
+    /// DROP MATERIALIZED VIEW operation.
+    DropMaterializedView(DropMaterializedViewNode),
+
+    /// REFRESH MATERIALIZED VIEW operation.
+    RefreshMaterializedView(RefreshMaterializedViewNode),
 
     /// CREATE SCHEMA operation.
     CreateSchema(CreateSchemaNode),
@@ -2601,6 +2611,9 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateMaterializedView(_)
+            | Self::DropMaterializedView(_)
+            | Self::RefreshMaterializedView(_)
             | Self::CreateSchema(_)
             | Self::AlterSchema(_)
             | Self::DropSchema(_)
@@ -2703,6 +2716,9 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateMaterializedView(_)
+            | Self::DropMaterializedView(_)
+            | Self::RefreshMaterializedView(_)
             | Self::CreateSchema(_)
             | Self::AlterSchema(_)
             | Self::DropSchema(_)
@@ -2873,6 +2889,9 @@ impl PhysicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::CreateView(_) => "CreateView",
             Self::DropView(_) => "DropView",
+            Self::CreateMaterializedView(_) => "CreateMaterializedView",
+            Self::DropMaterializedView(_) => "DropMaterializedView",
+            Self::RefreshMaterializedView(_) => "RefreshMaterializedView",
             Self::CreateSchema(_) => "CreateSchema",
             Self::AlterSchema(_) => "AlterSchema",
             Self::DropSchema(_) => "DropSchema",
@@ -2954,6 +2973,9 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateMaterializedView(_)
+            | Self::DropMaterializedView(_)
+            | Self::RefreshMaterializedView(_)
             | Self::CreateSchema(_)
             | Self::AlterSchema(_)
             | Self::DropSchema(_)
@@ -3460,6 +3482,31 @@ impl DisplayTree<'_> {
                 }
                 if node.cascade {
                     write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::CreateMaterializedView(node) => {
+                write!(f, "CreateMaterializedView: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                if !node.columns.is_empty() {
+                    let cols: Vec<_> = node.columns.iter().map(|c| c.name.as_str()).collect();
+                    write!(f, " ({})", cols.join(", "))?;
+                }
+            }
+            PhysicalPlan::DropMaterializedView(node) => {
+                write!(f, "DropMaterializedView: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::RefreshMaterializedView(node) => {
+                write!(f, "RefreshMaterializedView: {}", node.name)?;
+                if node.concurrently {
+                    write!(f, " CONCURRENTLY")?;
                 }
             }
             PhysicalPlan::CreateSchema(node) => {

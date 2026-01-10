@@ -12,22 +12,22 @@ use crate::ast::{
     AlterTableStatement, AnalyzeStatement, Assignment, BeginTransaction, BinaryOp, CallStatement,
     CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CopyDestination,
     CopyDirection, CopyFormat, CopyOptions, CopySource, CopyStatement, CopyTarget,
-    CreateFunctionStatement, CreateIndexStatement, CreateSchemaStatement, CreateTableStatement,
-    CreateTriggerStatement, CreateViewStatement, DataType, DeleteStatement, DistinctClause,
-    DropFunctionStatement, DropIndexStatement, DropSchemaStatement, DropTableStatement,
-    DropTriggerStatement, DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr,
-    FetchClause, FunctionCall, FunctionLanguage, FunctionParameter, FunctionVolatility,
-    GroupByClause, GroupingSet, Identifier, IndexColumn, InsertSource, InsertStatement,
-    IsolationLevel, JoinClause, JoinCondition, JoinType, Literal, MergeAction, MergeClause,
-    MergeMatchType, MergeSqlStatement, NamedWindowDefinition, OnConflict, OrderByExpr,
-    ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
-    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
-    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
-    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
-    TruncateCascade, TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement,
-    UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec,
-    WithClause,
+    CreateFunctionStatement, CreateIndexStatement, CreateMaterializedViewStatement,
+    CreateSchemaStatement, CreateTableStatement, CreateTriggerStatement, CreateViewStatement,
+    DataType, DeleteStatement, DistinctClause, DropFunctionStatement, DropIndexStatement,
+    DropMaterializedViewStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
+    DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FetchClause, FunctionCall,
+    FunctionLanguage, FunctionParameter, FunctionVolatility, GroupByClause, GroupingSet,
+    Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
+    JoinCondition, JoinType, Literal, MergeAction, MergeClause, MergeMatchType, MergeSqlStatement,
+    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
+    PartitionOf, QualifiedName, RefreshMaterializedViewStatement, ReleaseSavepointStatement,
+    ResetStatement, RollbackTransaction, SavepointStatement, SelectItem, SelectStatement,
+    SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement, SetValue,
+    ShowStatement, Statement, TableAlias, TableConstraint, TableRef, TransactionAccessMode,
+    TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming, TruncateCascade,
+    TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement, UtilityStatement,
+    VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -41,10 +41,85 @@ pub fn parse_sql(sql: &str) -> ParseResult<Vec<Statement>> {
         return Err(ParseError::EmptyQuery);
     }
 
+    // Handle REFRESH MATERIALIZED VIEW specially since sqlparser-rs doesn't support it
+    if let Some(refresh_stmt) = try_parse_refresh_materialized_view(sql)? {
+        return Ok(vec![refresh_stmt]);
+    }
+
     let dialect = PostgreSqlDialect {};
     let statements = Parser::parse_sql(&dialect, sql)?;
 
     statements.into_iter().map(convert_statement).collect()
+}
+
+/// Attempts to parse a REFRESH MATERIALIZED VIEW statement.
+///
+/// Returns `Ok(Some(stmt))` if the input is a valid REFRESH MATERIALIZED VIEW statement,
+/// `Ok(None)` if it doesn't match this pattern, or an error if it matches but is malformed.
+fn try_parse_refresh_materialized_view(sql: &str) -> ParseResult<Option<Statement>> {
+    let normalized = sql.trim().to_uppercase();
+
+    // Check if this looks like a REFRESH statement
+    if !normalized.starts_with("REFRESH") {
+        return Ok(None);
+    }
+
+    // Parse: REFRESH MATERIALIZED VIEW [CONCURRENTLY] name [;]
+    let tokens: Vec<&str> = sql.split_whitespace().collect();
+    if tokens.len() < 4 {
+        return Err(ParseError::SqlSyntax(
+            "REFRESH MATERIALIZED VIEW requires a view name".to_string(),
+        ));
+    }
+
+    // Validate the statement structure
+    if tokens[0].to_uppercase() != "REFRESH" {
+        return Ok(None);
+    }
+    if tokens[1].to_uppercase() != "MATERIALIZED" {
+        return Err(ParseError::SqlSyntax("Expected MATERIALIZED after REFRESH".to_string()));
+    }
+    if tokens[2].to_uppercase() != "VIEW" {
+        return Err(ParseError::SqlSyntax("Expected VIEW after REFRESH MATERIALIZED".to_string()));
+    }
+
+    // Check for CONCURRENTLY option and extract the view name
+    let (concurrently, name_start_idx) =
+        if tokens.len() > 4 && tokens[3].to_uppercase() == "CONCURRENTLY" {
+            (true, 4)
+        } else {
+            (false, 3)
+        };
+
+    if name_start_idx >= tokens.len() {
+        return Err(ParseError::SqlSyntax(
+            "REFRESH MATERIALIZED VIEW requires a view name".to_string(),
+        ));
+    }
+
+    // Collect the view name (may be qualified like schema.view)
+    let name_str = tokens[name_start_idx].trim_end_matches(';');
+    let name = parse_qualified_name(name_str);
+
+    Ok(Some(Statement::RefreshMaterializedView(
+        RefreshMaterializedViewStatement::new(name).with_concurrently(concurrently),
+    )))
+}
+
+/// Parses a potentially qualified name (e.g., "schema.table" or just "table").
+fn parse_qualified_name(name: &str) -> QualifiedName {
+    let parts: Vec<&str> = name.split('.').collect();
+    match parts.as_slice() {
+        [table] => QualifiedName::simple(Identifier::new(*table)),
+        [schema, table] => {
+            QualifiedName::qualified(Identifier::new(*schema), Identifier::new(*table))
+        }
+        parts => {
+            // For 3+ parts, create from the parts vector
+            let identifiers: Vec<Identifier> = parts.iter().map(|p| Identifier::new(*p)).collect();
+            QualifiedName::new(identifiers)
+        }
+    }
 }
 
 /// Parses a single SQL statement.
@@ -157,15 +232,22 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
         }
         sp::Statement::CreateView(create_view) => {
             if create_view.materialized {
-                return Err(ParseError::Unsupported("MATERIALIZED VIEW".to_string()));
+                let mat_view_stmt = convert_create_materialized_view(
+                    create_view.if_not_exists,
+                    create_view.name,
+                    create_view.columns,
+                    *create_view.query,
+                )?;
+                Ok(Statement::CreateMaterializedView(Box::new(mat_view_stmt)))
+            } else {
+                let view_stmt = convert_create_view(
+                    create_view.or_replace,
+                    create_view.name,
+                    create_view.columns,
+                    *create_view.query,
+                )?;
+                Ok(Statement::CreateView(Box::new(view_stmt)))
             }
-            let view_stmt = convert_create_view(
-                create_view.or_replace,
-                create_view.name,
-                create_view.columns,
-                *create_view.query,
-            )?;
-            Ok(Statement::CreateView(Box::new(view_stmt)))
         }
         sp::Statement::AlterTable(sp::AlterTable { name, if_exists, operations, .. }) => {
             let alter_stmt = convert_alter_table(name, if_exists, operations)?;
@@ -203,6 +285,14 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
                     cascade,
                 };
                 Ok(Statement::DropView(drop_stmt))
+            }
+            sp::ObjectType::MaterializedView => {
+                let drop_stmt = DropMaterializedViewStatement {
+                    if_exists,
+                    names: names.into_iter().map(convert_object_name).collect(),
+                    cascade,
+                };
+                Ok(Statement::DropMaterializedView(drop_stmt))
             }
             sp::ObjectType::Schema => {
                 // Schema names are simple identifiers, not qualified names
@@ -1939,6 +2029,26 @@ fn convert_create_view(
     })
 }
 
+/// Converts a CREATE MATERIALIZED VIEW statement.
+fn convert_create_materialized_view(
+    if_not_exists: bool,
+    name: sp::ObjectName,
+    columns: Vec<sp::ViewColumnDef>,
+    query: sp::Query,
+) -> ParseResult<CreateMaterializedViewStatement> {
+    let view_name = convert_object_name(name);
+    let column_aliases: Vec<Identifier> =
+        columns.into_iter().map(|c| convert_ident(c.name)).collect();
+    let select = convert_query(query)?;
+
+    Ok(CreateMaterializedViewStatement {
+        if_not_exists,
+        name: view_name,
+        columns: column_aliases,
+        query: Box::new(select),
+    })
+}
+
 /// Converts an ALTER TABLE statement.
 fn convert_alter_table(
     name: sp::ObjectName,
@@ -2945,6 +3055,175 @@ mod tests {
                 assert!(drop.cascade);
             }
             _ => panic!("expected DROP VIEW"),
+        }
+    }
+
+    // =====================
+    // MATERIALIZED VIEW Tests
+    // =====================
+
+    #[test]
+    fn parse_create_materialized_view_basic() {
+        let stmt = parse_single_statement(
+            "CREATE MATERIALIZED VIEW sales_summary AS SELECT region, SUM(amount) as total FROM sales GROUP BY region",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateMaterializedView(mv) => {
+                assert_eq!(mv.name.to_string(), "sales_summary");
+                assert!(!mv.if_not_exists);
+                assert!(mv.columns.is_empty());
+            }
+            _ => panic!("expected CREATE MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_materialized_view_if_not_exists() {
+        let stmt = parse_single_statement(
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS my_mv AS SELECT * FROM users",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateMaterializedView(mv) => {
+                assert_eq!(mv.name.to_string(), "my_mv");
+                assert!(mv.if_not_exists);
+            }
+            _ => panic!("expected CREATE MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_materialized_view_with_columns() {
+        let stmt = parse_single_statement(
+            "CREATE MATERIALIZED VIEW mv_stats (total_count, avg_value) AS SELECT COUNT(*), AVG(value) FROM data",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateMaterializedView(mv) => {
+                assert_eq!(mv.name.to_string(), "mv_stats");
+                assert_eq!(mv.columns.len(), 2);
+                assert_eq!(mv.columns[0].name, "total_count");
+                assert_eq!(mv.columns[1].name, "avg_value");
+            }
+            _ => panic!("expected CREATE MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_create_materialized_view_with_join() {
+        let stmt = parse_single_statement(
+            "CREATE MATERIALIZED VIEW user_orders AS SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateMaterializedView(mv) => {
+                assert_eq!(mv.name.to_string(), "user_orders");
+                assert!(mv.query.from.len() == 1);
+            }
+            _ => panic!("expected CREATE MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_materialized_view_basic() {
+        let stmt = parse_single_statement("DROP MATERIALIZED VIEW sales_summary").unwrap();
+        match stmt {
+            Statement::DropMaterializedView(drop) => {
+                assert!(!drop.if_exists);
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].to_string(), "sales_summary");
+                assert!(!drop.cascade);
+            }
+            _ => panic!("expected DROP MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_materialized_view_if_exists() {
+        let stmt = parse_single_statement("DROP MATERIALIZED VIEW IF EXISTS maybe_mv").unwrap();
+        match stmt {
+            Statement::DropMaterializedView(drop) => {
+                assert!(drop.if_exists);
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].to_string(), "maybe_mv");
+            }
+            _ => panic!("expected DROP MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_materialized_view_cascade() {
+        let stmt = parse_single_statement("DROP MATERIALIZED VIEW mv_cascade CASCADE").unwrap();
+        match stmt {
+            Statement::DropMaterializedView(drop) => {
+                assert!(!drop.if_exists);
+                assert!(drop.cascade);
+                assert_eq!(drop.names.len(), 1);
+            }
+            _ => panic!("expected DROP MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_materialized_view_multiple() {
+        let stmt = parse_single_statement("DROP MATERIALIZED VIEW mv1, mv2, mv3").unwrap();
+        match stmt {
+            Statement::DropMaterializedView(drop) => {
+                assert_eq!(drop.names.len(), 3);
+                assert_eq!(drop.names[0].to_string(), "mv1");
+                assert_eq!(drop.names[1].to_string(), "mv2");
+                assert_eq!(drop.names[2].to_string(), "mv3");
+            }
+            _ => panic!("expected DROP MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_refresh_materialized_view_basic() {
+        let stmt = parse_single_statement("REFRESH MATERIALIZED VIEW sales_summary").unwrap();
+        match stmt {
+            Statement::RefreshMaterializedView(refresh) => {
+                assert_eq!(refresh.name.to_string(), "sales_summary");
+                assert!(!refresh.concurrently);
+            }
+            _ => panic!("expected REFRESH MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_refresh_materialized_view_concurrently() {
+        let stmt =
+            parse_single_statement("REFRESH MATERIALIZED VIEW CONCURRENTLY large_mv").unwrap();
+        match stmt {
+            Statement::RefreshMaterializedView(refresh) => {
+                assert_eq!(refresh.name.to_string(), "large_mv");
+                assert!(refresh.concurrently);
+            }
+            _ => panic!("expected REFRESH MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_refresh_materialized_view_qualified_name() {
+        let stmt = parse_single_statement("REFRESH MATERIALIZED VIEW schema.my_view").unwrap();
+        match stmt {
+            Statement::RefreshMaterializedView(refresh) => {
+                assert_eq!(refresh.name.to_string(), "schema.my_view");
+                assert!(!refresh.concurrently);
+            }
+            _ => panic!("expected REFRESH MATERIALIZED VIEW"),
+        }
+    }
+
+    #[test]
+    fn parse_refresh_materialized_view_with_semicolon() {
+        let stmt = parse_single_statement("REFRESH MATERIALIZED VIEW my_mv;").unwrap();
+        match stmt {
+            Statement::RefreshMaterializedView(refresh) => {
+                assert_eq!(refresh.name.to_string(), "my_mv");
+            }
+            _ => panic!("expected REFRESH MATERIALIZED VIEW"),
         }
     }
 

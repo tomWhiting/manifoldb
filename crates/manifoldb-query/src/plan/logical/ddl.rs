@@ -462,6 +462,108 @@ impl DropViewNode {
 }
 
 // ============================================================================
+// Materialized View DDL Nodes
+// ============================================================================
+
+/// A CREATE MATERIALIZED VIEW operation.
+///
+/// Materialized views store query results persistently and must be
+/// explicitly refreshed to update their data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateMaterializedViewNode {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The materialized view name.
+    pub name: String,
+    /// Optional column aliases for the view.
+    pub columns: Vec<Identifier>,
+    /// The query defining the materialized view.
+    pub query: Box<SelectStatement>,
+}
+
+impl CreateMaterializedViewNode {
+    /// Creates a new CREATE MATERIALIZED VIEW node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, query: SelectStatement) -> Self {
+        Self { if_not_exists: false, name: name.into(), columns: vec![], query: Box::new(query) }
+    }
+
+    /// Sets the IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn with_if_not_exists(mut self, if_not_exists: bool) -> Self {
+        self.if_not_exists = if_not_exists;
+        self
+    }
+
+    /// Sets the column aliases.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// A DROP MATERIALIZED VIEW operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropMaterializedViewNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The materialized view names to drop.
+    pub names: Vec<String>,
+    /// Whether CASCADE is specified (drops dependent objects).
+    pub cascade: bool,
+}
+
+impl DropMaterializedViewNode {
+    /// Creates a new DROP MATERIALIZED VIEW node.
+    #[must_use]
+    pub fn new(names: Vec<String>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+/// A REFRESH MATERIALIZED VIEW operation.
+///
+/// Re-executes the materialized view's defining query and updates
+/// the stored data with the new results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshMaterializedViewNode {
+    /// The materialized view name to refresh.
+    pub name: String,
+    /// Whether CONCURRENTLY is specified (allows concurrent reads during refresh).
+    pub concurrently: bool,
+}
+
+impl RefreshMaterializedViewNode {
+    /// Creates a new REFRESH MATERIALIZED VIEW node.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), concurrently: false }
+    }
+
+    /// Sets the CONCURRENTLY flag.
+    #[must_use]
+    pub const fn with_concurrently(mut self, concurrently: bool) -> Self {
+        self.concurrently = concurrently;
+        self
+    }
+}
+
+// ============================================================================
 // Schema DDL Nodes
 // ============================================================================
 

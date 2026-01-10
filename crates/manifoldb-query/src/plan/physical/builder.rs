@@ -415,6 +415,15 @@ impl PhysicalPlanner {
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
             LogicalPlan::CreateView(node) => PhysicalPlan::CreateView(node.clone()),
             LogicalPlan::DropView(node) => PhysicalPlan::DropView(node.clone()),
+            LogicalPlan::CreateMaterializedView(node) => {
+                PhysicalPlan::CreateMaterializedView(node.clone())
+            }
+            LogicalPlan::DropMaterializedView(node) => {
+                PhysicalPlan::DropMaterializedView(node.clone())
+            }
+            LogicalPlan::RefreshMaterializedView(node) => {
+                PhysicalPlan::RefreshMaterializedView(node.clone())
+            }
             LogicalPlan::CreateSchema(node) => PhysicalPlan::CreateSchema(node.clone()),
             LogicalPlan::AlterSchema(node) => PhysicalPlan::AlterSchema(node.clone()),
             LogicalPlan::DropSchema(node) => PhysicalPlan::DropSchema(node.clone()),

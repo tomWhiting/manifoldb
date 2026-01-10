@@ -44,6 +44,12 @@ pub enum Statement {
     CreateView(Box<CreateViewStatement>),
     /// DROP VIEW statement.
     DropView(DropViewStatement),
+    /// CREATE MATERIALIZED VIEW statement.
+    CreateMaterializedView(Box<CreateMaterializedViewStatement>),
+    /// DROP MATERIALIZED VIEW statement.
+    DropMaterializedView(DropMaterializedViewStatement),
+    /// REFRESH MATERIALIZED VIEW statement.
+    RefreshMaterializedView(RefreshMaterializedViewStatement),
     /// CREATE SCHEMA statement.
     CreateSchema(CreateSchemaStatement),
     /// ALTER SCHEMA statement.
@@ -2946,6 +2952,135 @@ impl DropViewStatement {
     #[must_use]
     pub const fn with_cascade(mut self, cascade: bool) -> Self {
         self.cascade = cascade;
+        self
+    }
+}
+
+// ============================================================================
+// Materialized View Statements
+// ============================================================================
+
+/// A CREATE MATERIALIZED VIEW statement.
+///
+/// Creates a materialized view that stores query results persistently.
+/// Unlike regular views, materialized views store the computed data
+/// and must be explicitly refreshed.
+///
+/// # Examples
+///
+/// ```sql
+/// CREATE MATERIALIZED VIEW sales_summary AS
+/// SELECT region, SUM(amount) as total
+/// FROM sales
+/// GROUP BY region;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateMaterializedViewStatement {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The materialized view name.
+    pub name: QualifiedName,
+    /// Optional column aliases for the view.
+    pub columns: Vec<Identifier>,
+    /// The query defining the materialized view.
+    pub query: Box<SelectStatement>,
+}
+
+impl CreateMaterializedViewStatement {
+    /// Creates a new CREATE MATERIALIZED VIEW statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>, query: SelectStatement) -> Self {
+        Self { if_not_exists: false, name: name.into(), columns: vec![], query: Box::new(query) }
+    }
+
+    /// Sets the IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn with_if_not_exists(mut self, if_not_exists: bool) -> Self {
+        self.if_not_exists = if_not_exists;
+        self
+    }
+
+    /// Sets the column aliases.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<Identifier>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
+/// A DROP MATERIALIZED VIEW statement.
+///
+/// Removes one or more materialized views from the database.
+///
+/// # Examples
+///
+/// ```sql
+/// DROP MATERIALIZED VIEW sales_summary;
+/// DROP MATERIALIZED VIEW IF EXISTS maybe_exists;
+/// DROP MATERIALIZED VIEW old_view CASCADE;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropMaterializedViewStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The materialized view(s) to drop.
+    pub names: Vec<QualifiedName>,
+    /// Whether CASCADE is specified (drops dependent objects).
+    pub cascade: bool,
+}
+
+impl DropMaterializedViewStatement {
+    /// Creates a new DROP MATERIALIZED VIEW statement.
+    #[must_use]
+    pub fn new(names: Vec<QualifiedName>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+/// A REFRESH MATERIALIZED VIEW statement.
+///
+/// Refreshes the cached data in a materialized view by re-executing
+/// its defining query and storing the new results.
+///
+/// # Examples
+///
+/// ```sql
+/// REFRESH MATERIALIZED VIEW sales_summary;
+/// REFRESH MATERIALIZED VIEW CONCURRENTLY large_view;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshMaterializedViewStatement {
+    /// The materialized view to refresh.
+    pub name: QualifiedName,
+    /// Whether CONCURRENTLY is specified (allows concurrent reads during refresh).
+    pub concurrently: bool,
+}
+
+impl RefreshMaterializedViewStatement {
+    /// Creates a new REFRESH MATERIALIZED VIEW statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>) -> Self {
+        Self { name: name.into(), concurrently: false }
+    }
+
+    /// Sets the CONCURRENTLY flag.
+    #[must_use]
+    pub const fn with_concurrently(mut self, concurrently: bool) -> Self {
+        self.concurrently = concurrently;
         self
     }
 }
