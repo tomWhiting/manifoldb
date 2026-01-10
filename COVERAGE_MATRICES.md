@@ -85,13 +85,14 @@ Cypher Writing Clauses
 CALL/YIELD Procedures
 ├── ProcedureCall logical node: ✅ Complete
 ├── Procedure registry infrastructure: ✅ Complete
-├── PageRank/ShortestPath: ⚠️ Registered but execution not wired (returns EmptyOp)
-├── Traversal (bfs, dfs): ⚠️ Registered but execution not wired
-├── Centrality (betweenness, closeness, degree, eigenvector): ⚠️ Registered but execution not wired
-├── Community (labelPropagation, connectedComponents, stronglyConnected): ⚠️ Registered but execution not wired
-├── Path (dijkstra, astar, allShortestPaths, sssp): ⚠️ Registered but execution not wired
-├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ⚠️ Registered but execution not wired
-└── Status: ⚠️ 20 procedures registered; helpers exist but executor integration missing (Jan 2026)
+├── PageRank/ShortestPath: ✅ Execution wired (Jan 2026)
+├── Traversal (bfs, dfs): ✅ Execution wired (Jan 2026)
+├── Centrality (betweenness, closeness, degree, eigenvector): ✅ Execution wired (Jan 2026)
+├── Community (labelPropagation, connectedComponents, stronglyConnected): ✅ Execution wired (Jan 2026)
+├── Path (dijkstra, astar, allShortestPaths, sssp): ✅ Execution wired (Jan 2026)
+├── Similarity (nodeSimilarity, jaccard, overlap, cosine): ✅ Execution wired (Jan 2026)
+└── Status: ✅ All 20 procedures wired to graph algorithm helpers (Jan 2026)
+    Note: Bulk-iteration algorithms (PageRank, Louvain, etc.) work but require table name fix
 
 Variable-Length Paths (Execution)
 ├── Parser: ✅ Exists

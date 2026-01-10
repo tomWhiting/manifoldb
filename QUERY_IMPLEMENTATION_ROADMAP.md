@@ -51,6 +51,11 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **NATURAL JOIN / JOIN USING** - Physical plan builder synthesizes HashJoin keys from using_columns
 - ✅ **Pattern Comprehension Execution** - Full graph traversal with filter/projection support
 - ✅ **INSERT ON CONFLICT (Upsert)** - DO NOTHING and DO UPDATE with column-based conflict target (constraint name TBD)
+- ✅ **Wire CALL/YIELD Procedure Execution** - All 20 graph algorithm procedures wired to helpers
+- ✅ **SQL MERGE Statement (Parser/Planner)** - MERGE INTO with WHEN MATCHED/NOT MATCHED clauses (execution pending)
+- ✅ **ROLLUP/CUBE/GROUPING SETS** - Multi-pass aggregation with GROUPING() function support
+- ✅ **Advanced CTE Features** - SEARCH DEPTH/BREADTH FIRST, CYCLE detection, MATERIALIZED hints
+- ✅ **Entity Table Name Unification** - Fixed nodes→entities mismatch between API layers
 
 ### Remaining Work (2 Meta-Tasks)
 
@@ -59,7 +64,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 | # | Meta-Task | Items | Priority | Status |
 |---|-----------|-------|----------|--------|
 | 1 | Type System & Plan Infrastructure | 4 | Medium | ✅ Complete (Jan 2026) |
-| 2 | Advanced CTE Features | 4 | Low | **TODO** - SEARCH, CYCLE, MATERIALIZED hints |
+| 2 | Advanced CTE Features | 4 | Low | ✅ Complete (Jan 2026) |
 | 3 | Window Function Extensions | 5 | Low | ✅ Complete (Jan 2026) |
 | 4 | Advanced SELECT Features | 3 | Low | **TODO** - DISTINCT ON, WITH TIES, TABLESAMPLE |
 | 5 | LATERAL Subqueries | 2 | Medium | ✅ Complete (Jan 2026) |
