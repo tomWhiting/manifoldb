@@ -35,7 +35,10 @@ mod graph;
 mod node;
 mod procedure;
 mod relational;
+mod schema;
 mod transaction;
+mod type_infer;
+mod types;
 pub mod utility;
 mod validate;
 mod vector;
@@ -62,15 +65,18 @@ pub use relational::{
     ProjectNode, RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode,
     ValuesNode, WindowNode,
 };
+pub use schema::{EmptyCatalog, SchemaCatalog, SchemaProvider};
 pub use transaction::{
     BeginTransactionNode, CommitNode, ReleaseSavepointNode, RollbackNode, SavepointNode,
     SetTransactionNode,
 };
+pub use type_infer::{TypeError, TypeResult};
+pub use types::{PlanType, Schema, TypeContext, TypedColumn};
 pub use utility::{
     AnalyzeNode, CopyNode, ExplainAnalyzeNode, ExplainFormat, ResetNode, SetSessionNode, ShowNode,
     VacuumNode,
 };
-pub use validate::{check_no_cycles, validate_plan, PlanError, PlanResult};
+pub use validate::{check_no_cycles, validate_plan, validate_with_schema, PlanError, PlanResult};
 pub use vector::{
     AnnSearchNode, AnnSearchParams, HybridSearchComponent, HybridSearchNode,
     ScoreCombinationMethod, VectorDistanceNode,
