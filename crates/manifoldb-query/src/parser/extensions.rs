@@ -196,7 +196,7 @@ impl ExtendedParser {
         }
 
         // Must NOT contain Cypher DML keywords (those are handled separately)
-        // Check for CREATE, SET, DELETE, REMOVE which indicate mutation operations
+        // Check for CREATE, SET, DELETE, REMOVE, MERGE which indicate mutation operations
         if upper.contains(" CREATE ") {
             return false; // This is a CREATE statement (MATCH ... CREATE)
         }
@@ -208,6 +208,9 @@ impl ExtendedParser {
         }
         if upper.contains(" REMOVE ") {
             return false; // This is a REMOVE statement
+        }
+        if upper.contains("MERGE") {
+            return false; // This is a MERGE statement
         }
 
         true

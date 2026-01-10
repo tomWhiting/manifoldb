@@ -285,12 +285,7 @@ fn test_merge_twice_creates_once() {
 // ============================================================================
 
 /// Tests MERGE relationship creation when the relationship doesn't exist.
-///
-/// Note: This test is marked as `#[ignore]` due to a parser limitation with
-/// MATCH...MERGE patterns that don't have ON CREATE SET/ON MATCH SET clauses.
-/// The MERGE execution itself works correctly - see test_merge_relationship_on_create_set.
 #[test]
-#[ignore = "Parser limitation with MATCH...MERGE without ON CREATE/MATCH SET"]
 fn test_merge_relationship_creates_when_not_exists() {
     let db = Database::in_memory().expect("failed to create db");
 
@@ -322,12 +317,7 @@ fn test_merge_relationship_creates_when_not_exists() {
 }
 
 /// Tests MERGE matching an existing relationship.
-///
-/// Note: This test is marked as `#[ignore]` due to a parser limitation with
-/// MATCH...MERGE patterns that don't have ON CREATE SET/ON MATCH SET clauses.
-/// The MERGE execution itself works correctly - see test_merge_relationship_on_create_set.
 #[test]
-#[ignore = "Parser limitation with MATCH...MERGE without ON CREATE/MATCH SET"]
 fn test_merge_relationship_matches_existing() {
     let db = Database::in_memory().expect("failed to create db");
 
@@ -358,12 +348,7 @@ fn test_merge_relationship_matches_existing() {
 }
 
 /// Tests MERGE relationship with properties.
-///
-/// Note: This test is marked as `#[ignore]` due to a parser limitation with
-/// MATCH...MERGE patterns that don't have ON CREATE SET/ON MATCH SET clauses.
-/// The MERGE execution itself works correctly - see test_merge_relationship_on_create_set.
 #[test]
-#[ignore = "Parser limitation with MATCH...MERGE without ON CREATE/MATCH SET"]
 fn test_merge_relationship_with_properties() {
     let db = Database::in_memory().expect("failed to create db");
 
