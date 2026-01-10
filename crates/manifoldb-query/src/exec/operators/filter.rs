@@ -274,10 +274,17 @@ fn evaluate_expr_with_context(
                     row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name));
 
                 // If we have a graph accessor and didn't find the qualified name directly,
-                // check if the qualifier refers to an entity ID column
+                // check if the qualifier refers to an entity (as Value::Node or Value::Int)
                 if direct_value.is_none() {
-                    if let Some(graph) = graph {
-                        if let Some(entity_value) = row.get_by_name(qual) {
+                    if let Some(entity_value) = row.get_by_name(qual) {
+                        // First try Value::Node which contains properties directly
+                        if let Value::Node { properties, .. } = entity_value {
+                            if let Some(prop_value) = properties.get(name) {
+                                return Ok(prop_value.clone());
+                            }
+                        }
+                        // Fall back to looking up by entity ID (legacy path)
+                        else if let Some(graph) = graph {
                             if let Value::Int(id) = entity_value {
                                 let entity_id = EntityId::new(*id as u64);
                                 if let Ok(Some(properties)) = graph.get_entity_properties(entity_id)
@@ -437,13 +444,18 @@ pub fn evaluate_expr_with_graph(
                     row.get_by_name(&qualified_name).or_else(|| row.get_by_name(name));
 
                 // If we have a graph accessor and didn't find the qualified name directly,
-                // check if the qualifier refers to an entity ID column and look up the property
-                // from the graph. This enables MATCH (n:Label {prop: value}) patterns where
-                // the row only contains entity IDs and properties must be fetched from storage.
+                // check if the qualifier refers to an entity (as Value::Node or Value::Int)
+                // This enables MATCH (n:Label {prop: value}) patterns.
                 if direct_value.is_none() {
-                    if let Some(graph) = graph {
-                        // Check if there's a column with just the qualifier name that contains an entity ID
-                        if let Some(entity_value) = row.get_by_name(qual) {
+                    if let Some(entity_value) = row.get_by_name(qual) {
+                        // First try Value::Node which contains properties directly
+                        if let Value::Node { properties, .. } = entity_value {
+                            if let Some(prop_value) = properties.get(name) {
+                                return Ok(prop_value.clone());
+                            }
+                        }
+                        // Fall back to looking up by entity ID (legacy path)
+                        else if let Some(graph) = graph {
                             if let Value::Int(id) = entity_value {
                                 let entity_id = EntityId::new(*id as u64);
                                 // Try to get the property from the graph
@@ -3925,6 +3937,37 @@ fn value_to_json(val: &Value) -> serde_json::Value {
             map.insert("srid".to_string(), serde_json::json!(*srid));
             serde_json::Value::Object(map)
         }
+        Value::Node { id, labels, properties } => {
+            let mut map = serde_json::Map::new();
+            map.insert("id".to_string(), serde_json::json!(*id));
+            map.insert(
+                "labels".to_string(),
+                serde_json::Value::Array(
+                    labels.iter().map(|l| serde_json::Value::String(l.clone())).collect(),
+                ),
+            );
+            map.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(
+                    properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+                ),
+            );
+            serde_json::Value::Object(map)
+        }
+        Value::Edge { id, edge_type, source, target, properties } => {
+            let mut map = serde_json::Map::new();
+            map.insert("id".to_string(), serde_json::json!(*id));
+            map.insert("type".to_string(), serde_json::Value::String(edge_type.clone()));
+            map.insert("source".to_string(), serde_json::json!(*source));
+            map.insert("target".to_string(), serde_json::json!(*target));
+            map.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(
+                    properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+                ),
+            );
+            serde_json::Value::Object(map)
+        }
     }
 }
 
@@ -6360,10 +6403,20 @@ fn cypher_labels(args: &[Value]) -> OperatorResult<Value> {
 /// This function extracts that ID from the entity.
 ///
 /// Currently supports:
+/// - Node values (extracts the id field)
+/// - Edge values (extracts the id field)
 /// - Integer values (returns as-is, assumed to be the ID)
 /// - Maps with an "_id" key
 fn cypher_id(args: &[Value]) -> OperatorResult<Value> {
     match args.first() {
+        Some(Value::Node { id, .. }) => {
+            // Extract ID from node
+            Ok(Value::Int(*id))
+        }
+        Some(Value::Edge { id, .. }) => {
+            // Extract ID from edge
+            Ok(Value::Int(*id))
+        }
         Some(Value::Int(id)) => {
             // Already an integer, return as-is
             Ok(Value::Int(*id))
@@ -6802,6 +6855,12 @@ fn value_to_string(value: &Value) -> String {
             Some(z_val) => format!("point({{x: {x}, y: {y}, z: {z_val}, srid: {srid}}})"),
             None => format!("point({{x: {x}, y: {y}, srid: {srid}}})"),
         },
+        Value::Node { id, labels, .. } => {
+            format!("node({id}, labels: [{}])", labels.join(", "))
+        }
+        Value::Edge { id, edge_type, source, target, .. } => {
+            format!("edge({id}, type: {edge_type}, {source} -> {target})")
+        }
     }
 }
 
@@ -11210,6 +11269,24 @@ mod tests {
             Vec<crate::exec::graph_accessor::NodeScanResult>,
         > {
             Ok(vec![])
+        }
+
+        fn get_entity(
+            &self,
+            _entity_id: EntityId,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Option<crate::exec::graph_accessor::NodeScanResult>,
+        > {
+            Ok(None)
+        }
+
+        fn get_edge(
+            &self,
+            _edge_id: manifoldb_core::EdgeId,
+        ) -> crate::exec::graph_accessor::GraphAccessResult<
+            Option<crate::exec::graph_accessor::EdgeResult>,
+        > {
+            Ok(None)
         }
     }
 

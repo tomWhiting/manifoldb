@@ -270,6 +270,8 @@ impl GraphExpandOp {
         // First, try to get from the input row
         if let Some(value) = row.get_by_name(&self.node.src_var) {
             return match value {
+                Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
                 Value::Int(id) => Some(EntityId::new(*id as u64)),
                 _ => None,
             };
@@ -277,6 +279,8 @@ impl GraphExpandOp {
 
         // Fall back to variable bindings (for correlated subqueries)
         self.variable_bindings.get(&self.node.src_var).and_then(|v| match v {
+            Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+            Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })
@@ -305,13 +309,51 @@ impl Operator for GraphExpandOp {
                     let expanded = &self.expanded[self.position];
                     self.position += 1;
 
-                    // Build output row
+                    // Build output row with full Value::Node and Value::Edge data
                     let mut values = input_row.values().to_vec();
-                    values.push(Value::Int(expanded.entity_id.as_u64() as i64));
+
+                    // Build Value::Node for the destination node
+                    let dst_node_value = if let Some(graph) = &self.graph {
+                        // Try to get full entity data
+                        let entity_data = graph.get_entity(expanded.entity_id).ok().flatten();
+                        if let Some(entity) = entity_data {
+                            Value::Node {
+                                id: expanded.entity_id.as_u64() as i64,
+                                labels: entity.labels,
+                                properties: entity.properties,
+                            }
+                        } else {
+                            // Fallback to just the ID if entity not found
+                            Value::Int(expanded.entity_id.as_u64() as i64)
+                        }
+                    } else {
+                        Value::Int(expanded.entity_id.as_u64() as i64)
+                    };
+                    values.push(dst_node_value);
+
                     if self.node.edge_var.is_some() {
-                        // Add edge ID if tracking (use actual edge ID if available)
+                        // Build Value::Edge with full edge data if available
                         let edge_value = match expanded.edge_id {
-                            Some(edge_id) => Value::Int(edge_id.as_u64() as i64),
+                            Some(edge_id) => {
+                                if let Some(graph) = &self.graph {
+                                    // Try to get full edge data
+                                    let edge_data = graph.get_edge(edge_id).ok().flatten();
+                                    if let Some(edge) = edge_data {
+                                        Value::Edge {
+                                            id: edge_id.as_u64() as i64,
+                                            edge_type: edge.edge_type,
+                                            source: edge.source.as_u64() as i64,
+                                            target: edge.target.as_u64() as i64,
+                                            properties: edge.properties,
+                                        }
+                                    } else {
+                                        // Fallback to just the ID
+                                        Value::Int(edge_id.as_u64() as i64)
+                                    }
+                                } else {
+                                    Value::Int(edge_id.as_u64() as i64)
+                                }
+                            }
                             None => Value::Null,
                         };
                         values.push(edge_value);
@@ -869,6 +911,8 @@ impl ShortestPathOp {
         // First, try to get from the input row
         if let Some(value) = row.get_by_name(&self.node.src_var) {
             return match value {
+                Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
                 Value::Int(id) => Some(EntityId::new(*id as u64)),
                 _ => None,
             };
@@ -876,6 +920,8 @@ impl ShortestPathOp {
 
         // Fall back to variable bindings (for correlated subqueries)
         self.variable_bindings.get(&self.node.src_var).and_then(|v| match v {
+            Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+            Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })
@@ -890,6 +936,8 @@ impl ShortestPathOp {
         // First, try to get from the input row
         if let Some(value) = row.get_by_name(&self.node.dst_var) {
             return match value {
+                Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
                 Value::Int(id) => Some(EntityId::new(*id as u64)),
                 _ => None,
             };
@@ -897,6 +945,8 @@ impl ShortestPathOp {
 
         // Fall back to variable bindings (for correlated subqueries)
         self.variable_bindings.get(&self.node.dst_var).and_then(|v| match v {
+            Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+            Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })

@@ -31,6 +31,21 @@ impl NodeScanResult {
     }
 }
 
+/// Result of getting a single edge.
+#[derive(Debug, Clone)]
+pub struct EdgeResult {
+    /// The edge ID.
+    pub id: EdgeId,
+    /// The edge type.
+    pub edge_type: String,
+    /// The source entity ID.
+    pub source: EntityId,
+    /// The target entity ID.
+    pub target: EntityId,
+    /// The properties of this edge.
+    pub properties: HashMap<String, Value>,
+}
+
 /// Result of a neighbor expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeighborResult {
@@ -337,6 +352,16 @@ pub trait GraphAccessor: Send + Sync {
     /// If label is None, returns all nodes.
     /// This is used for MATCH (n:Label) patterns.
     fn scan_nodes(&self, label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>>;
+
+    /// Get a single entity by its ID with full data (labels and properties).
+    ///
+    /// Returns the entity data, or None if the entity doesn't exist.
+    fn get_entity(&self, entity_id: EntityId) -> GraphAccessResult<Option<NodeScanResult>>;
+
+    /// Get a single edge by its ID with full data.
+    ///
+    /// Returns the edge data, or None if the edge doesn't exist.
+    fn get_edge(&self, edge_id: EdgeId) -> GraphAccessResult<Option<EdgeResult>>;
 }
 
 /// A null implementation of `GraphAccessor` that returns no results.
@@ -423,6 +448,14 @@ impl GraphAccessor for NullGraphAccessor {
     }
 
     fn scan_nodes(&self, _label: Option<&str>) -> GraphAccessResult<Vec<NodeScanResult>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_entity(&self, _entity_id: EntityId) -> GraphAccessResult<Option<NodeScanResult>> {
+        Err(GraphAccessError::NoStorage)
+    }
+
+    fn get_edge(&self, _edge_id: EdgeId) -> GraphAccessResult<Option<EdgeResult>> {
         Err(GraphAccessError::NoStorage)
     }
 }
@@ -637,6 +670,20 @@ where
         // which doesn't have direct entity iteration.
         // The actual implementation will be in the manifoldb crate's graph accessor.
         Ok(vec![])
+    }
+
+    fn get_entity(&self, _entity_id: EntityId) -> GraphAccessResult<Option<NodeScanResult>> {
+        // TransactionGraphAccessor uses the low-level storage Transaction trait,
+        // which doesn't have direct entity access.
+        // The actual implementation will be in the manifoldb crate's graph accessor.
+        Ok(None)
+    }
+
+    fn get_edge(&self, _edge_id: EdgeId) -> GraphAccessResult<Option<EdgeResult>> {
+        // TransactionGraphAccessor uses the low-level storage Transaction trait,
+        // which doesn't have direct edge access.
+        // The actual implementation will be in the manifoldb crate's graph accessor.
+        Ok(None)
     }
 }
 

@@ -1555,25 +1555,32 @@ impl PlanBuilder {
             .map(|v| v.name.clone())
             .unwrap_or_else(|| self.next_alias("node"));
 
-        // For all node patterns (with or without edges), we need to create a scan
-        // for the start node if it has labels. This provides the source entities
-        // for graph expansion.
-        if let Some(labels) = path.start.simple_labels() {
+        // For pure Cypher queries (starting from empty), we need to create a scan.
+        // For SQL+MATCH (starting from a FROM clause), we use the existing input.
+        let is_empty_input = matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()));
+
+        if is_empty_input {
+            // Pure Cypher: MATCH (n) or MATCH (n:Label)
+            // Create a scan for all nodes (empty label) or by label
+            let label = if let Some(labels) = path.start.simple_labels() {
+                labels.first().map(|l| l.name.clone()).unwrap_or_default()
+            } else {
+                String::new() // Empty string means "scan all nodes"
+            };
+
+            plan = LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
+        } else if let Some(labels) = path.start.simple_labels() {
+            // SQL+MATCH with labels: SELECT * FROM Foo f MATCH (f:Label)
+            // Cross join with a label scan
             if let Some(first_label) = labels.first() {
                 let label = first_label.name.clone();
                 let node_scan =
                     LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
-
-                // If the input is an empty Values node, just use the scan directly.
-                // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
-                plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
-                {
-                    node_scan
-                } else {
-                    plan.cross_join(node_scan)
-                };
+                plan = plan.cross_join(node_scan);
             }
         }
+        // For SQL+MATCH without labels (e.g., SELECT * FROM Person p MATCH (p)-[...]->(...))
+        // we don't create an additional scan - the existing plan provides the source entities
 
         // Add property filter if specified on the start node
         if !path.start.properties.is_empty() {

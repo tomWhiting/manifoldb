@@ -447,6 +447,29 @@ fn hash_value(value: &Value, hasher: &mut DefaultHasher) {
             }
             srid.hash(hasher);
         }
+        Value::Node { id, labels, properties } => {
+            id.hash(hasher);
+            labels.len().hash(hasher);
+            for label in labels {
+                label.hash(hasher);
+            }
+            properties.len().hash(hasher);
+            for (k, v) in properties {
+                k.hash(hasher);
+                hash_value(v, hasher);
+            }
+        }
+        Value::Edge { id, edge_type, source, target, properties } => {
+            id.hash(hasher);
+            edge_type.hash(hasher);
+            source.hash(hasher);
+            target.hash(hasher);
+            properties.len().hash(hasher);
+            for (k, v) in properties {
+                k.hash(hasher);
+                hash_value(v, hasher);
+            }
+        }
     }
 }
 

@@ -25,6 +25,8 @@
 //! assert_eq!(embedding.as_vector().map(|v| v.len()), Some(3));
 //! ```
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// A value that can be stored as a property on an entity or edge.
@@ -122,6 +124,46 @@ pub enum Value {
         /// - 0: Cartesian 2D (default for x/y without srid)
         /// - 9157: Cartesian 3D
         srid: u32,
+    },
+    /// A graph node (entity) with its full data.
+    ///
+    /// This variant is used when returning nodes from Cypher queries like
+    /// `MATCH (n) RETURN n`. It contains the node's ID, labels, and all properties.
+    ///
+    /// # Fields
+    /// - `id` - The unique entity ID
+    /// - `labels` - Node labels (e.g., ["Person", "Employee"])
+    /// - `properties` - Key-value property map
+    Node {
+        /// The unique entity ID
+        id: i64,
+        /// Node labels
+        labels: Vec<String>,
+        /// Node properties
+        properties: HashMap<String, Value>,
+    },
+    /// A graph edge (relationship) with its full data.
+    ///
+    /// This variant is used when returning edges from Cypher queries like
+    /// `MATCH ()-[r]->() RETURN r`. It contains the edge's ID, type, endpoints, and properties.
+    ///
+    /// # Fields
+    /// - `id` - The unique edge ID
+    /// - `edge_type` - The relationship type (e.g., "KNOWS", "WORKS_AT")
+    /// - `source` - The source node ID
+    /// - `target` - The target node ID
+    /// - `properties` - Key-value property map
+    Edge {
+        /// The unique edge ID
+        id: i64,
+        /// The relationship type
+        edge_type: String,
+        /// Source node ID
+        source: i64,
+        /// Target node ID
+        target: i64,
+        /// Edge properties
+        properties: HashMap<String, Value>,
     },
 }
 
@@ -274,6 +316,64 @@ impl Value {
     #[must_use]
     pub const fn cartesian_3d(x: f64, y: f64, z: f64) -> Self {
         Self::Point { x, y, z: Some(z), srid: 9157 }
+    }
+
+    /// Returns `true` if the value is a graph node.
+    #[inline]
+    #[must_use]
+    pub const fn is_node(&self) -> bool {
+        matches!(self, Self::Node { .. })
+    }
+
+    /// Returns the value as a node reference if it is one.
+    ///
+    /// Returns a tuple of (id, labels, properties).
+    #[inline]
+    #[must_use]
+    pub fn as_node(&self) -> Option<(i64, &[String], &HashMap<String, Value>)> {
+        match self {
+            Self::Node { id, labels, properties } => Some((*id, labels, properties)),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if the value is a graph edge.
+    #[inline]
+    #[must_use]
+    pub const fn is_edge(&self) -> bool {
+        matches!(self, Self::Edge { .. })
+    }
+
+    /// Returns the value as an edge reference if it is one.
+    ///
+    /// Returns a tuple of (id, edge_type, source, target, properties).
+    #[inline]
+    #[must_use]
+    pub fn as_edge(&self) -> Option<(i64, &str, i64, i64, &HashMap<String, Value>)> {
+        match self {
+            Self::Edge { id, edge_type, source, target, properties } => {
+                Some((*id, edge_type, *source, *target, properties))
+            }
+            _ => None,
+        }
+    }
+
+    /// Creates a node value from its components.
+    #[must_use]
+    pub fn node(id: i64, labels: Vec<String>, properties: HashMap<String, Value>) -> Self {
+        Self::Node { id, labels, properties }
+    }
+
+    /// Creates an edge value from its components.
+    #[must_use]
+    pub fn edge(
+        id: i64,
+        edge_type: String,
+        source: i64,
+        target: i64,
+        properties: HashMap<String, Value>,
+    ) -> Self {
+        Self::Edge { id, edge_type, source, target, properties }
     }
 }
 

@@ -36,8 +36,8 @@ pub struct GraphCreateOp {
     graph_mutator: Option<Arc<dyn GraphMutator>>,
     /// Whether we've produced the output row yet (for no-input case).
     produced: bool,
-    /// Created entities mapped by variable name.
-    created_entities: HashMap<String, EntityId>,
+    /// Created entities mapped by variable name (full Value::Node or Value::Edge).
+    created_entities: HashMap<String, Value>,
 }
 
 impl GraphCreateOp {
@@ -107,8 +107,10 @@ impl GraphCreateOp {
         let empty_row = Row::new(empty_schema, vec![]);
         let row_for_eval = input_row.unwrap_or(&empty_row);
 
+        let mut evaluated_properties = HashMap::new();
         for (key, expr) in &spec.properties {
             let value = evaluate_expr(expr, row_for_eval)?;
+            evaluated_properties.insert(key.clone(), value.clone());
             request = request.with_property(key.clone(), value);
         }
 
@@ -117,9 +119,14 @@ impl GraphCreateOp {
             .create_node(&request)
             .map_err(|e| ParseError::InvalidGraphOp(format!("failed to create node: {e}")))?;
 
-        // Store the entity ID if there's a variable
+        // Store the full node value if there's a variable
         if let Some(ref var) = spec.variable {
-            self.created_entities.insert(var.clone(), entity.id);
+            let node_value = Value::Node {
+                id: entity.id.as_u64() as i64,
+                labels: spec.labels.clone(),
+                properties: evaluated_properties,
+            };
+            self.created_entities.insert(var.clone(), node_value);
         }
 
         Ok(entity.id)
@@ -148,8 +155,10 @@ impl GraphCreateOp {
         let empty_row = Row::new(empty_schema, vec![]);
         let row_for_eval = input_row.unwrap_or(&empty_row);
 
+        let mut evaluated_properties = HashMap::new();
         for (key, expr) in &spec.properties {
             let value = evaluate_expr(expr, row_for_eval)?;
+            evaluated_properties.insert(key.clone(), value.clone());
             request = request.with_property(key.clone(), value);
         }
 
@@ -158,11 +167,16 @@ impl GraphCreateOp {
             ParseError::InvalidGraphOp(format!("failed to create relationship: {e}"))
         })?;
 
-        // Store the edge ID if there's a variable (we store it as EntityId for simplicity)
-        // Note: In a full implementation, we might want separate storage for edge IDs
+        // Store the full edge value if there's a variable
         if let Some(ref var) = spec.rel_variable {
-            // Store edge ID as entity ID (both are u64 based)
-            self.created_entities.insert(var.clone(), EntityId::new(edge.id.as_u64()));
+            let edge_value = Value::Edge {
+                id: edge.id.as_u64() as i64,
+                edge_type: spec.rel_type.clone(),
+                source: source_id.as_u64() as i64,
+                target: target_id.as_u64() as i64,
+                properties: evaluated_properties,
+            };
+            self.created_entities.insert(var.clone(), edge_value);
         }
 
         Ok(edge.id)
@@ -177,14 +191,25 @@ impl GraphCreateOp {
         input_row: Option<&Row>,
     ) -> OperatorResult<EntityId> {
         // Check if we created this entity in this CREATE
-        if let Some(&id) = self.created_entities.get(var_name) {
-            return Ok(id);
+        if let Some(value) = self.created_entities.get(var_name) {
+            match value {
+                Value::Node { id, .. } => return Ok(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => return Ok(EntityId::new(*id as u64)),
+                Value::Int(id) => return Ok(EntityId::new(*id as u64)),
+                _ => {
+                    return Err(ParseError::InvalidGraphOp(format!(
+                        "variable '{var_name}' is not an entity"
+                    )));
+                }
+            }
         }
 
         // Check the input row (from MATCH clause)
         if let Some(row) = input_row {
             if let Some(value) = row.get_by_name(var_name) {
                 match value {
+                    Value::Node { id, .. } => return Ok(EntityId::new(*id as u64)),
+                    Value::Edge { id, .. } => return Ok(EntityId::new(*id as u64)),
                     Value::Int(id) => return Ok(EntityId::new(*id as u64)),
                     _ => {
                         return Err(ParseError::InvalidGraphOp(format!(
@@ -222,15 +247,12 @@ impl GraphCreateOp {
         let schema = self.base.schema();
 
         if self.create_node.returning.is_empty() {
-            // Return entity IDs for all created variables
+            // Return full entity values for all created variables
             let cols = schema.columns();
             let values: Vec<Value> = cols
                 .into_iter()
                 .map(|col: &str| {
-                    self.created_entities
-                        .get(col)
-                        .map(|id| Value::Int(id.as_u64() as i64))
-                        .unwrap_or(Value::Null)
+                    self.created_entities.get(col).cloned().unwrap_or(Value::Null)
                 })
                 .collect();
             Ok(Row::new(schema, values))
@@ -250,7 +272,7 @@ impl GraphCreateOp {
         }
     }
 
-    /// Builds a merged row containing input columns + created entity IDs.
+    /// Builds a merged row containing input columns + created entities.
     fn build_merged_row(&self, input_row: Option<&Row>) -> Row {
         let mut columns = Vec::new();
         let mut values = Vec::new();
@@ -263,10 +285,10 @@ impl GraphCreateOp {
             values.extend(row.values().to_vec());
         }
 
-        // Add created entity IDs
-        for (var, id) in &self.created_entities {
+        // Add created entities (full Value::Node or Value::Edge)
+        for (var, value) in &self.created_entities {
             columns.push(var.clone());
-            values.push(Value::Int(id.as_u64() as i64));
+            values.push(value.clone());
         }
 
         let schema = Arc::new(Schema::new(columns));

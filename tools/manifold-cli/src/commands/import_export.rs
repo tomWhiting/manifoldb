@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
+use manifoldb::backup;
 use manifoldb::Value;
 
 use crate::commands::open_or_create_database;
@@ -221,5 +222,34 @@ fn value_to_string(value: &Value) -> String {
             Some(z_val) => format!("point({{x: {x}, y: {y}, z: {z_val}, srid: {srid}}})"),
             None => format!("point({{x: {x}, y: {y}, srid: {srid}}})"),
         },
+        Value::Node { id, labels, .. } => {
+            format!("node({id}, labels: [{}])", labels.join(", "))
+        }
+        Value::Edge { id, edge_type, source, target, .. } => {
+            format!("edge({id}, type: {edge_type}, {source} -> {target})")
+        }
     }
+}
+
+/// Restore a database from a backup file.
+pub fn restore(db_path: Option<&Path>, backup_path: &Path) -> Result<()> {
+    if !backup_path.exists() {
+        return Err(CliError::FileNotFound(backup_path.to_path_buf()));
+    }
+
+    let db = open_or_create_database(db_path)?;
+
+    let file = File::open(backup_path)?;
+    let reader = BufReader::new(file);
+
+    let stats = backup::import(&db, reader)
+        .map_err(|e| CliError::InvalidInput(format!("Backup restore failed: {e}")))?;
+
+    println!(
+        "Restored {} entities, {} edges from {}",
+        stats.entity_count,
+        stats.edge_count,
+        backup_path.display()
+    );
+    Ok(())
 }

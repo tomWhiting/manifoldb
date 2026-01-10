@@ -97,6 +97,25 @@ impl GraphDeleteOp {
             // Look up the variable in the row
             if let Some(value) = row.get_by_name(var_name) {
                 match value {
+                    Value::Node { id, .. } => {
+                        // Full node value - delete as node
+                        let entity_id = EntityId::new(*id as u64);
+                        match self.try_delete_as_node(entity_id) {
+                            Ok(_) => {
+                                // Node was successfully deleted or not found
+                            }
+                            Err(e) => {
+                                // Node deletion failed with an error (e.g., has relationships)
+                                // Propagate the error
+                                return Err(e);
+                            }
+                        }
+                    }
+                    Value::Edge { id, .. } => {
+                        // Full edge value - delete as edge
+                        let edge_id = EdgeId::new(*id as u64);
+                        self.delete_edge(edge_id)?;
+                    }
                     Value::Int(id) => {
                         // Check if this is known to be an edge variable from the MATCH pattern
                         if edge_variables.contains(var_name) {

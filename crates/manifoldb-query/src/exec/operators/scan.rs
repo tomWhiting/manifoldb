@@ -66,14 +66,26 @@ impl Operator for FullScanOp {
         // This handles MATCH (n:Label) patterns where the scan table name is a label
         if self.data.is_empty() {
             // Try to use the graph accessor to scan nodes by label
+            // Empty table_name means scan all nodes (MATCH (n) without a label)
             let graph = ctx.graph();
-            match graph.scan_nodes(Some(&self.node.table_name)) {
+            let label_filter = if self.node.table_name.is_empty() {
+                None
+            } else {
+                Some(self.node.table_name.as_str())
+            };
+            match graph.scan_nodes(label_filter) {
                 Ok(nodes) => {
                     // Build rows from the scanned nodes
-                    // For MATCH patterns, we typically need the entity ID under the alias
+                    // Create Value::Node with full entity data so RETURN n works
                     self.data = nodes
                         .into_iter()
-                        .map(|node| vec![Value::Int(node.id.as_u64() as i64)])
+                        .map(|node| {
+                            vec![Value::Node {
+                                id: node.id.as_u64() as i64,
+                                labels: node.labels,
+                                properties: node.properties,
+                            }]
+                        })
                         .collect();
                     // Schema is already set correctly in new() based on the alias
                 }

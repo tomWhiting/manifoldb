@@ -78,10 +78,14 @@ fn test_edge_variable_diagnostic() {
     // Verify edge variable is properly bound (not null)
     let first_row = result.iter().next().unwrap();
     println!("First row values: {:?}", first_row);
-    // r should be the second value (index 1) and should be an Int
-    let edge_id = first_row.get(1).expect("should have edge column");
-    println!("Edge ID: {:?}", edge_id);
-    assert!(matches!(edge_id, manifoldb::Value::Int(_)), "Edge should be an Int ID");
+    // r should be the second value (index 1) and should be an Edge with full data
+    let edge_val = first_row.get(1).expect("should have edge column");
+    println!("Edge value: {:?}", edge_val);
+    assert!(
+        matches!(edge_val, manifoldb::Value::Edge { .. }),
+        "Edge should be a Value::Edge with full data, got {:?}",
+        edge_val
+    );
 
     // Test 5: DELETE pattern simulation - check if edge is bound correctly
     println!("\n=== Test 5: DELETE pattern simulation ===");
@@ -92,6 +96,28 @@ fn test_edge_variable_diagnostic() {
         println!("  Row {}: {:?}", i, row);
     }
     assert!(!result.is_empty(), "Should have at least one row for DELETE");
+
+    // Test 6: Property filter + anonymous destination (the failing pattern)
+    println!("\n=== Test 6: Property filter + anonymous destination ===");
+    let result = db
+        .query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() RETURN a, r")
+        .expect("match failed");
+    println!("MATCH returned {} rows", result.len());
+    for (i, row) in result.iter().enumerate() {
+        println!("  Row {}: {:?}", i, row);
+    }
+    assert!(!result.is_empty(), "Should have at least one row for property filter + anon dest");
+
+    // Test 7: Property filter + anonymous destination + RETURN only r
+    println!("\n=== Test 7: Property filter + anon dest + RETURN only r ===");
+    let result = db
+        .query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() RETURN r")
+        .expect("match failed");
+    println!("MATCH returned {} rows", result.len());
+    for (i, row) in result.iter().enumerate() {
+        println!("  Row {}: {:?}", i, row);
+    }
+    assert!(!result.is_empty(), "Should have at least one row when returning only r");
 }
 
 #[test]

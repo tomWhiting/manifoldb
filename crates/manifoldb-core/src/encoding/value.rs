@@ -36,6 +36,8 @@ mod tags {
     pub const SPARSE_VECTOR: u8 = 0x08;
     pub const MULTI_VECTOR: u8 = 0x09;
     pub const POINT: u8 = 0x0A;
+    pub const NODE: u8 = 0x0B;
+    pub const EDGE: u8 = 0x0C;
 }
 
 impl Encoder for Value {
@@ -139,6 +141,60 @@ impl Encoder for Value {
                     None => {
                         buf.push(0);
                     }
+                }
+            }
+            Self::Node { id, labels, properties } => {
+                buf.push(tags::NODE);
+                // Encode id (8 bytes)
+                buf.extend_from_slice(&id.to_be_bytes());
+                // Encode label count (4 bytes) + labels
+                let label_count = u32::try_from(labels.len())
+                    .map_err(|_| CoreError::Encoding("too many labels".to_owned()))?;
+                buf.extend_from_slice(&label_count.to_be_bytes());
+                for label in labels {
+                    let label_bytes = label.as_bytes();
+                    let label_len = u32::try_from(label_bytes.len())
+                        .map_err(|_| CoreError::Encoding("label too long".to_owned()))?;
+                    buf.extend_from_slice(&label_len.to_be_bytes());
+                    buf.extend_from_slice(label_bytes);
+                }
+                // Encode property count (4 bytes) + properties
+                let prop_count = u32::try_from(properties.len())
+                    .map_err(|_| CoreError::Encoding("too many properties".to_owned()))?;
+                buf.extend_from_slice(&prop_count.to_be_bytes());
+                for (key, value) in properties {
+                    let key_bytes = key.as_bytes();
+                    let key_len = u32::try_from(key_bytes.len())
+                        .map_err(|_| CoreError::Encoding("property key too long".to_owned()))?;
+                    buf.extend_from_slice(&key_len.to_be_bytes());
+                    buf.extend_from_slice(key_bytes);
+                    value.encode_to(buf)?;
+                }
+            }
+            Self::Edge { id, edge_type, source, target, properties } => {
+                buf.push(tags::EDGE);
+                // Encode id (8 bytes)
+                buf.extend_from_slice(&id.to_be_bytes());
+                // Encode edge_type (4 bytes length + bytes)
+                let edge_type_bytes = edge_type.as_bytes();
+                let edge_type_len = u32::try_from(edge_type_bytes.len())
+                    .map_err(|_| CoreError::Encoding("edge type too long".to_owned()))?;
+                buf.extend_from_slice(&edge_type_len.to_be_bytes());
+                buf.extend_from_slice(edge_type_bytes);
+                // Encode source and target (8 bytes each)
+                buf.extend_from_slice(&source.to_be_bytes());
+                buf.extend_from_slice(&target.to_be_bytes());
+                // Encode property count (4 bytes) + properties
+                let prop_count = u32::try_from(properties.len())
+                    .map_err(|_| CoreError::Encoding("too many properties".to_owned()))?;
+                buf.extend_from_slice(&prop_count.to_be_bytes());
+                for (key, value) in properties {
+                    let key_bytes = key.as_bytes();
+                    let key_len = u32::try_from(key_bytes.len())
+                        .map_err(|_| CoreError::Encoding("property key too long".to_owned()))?;
+                    buf.extend_from_slice(&key_len.to_be_bytes());
+                    buf.extend_from_slice(key_bytes);
+                    value.encode_to(buf)?;
                 }
             }
         }
@@ -384,6 +440,155 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             };
 
             Ok((Value::Point { x, y, z, srid }, consumed))
+        }
+        tags::NODE => {
+            // Node format: tag(1) + id(8) + label_count(4) + labels + prop_count(4) + properties
+            if rest.len() < 12 {
+                // id(8) + label_count(4)
+                return Err(CoreError::Encoding("unexpected end of input for node".to_owned()));
+            }
+            let id_bytes: [u8; 8] = rest[..8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read node id".to_owned()))?;
+            let id = i64::from_be_bytes(id_bytes);
+
+            let label_count_bytes: [u8; 4] = rest[8..12]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read label count".to_owned()))?;
+            let label_count = usize::try_from(u32::from_be_bytes(label_count_bytes))
+                .map_err(|_| CoreError::Encoding("label count exceeds capacity".to_owned()))?;
+
+            let mut pos = 12;
+            let mut labels = Vec::with_capacity(label_count);
+            for _ in 0..label_count {
+                if rest.len() < pos + 4 {
+                    return Err(CoreError::Encoding("unexpected end of input for label".to_owned()));
+                }
+                let label_len_bytes: [u8; 4] = rest[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read label length".to_owned()))?;
+                let label_len = usize::try_from(u32::from_be_bytes(label_len_bytes))
+                    .map_err(|_| CoreError::Encoding("label length exceeds capacity".to_owned()))?;
+                pos += 4;
+                if rest.len() < pos + label_len {
+                    return Err(CoreError::Encoding("unexpected end of input for label".to_owned()));
+                }
+                let label = String::from_utf8(rest[pos..pos + label_len].to_vec())
+                    .map_err(|e| CoreError::Encoding(format!("invalid label UTF-8: {e}")))?;
+                labels.push(label);
+                pos += label_len;
+            }
+
+            if rest.len() < pos + 4 {
+                return Err(CoreError::Encoding("unexpected end of input for prop count".to_owned()));
+            }
+            let prop_count_bytes: [u8; 4] = rest[pos..pos + 4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read property count".to_owned()))?;
+            let prop_count = usize::try_from(u32::from_be_bytes(prop_count_bytes))
+                .map_err(|_| CoreError::Encoding("property count exceeds capacity".to_owned()))?;
+            pos += 4;
+
+            let mut properties = std::collections::HashMap::with_capacity(prop_count);
+            for _ in 0..prop_count {
+                if rest.len() < pos + 4 {
+                    return Err(CoreError::Encoding("unexpected end of input for key".to_owned()));
+                }
+                let key_len_bytes: [u8; 4] = rest[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read key length".to_owned()))?;
+                let key_len = usize::try_from(u32::from_be_bytes(key_len_bytes))
+                    .map_err(|_| CoreError::Encoding("key length exceeds capacity".to_owned()))?;
+                pos += 4;
+                if rest.len() < pos + key_len {
+                    return Err(CoreError::Encoding("unexpected end of input for key".to_owned()));
+                }
+                let key = String::from_utf8(rest[pos..pos + key_len].to_vec())
+                    .map_err(|e| CoreError::Encoding(format!("invalid key UTF-8: {e}")))?;
+                pos += key_len;
+
+                let (value, consumed) = decode_value(&bytes[1 + pos..])?;
+                properties.insert(key, value);
+                pos += consumed;
+            }
+
+            Ok((Value::Node { id, labels, properties }, 1 + pos))
+        }
+        tags::EDGE => {
+            // Edge format: tag(1) + id(8) + edge_type_len(4) + edge_type + source(8) + target(8) + prop_count(4) + properties
+            if rest.len() < 12 {
+                // id(8) + edge_type_len(4)
+                return Err(CoreError::Encoding("unexpected end of input for edge".to_owned()));
+            }
+            let id_bytes: [u8; 8] = rest[..8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read edge id".to_owned()))?;
+            let id = i64::from_be_bytes(id_bytes);
+
+            let edge_type_len_bytes: [u8; 4] = rest[8..12]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read edge type length".to_owned()))?;
+            let edge_type_len = usize::try_from(u32::from_be_bytes(edge_type_len_bytes))
+                .map_err(|_| CoreError::Encoding("edge type length exceeds capacity".to_owned()))?;
+
+            let mut pos = 12;
+            if rest.len() < pos + edge_type_len {
+                return Err(CoreError::Encoding("unexpected end of input for edge type".to_owned()));
+            }
+            let edge_type = String::from_utf8(rest[pos..pos + edge_type_len].to_vec())
+                .map_err(|e| CoreError::Encoding(format!("invalid edge type UTF-8: {e}")))?;
+            pos += edge_type_len;
+
+            if rest.len() < pos + 16 {
+                // source(8) + target(8)
+                return Err(CoreError::Encoding("unexpected end of input for source/target".to_owned()));
+            }
+            let source_bytes: [u8; 8] = rest[pos..pos + 8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read source".to_owned()))?;
+            let source = i64::from_be_bytes(source_bytes);
+            pos += 8;
+
+            let target_bytes: [u8; 8] = rest[pos..pos + 8]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read target".to_owned()))?;
+            let target = i64::from_be_bytes(target_bytes);
+            pos += 8;
+
+            if rest.len() < pos + 4 {
+                return Err(CoreError::Encoding("unexpected end of input for prop count".to_owned()));
+            }
+            let prop_count_bytes: [u8; 4] = rest[pos..pos + 4]
+                .try_into()
+                .map_err(|_| CoreError::Encoding("failed to read property count".to_owned()))?;
+            let prop_count = usize::try_from(u32::from_be_bytes(prop_count_bytes))
+                .map_err(|_| CoreError::Encoding("property count exceeds capacity".to_owned()))?;
+            pos += 4;
+
+            let mut properties = std::collections::HashMap::with_capacity(prop_count);
+            for _ in 0..prop_count {
+                if rest.len() < pos + 4 {
+                    return Err(CoreError::Encoding("unexpected end of input for key".to_owned()));
+                }
+                let key_len_bytes: [u8; 4] = rest[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| CoreError::Encoding("failed to read key length".to_owned()))?;
+                let key_len = usize::try_from(u32::from_be_bytes(key_len_bytes))
+                    .map_err(|_| CoreError::Encoding("key length exceeds capacity".to_owned()))?;
+                pos += 4;
+                if rest.len() < pos + key_len {
+                    return Err(CoreError::Encoding("unexpected end of input for key".to_owned()));
+                }
+                let key = String::from_utf8(rest[pos..pos + key_len].to_vec())
+                    .map_err(|e| CoreError::Encoding(format!("invalid key UTF-8: {e}")))?;
+                pos += key_len;
+
+                let (value, consumed) = decode_value(&bytes[1 + pos..])?;
+                properties.insert(key, value);
+                pos += consumed;
+            }
+
+            Ok((Value::Edge { id, edge_type, source, target, properties }, 1 + pos))
         }
         _ => Err(CoreError::Encoding(format!("unknown type tag: {tag:#x}"))),
     }

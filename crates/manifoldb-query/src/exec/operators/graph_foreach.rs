@@ -163,6 +163,25 @@ impl GraphForeachOp {
                 })?;
 
                 match id_value {
+                    Value::Node { id, .. } => {
+                        let entity_id = EntityId::new(*id as u64);
+                        let mut update = UpdateNodeRequest::new(entity_id);
+                        update.set_properties.insert(property.clone(), val);
+                        mutator.update_node(&update).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("failed to update node: {e}"))
+                        })?;
+                    }
+                    Value::Edge { id, .. } => {
+                        let edge_id = EdgeId::new(*id as u64);
+                        let mut update =
+                            crate::exec::graph_accessor::UpdateEdgeRequest::new(edge_id);
+                        update.set_properties.insert(property.clone(), val);
+                        mutator.update_edge(&update).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!(
+                                "failed to update edge: {e}"
+                            ))
+                        })?;
+                    }
                     Value::Int(id) => {
                         let entity_id = EntityId::new(*id as u64);
 
@@ -213,6 +232,14 @@ impl GraphForeachOp {
                 })?;
 
                 match id_value {
+                    Value::Node { id, .. } => {
+                        let entity_id = EntityId::new(*id as u64);
+                        let mut update = UpdateNodeRequest::new(entity_id);
+                        update.add_labels.push(Label::new(label));
+                        mutator.update_node(&update).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("failed to update node: {e}"))
+                        })?;
+                    }
                     Value::Int(id) => {
                         let entity_id = EntityId::new(*id as u64);
                         let mut update = UpdateNodeRequest::new(entity_id);
@@ -461,7 +488,7 @@ impl GraphForeachOp {
             })?;
 
             match id_value {
-                Value::Int(id) => {
+                Value::Node { id, .. } | Value::Int(id) => {
                     let entity_id = EntityId::new(*id as u64);
 
                     let result: DeleteResult = if delete_node.detach {
@@ -475,6 +502,12 @@ impl GraphForeachOp {
 
                     // Ignore result - delete is best effort in FOREACH
                     let _ = result;
+                }
+                Value::Edge { id, .. } => {
+                    let edge_id = EdgeId::new(*id as u64);
+                    mutator.delete_edge(edge_id).map_err(|e| {
+                        ParseError::InvalidGraphOp(format!("failed to delete edge: {e}"))
+                    })?;
                 }
                 _ => {
                     return Err(ParseError::InvalidGraphOp(format!(
@@ -501,9 +534,15 @@ impl GraphForeachOp {
                 })?;
 
                 match id_value {
-                    Value::Int(id) => {
+                    Value::Node { id, .. } | Value::Int(id) => {
                         let entity_id = EntityId::new(*id as u64);
                         mutator.remove_entity_property(entity_id, property).map_err(|e| {
+                            ParseError::InvalidGraphOp(format!("failed to remove property: {e}"))
+                        })?;
+                    }
+                    Value::Edge { id, .. } => {
+                        let edge_id = EdgeId::new(*id as u64);
+                        mutator.remove_edge_property(edge_id, property).map_err(|e| {
                             ParseError::InvalidGraphOp(format!("failed to remove property: {e}"))
                         })?;
                     }
@@ -521,7 +560,7 @@ impl GraphForeachOp {
                 })?;
 
                 match id_value {
-                    Value::Int(id) => {
+                    Value::Node { id, .. } | Value::Int(id) => {
                         let entity_id = EntityId::new(*id as u64);
                         mutator.remove_entity_label(entity_id, label).map_err(|e| {
                             ParseError::InvalidGraphOp(format!("failed to remove label: {e}"))
@@ -642,6 +681,8 @@ fn resolve_entity_id_simple(var_name: &str, row: &Row) -> OperatorResult<EntityI
         .ok_or_else(|| ParseError::InvalidGraphOp(format!("unbound variable: {var_name}")))?;
 
     match value {
+        Value::Node { id, .. } => Ok(EntityId::new(*id as u64)),
+        Value::Edge { id, .. } => Ok(EntityId::new(*id as u64)),
         Value::Int(id) => Ok(EntityId::new(*id as u64)),
         _ => Err(ParseError::InvalidGraphOp(format!("variable '{var_name}' is not an entity ID"))),
     }

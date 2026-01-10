@@ -1156,6 +1156,37 @@ fn value_to_json(val: &Value) -> serde_json::Value {
             map.insert("srid".to_string(), serde_json::json!(*srid));
             serde_json::Value::Object(map)
         }
+        Value::Node { id, labels, properties } => {
+            let mut map = serde_json::Map::new();
+            map.insert("id".to_string(), serde_json::json!(*id));
+            map.insert(
+                "labels".to_string(),
+                serde_json::Value::Array(
+                    labels.iter().map(|l| serde_json::Value::String(l.clone())).collect(),
+                ),
+            );
+            map.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(
+                    properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+                ),
+            );
+            serde_json::Value::Object(map)
+        }
+        Value::Edge { id, edge_type, source, target, properties } => {
+            let mut map = serde_json::Map::new();
+            map.insert("id".to_string(), serde_json::json!(*id));
+            map.insert("type".to_string(), serde_json::Value::String(edge_type.clone()));
+            map.insert("source".to_string(), serde_json::json!(*source));
+            map.insert("target".to_string(), serde_json::json!(*target));
+            map.insert(
+                "properties".to_string(),
+                serde_json::Value::Object(
+                    properties.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect(),
+                ),
+            );
+            serde_json::Value::Object(map)
+        }
     }
 }
 

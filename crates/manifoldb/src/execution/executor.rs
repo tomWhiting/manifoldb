@@ -1875,28 +1875,37 @@ fn execute_graph_plan<T: Transaction>(
 
             // Execute a table scan and convert to result set for graph traversal input
             let alias = alias.unwrap_or(label);
-            let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
+            // Empty label means "scan all nodes" (MATCH (n) without a label filter)
+            let label_filter = if label.is_empty() { None } else { Some(label.as_str()) };
+            let entities = tx.iter_entities(label_filter).map_err(Error::Transaction)?;
 
-            // Build schema with prefixed column names
-            let columns = collect_all_columns(&entities);
-            let prefixed_columns: Vec<String> =
-                columns.iter().map(|c| format!("{}.{}", alias, c)).collect();
-            let schema = Arc::new(Schema::new(prefixed_columns.clone()));
+            // Build schema: first column is the alias itself (for RETURN n),
+            // then prefixed property columns (for RETURN n.name)
+            let prop_columns = collect_all_columns(&entities);
+            let mut all_columns = vec![alias.to_string()];
+            all_columns.extend(prop_columns.iter().map(|c| format!("{}.{}", alias, c)));
+            let schema = Arc::new(Schema::new(all_columns));
 
-            // Convert entities to rows
+            // Convert entities to rows with full Value::Node for the alias column
             let rows: Vec<Row> = entities
                 .iter()
                 .map(|entity| {
-                    let values: Vec<Value> = columns
-                        .iter()
-                        .map(|col| {
-                            if col == "_rowid" {
-                                Value::Int(entity.id.as_u64() as i64)
-                            } else {
-                                entity.get_property(col).cloned().unwrap_or(Value::Null)
-                            }
-                        })
-                        .collect();
+                    // First value is the full node for RETURN n
+                    let node_value = Value::Node {
+                        id: entity.id.as_u64() as i64,
+                        labels: entity.labels.iter().map(|l| l.as_str().to_string()).collect(),
+                        properties: entity.properties.clone(),
+                    };
+
+                    // Then individual property values for RETURN n.name, etc.
+                    let mut values = vec![node_value];
+                    values.extend(prop_columns.iter().map(|col| {
+                        if col == "_rowid" {
+                            Value::Int(entity.id.as_u64() as i64)
+                        } else {
+                            entity.get_property(col).cloned().unwrap_or(Value::Null)
+                        }
+                    }));
                     Row::new(Arc::clone(&schema), values)
                 })
                 .collect();
@@ -2073,7 +2082,7 @@ fn execute_logical_plan<T: Transaction>(
 ) -> Result<Vec<Entity>> {
     match plan {
         LogicalPlan::Scan(scan_node) => {
-            // The table name is the entity label
+            // The table name is the entity label (empty string means all entities)
             let label = &scan_node.table_name;
 
             // Check if this is a materialized view
@@ -2081,7 +2090,9 @@ fn execute_logical_plan<T: Transaction>(
                 return Ok(entities);
             }
 
-            let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
+            // Empty label means "scan all entities" (MATCH (n) without a label filter)
+            let label_filter = if label.is_empty() { None } else { Some(label.as_str()) };
+            let entities = tx.iter_entities(label_filter).map_err(Error::Transaction)?;
             Ok(entities)
         }
 
@@ -3407,6 +3418,8 @@ fn contains_join(plan: &LogicalPlan) -> bool {
 fn contains_graph(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::Expand { .. } | LogicalPlan::PathScan { .. } => true,
+        // Scan nodes with an alias are Cypher-style node patterns like MATCH (n:Label)
+        LogicalPlan::Scan(scan_node) => scan_node.alias.is_some(),
         LogicalPlan::Filter { input, .. }
         | LogicalPlan::Project { input, .. }
         | LogicalPlan::Sort { input, .. }

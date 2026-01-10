@@ -26,3 +26,6 @@ Thumbs.db
 .codlr/
 tools/gimbal/target/
 tools/gimbal/
+test-data/
+# Generated/downloaded libraries
+lib/

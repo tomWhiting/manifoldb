@@ -8,6 +8,7 @@ members = [
     "crates/manifoldb-vector",
     "crates/manifoldb-query",
     "tools/manifold-cli",
+    "tools/session-viewer/server",
 ]
 
 [workspace.package]

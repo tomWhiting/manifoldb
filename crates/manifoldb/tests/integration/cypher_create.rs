@@ -394,3 +394,78 @@ fn test_create_empty_properties() {
         "Expected no custom properties"
     );
 }
+
+// ============================================================================
+// RETURN Full Node Data Tests
+// ============================================================================
+
+#[test]
+fn test_return_node_includes_full_data() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create a node with properties
+    let result =
+        db.query("CREATE (n:Person {name: 'Alice', age: 30}) RETURN n").expect("query failed");
+
+    assert_eq!(result.len(), 1, "Expected 1 row");
+
+    // Get the returned node value
+    let row = result.iter().next().expect("Expected at least one row");
+    let node_value = row.values().first().expect("Expected at least one value");
+
+    // Verify we get a full Node value with id, labels, and properties
+    match node_value {
+        Value::Node { id, labels, properties } => {
+            // ID should be a positive integer
+            assert!(*id > 0, "Node ID should be positive, got {id}");
+
+            // Should have the Person label
+            assert!(labels.contains(&"Person".to_string()), "Expected Person label, got {:?}", labels);
+
+            // Should have properties
+            assert_eq!(
+                properties.get("name"),
+                Some(&Value::String("Alice".to_string())),
+                "Expected name property"
+            );
+            assert_eq!(properties.get("age"), Some(&Value::Int(30)), "Expected age property");
+        }
+        other => {
+            panic!("Expected Value::Node, got {:?}", other);
+        }
+    }
+}
+
+#[test]
+fn test_match_return_node_includes_full_data() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // First create a node
+    db.query("CREATE (n:Person {name: 'Bob', score: 100})").expect("create failed");
+
+    // Now MATCH and RETURN it
+    let result = db.query("MATCH (n:Person) RETURN n").expect("query failed");
+
+    assert_eq!(result.len(), 1, "Expected 1 row");
+
+    // Get the returned node value
+    let row = result.iter().next().expect("Expected at least one row");
+    let node_value = row.values().first().expect("Expected at least one value");
+
+    // Verify we get a full Node value
+    match node_value {
+        Value::Node { id, labels, properties } => {
+            assert!(*id > 0, "Node ID should be positive");
+            assert!(labels.contains(&"Person".to_string()), "Expected Person label");
+            assert_eq!(
+                properties.get("name"),
+                Some(&Value::String("Bob".to_string())),
+                "Expected name property"
+            );
+            assert_eq!(properties.get("score"), Some(&Value::Int(100)), "Expected score property");
+        }
+        other => {
+            panic!("Expected Value::Node from MATCH RETURN, got {:?}", other);
+        }
+    }
+}

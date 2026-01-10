@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use manifoldb_core::{Edge, EdgeType, Entity, EntityId, Value};
+use manifoldb_core::{Edge, EdgeId, EdgeType, Entity, EntityId, Value};
 use manifoldb_query::exec::operators::filter::evaluate_expr;
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::ResultSet;
@@ -46,7 +46,22 @@ pub fn execute_expand_operation<T: Transaction>(
     let mut result_rows = Vec::new();
 
     // Process each source node
-    for (src_id, _src_row) in source_nodes {
+    for (src_id, src_row) in source_nodes {
+        // Get source entity for building Value::Node
+        // First try to get it from the source row, then fall back to lookup
+        let src_node_value = src_row
+            .get_by_name(&expand.src_var)
+            .filter(|v| matches!(v, Value::Node { .. }))
+            .cloned()
+            .or_else(|| {
+                tx.get_entity(src_id).ok().flatten().map(|e| Value::Node {
+                    id: e.id.as_u64() as i64,
+                    labels: e.labels.iter().map(|l| l.as_str().to_string()).collect(),
+                    properties: e.properties.clone(),
+                })
+            })
+            .unwrap_or_else(|| Value::Int(src_id.as_u64() as i64));
+
         match &expand.length {
             ExpandLength::Single => {
                 // Single hop expansion using DatabaseTransaction's edge methods
@@ -55,7 +70,7 @@ pub fn execute_expand_operation<T: Transaction>(
 
                 for (neighbor_id, edge) in neighbors {
                     // Apply node label filter if specified
-                    let entity = if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
+                    let dest_entity = if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
                         match tx.get_entity(neighbor_id).map_err(Error::Transaction)? {
                             Some(e) => {
                                 // Check labels
@@ -71,24 +86,18 @@ pub fn execute_expand_operation<T: Transaction>(
                             None => continue,
                         }
                     } else {
-                        None
+                        // Look up the destination entity for Value::Node
+                        tx.get_entity(neighbor_id).map_err(Error::Transaction)?
                     };
 
                     // Apply node property filter if specified
                     if let Some(ref filter) = expand.node_filter {
-                        // Get entity if we don't have it yet
-                        let entity_for_filter = match &entity {
-                            Some(e) => Some(e),
-                            None => {
-                                // This shouldn't happen since we already checked node_filter.is_some()
-                                // but handle it gracefully
-                                continue;
-                            }
-                        };
-                        if let Some(e) = entity_for_filter {
+                        if let Some(ref e) = dest_entity {
                             if !evaluate_entity_filter(e, filter, &expand.dst_var) {
                                 continue;
                             }
+                        } else {
+                            continue;
                         }
                     }
 
@@ -100,13 +109,28 @@ pub fn execute_expand_operation<T: Transaction>(
                         }
                     }
 
-                    // Build row
+                    // Build destination node value
+                    let dst_node_value = dest_entity
+                        .map(|e| Value::Node {
+                            id: e.id.as_u64() as i64,
+                            labels: e.labels.iter().map(|l| l.as_str().to_string()).collect(),
+                            properties: e.properties.clone(),
+                        })
+                        .unwrap_or_else(|| Value::Int(neighbor_id.as_u64() as i64));
+
+                    // Build row with full Value::Node for nodes and Value::Edge for edges
                     let mut values = Vec::new();
-                    values.push(Value::Int(src_id.as_u64() as i64));
-                    values.push(Value::Int(neighbor_id.as_u64() as i64));
+                    values.push(src_node_value.clone());
+                    values.push(dst_node_value);
 
                     if expand.edge_var.is_some() {
-                        values.push(Value::Int(edge.id.as_u64() as i64));
+                        values.push(Value::Edge {
+                            id: edge.id.as_u64() as i64,
+                            edge_type: edge.edge_type.as_str().to_string(),
+                            source: edge.source.as_u64() as i64,
+                            target: edge.target.as_u64() as i64,
+                            properties: edge.properties.clone(),
+                        });
                     }
 
                     result_rows.push(Row::new(Arc::clone(&schema), values));
@@ -131,11 +155,12 @@ pub fn execute_expand_operation<T: Transaction>(
                 )?;
 
                 for (neighbor_id, _depth) in traversal_results {
+                    // Get destination entity for Value::Node and filtering
+                    let dest_entity = tx.get_entity(neighbor_id).map_err(Error::Transaction)?;
+
                     // Apply node label filter and property filter if specified
                     if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
-                        if let Some(entity) =
-                            tx.get_entity(neighbor_id).map_err(Error::Transaction)?
-                        {
+                        if let Some(ref entity) = dest_entity {
                             // Check labels
                             if !expand.node_labels.is_empty() {
                                 let has_label =
@@ -147,7 +172,7 @@ pub fn execute_expand_operation<T: Transaction>(
 
                             // Check property filter
                             if let Some(ref filter) = expand.node_filter {
-                                if !evaluate_entity_filter(&entity, filter, &expand.dst_var) {
+                                if !evaluate_entity_filter(entity, filter, &expand.dst_var) {
                                     continue;
                                 }
                             }
@@ -156,10 +181,19 @@ pub fn execute_expand_operation<T: Transaction>(
                         }
                     }
 
+                    // Build destination node value
+                    let dst_node_value = dest_entity
+                        .map(|e| Value::Node {
+                            id: e.id.as_u64() as i64,
+                            labels: e.labels.iter().map(|l| l.as_str().to_string()).collect(),
+                            properties: e.properties.clone(),
+                        })
+                        .unwrap_or_else(|| Value::Int(neighbor_id.as_u64() as i64));
+
                     // Build row
                     let mut values = Vec::new();
-                    values.push(Value::Int(src_id.as_u64() as i64));
-                    values.push(Value::Int(neighbor_id.as_u64() as i64));
+                    values.push(src_node_value.clone());
+                    values.push(dst_node_value);
 
                     // For variable length, we don't have a single edge ID
                     if expand.edge_var.is_some() {
@@ -346,6 +380,8 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
         .filter_map(|row| {
             let id_value = row.get(id_col_idx)?;
             let entity_id = match id_value {
+                Value::Node { id, .. } => Some(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => Some(EntityId::new(*id as u64)),
                 Value::Int(id) => Some(EntityId::new(*id as u64)),
                 _ => None,
             }?;
@@ -360,9 +396,10 @@ pub fn extract_source_nodes(result: ResultSet, src_var: &str) -> Vec<(EntityId, 
 
 use manifoldb_graph::traversal::Direction;
 use manifoldb_query::exec::graph_accessor::{
-    CreateEdgeRequest, CreateNodeRequest, DeleteResult, GraphAccessError, GraphAccessResult,
-    GraphAccessor, GraphMutator, NeighborResult, NodeScanResult, PathFindConfig, PathMatchResult,
-    ShortestPathConfig, ShortestPathResult, TraversalResult, UpdateEdgeRequest, UpdateNodeRequest,
+    CreateEdgeRequest, CreateNodeRequest, DeleteResult, EdgeResult, GraphAccessError,
+    GraphAccessResult, GraphAccessor, GraphMutator, NeighborResult, NodeScanResult, PathFindConfig,
+    PathMatchResult, ShortestPathConfig, ShortestPathResult, TraversalResult, UpdateEdgeRequest,
+    UpdateNodeRequest,
 };
 
 /// A `GraphMutator` implementation that wraps a `DatabaseTransaction`.
@@ -753,6 +790,16 @@ impl<T: Transaction> DatabaseGraphAccessor<T> {
     pub fn from_arc(tx: std::sync::Arc<std::sync::RwLock<Option<DatabaseTransaction<T>>>>) -> Self {
         Self { tx }
     }
+
+    /// Create a new accessor owning a transaction (for read-only queries).
+    ///
+    /// This wraps the transaction in an Arc<RwLock<Option<...>>> for compatibility
+    /// with the existing interface, but doesn't share with a mutator.
+    pub fn from_transaction(tx: DatabaseTransaction<T>) -> Self {
+        Self {
+            tx: std::sync::Arc::new(std::sync::RwLock::new(Some(tx))),
+        }
+    }
 }
 
 impl<T: Transaction> Clone for DatabaseGraphAccessor<T> {
@@ -987,6 +1034,44 @@ where
             tx.iter_entities(label).map_err(|e| GraphAccessError::Internal(e.to_string()))?;
 
         Ok(entities.iter().map(NodeScanResult::from_entity).collect())
+    }
+
+    fn get_entity(&self, entity_id: EntityId) -> GraphAccessResult<Option<NodeScanResult>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        match tx.get_entity(entity_id) {
+            Ok(Some(entity)) => Ok(Some(NodeScanResult::from_entity(&entity))),
+            Ok(None) => Ok(None),
+            Err(e) => Err(GraphAccessError::Internal(e.to_string())),
+        }
+    }
+
+    fn get_edge(&self, edge_id: EdgeId) -> GraphAccessResult<Option<EdgeResult>> {
+        let guard = self
+            .tx
+            .read()
+            .map_err(|e| GraphAccessError::Internal(format!("failed to acquire lock: {e}")))?;
+        let tx = guard
+            .as_ref()
+            .ok_or_else(|| GraphAccessError::Internal("transaction not available".to_string()))?;
+
+        match tx.get_edge(edge_id) {
+            Ok(Some(edge)) => Ok(Some(EdgeResult {
+                id: edge.id,
+                edge_type: edge.edge_type.as_str().to_string(),
+                source: edge.source,
+                target: edge.target,
+                properties: edge.properties.clone(),
+            })),
+            Ok(None) => Ok(None),
+            Err(e) => Err(GraphAccessError::Internal(e.to_string())),
+        }
     }
 }
 

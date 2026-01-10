@@ -1,0 +1,240 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+  gap: 0;
+}
+
+.header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+}
+
+.header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #e94560;
+}
+
+.stats {
+  display: flex;
+  gap: 16px;
+}
+
+.stat {
+  padding: 4px 12px;
+  background: #0f3460;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.refresh-btn {
+  margin-left: auto;
+  padding: 6px 16px;
+  background: #0f3460;
+  border: 1px solid #1a4a80;
+  border-radius: 4px;
+  color: #e0e0e0;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.refresh-btn:hover {
+  background: #1a4a80;
+  border-color: #2563eb;
+}
+
+.graph-container {
+  position: relative;
+  background: #1a1a2e;
+  overflow: hidden;
+}
+
+.graph-container > div {
+  height: 100% !important;
+  width: 100% !important;
+}
+
+.legend {
+  background: #16213e;
+  padding: 16px;
+  border-left: 1px solid #0f3460;
+  overflow-y: auto;
+}
+
+.legend h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e94560;
+  margin-bottom: 16px;
+}
+
+.legend h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.legend-section {
+  margin-bottom: 20px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-line {
+  width: 20px;
+  height: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* Tooltip */
+.tooltip {
+  position: fixed;
+  top: 80px;
+  right: 240px;
+  max-width: 320px;
+  padding: 12px;
+  background: rgba(22, 33, 62, 0.95);
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  font-size: 12px;
+}
+
+.tooltip-header {
+  font-weight: 600;
+  color: #e94560;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.tooltip-id,
+.tooltip-uuid,
+.tooltip-tool,
+.tooltip-tokens {
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.tooltip-command {
+  color: #facc15;
+  font-family: monospace;
+  font-size: 11px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.tooltip-content {
+  color: #e0e0e0;
+  line-height: 1.4;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #0f3460;
+  font-size: 11px;
+}
+
+/* Loading and error states */
+.loading,
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  text-align: center;
+  padding: 40px;
+}
+
+.loading h2,
+.error h2 {
+  color: #e94560;
+  margin-bottom: 12px;
+  font-size: 20px;
+}
+
+.loading p,
+.error p {
+  color: #94a3b8;
+  margin-bottom: 20px;
+}
+
+.error button {
+  padding: 10px 24px;
+  background: #e94560;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.error button:hover {
+  background: #d13354;
+}
+
+.hint {
+  margin-top: 24px;
+  padding: 16px;
+  background: #16213e;
+  border-radius: 8px;
+  border: 1px solid #0f3460;
+}
+
+.hint p {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.hint code {
+  display: block;
+  padding: 12px;
+  background: #0f0f1a;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #facc15;
+}

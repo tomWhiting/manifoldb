@@ -243,8 +243,11 @@ pub fn encode_sortable(value: &Value) -> Result<Vec<u8>, CoreError> {
         | Value::SparseVector(_)
         | Value::MultiVector(_)
         | Value::Array(_)
-        | Value::Point { .. } => Err(CoreError::Encoding(
-            "vectors, arrays, and points are not supported for sortable encoding".into(),
+        | Value::Point { .. }
+        | Value::Node { .. }
+        | Value::Edge { .. } => Err(CoreError::Encoding(
+            "vectors, arrays, points, nodes, and edges are not supported for sortable encoding"
+                .into(),
         )),
     }
 }
@@ -391,7 +394,9 @@ pub fn sortable_encoded_size(value: &Value) -> Option<usize> {
         | Value::SparseVector(_)
         | Value::MultiVector(_)
         | Value::Array(_)
-        | Value::Point { .. } => None,
+        | Value::Point { .. }
+        | Value::Node { .. }
+        | Value::Edge { .. } => None,
     }
 }
 

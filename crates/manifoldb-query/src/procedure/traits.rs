@@ -209,6 +209,8 @@ fn value_type_name(value: &Value) -> String {
         Value::MultiVector(_) => "MULTI_VECTOR".to_string(),
         Value::Array(_) => "ARRAY".to_string(),
         Value::Point { .. } => "POINT".to_string(),
+        Value::Node { .. } => "NODE".to_string(),
+        Value::Edge { .. } => "EDGE".to_string(),
     }
 }
 

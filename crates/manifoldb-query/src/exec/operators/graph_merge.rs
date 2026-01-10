@@ -283,6 +283,8 @@ impl GraphMergeOp {
         })?;
 
         match value {
+            Value::Node { id, .. } => Ok(EntityId::new(*id as u64)),
+            Value::Edge { id, .. } => Ok(EntityId::new(*id as u64)),
             Value::Int(id) => Ok(EntityId::new(*id as u64)),
             _ => Err(ParseError::InvalidGraphOp(format!(
                 "variable '{}' is not an entity ID",

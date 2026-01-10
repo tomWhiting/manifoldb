@@ -97,6 +97,8 @@ impl GraphRemoveOp {
     fn resolve_entity_id(&self, var_name: &str, input_row: &Row) -> OperatorResult<EntityId> {
         if let Some(value) = input_row.get_by_name(var_name) {
             match value {
+                Value::Node { id, .. } => return Ok(EntityId::new(*id as u64)),
+                Value::Edge { id, .. } => return Ok(EntityId::new(*id as u64)),
                 Value::Int(id) => return Ok(EntityId::new(*id as u64)),
                 _ => {
                     return Err(ParseError::InvalidGraphOp(format!(

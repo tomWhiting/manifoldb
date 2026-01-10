@@ -82,6 +82,22 @@ impl GraphSetOp {
                     })?;
 
                     match id_value {
+                        Value::Node { id, .. } => {
+                            // It's a node value with full entity data
+                            let entity_id = EntityId::new(*id as u64);
+                            let update = node_updates
+                                .entry(variable.clone())
+                                .or_insert_with(|| UpdateNodeRequest::new(entity_id));
+                            update.set_properties.insert(property.clone(), val);
+                        }
+                        Value::Edge { id, .. } => {
+                            // It's an edge value with full edge data
+                            let edge_id = EdgeId::new(*id as u64);
+                            let update = edge_updates
+                                .entry(variable.clone())
+                                .or_insert_with(|| UpdateEdgeRequest::new(edge_id));
+                            update.set_properties.insert(property.clone(), val);
+                        }
                         Value::Int(id) => {
                             // Could be either a node or an edge - we need to determine which
                             // For now, we'll try node first, and if that fails, try edge
@@ -137,6 +153,13 @@ impl GraphSetOp {
                     })?;
 
                     match id_value {
+                        Value::Node { id, .. } => {
+                            let entity_id = EntityId::new(*id as u64);
+                            let update = node_updates
+                                .entry(variable.clone())
+                                .or_insert_with(|| UpdateNodeRequest::new(entity_id));
+                            update.add_labels.push(Label::new(label));
+                        }
                         Value::Int(id) => {
                             let entity_id = EntityId::new(*id as u64);
                             let update = node_updates
