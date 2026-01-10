@@ -314,6 +314,11 @@ impl LogicalPlan {
                 }
             }
 
+            Self::MergeSql { .. } => {
+                // MERGE doesn't return data (unless we add RETURNING support later)
+                Ok(Schema::empty())
+            }
+
             // ========== DDL Nodes ==========
             Self::CreateTable(node) => create_table_schema(node),
 

@@ -2721,3 +2721,172 @@ mod utility_statements {
         }
     }
 }
+
+// ============================================================================
+// SQL MERGE Statement Parsing Tests
+// ============================================================================
+
+mod merge_sql {
+    use super::*;
+    use manifoldb_query::ast::{MergeAction, MergeMatchType};
+
+    #[test]
+    fn parse_simple_merge_update() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target_table t
+             USING source_table s
+             ON t.id = s.id
+             WHEN MATCHED THEN UPDATE SET t.name = s.name",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                // Check target table
+                if let TableRef::Table { name, .. } = &merge.target {
+                    assert_eq!(name.parts[0].name, "target_table");
+                } else {
+                    panic!("expected table ref for target");
+                }
+
+                // Check alias
+                assert!(merge.target_alias.is_some());
+                assert_eq!(merge.target_alias.as_ref().unwrap().name.name, "t");
+
+                // Check source
+                if let TableRef::Table { name, .. } = &merge.source {
+                    assert_eq!(name.parts[0].name, "source_table");
+                } else {
+                    panic!("expected table ref for source");
+                }
+
+                // Check clauses
+                assert_eq!(merge.clauses.len(), 1);
+                assert_eq!(merge.clauses[0].match_type, MergeMatchType::Matched);
+                match &merge.clauses[0].action {
+                    MergeAction::Update { assignments } => {
+                        assert_eq!(assignments.len(), 1);
+                    }
+                    _ => panic!("expected UPDATE action"),
+                }
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+
+    #[test]
+    fn parse_merge_insert() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target t
+             USING source s
+             ON t.id = s.id
+             WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name)",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                assert_eq!(merge.clauses.len(), 1);
+                assert_eq!(merge.clauses[0].match_type, MergeMatchType::NotMatched);
+                match &merge.clauses[0].action {
+                    MergeAction::Insert { columns, values } => {
+                        assert_eq!(columns.len(), 2);
+                        assert_eq!(values.len(), 2);
+                    }
+                    _ => panic!("expected INSERT action"),
+                }
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+
+    #[test]
+    fn parse_merge_delete() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target t
+             USING source s
+             ON t.id = s.id
+             WHEN MATCHED THEN DELETE",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                assert_eq!(merge.clauses.len(), 1);
+                assert_eq!(merge.clauses[0].match_type, MergeMatchType::Matched);
+                assert!(matches!(merge.clauses[0].action, MergeAction::Delete));
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+
+    #[test]
+    fn parse_merge_multiple_clauses() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target t
+             USING source s
+             ON t.id = s.id
+             WHEN MATCHED THEN UPDATE SET t.value = s.value
+             WHEN NOT MATCHED THEN INSERT (id, value) VALUES (s.id, s.value)",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                assert_eq!(merge.clauses.len(), 2);
+                assert_eq!(merge.clauses[0].match_type, MergeMatchType::Matched);
+                assert!(matches!(merge.clauses[0].action, MergeAction::Update { .. }));
+                assert_eq!(merge.clauses[1].match_type, MergeMatchType::NotMatched);
+                assert!(matches!(merge.clauses[1].action, MergeAction::Insert { .. }));
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+
+    #[test]
+    fn parse_merge_with_condition() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target t
+             USING source s
+             ON t.id = s.id
+             WHEN MATCHED AND s.status = 'active' THEN UPDATE SET t.value = s.value
+             WHEN MATCHED THEN DELETE",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                assert_eq!(merge.clauses.len(), 2);
+
+                // First clause has a condition
+                assert_eq!(merge.clauses[0].match_type, MergeMatchType::Matched);
+                assert!(merge.clauses[0].condition.is_some());
+
+                // Second clause has no condition
+                assert_eq!(merge.clauses[1].match_type, MergeMatchType::Matched);
+                assert!(merge.clauses[1].condition.is_none());
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+
+    #[test]
+    fn parse_merge_with_subquery_source() {
+        let stmt = parse_single_statement(
+            "MERGE INTO target t
+             USING (SELECT id, name FROM staging WHERE active = true) s
+             ON t.id = s.id
+             WHEN MATCHED THEN UPDATE SET t.name = s.name",
+        )
+        .unwrap();
+
+        match stmt {
+            Statement::MergeSql(merge) => {
+                // Check source is a subquery
+                assert!(matches!(merge.source, TableRef::Subquery { .. }));
+                assert_eq!(merge.clauses.len(), 1);
+            }
+            _ => panic!("expected MergeSql statement"),
+        }
+    }
+}

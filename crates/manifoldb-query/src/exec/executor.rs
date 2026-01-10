@@ -564,6 +564,12 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
                 "worksOnSystem".to_string(),
             ])))
         }
+
+        PhysicalPlan::MergeSql { .. } => {
+            // MERGE is handled at a higher level by the storage engine
+            // This returns an empty result - affected row counts come from execution context
+            Ok(Box::new(EmptyOp::with_columns(vec![])))
+        }
     }
 }
 

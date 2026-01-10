@@ -398,6 +398,9 @@ impl PhysicalPlanner {
             LogicalPlan::Delete { table, filter, returning } => {
                 self.plan_delete(table, filter, returning)
             }
+            LogicalPlan::MergeSql { target_table, source, on_condition, clauses } => {
+                self.plan_merge_sql(target_table, source, on_condition, clauses)
+            }
 
             // DDL nodes - these are executed directly without physical plans
             LogicalPlan::CreateTable(node) => PhysicalPlan::CreateTable(node.clone()),
@@ -1662,6 +1665,31 @@ impl PhysicalPlanner {
             table: table.to_string(),
             filter: filter.clone(),
             returning: returning.to_vec(),
+            cost,
+        }
+    }
+
+    fn plan_merge_sql(
+        &self,
+        target_table: &str,
+        source: &LogicalPlan,
+        on_condition: &LogicalExpr,
+        clauses: &[crate::plan::logical::LogicalMergeClause],
+    ) -> PhysicalPlan {
+        let source_plan = self.plan(source);
+        let source_rows = source_plan.cost().cardinality();
+        let target_rows = self.catalog.get_row_count(target_table);
+
+        // MERGE cost: source scan + join + actions for matched/unmatched rows
+        // Rough estimate: source rows * 3 (for comparison and potential actions)
+        let estimated_affected = source_rows.max(target_rows);
+        let cost = Cost::new(estimated_affected as f64 * 3.0, estimated_affected);
+
+        PhysicalPlan::MergeSql {
+            target_table: target_table.to_string(),
+            source: Box::new(source_plan),
+            on_condition: on_condition.clone(),
+            clauses: clauses.to_vec(),
             cost,
         }
     }

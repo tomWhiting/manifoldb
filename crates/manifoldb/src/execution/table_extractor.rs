@@ -224,6 +224,12 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::ShowProcedures(_) => {
             // Session variable and utility statements don't reference tables
         }
+
+        LogicalPlan::MergeSql { target_table, source, .. } => {
+            // MERGE references both target and source tables
+            tables.push(target_table.clone());
+            collect_tables_from_plan(source, tables);
+        }
     }
 }
 

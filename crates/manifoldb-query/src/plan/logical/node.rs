@@ -289,6 +289,18 @@ pub enum LogicalPlan {
         returning: Vec<LogicalExpr>,
     },
 
+    /// SQL MERGE operation (conditional INSERT/UPDATE/DELETE).
+    MergeSql {
+        /// Target table name.
+        target_table: String,
+        /// Source plan (can be a scan, subquery, etc.).
+        source: Box<LogicalPlan>,
+        /// Join condition between source and target.
+        on_condition: LogicalExpr,
+        /// WHEN clauses specifying actions.
+        clauses: Vec<LogicalMergeClause>,
+    },
+
     // ========== DDL Nodes ==========
     /// CREATE TABLE operation.
     CreateTable(CreateTableNode),
@@ -625,7 +637,8 @@ impl LogicalPlan {
             | Self::AnnSearch { input, .. }
             | Self::VectorDistance { input, .. }
             | Self::HybridSearch { input, .. }
-            | Self::Insert { input, .. } => vec![input.as_ref()],
+            | Self::Insert { input, .. }
+            | Self::MergeSql { source: input, .. } => vec![input.as_ref()],
 
             // Binary nodes
             Self::Join { left, right, .. }
@@ -719,6 +732,7 @@ impl LogicalPlan {
             | Self::VectorDistance { input, .. }
             | Self::HybridSearch { input, .. }
             | Self::Insert { input, .. }
+            | Self::MergeSql { source: input, .. }
             | Self::GraphSet { input, .. }
             | Self::GraphDelete { input, .. }
             | Self::GraphRemove { input, .. }
@@ -824,6 +838,7 @@ impl LogicalPlan {
             Self::Insert { .. } => "Insert",
             Self::Update { .. } => "Update",
             Self::Delete { .. } => "Delete",
+            Self::MergeSql { .. } => "MergeSql",
             Self::CreateTable(_) => "CreateTable",
             Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
@@ -1103,6 +1118,10 @@ impl DisplayTree<'_> {
                 if let Some(filt) = filter {
                     write!(f, " WHERE {filt}")?;
                 }
+            }
+            LogicalPlan::MergeSql { target_table, on_condition, clauses, .. } => {
+                write!(f, "MergeSql: {target_table} ON {on_condition}")?;
+                write!(f, " ({} clauses)", clauses.len())?;
             }
             LogicalPlan::CreateTable(node) => {
                 write!(f, "CreateTable: {}", node.name)?;
@@ -1521,6 +1540,112 @@ pub enum LogicalConflictAction {
         /// Optional WHERE clause for the update.
         where_clause: Option<LogicalExpr>,
     },
+}
+
+// ============================================================================
+// MERGE Statement Types
+// ============================================================================
+
+/// A WHEN clause in a SQL MERGE statement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LogicalMergeClause {
+    /// Whether this is a MATCHED or NOT MATCHED clause.
+    pub match_type: LogicalMergeMatchType,
+    /// Optional additional condition (AND clause).
+    pub condition: Option<LogicalExpr>,
+    /// The action to perform.
+    pub action: LogicalMergeAction,
+}
+
+impl LogicalMergeClause {
+    /// Creates a new WHEN MATCHED ... UPDATE clause.
+    #[must_use]
+    pub fn matched_update(assignments: Vec<(String, LogicalExpr)>) -> Self {
+        Self {
+            match_type: LogicalMergeMatchType::Matched,
+            condition: None,
+            action: LogicalMergeAction::Update { assignments },
+        }
+    }
+
+    /// Creates a new WHEN MATCHED ... DELETE clause.
+    #[must_use]
+    pub fn matched_delete() -> Self {
+        Self {
+            match_type: LogicalMergeMatchType::Matched,
+            condition: None,
+            action: LogicalMergeAction::Delete,
+        }
+    }
+
+    /// Creates a new WHEN NOT MATCHED ... INSERT clause.
+    #[must_use]
+    pub fn not_matched_insert(columns: Vec<String>, values: Vec<LogicalExpr>) -> Self {
+        Self {
+            match_type: LogicalMergeMatchType::NotMatched,
+            condition: None,
+            action: LogicalMergeAction::Insert { columns, values },
+        }
+    }
+
+    /// Creates a new WHEN NOT MATCHED BY SOURCE ... DELETE clause.
+    #[must_use]
+    pub fn not_matched_by_source_delete() -> Self {
+        Self {
+            match_type: LogicalMergeMatchType::NotMatchedBySource,
+            condition: None,
+            action: LogicalMergeAction::Delete,
+        }
+    }
+
+    /// Creates a new WHEN NOT MATCHED BY SOURCE ... UPDATE clause.
+    #[must_use]
+    pub fn not_matched_by_source_update(assignments: Vec<(String, LogicalExpr)>) -> Self {
+        Self {
+            match_type: LogicalMergeMatchType::NotMatchedBySource,
+            condition: None,
+            action: LogicalMergeAction::Update { assignments },
+        }
+    }
+
+    /// Adds a condition to this clause.
+    #[must_use]
+    pub fn with_condition(mut self, condition: LogicalExpr) -> Self {
+        self.condition = Some(condition);
+        self
+    }
+}
+
+/// The match type for a MERGE WHEN clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalMergeMatchType {
+    /// WHEN MATCHED - source row matches target row.
+    Matched,
+    /// WHEN NOT MATCHED (BY TARGET) - source row has no match in target.
+    NotMatched,
+    /// WHEN NOT MATCHED BY SOURCE - target row has no match in source.
+    NotMatchedBySource,
+}
+
+/// The action to perform in a MERGE WHEN clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalMergeAction {
+    /// UPDATE SET ... action.
+    Update {
+        /// The assignments (column, expression).
+        assignments: Vec<(String, LogicalExpr)>,
+    },
+    /// DELETE action.
+    Delete,
+    /// INSERT (columns) VALUES (values) action.
+    Insert {
+        /// Target columns for the insert.
+        columns: Vec<String>,
+        /// Values to insert.
+        values: Vec<LogicalExpr>,
+    },
+    /// DO NOTHING action (skip the row).
+    DoNothing,
 }
 
 #[cfg(test)]
