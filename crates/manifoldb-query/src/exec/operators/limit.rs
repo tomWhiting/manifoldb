@@ -120,6 +120,15 @@ impl Operator for LimitOp {
 /// 1. Returning rows up to the limit
 /// 2. Storing the last returned row's values
 /// 3. Continuing to return rows that match the last row's ordering
+///
+/// ## Known Limitation
+///
+/// The current implementation compares **all columns** of rows to determine
+/// ties, rather than just the ORDER BY columns. This works correctly when
+/// the ORDER BY columns are the only columns in the result set, or when all
+/// rows with the same ORDER BY values also have the same values in other
+/// columns. For full SQL compliance, the operator would need to receive
+/// the ORDER BY column indices from the physical plan.
 pub struct LimitWithTiesOp {
     /// Base operator state.
     base: OperatorBase,
@@ -135,8 +144,6 @@ pub struct LimitWithTiesOp {
     returned: usize,
     /// The last row that was within the limit (used for tie comparison).
     last_limit_row: Option<Row>,
-    /// Whether we're in the "tie" phase (checking for additional matching rows).
-    in_tie_phase: bool,
 }
 
 impl LimitWithTiesOp {
@@ -152,7 +159,6 @@ impl LimitWithTiesOp {
             skipped: 0,
             returned: 0,
             last_limit_row: None,
-            in_tie_phase: false,
         }
     }
 
@@ -176,7 +182,6 @@ impl Operator for LimitWithTiesOp {
         self.skipped = 0;
         self.returned = 0;
         self.last_limit_row = None;
-        self.in_tie_phase = false;
         self.base.set_open();
         Ok(())
     }
@@ -200,9 +205,7 @@ impl Operator for LimitWithTiesOp {
                             self.base.inc_rows_produced();
                             return Ok(Some(row));
                         }
-                        // We've hit the limit, enter tie phase
-                        self.in_tie_phase = true;
-
+                        // We've hit the limit, check for ties
                         // Check if this row ties with the last row
                         if let Some(ref last_row) = self.last_limit_row {
                             if self.rows_are_tied(last_row, &row) {
