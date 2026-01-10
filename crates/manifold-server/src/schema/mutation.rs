@@ -51,6 +51,40 @@ impl MutationRoot {
         Ok(node)
     }
 
+    /// Create multiple nodes in a single batch operation.
+    async fn create_nodes(
+        &self,
+        ctx: &Context<'_>,
+        inputs: Vec<CreateNodeInput>,
+    ) -> Result<Vec<Node>> {
+        let db = ctx.data::<Arc<Database>>()?;
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let mut nodes = Vec::with_capacity(inputs.len());
+
+        for input in inputs {
+            let labels_str = input.labels.join(":");
+            let props = input.properties.map(|p| format!(" {}", p.0)).unwrap_or_default();
+
+            let query = format!("CREATE (n:{}{}) RETURN n", labels_str, props);
+            let result = db.query(&query)?;
+
+            let graph = convert::query_result_to_graph(&result)?;
+            let node = graph
+                .nodes
+                .into_iter()
+                .next()
+                .ok_or_else(|| async_graphql::Error::new("Failed to create node in batch"))?;
+
+            // Publish event for each created node
+            pubsub.publish_node_event(NodeChangeEvent::Created(node.clone()));
+
+            nodes.push(node);
+        }
+
+        Ok(nodes)
+    }
+
     /// Create an edge between two nodes.
     async fn create_edge(&self, ctx: &Context<'_>, input: CreateEdgeInput) -> Result<Edge> {
         let db = ctx.data::<Arc<Database>>()?;
@@ -77,6 +111,44 @@ impl MutationRoot {
         pubsub.publish_edge_event(EdgeChangeEvent::Created(edge.clone()));
 
         Ok(edge)
+    }
+
+    /// Create multiple edges in a single batch operation.
+    async fn create_edges(
+        &self,
+        ctx: &Context<'_>,
+        inputs: Vec<CreateEdgeInput>,
+    ) -> Result<Vec<Edge>> {
+        let db = ctx.data::<Arc<Database>>()?;
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let mut edges = Vec::with_capacity(inputs.len());
+
+        for input in inputs {
+            let props = input.properties.map(|p| format!(" {}", p.0)).unwrap_or_default();
+
+            let query = format!(
+                "MATCH (a), (b) WHERE id(a) = {} AND id(b) = {} \
+                 CREATE (a)-[r:{}{}]->(b) RETURN r",
+                input.source_id, input.target_id, input.edge_type, props
+            );
+
+            let result = db.query(&query)?;
+
+            let graph = convert::query_result_to_graph(&result)?;
+            let edge = graph
+                .edges
+                .into_iter()
+                .next()
+                .ok_or_else(|| async_graphql::Error::new("Failed to create edge in batch"))?;
+
+            // Publish event for each created edge
+            pubsub.publish_edge_event(EdgeChangeEvent::Created(edge.clone()));
+
+            edges.push(edge);
+        }
+
+        Ok(edges)
     }
 
     /// Delete a node by ID (and its connected edges).
