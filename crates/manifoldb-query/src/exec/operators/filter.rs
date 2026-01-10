@@ -961,24 +961,22 @@ pub fn evaluate_expr_with_graph(
         }
 
         // Pattern comprehension: [(pattern) WHERE predicate | expression]
-        // This expression type requires graph access to execute the pattern matching.
-        // At the expression evaluation level, we cannot execute graph traversals directly.
-        // Pattern comprehensions should be planned as subquery-like operations that
-        // execute the pattern match and collect results.
-        //
-        // For now, we return NULL and pattern comprehensions should be handled
-        // at the operator level where graph access is available.
-        LogicalExpr::PatternComprehension { .. } => {
-            // TODO: Pattern comprehensions require graph access for execution.
-            // They should be transformed into a plan that:
-            // 1. Executes the graph pattern match for each input row
-            // 2. Filters matches based on the WHERE predicate
-            // 3. Projects the result expression for each match
-            // 4. Collects all projections into a list
-            //
-            // This is similar to a correlated subquery over graph data.
-            // For now, return an empty list as a placeholder.
-            Ok(Value::Array(vec![]))
+        // Execute the graph pattern match and collect projected values for each match.
+        LogicalExpr::PatternComprehension { expand_steps, filter_predicate, projection_expr } => {
+            // Pattern comprehension requires graph access for execution
+            let Some(graph) = graph else {
+                // No graph accessor available - return empty array as fallback
+                return Ok(Value::Array(vec![]));
+            };
+
+            // Execute the pattern comprehension and return collected values
+            evaluate_pattern_comprehension(
+                graph,
+                expand_steps,
+                filter_predicate.as_deref(),
+                projection_expr,
+                row,
+            )
         }
 
         // EXISTS { } subquery: Returns boolean based on pattern existence
@@ -1358,6 +1356,205 @@ fn execute_count_pattern(
     }
 
     Ok(total_count)
+}
+
+/// Evaluates a pattern comprehension `[(pattern) WHERE predicate | expression]`.
+///
+/// This function implements pattern comprehension for Cypher by:
+/// 1. Executing the graph pattern match starting from the source node
+/// 2. Filtering matches based on the optional WHERE predicate
+/// 3. Evaluating the projection expression for each valid match
+/// 4. Collecting all projection results into an array
+///
+/// # Arguments
+///
+/// * `graph` - The graph accessor for traversal operations
+/// * `expand_steps` - The expand nodes representing the pattern to match
+/// * `filter_predicate` - Optional WHERE filter to apply to matches
+/// * `projection_expr` - The expression to evaluate for each match
+/// * `row` - The current row (provides correlated variable bindings)
+///
+/// # Returns
+///
+/// An array containing the projected values for all matching paths.
+fn evaluate_pattern_comprehension(
+    graph: &dyn GraphAccessor,
+    expand_steps: &[ExpandNode],
+    filter_predicate: Option<&LogicalExpr>,
+    projection_expr: &LogicalExpr,
+    row: &Row,
+) -> OperatorResult<Value> {
+    // Empty pattern matches nothing
+    if expand_steps.is_empty() {
+        return Ok(Value::Array(vec![]));
+    }
+
+    // Get the source node ID from the first expand step
+    let first_step = &expand_steps[0];
+    let source_id = match row.get_by_name(&first_step.src_var) {
+        Some(Value::Int(id)) => EntityId::new(*id as u64),
+        Some(_) | None => {
+            // Source variable not found or not an integer - no matches
+            return Ok(Value::Array(vec![]));
+        }
+    };
+
+    // Execute the pattern matching and collect projected values
+    let mut results = Vec::new();
+    execute_pattern_comprehension(
+        graph,
+        expand_steps,
+        filter_predicate,
+        projection_expr,
+        row,
+        source_id,
+        0,
+        &mut results,
+    )?;
+
+    Ok(Value::Array(results))
+}
+
+/// Recursively executes pattern matching for pattern comprehension.
+///
+/// This function handles multi-hop patterns by recursively expanding each step.
+/// For each complete match (that passes the optional filter), it evaluates
+/// the projection expression and adds the result to the collected values.
+///
+/// # Arguments
+///
+/// * `graph` - The graph accessor for traversal operations
+/// * `expand_steps` - The expand nodes representing the pattern to match
+/// * `filter_predicate` - Optional WHERE filter to apply to matches
+/// * `projection_expr` - The expression to evaluate for each match
+/// * `base_row` - The row containing variable bindings accumulated so far
+/// * `current_node` - The current node in the traversal
+/// * `step_index` - The current step index in the pattern
+/// * `results` - Mutable vector to collect projection results
+fn execute_pattern_comprehension(
+    graph: &dyn GraphAccessor,
+    expand_steps: &[ExpandNode],
+    filter_predicate: Option<&LogicalExpr>,
+    projection_expr: &LogicalExpr,
+    base_row: &Row,
+    current_node: EntityId,
+    step_index: usize,
+    results: &mut Vec<Value>,
+) -> OperatorResult<()> {
+    // Base case: all steps completed - check filter and project
+    if step_index >= expand_steps.len() {
+        // Apply filter predicate if present
+        let passes_filter = if let Some(predicate) = filter_predicate {
+            let result = evaluate_expr_with_graph(predicate, base_row, Some(graph))?;
+            matches!(result, Value::Bool(true))
+        } else {
+            true
+        };
+
+        if passes_filter {
+            // Evaluate projection expression and collect result
+            let projected = evaluate_expr_with_graph(projection_expr, base_row, Some(graph))?;
+            results.push(projected);
+        }
+        return Ok(());
+    }
+
+    let step = &expand_steps[step_index];
+    let direction = expand_direction_to_graph_direction(&step.direction);
+
+    // Get edge type filters
+    let edge_types: Option<Vec<EdgeType>> = if step.edge_types.is_empty() {
+        None
+    } else {
+        Some(step.edge_types.iter().map(|s| EdgeType::new(s.as_str())).collect())
+    };
+
+    // Execute expansion based on length specification
+    let neighbors = match &step.length {
+        ExpandLength::Single => {
+            // Single hop expansion
+            let results = if let Some(ref types) = edge_types {
+                graph.neighbors_by_types(current_node, direction, types)
+            } else {
+                graph.neighbors(current_node, direction)
+            };
+
+            match results {
+                Ok(neighbors) => neighbors,
+                Err(_) => return Ok(()),
+            }
+        }
+        ExpandLength::Exact(n) => {
+            // Exact depth: use expand_all with min=max=n
+            let expansion_results =
+                graph.expand_all(current_node, direction, *n, Some(*n), edge_types.as_deref());
+            match expansion_results {
+                Ok(traversals) => traversals
+                    .into_iter()
+                    .map(|t| {
+                        crate::exec::graph_accessor::NeighborResult::new(
+                            t.node,
+                            t.edge_id.unwrap_or(manifoldb_core::EdgeId::new(0)),
+                            direction,
+                        )
+                    })
+                    .collect(),
+                Err(_) => return Ok(()),
+            }
+        }
+        ExpandLength::Range { min, max } => {
+            // Variable length expansion
+            let expansion_results =
+                graph.expand_all(current_node, direction, *min, *max, edge_types.as_deref());
+            match expansion_results {
+                Ok(traversals) => traversals
+                    .into_iter()
+                    .map(|t| {
+                        crate::exec::graph_accessor::NeighborResult::new(
+                            t.node,
+                            t.edge_id.unwrap_or(manifoldb_core::EdgeId::new(0)),
+                            direction,
+                        )
+                    })
+                    .collect(),
+                Err(_) => return Ok(()),
+            }
+        }
+    };
+
+    // For each neighbor, continue the pattern matching
+    for neighbor in neighbors {
+        // Apply node label filter if present
+        if !step.node_labels.is_empty() {
+            // TODO: Check if the neighbor node has the required labels
+            // For now, we skip label filtering as it requires entity access
+        }
+
+        // Create a new row with the destination variable bound
+        let row_with_binding =
+            base_row.with_binding(&step.dst_var, Value::Int(neighbor.node.as_u64() as i64));
+
+        // Optionally bind edge variable
+        let row_with_edge = if let Some(ref edge_var) = step.edge_var {
+            row_with_binding.with_binding(edge_var, Value::Int(neighbor.edge_id.as_u64() as i64))
+        } else {
+            row_with_binding
+        };
+
+        // Recursively process the next step
+        execute_pattern_comprehension(
+            graph,
+            expand_steps,
+            filter_predicate,
+            projection_expr,
+            &row_with_edge,
+            neighbor.node,
+            step_index + 1,
+            results,
+        )?;
+    }
+
+    Ok(())
 }
 
 // ===========================================================================
@@ -10868,22 +11065,33 @@ mod tests {
 
     // ========== EXISTS Subquery Evaluation Tests ==========
 
-    /// Mock graph accessor for testing EXISTS subqueries.
+    /// Mock graph accessor for testing EXISTS and pattern comprehension subqueries.
     ///
     /// This mock provides controlled graph traversal results for testing
-    /// the EXISTS execution logic without requiring actual graph storage.
+    /// the EXISTS and pattern comprehension execution logic without requiring
+    /// actual graph storage.
     struct MockGraphAccessor {
         /// Neighbors to return for each node. Key is source node ID.
         neighbors: std::collections::HashMap<u64, Vec<(u64, u64)>>, // (neighbor_id, edge_id)
+        /// Properties for each entity. Key is entity ID.
+        entity_properties: std::collections::HashMap<u64, std::collections::HashMap<String, Value>>,
     }
 
     impl MockGraphAccessor {
         fn new() -> Self {
-            Self { neighbors: std::collections::HashMap::new() }
+            Self {
+                neighbors: std::collections::HashMap::new(),
+                entity_properties: std::collections::HashMap::new(),
+            }
         }
 
         fn add_edge(&mut self, from: u64, to: u64, edge_id: u64) {
             self.neighbors.entry(from).or_default().push((to, edge_id));
+        }
+
+        #[allow(dead_code)]
+        fn add_entity_property(&mut self, entity_id: u64, key: &str, value: Value) {
+            self.entity_properties.entry(entity_id).or_default().insert(key.to_string(), value);
         }
     }
 
@@ -10971,11 +11179,11 @@ mod tests {
 
         fn get_entity_properties(
             &self,
-            _entity_id: EntityId,
+            entity_id: EntityId,
         ) -> crate::exec::graph_accessor::GraphAccessResult<
             Option<std::collections::HashMap<String, manifoldb_core::Value>>,
         > {
-            Ok(Some(std::collections::HashMap::new()))
+            Ok(self.entity_properties.get(&entity_id.as_u64()).cloned())
         }
 
         fn get_edge_properties(
@@ -12570,6 +12778,292 @@ mod tests {
             assert!(filter.next().unwrap().is_some());
             assert!(filter.next().unwrap().is_none());
             filter.close().unwrap();
+        }
+    }
+
+    // ========== Pattern Comprehension Evaluation Tests ==========
+
+    #[test]
+    fn test_pattern_comprehension_no_graph() {
+        // When no graph accessor is provided, pattern comprehension should return empty array
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let expr = LogicalExpr::PatternComprehension {
+            expand_steps: vec![expand_step],
+            filter_predicate: None,
+            projection_expr: Box::new(LogicalExpr::column("friend")),
+        };
+
+        // Without graph accessor, should return empty array
+        let result = evaluate_expr(&expr, &row).unwrap();
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_pattern_comprehension_basic() {
+        // Test [(n)-[:KNOWS]->(friend) | friend] - project the friend node ID
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2
+        mock_graph.add_edge(1, 3, 101); // Node 1 KNOWS Node 3
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step],
+            None,
+            &LogicalExpr::column("friend"),
+            &row,
+        )
+        .unwrap();
+
+        // Should return [2, 3] (the friend node IDs)
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::Int(2)));
+                assert!(arr.contains(&Value::Int(3)));
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_comprehension_with_properties() {
+        // Test [(n)-[:KNOWS]->(friend) | friend.name] - project a property
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2
+        mock_graph.add_edge(1, 3, 101); // Node 1 KNOWS Node 3
+        mock_graph.add_entity_property(2, "name", Value::from("Alice"));
+        mock_graph.add_entity_property(3, "name", Value::from("Bob"));
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Project friend.name
+        let projection =
+            LogicalExpr::Column { qualifier: Some("friend".to_string()), name: "name".to_string() };
+
+        let result =
+            evaluate_pattern_comprehension(&mock_graph, &[expand_step], None, &projection, &row)
+                .unwrap();
+
+        // Should return ["Alice", "Bob"]
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::from("Alice")));
+                assert!(arr.contains(&Value::from("Bob")));
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_comprehension_empty_result() {
+        // Test pattern comprehension when no matches exist
+        let mock_graph = MockGraphAccessor::new(); // Empty graph
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step],
+            None,
+            &LogicalExpr::column("friend"),
+            &row,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_pattern_comprehension_with_filter() {
+        // Test [(n)-[:KNOWS]->(friend) WHERE friend > 2 | friend]
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2
+        mock_graph.add_edge(1, 3, 101); // Node 1 KNOWS Node 3
+        mock_graph.add_edge(1, 4, 102); // Node 1 KNOWS Node 4
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        // Filter: friend > 2
+        let filter = LogicalExpr::column("friend").gt(LogicalExpr::integer(2));
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step],
+            Some(&filter),
+            &LogicalExpr::column("friend"),
+            &row,
+        )
+        .unwrap();
+
+        // Should return [3, 4] (only friends with ID > 2)
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::Int(3)));
+                assert!(arr.contains(&Value::Int(4)));
+                assert!(!arr.contains(&Value::Int(2)));
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_comprehension_multi_hop() {
+        // Test [(n)-[:KNOWS]->(friend)-[:KNOWS]->(fof) | fof]
+        // Friend of friend pattern
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2
+        mock_graph.add_edge(2, 3, 101); // Node 2 KNOWS Node 3
+        mock_graph.add_edge(2, 4, 102); // Node 2 KNOWS Node 4
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step1 = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+        let expand_step2 = ExpandNode::outgoing("friend", "fof").with_edge_type("KNOWS");
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step1, expand_step2],
+            None,
+            &LogicalExpr::column("fof"),
+            &row,
+        )
+        .unwrap();
+
+        // Should return [3, 4] (friends of friend 2)
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::Int(3)));
+                assert!(arr.contains(&Value::Int(4)));
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_comprehension_with_edge_binding() {
+        // Test [(n)-[r:KNOWS]->(friend) | r] - project the edge ID
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100); // Node 1 KNOWS Node 2 via edge 100
+        mock_graph.add_edge(1, 3, 101); // Node 1 KNOWS Node 3 via edge 101
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step =
+            ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS").with_edge_var("r");
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step],
+            None,
+            &LogicalExpr::column("r"),
+            &row,
+        )
+        .unwrap();
+
+        // Should return [100, 101] (the edge IDs)
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::Int(100)));
+                assert!(arr.contains(&Value::Int(101)));
+            }
+            _ => panic!("Expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_pattern_comprehension_source_not_found() {
+        // When source variable doesn't exist, should return empty array
+        let mock_graph = MockGraphAccessor::new();
+
+        let schema = Arc::new(Schema::new(vec!["other".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        // Source var "n" doesn't exist in the row
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[expand_step],
+            None,
+            &LogicalExpr::column("friend"),
+            &row,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_pattern_comprehension_empty_pattern() {
+        // Empty expand steps should return empty array
+        let mock_graph = MockGraphAccessor::new();
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let result = evaluate_pattern_comprehension(
+            &mock_graph,
+            &[], // No expand steps
+            None,
+            &LogicalExpr::column("n"),
+            &row,
+        )
+        .unwrap();
+
+        assert_eq!(result, Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_pattern_comprehension_expression_eval() {
+        // Test using evaluate_expr_with_graph (which now properly handles PatternComprehension)
+        let mut mock_graph = MockGraphAccessor::new();
+        mock_graph.add_edge(1, 2, 100);
+        mock_graph.add_edge(1, 3, 101);
+
+        let schema = Arc::new(Schema::new(vec!["n".to_string()]));
+        let row = Row::new(Arc::clone(&schema), vec![Value::Int(1)]);
+
+        let expand_step = ExpandNode::outgoing("n", "friend").with_edge_type("KNOWS");
+
+        let expr = LogicalExpr::PatternComprehension {
+            expand_steps: vec![expand_step],
+            filter_predicate: None,
+            projection_expr: Box::new(LogicalExpr::column("friend")),
+        };
+
+        let result = evaluate_expr_with_graph(&expr, &row, Some(&mock_graph)).unwrap();
+
+        match result {
+            Value::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(arr.contains(&Value::Int(2)));
+                assert!(arr.contains(&Value::Int(3)));
+            }
+            _ => panic!("Expected array result"),
         }
     }
 }
