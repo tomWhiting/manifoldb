@@ -32,9 +32,14 @@ impl FullScanOp {
     /// Creates a new full scan operator.
     #[must_use]
     pub fn new(node: FullScanNode) -> Self {
-        // Build schema from projection or use default columns
-        let columns =
-            node.projection.clone().unwrap_or_else(|| vec!["id".to_string(), "data".to_string()]);
+        // Build schema: use alias if set (for graph node scans),
+        // otherwise use projection or default columns
+        let columns = if let Some(ref alias) = node.alias {
+            // For graph node scans, the schema is a single column with the alias
+            vec![alias.clone()]
+        } else {
+            node.projection.clone().unwrap_or_else(|| vec!["id".to_string(), "data".to_string()])
+        };
         let schema = Arc::new(Schema::new(columns));
 
         Self { base: OperatorBase::new(schema), node, current_row: 0, data: Vec::new() }
@@ -64,18 +69,13 @@ impl Operator for FullScanOp {
             let graph = ctx.graph();
             match graph.scan_nodes(Some(&self.node.table_name)) {
                 Ok(nodes) => {
-                    // Get the alias from the node configuration, or use table name
-                    let alias = self.node.alias.as_deref().unwrap_or(&self.node.table_name);
-
                     // Build rows from the scanned nodes
                     // For MATCH patterns, we typically need the entity ID under the alias
                     self.data = nodes
                         .into_iter()
                         .map(|node| vec![Value::Int(node.id.as_u64() as i64)])
                         .collect();
-
-                    // Update schema to use the alias
-                    self.base = OperatorBase::new(Arc::new(Schema::new(vec![alias.to_string()])));
+                    // Schema is already set correctly in new() based on the alias
                 }
                 Err(_) => {
                     // If scan_nodes returns an error (e.g., NoStorage), we keep the empty data

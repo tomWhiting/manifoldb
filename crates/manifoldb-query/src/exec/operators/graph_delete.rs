@@ -89,33 +89,32 @@ impl GraphDeleteOp {
 
     /// Process a single input row and delete all specified variables.
     fn process_row(&mut self, row: &Row) -> OperatorResult<()> {
-        // Clone the variables to avoid borrow issues
+        // Clone the variables and edge_variables to avoid borrow issues
         let variables = self.delete_node.variables.clone();
+        let edge_variables = self.delete_node.edge_variables.clone();
 
         for var_name in &variables {
             // Look up the variable in the row
             if let Some(value) = row.get_by_name(var_name) {
                 match value {
                     Value::Int(id) => {
-                        // Could be either a node ID or an edge ID
-                        // We need to determine which based on the context
-                        let entity_id = EntityId::new(*id as u64);
-                        let edge_id = EdgeId::new(*id as u64);
-
-                        // First, try to delete as a node
-                        match self.try_delete_as_node(entity_id) {
-                            Ok(deleted) if deleted => {
-                                // Node was successfully deleted
-                            }
-                            Ok(_not_deleted) => {
-                                // Node wasn't deleted (not found), try as edge
-                                // Ignore edge errors - it might not exist either
-                                let _ = self.delete_edge(edge_id);
-                            }
-                            Err(e) => {
-                                // Node deletion failed with an error (e.g., has relationships)
-                                // Propagate the error
-                                return Err(e);
+                        // Check if this is known to be an edge variable from the MATCH pattern
+                        if edge_variables.contains(var_name) {
+                            // This is an edge variable - delete as edge
+                            let edge_id = EdgeId::new(*id as u64);
+                            self.delete_edge(edge_id)?;
+                        } else {
+                            // This is a node variable - delete as node
+                            let entity_id = EntityId::new(*id as u64);
+                            match self.try_delete_as_node(entity_id) {
+                                Ok(_) => {
+                                    // Node was successfully deleted or not found
+                                }
+                                Err(e) => {
+                                    // Node deletion failed with an error (e.g., has relationships)
+                                    // Propagate the error
+                                    return Err(e);
+                                }
                             }
                         }
                     }

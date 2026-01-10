@@ -578,6 +578,9 @@ impl GraphSetNode {
 pub struct GraphDeleteNode {
     /// Variables to delete (node or relationship variables).
     pub variables: Vec<String>,
+    /// Set of variables that are known to be edge/relationship variables.
+    /// Used to distinguish edge deletes from node deletes.
+    pub edge_variables: std::collections::HashSet<String>,
     /// Whether this is a DETACH DELETE (also deletes relationships).
     pub detach: bool,
     /// Expressions for the RETURN clause.
@@ -588,13 +591,30 @@ impl GraphDeleteNode {
     /// Creates a new graph DELETE node.
     #[must_use]
     pub fn new(variables: Vec<String>) -> Self {
-        Self { variables, detach: false, returning: vec![] }
+        Self {
+            variables,
+            edge_variables: std::collections::HashSet::new(),
+            detach: false,
+            returning: vec![],
+        }
     }
 
     /// Creates a new DETACH DELETE node.
     #[must_use]
     pub fn detach(variables: Vec<String>) -> Self {
-        Self { variables, detach: true, returning: vec![] }
+        Self {
+            variables,
+            edge_variables: std::collections::HashSet::new(),
+            detach: true,
+            returning: vec![],
+        }
+    }
+
+    /// Sets the edge variables (variables that refer to edges, not nodes).
+    #[must_use]
+    pub fn with_edge_variables(mut self, edge_vars: std::collections::HashSet<String>) -> Self {
+        self.edge_variables = edge_vars;
+        self
     }
 
     /// Sets the returning clause.

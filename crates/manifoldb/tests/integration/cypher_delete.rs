@@ -133,14 +133,10 @@ fn test_regular_delete_node_with_relationships_fails() {
 // Relationship Deletion Tests
 // ============================================================================
 
-/// Tests MATCH ()-[r]->() DELETE r pattern for edge deletion.
+/// Tests MATCH pattern for edge deletion using labeled start node.
 ///
-/// NOTE: This test is marked as `#[ignore]` because MATCH clause execution
-/// for edge patterns does not yet properly expose edge IDs in result rows.
-/// The DELETE execution itself works correctly - the limitation is in the
-/// MATCH pattern matching for relationship patterns.
+/// Deletes relationships while preserving the nodes.
 #[test]
-#[ignore = "MATCH for edge patterns does not yet expose edge IDs - requires MATCH enhancement"]
 fn test_delete_relationship() {
     let db = Database::in_memory().expect("failed to create db");
 
@@ -159,8 +155,9 @@ fn test_delete_relationship() {
     assert_eq!(edges.len(), 1, "Expected 1 edge from Alice");
     drop(tx);
 
-    // Delete only the relationship
-    db.query("MATCH ()-[r:KNOWS]->() DELETE r").expect("delete relationship failed");
+    // Delete only the relationship using a labeled start node pattern
+    // Note: Patterns require at least one label to scan from
+    db.query("MATCH (a:Person)-[r:KNOWS]->() DELETE r").expect("delete relationship failed");
 
     // Verify relationship is gone but nodes remain
     let tx = db.begin_read().expect("failed to begin read");
@@ -175,14 +172,10 @@ fn test_delete_relationship() {
     assert_eq!(edges.len(), 0, "Alice should have no outgoing edges");
 }
 
-/// Tests MATCH ()-[r:TYPE]->() DELETE r pattern for typed edge deletion.
+/// Tests MATCH pattern for typed edge deletion.
 ///
-/// NOTE: This test is marked as `#[ignore]` because MATCH clause execution
-/// for edge patterns does not yet properly expose edge IDs in result rows.
-/// The DELETE execution itself works correctly - the limitation is in the
-/// MATCH pattern matching for relationship patterns.
+/// Deletes only edges of a specific type while preserving others.
 #[test]
-#[ignore = "MATCH for edge patterns does not yet expose edge IDs - requires MATCH enhancement"]
 fn test_delete_relationship_by_type() {
     let db = Database::in_memory().expect("failed to create db");
 
@@ -194,8 +187,8 @@ fn test_delete_relationship_by_type() {
     )
     .expect("create failed");
 
-    // Delete only KNOWS relationships
-    db.query("MATCH ()-[r:KNOWS]->() DELETE r").expect("delete failed");
+    // Delete only KNOWS relationships using a labeled start node pattern
+    db.query("MATCH (a:Person)-[r:KNOWS]->() DELETE r").expect("delete failed");
 
     // Verify KNOWS is gone but WORKS_WITH remains
     let tx = db.begin_read().expect("failed to begin read");

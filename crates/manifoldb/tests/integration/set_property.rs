@@ -63,11 +63,8 @@ fn test_set_add_label() {
 
 /// Test SET on relationship properties.
 ///
-/// Note: This test is currently ignored because edge pattern matching in MATCH
-/// clauses is not fully implemented yet. The SET implementation itself supports
-/// edge property updates - this test will pass once edge pattern matching is added.
+/// Sets a property on a relationship using MATCH pattern matching.
 #[test]
-#[ignore = "Edge pattern matching in MATCH not yet implemented"]
 fn test_set_relationship_property() {
     let db = Database::in_memory().expect("failed to create db");
 

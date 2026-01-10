@@ -34,3 +34,5 @@ pub mod set_property;
 pub mod sql;
 pub mod transactions;
 pub mod vector;
+
+pub mod edge_diagnostic;

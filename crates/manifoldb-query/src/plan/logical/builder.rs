@@ -1555,46 +1555,36 @@ impl PlanBuilder {
             .map(|v| v.name.clone())
             .unwrap_or_else(|| self.next_alias("node"));
 
-        // For standalone node patterns (no edges), we need to create a scan
-        // of all matching nodes.
-        if path.steps.is_empty() {
-            // Get the label(s) from the start node - we'll scan by the first label
-            if let Some(labels) = path.start.simple_labels() {
-                if let Some(first_label) = labels.first() {
-                    let label = first_label.name.clone();
-                    let node_scan =
-                        LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
+        // For all node patterns (with or without edges), we need to create a scan
+        // for the start node if it has labels. This provides the source entities
+        // for graph expansion.
+        if let Some(labels) = path.start.simple_labels() {
+            if let Some(first_label) = labels.first() {
+                let label = first_label.name.clone();
+                let node_scan =
+                    LogicalPlan::Scan(Box::new(ScanNode::new(&label).with_alias(&start_var)));
 
-                    // If the input is an empty Values node, just use the scan directly.
-                    // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
-                    plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
-                    {
-                        node_scan
-                    } else {
-                        plan.cross_join(node_scan)
-                    };
-                }
-            }
-
-            // Add property filter if specified
-            if !path.start.properties.is_empty() {
-                let start_filter = self.properties_to_filter(&path.start.properties, &start_var)?;
-                plan = LogicalPlan::Filter {
-                    node: FilterNode::new(start_filter),
-                    input: Box::new(plan),
+                // If the input is an empty Values node, just use the scan directly.
+                // Otherwise, cross join with the existing plan (for multiple MATCH patterns).
+                plan = if matches!(&plan, LogicalPlan::Values(v) if v.rows.is_empty() || (v.rows.len() == 1 && v.rows[0].is_empty()))
+                {
+                    node_scan
+                } else {
+                    plan.cross_join(node_scan)
                 };
             }
-
-            return Ok(plan);
         }
 
-        // Handle start node property filtering for patterns with edges
-        // The start node scan is handled by the first Expand which takes
-        // the input as its source. The property filter is applied after expansion.
+        // Add property filter if specified on the start node
         if !path.start.properties.is_empty() {
             let start_filter = self.properties_to_filter(&path.start.properties, &start_var)?;
             plan =
                 LogicalPlan::Filter { node: FilterNode::new(start_filter), input: Box::new(plan) };
+        }
+
+        // For standalone node patterns (no edges), we're done
+        if path.steps.is_empty() {
+            return Ok(plan);
         }
 
         // Build expand nodes for each step
@@ -1747,6 +1737,22 @@ impl PlanBuilder {
         }
 
         vars
+    }
+
+    /// Extracts edge variable names from a graph pattern.
+    /// These are variables defined on edges (relationships), not nodes.
+    fn extract_edge_variables(pattern: &GraphPattern) -> std::collections::HashSet<String> {
+        let mut edge_vars = std::collections::HashSet::new();
+
+        for path in &pattern.paths {
+            for (edge, _node) in &path.steps {
+                if let Some(var) = &edge.variable {
+                    edge_vars.insert(var.name.clone());
+                }
+            }
+        }
+
+        edge_vars
     }
 
     /// Converts a path pattern to a list of expand nodes.
@@ -2604,6 +2610,9 @@ impl PlanBuilder {
             plan = plan.filter(filter);
         }
 
+        // Extract edge variables from the MATCH pattern to distinguish from node variables
+        let edge_variables = Self::extract_edge_variables(&delete.match_clause);
+
         // Build the DELETE node
         let variables: Vec<String> = delete.variables.iter().map(|v| v.name.clone()).collect();
         let mut graph_delete = if delete.detach {
@@ -2611,6 +2620,9 @@ impl PlanBuilder {
         } else {
             GraphDeleteNode::new(variables)
         };
+
+        // Set edge variables so DELETE knows which variables refer to edges
+        graph_delete = graph_delete.with_edge_variables(edge_variables);
 
         // Add RETURN expressions if present
         if !delete.return_clause.is_empty() {
