@@ -37,12 +37,7 @@ pub async fn run(database_path: &str, host: &str, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/graphql", get(graphql_playground).post(graphql_handler))
         .layer(Extension(schema))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     // Start server
     let addr = format!("{}:{}", host, port);

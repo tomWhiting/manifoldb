@@ -177,9 +177,7 @@ impl GraphForeachOp {
                             crate::exec::graph_accessor::UpdateEdgeRequest::new(edge_id);
                         update.set_properties.insert(property.clone(), val);
                         mutator.update_edge(&update).map_err(|e| {
-                            ParseError::InvalidGraphOp(format!(
-                                "failed to update edge: {e}"
-                            ))
+                            ParseError::InvalidGraphOp(format!("failed to update edge: {e}"))
                         })?;
                     }
                     Value::Int(id) => {

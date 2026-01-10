@@ -89,9 +89,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Vector(v) => serde_json::json!(v),
         Value::SparseVector(v) => serde_json::json!(v),
         Value::MultiVector(v) => serde_json::json!(v),
-        Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(value_to_json).collect())
-        }
+        Value::Array(arr) => serde_json::Value::Array(arr.iter().map(value_to_json).collect()),
         Value::Point { x, y, z, srid } => {
             serde_json::json!({
                 "_type": "point",
@@ -128,50 +126,40 @@ fn props_to_json(props: &HashMap<String, Value>) -> HashMap<String, serde_json::
 }
 
 /// GET /api/graph - Returns all nodes and edges
-async fn get_graph(State(state): State<Arc<AppState>>) -> Result<Json<GraphResponse>, (StatusCode, String)> {
+async fn get_graph(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<GraphResponse>, (StatusCode, String)> {
     // Query all nodes
-    let nodes_result = state.db.query("MATCH (n) RETURN n")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query nodes: {}", e)))?;
+    let nodes_result = state.db.query("MATCH (n) RETURN n").map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query nodes: {}", e))
+    })?;
 
     let mut nodes = Vec::new();
     for row in nodes_result.iter() {
-        if let Some(value) = row.get(0) {
-            match value {
-                Value::Node { id, labels, properties } => {
-                    nodes.push(NodeResponse {
-                        id: *id,
-                        labels: labels.clone(),
-                        properties: props_to_json(properties),
-                    });
-                }
-                _ => {
-                    // Skip non-node values
-                }
-            }
+        if let Some(Value::Node { id, labels, properties }) = row.get(0) {
+            nodes.push(NodeResponse {
+                id: *id,
+                labels: labels.clone(),
+                properties: props_to_json(properties),
+            });
         }
     }
 
     // Query all edges
-    let edges_result = state.db.query("MATCH ()-[r]->() RETURN r")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query edges: {}", e)))?;
+    let edges_result = state.db.query("MATCH ()-[r]->() RETURN r").map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query edges: {}", e))
+    })?;
 
     let mut edges = Vec::new();
     for row in edges_result.iter() {
-        if let Some(value) = row.get(0) {
-            match value {
-                Value::Edge { id, edge_type, source, target, properties } => {
-                    edges.push(EdgeResponse {
-                        id: *id,
-                        source: *source,
-                        target: *target,
-                        edge_type: edge_type.clone(),
-                        properties: props_to_json(properties),
-                    });
-                }
-                _ => {
-                    // Skip non-edge values
-                }
-            }
+        if let Some(Value::Edge { id, edge_type, source, target, properties }) = row.get(0) {
+            edges.push(EdgeResponse {
+                id: *id,
+                source: *source,
+                target: *target,
+                edge_type: edge_type.clone(),
+                properties: props_to_json(properties),
+            });
         }
     }
 
@@ -179,10 +167,13 @@ async fn get_graph(State(state): State<Arc<AppState>>) -> Result<Json<GraphRespo
 }
 
 /// GET /api/stats - Returns statistics about the graph
-async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>, (StatusCode, String)> {
+async fn get_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<StatsResponse>, (StatusCode, String)> {
     // Query all nodes to count labels
-    let nodes_result = state.db.query("MATCH (n) RETURN n")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query nodes: {}", e)))?;
+    let nodes_result = state.db.query("MATCH (n) RETURN n").map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query nodes: {}", e))
+    })?;
 
     let mut node_count = 0;
     let mut labels: HashMap<String, usize> = HashMap::new();
@@ -197,8 +188,9 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsRespo
     }
 
     // Query all edges to count types
-    let edges_result = state.db.query("MATCH ()-[r]->() RETURN r")
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query edges: {}", e)))?;
+    let edges_result = state.db.query("MATCH ()-[r]->() RETURN r").map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to query edges: {}", e))
+    })?;
 
     let mut edge_count = 0;
     let mut edge_types: HashMap<String, usize> = HashMap::new();
@@ -210,12 +202,7 @@ async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsRespo
         }
     }
 
-    Ok(Json(StatsResponse {
-        node_count,
-        edge_count,
-        labels,
-        edge_types,
-    }))
+    Ok(Json(StatsResponse { node_count, edge_count, labels, edge_types }))
 }
 
 /// GET /api/health - Health check endpoint
@@ -236,10 +223,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState { db });
 
     // Configure CORS for the frontend
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
     // Build the router
     let app = Router::new()

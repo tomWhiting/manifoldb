@@ -110,9 +110,8 @@ fn test_edge_variable_diagnostic() {
 
     // Test 7: Property filter + anonymous destination + RETURN only r
     println!("\n=== Test 7: Property filter + anon dest + RETURN only r ===");
-    let result = db
-        .query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() RETURN r")
-        .expect("match failed");
+    let result =
+        db.query("MATCH (a:Person {name: 'Alice'})-[r:KNOWS]->() RETURN r").expect("match failed");
     println!("MATCH returned {} rows", result.len());
     for (i, row) in result.iter().enumerate() {
         println!("  Row {}: {:?}", i, row);

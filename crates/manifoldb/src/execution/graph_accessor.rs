@@ -70,7 +70,9 @@ pub fn execute_expand_operation<T: Transaction>(
 
                 for (neighbor_id, edge) in neighbors {
                     // Apply node label filter if specified
-                    let dest_entity = if !expand.node_labels.is_empty() || expand.node_filter.is_some() {
+                    let dest_entity = if !expand.node_labels.is_empty()
+                        || expand.node_filter.is_some()
+                    {
                         match tx.get_entity(neighbor_id).map_err(Error::Transaction)? {
                             Some(e) => {
                                 // Check labels
@@ -796,9 +798,7 @@ impl<T: Transaction> DatabaseGraphAccessor<T> {
     /// This wraps the transaction in an Arc<RwLock<Option<...>>> for compatibility
     /// with the existing interface, but doesn't share with a mutator.
     pub fn from_transaction(tx: DatabaseTransaction<T>) -> Self {
-        Self {
-            tx: std::sync::Arc::new(std::sync::RwLock::new(Some(tx))),
-        }
+        Self { tx: std::sync::Arc::new(std::sync::RwLock::new(Some(tx))) }
     }
 }
 

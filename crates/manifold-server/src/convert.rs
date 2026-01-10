@@ -64,10 +64,8 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
 
 /// Convert a HashMap of properties to JSON.
 fn hashmap_to_json(map: &HashMap<String, Value>) -> serde_json::Value {
-    let obj: serde_json::Map<String, serde_json::Value> = map
-        .iter()
-        .map(|(k, v)| (k.clone(), value_to_json(v)))
-        .collect();
+    let obj: serde_json::Map<String, serde_json::Value> =
+        map.iter().map(|(k, v)| (k.clone(), value_to_json(v))).collect();
     serde_json::Value::Object(obj)
 }
 
@@ -100,24 +98,11 @@ fn value_edge_to_graphql(
 /// Convert a ManifoldDB QueryResult to a GraphQL TableResult.
 pub fn query_result_to_table(result: &DbQueryResult) -> TableResult {
     let columns: Vec<String> = result.columns().to_vec();
-    let rows: Vec<Json<Vec<serde_json::Value>>> = result
-        .iter()
-        .map(|row| {
-            Json(
-                row.values()
-                    .iter()
-                    .map(value_to_json)
-                    .collect(),
-            )
-        })
-        .collect();
+    let rows: Vec<Json<Vec<serde_json::Value>>> =
+        result.iter().map(|row| Json(row.values().iter().map(value_to_json).collect())).collect();
     let row_count = rows.len() as i32;
 
-    TableResult {
-        columns,
-        rows,
-        row_count,
-    }
+    TableResult { columns, rows, row_count }
 }
 
 /// Convert a ManifoldDB QueryResult to a GraphQL GraphResult.
@@ -131,7 +116,13 @@ pub fn query_result_to_graph(result: &DbQueryResult) -> Result<GraphResult> {
 
     for row in result.iter() {
         for value in row.values() {
-            extract_graph_elements(value, &mut nodes, &mut edges, &mut seen_node_ids, &mut seen_edge_ids);
+            extract_graph_elements(
+                value,
+                &mut nodes,
+                &mut edges,
+                &mut seen_node_ids,
+                &mut seen_edge_ids,
+            );
         }
     }
 

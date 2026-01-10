@@ -251,9 +251,7 @@ impl GraphCreateOp {
             let cols = schema.columns();
             let values: Vec<Value> = cols
                 .into_iter()
-                .map(|col: &str| {
-                    self.created_entities.get(col).cloned().unwrap_or(Value::Null)
-                })
+                .map(|col: &str| self.created_entities.get(col).cloned().unwrap_or(Value::Null))
                 .collect();
             Ok(Row::new(schema, values))
         } else {

@@ -251,9 +251,7 @@ fn run() -> Result<()> {
         Commands::Export { collection, output, format } => {
             import_export::export(cli.database.as_deref(), &collection, &output, format)
         }
-        Commands::Restore { file } => {
-            import_export::restore(cli.database.as_deref(), &file)
-        }
+        Commands::Restore { file } => import_export::restore(cli.database.as_deref(), &file),
         Commands::Collections(cmd) => collections::run(cli.database.as_deref(), cmd, cli.format),
         Commands::Indexes(cmd) => indexes::run(cli.database.as_deref(), cmd, cli.format),
         Commands::Graph(cmd) => graph::run(cli.database.as_deref(), cmd, cli.format),

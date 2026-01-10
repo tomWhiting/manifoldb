@@ -462,7 +462,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             let mut labels = Vec::with_capacity(label_count);
             for _ in 0..label_count {
                 if rest.len() < pos + 4 {
-                    return Err(CoreError::Encoding("unexpected end of input for label".to_owned()));
+                    return Err(CoreError::Encoding(
+                        "unexpected end of input for label".to_owned(),
+                    ));
                 }
                 let label_len_bytes: [u8; 4] = rest[pos..pos + 4]
                     .try_into()
@@ -471,7 +473,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
                     .map_err(|_| CoreError::Encoding("label length exceeds capacity".to_owned()))?;
                 pos += 4;
                 if rest.len() < pos + label_len {
-                    return Err(CoreError::Encoding("unexpected end of input for label".to_owned()));
+                    return Err(CoreError::Encoding(
+                        "unexpected end of input for label".to_owned(),
+                    ));
                 }
                 let label = String::from_utf8(rest[pos..pos + label_len].to_vec())
                     .map_err(|e| CoreError::Encoding(format!("invalid label UTF-8: {e}")))?;
@@ -480,7 +484,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             }
 
             if rest.len() < pos + 4 {
-                return Err(CoreError::Encoding("unexpected end of input for prop count".to_owned()));
+                return Err(CoreError::Encoding(
+                    "unexpected end of input for prop count".to_owned(),
+                ));
             }
             let prop_count_bytes: [u8; 4] = rest[pos..pos + 4]
                 .try_into()
@@ -533,7 +539,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
 
             let mut pos = 12;
             if rest.len() < pos + edge_type_len {
-                return Err(CoreError::Encoding("unexpected end of input for edge type".to_owned()));
+                return Err(CoreError::Encoding(
+                    "unexpected end of input for edge type".to_owned(),
+                ));
             }
             let edge_type = String::from_utf8(rest[pos..pos + edge_type_len].to_vec())
                 .map_err(|e| CoreError::Encoding(format!("invalid edge type UTF-8: {e}")))?;
@@ -541,7 +549,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
 
             if rest.len() < pos + 16 {
                 // source(8) + target(8)
-                return Err(CoreError::Encoding("unexpected end of input for source/target".to_owned()));
+                return Err(CoreError::Encoding(
+                    "unexpected end of input for source/target".to_owned(),
+                ));
             }
             let source_bytes: [u8; 8] = rest[pos..pos + 8]
                 .try_into()
@@ -556,7 +566,9 @@ pub fn decode_value(bytes: &[u8]) -> Result<(Value, usize), CoreError> {
             pos += 8;
 
             if rest.len() < pos + 4 {
-                return Err(CoreError::Encoding("unexpected end of input for prop count".to_owned()));
+                return Err(CoreError::Encoding(
+                    "unexpected end of input for prop count".to_owned(),
+                ));
             }
             let prop_count_bytes: [u8; 4] = rest[pos..pos + 4]
                 .try_into()

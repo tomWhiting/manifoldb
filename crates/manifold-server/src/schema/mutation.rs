@@ -23,10 +23,7 @@ impl MutationRoot {
         let db = ctx.data::<Arc<Database>>()?;
         let result = db.query(&query)?;
 
-        Ok(QueryResult {
-            table: Some(convert::query_result_to_table(&result)),
-            graph: None,
-        })
+        Ok(QueryResult { table: Some(convert::query_result_to_table(&result)), graph: None })
     }
 
     /// Create a node with labels and properties.
@@ -34,10 +31,7 @@ impl MutationRoot {
         let db = ctx.data::<Arc<Database>>()?;
 
         let labels_str = input.labels.join(":");
-        let props = input
-            .properties
-            .map(|p| format!(" {}", p.0))
-            .unwrap_or_default();
+        let props = input.properties.map(|p| format!(" {}", p.0)).unwrap_or_default();
 
         let query = format!("CREATE (n:{}{}) RETURN n", labels_str, props);
         let result = db.query(&query)?;
@@ -54,10 +48,7 @@ impl MutationRoot {
     async fn create_edge(&self, ctx: &Context<'_>, input: CreateEdgeInput) -> Result<Edge> {
         let db = ctx.data::<Arc<Database>>()?;
 
-        let props = input
-            .properties
-            .map(|p| format!(" {}", p.0))
-            .unwrap_or_default();
+        let props = input.properties.map(|p| format!(" {}", p.0)).unwrap_or_default();
 
         let query = format!(
             "MATCH (a), (b) WHERE id(a) = {} AND id(b) = {} \
@@ -100,19 +91,13 @@ impl MutationRoot {
     ) -> Result<Node> {
         let db = ctx.data::<Arc<Database>>()?;
 
-        let query = format!(
-            "MATCH (n) WHERE id(n) = {} SET n += {} RETURN n",
-            id.as_str(), properties.0
-        );
+        let query =
+            format!("MATCH (n) WHERE id(n) = {} SET n += {} RETURN n", id.as_str(), properties.0);
 
         let result = db.query(&query)?;
 
         let graph = convert::query_result_to_graph(&result)?;
-        graph
-            .nodes
-            .into_iter()
-            .next()
-            .ok_or_else(|| async_graphql::Error::new("Node not found"))
+        graph.nodes.into_iter().next().ok_or_else(|| async_graphql::Error::new("Node not found"))
     }
 
     // =========================================================================
@@ -137,7 +122,11 @@ impl MutationRoot {
                 .map(graphql_distance_to_manifold)
                 .unwrap_or(DistanceMetric::Cosine);
 
-            builder = builder.with_dense_vector(&vec_config.name, vec_config.dimension as usize, distance);
+            builder = builder.with_dense_vector(
+                &vec_config.name,
+                vec_config.dimension as usize,
+                distance,
+            );
         }
 
         // Build the collection
@@ -154,7 +143,9 @@ impl MutationRoot {
                     manifoldb::collection::VectorType::Dense { dimension } => {
                         (VectorTypeEnum::Dense, Some(*dimension as i32))
                     }
-                    manifoldb::collection::VectorType::Sparse { .. } => (VectorTypeEnum::Sparse, None),
+                    manifoldb::collection::VectorType::Sparse { .. } => {
+                        (VectorTypeEnum::Sparse, None)
+                    }
                     manifoldb::collection::VectorType::Multi { token_dim } => {
                         (VectorTypeEnum::Multi, Some(*token_dim as i32))
                     }
@@ -171,16 +162,13 @@ impl MutationRoot {
                         DistanceMetric::Manhattan => DistanceMetricEnum::Manhattan,
                         DistanceMetric::Chebyshev => DistanceMetricEnum::Chebyshev,
                     },
-                    manifoldb::collection::DistanceType::Sparse(_) => DistanceMetricEnum::DotProduct,
+                    manifoldb::collection::DistanceType::Sparse(_) => {
+                        DistanceMetricEnum::DotProduct
+                    }
                     manifoldb::collection::DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
                 };
 
-                VectorConfigInfo {
-                    name: vec_name.clone(),
-                    vector_type,
-                    dimension,
-                    distance_metric,
-                }
+                VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
             })
             .collect();
 
@@ -274,16 +262,13 @@ fn json_to_value(json: &serde_json::Value) -> Option<manifoldb::Value> {
         serde_json::Value::String(s) => Some(manifoldb::Value::String(s.clone())),
         serde_json::Value::Array(arr) => {
             // Check if it's a vector (all f32)
-            let floats: Option<Vec<f32>> = arr
-                .iter()
-                .map(|v| v.as_f64().map(|f| f as f32))
-                .collect();
+            let floats: Option<Vec<f32>> =
+                arr.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
             if let Some(vec) = floats {
                 Some(manifoldb::Value::Vector(vec))
             } else {
                 // Try as array of values
-                let values: Option<Vec<manifoldb::Value>> =
-                    arr.iter().map(json_to_value).collect();
+                let values: Option<Vec<manifoldb::Value>> = arr.iter().map(json_to_value).collect();
                 values.map(manifoldb::Value::Array)
             }
         }

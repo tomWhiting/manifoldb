@@ -420,7 +420,11 @@ fn test_return_node_includes_full_data() {
             assert!(*id > 0, "Node ID should be positive, got {id}");
 
             // Should have the Person label
-            assert!(labels.contains(&"Person".to_string()), "Expected Person label, got {:?}", labels);
+            assert!(
+                labels.contains(&"Person".to_string()),
+                "Expected Person label, got {:?}",
+                labels
+            );
 
             // Should have properties
             assert_eq!(

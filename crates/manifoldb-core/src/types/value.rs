@@ -132,7 +132,7 @@ pub enum Value {
     ///
     /// # Fields
     /// - `id` - The unique entity ID
-    /// - `labels` - Node labels (e.g., ["Person", "Employee"])
+    /// - `labels` - Node labels (e.g., `["Person", "Employee"]`)
     /// - `properties` - Key-value property map
     Node {
         /// The unique entity ID

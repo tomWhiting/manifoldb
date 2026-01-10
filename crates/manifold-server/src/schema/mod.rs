@@ -22,7 +22,5 @@ pub type AppSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
 
 /// Create a new GraphQL schema with the given database.
 pub fn create_schema(db: Database) -> AppSchema {
-    Schema::build(QueryRoot, MutationRoot, EmptySubscription)
-        .data(Arc::new(db))
-        .finish()
+    Schema::build(QueryRoot, MutationRoot, EmptySubscription).data(Arc::new(db)).finish()
 }

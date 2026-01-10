@@ -43,18 +43,12 @@ impl QueryRoot {
             labels: stats
                 .labels
                 .into_iter()
-                .map(|(name, count)| LabelInfo {
-                    name,
-                    count: count as i64,
-                })
+                .map(|(name, count)| LabelInfo { name, count: count as i64 })
                 .collect(),
             edge_types: stats
                 .edge_types
                 .into_iter()
-                .map(|(name, count)| EdgeTypeInfo {
-                    name,
-                    count: count as i64,
-                })
+                .map(|(name, count)| EdgeTypeInfo { name, count: count as i64 })
                 .collect(),
         })
     }
@@ -65,10 +59,7 @@ impl QueryRoot {
         let labels = db.list_labels()?;
         Ok(labels
             .into_iter()
-            .map(|(name, count)| LabelInfo {
-                name,
-                count: count as i64,
-            })
+            .map(|(name, count)| LabelInfo { name, count: count as i64 })
             .collect())
     }
 
@@ -78,10 +69,7 @@ impl QueryRoot {
         let edge_types = db.list_edge_types()?;
         Ok(edge_types
             .into_iter()
-            .map(|(name, count)| EdgeTypeInfo {
-                name,
-                count: count as i64,
-            })
+            .map(|(name, count)| EdgeTypeInfo { name, count: count as i64 })
             .collect())
     }
 
@@ -125,9 +113,7 @@ impl QueryRoot {
     ) -> Result<GraphResult> {
         let db = ctx.data::<Arc<Database>>()?;
 
-        let type_filter = edge_type
-            .map(|t| format!(":{}", t))
-            .unwrap_or_default();
+        let type_filter = edge_type.map(|t| format!(":{}", t)).unwrap_or_default();
 
         let (left_arrow, right_arrow) = match direction.unwrap_or(Direction::Both) {
             Direction::Outgoing => ("", "->"),
@@ -139,7 +125,11 @@ impl QueryRoot {
 
         let query = format!(
             "MATCH (n){}[r{}]{}(m) WHERE id(n) = {} RETURN n, r, m{}",
-            left_arrow, type_filter, right_arrow, node_id.as_str(), limit_clause
+            left_arrow,
+            type_filter,
+            right_arrow,
+            node_id.as_str(),
+            limit_clause
         );
 
         let result = db.query(&query)?;
@@ -271,12 +261,7 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
                 manifoldb::collection::DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
             };
 
-            VectorConfigInfo {
-                name: vec_name.clone(),
-                vector_type,
-                dimension,
-                distance_metric,
-            }
+            VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
         })
         .collect();
 
