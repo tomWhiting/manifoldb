@@ -360,9 +360,22 @@ These feature groups can be implemented independently:
 | DROP VIEW CASCADE | ✓ | ✓ | ✓ | ✓ | | | Parsing, planning (cascade not exec) |
 | MATERIALIZED VIEW | | | | | | | Not implemented |
 | **SCHEMA** |
-| CREATE SCHEMA | | | | | | | Not implemented |
-| DROP SCHEMA | | | | | | | Not implemented |
+| CREATE SCHEMA | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE SCHEMA IF NOT EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP SCHEMA | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP SCHEMA CASCADE | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| ALTER SCHEMA | | A | L | O | | | AST node and logical plan only (Jan 2026) |
 | SET search_path | | | | | | | Not implemented |
+| **FUNCTION** |
+| CREATE FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE OR REPLACE FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP FUNCTION IF EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| **TRIGGER** |
+| CREATE TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE OR REPLACE TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP TRIGGER IF EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
 
 ## 1.9 Transaction Statements
 

@@ -409,6 +409,13 @@ impl PhysicalPlanner {
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
             LogicalPlan::CreateView(node) => PhysicalPlan::CreateView(node.clone()),
             LogicalPlan::DropView(node) => PhysicalPlan::DropView(node.clone()),
+            LogicalPlan::CreateSchema(node) => PhysicalPlan::CreateSchema(node.clone()),
+            LogicalPlan::AlterSchema(node) => PhysicalPlan::AlterSchema(node.clone()),
+            LogicalPlan::DropSchema(node) => PhysicalPlan::DropSchema(node.clone()),
+            LogicalPlan::CreateFunction(node) => PhysicalPlan::CreateFunction((**node).clone()),
+            LogicalPlan::DropFunction(node) => PhysicalPlan::DropFunction(node.clone()),
+            LogicalPlan::CreateTrigger(node) => PhysicalPlan::CreateTrigger((**node).clone()),
+            LogicalPlan::DropTrigger(node) => PhysicalPlan::DropTrigger(node.clone()),
 
             // Graph DML nodes - build physical plans for these
             LogicalPlan::GraphCreate { node, input } => {

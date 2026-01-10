@@ -445,7 +445,14 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         | PhysicalPlan::CreateCollection(_)
         | PhysicalPlan::DropCollection(_)
         | PhysicalPlan::CreateView(_)
-        | PhysicalPlan::DropView(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        | PhysicalPlan::DropView(_)
+        | PhysicalPlan::CreateSchema(_)
+        | PhysicalPlan::AlterSchema(_)
+        | PhysicalPlan::DropSchema(_)
+        | PhysicalPlan::CreateFunction(_)
+        | PhysicalPlan::DropFunction(_)
+        | PhysicalPlan::CreateTrigger(_)
+        | PhysicalPlan::DropTrigger(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         // Graph DML operations
         PhysicalPlan::GraphCreate { node, input } => {

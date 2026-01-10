@@ -10,10 +10,18 @@
 //! - DROP COLLECTION
 //! - CREATE VIEW
 //! - DROP VIEW
+//! - CREATE SCHEMA
+//! - ALTER SCHEMA
+//! - DROP SCHEMA
+//! - CREATE FUNCTION
+//! - DROP FUNCTION
+//! - CREATE TRIGGER
+//! - DROP TRIGGER
 
 use crate::ast::{
-    AlterTableAction, ColumnDef, Expr, Identifier, IndexColumn, SelectStatement, TableConstraint,
-    VectorDef,
+    AlterSchemaAction, AlterTableAction, ColumnDef, DataType, Expr, FunctionLanguage,
+    FunctionParameter, FunctionVolatility, Identifier, IndexColumn, SelectStatement,
+    TableConstraint, TriggerEvent, TriggerForEach, TriggerTiming, VectorDef,
 };
 
 /// A CREATE TABLE operation.
@@ -349,6 +357,338 @@ impl DropViewNode {
     #[must_use]
     pub fn new(names: Vec<String>) -> Self {
         Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+// ============================================================================
+// Schema DDL Nodes
+// ============================================================================
+
+/// A CREATE SCHEMA operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateSchemaNode {
+    /// Whether IF NOT EXISTS is specified.
+    pub if_not_exists: bool,
+    /// The schema name.
+    pub name: String,
+    /// Optional authorization (owner) for the schema.
+    pub authorization: Option<String>,
+}
+
+impl CreateSchemaNode {
+    /// Creates a new CREATE SCHEMA node.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { if_not_exists: false, name: name.into(), authorization: None }
+    }
+
+    /// Sets the IF NOT EXISTS flag.
+    #[must_use]
+    pub const fn with_if_not_exists(mut self, if_not_exists: bool) -> Self {
+        self.if_not_exists = if_not_exists;
+        self
+    }
+
+    /// Sets the authorization (owner) for the schema.
+    #[must_use]
+    pub fn with_authorization(mut self, auth: impl Into<String>) -> Self {
+        self.authorization = Some(auth.into());
+        self
+    }
+}
+
+/// An ALTER SCHEMA operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterSchemaNode {
+    /// The schema name to alter.
+    pub name: String,
+    /// The action to perform on the schema.
+    pub action: AlterSchemaAction,
+}
+
+impl AlterSchemaNode {
+    /// Creates a new ALTER SCHEMA node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, action: AlterSchemaAction) -> Self {
+        Self { name: name.into(), action }
+    }
+}
+
+/// A DROP SCHEMA operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropSchemaNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The schema names to drop.
+    pub names: Vec<String>,
+    /// Whether CASCADE is specified (drops all contained objects).
+    pub cascade: bool,
+}
+
+impl DropSchemaNode {
+    /// Creates a new DROP SCHEMA node.
+    #[must_use]
+    pub fn new(names: Vec<String>) -> Self {
+        Self { if_exists: false, names, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+// ============================================================================
+// Function DDL Nodes
+// ============================================================================
+
+/// A CREATE FUNCTION operation.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct CreateFunctionNode {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The function name (may be schema-qualified).
+    pub name: String,
+    /// Function parameters.
+    pub parameters: Vec<FunctionParameter>,
+    /// Return type.
+    pub returns: DataType,
+    /// Whether the function returns a set of values (SETOF).
+    pub returns_setof: bool,
+    /// The function body.
+    pub body: String,
+    /// The language of the function body.
+    pub language: FunctionLanguage,
+    /// Function volatility (IMMUTABLE, STABLE, VOLATILE).
+    pub volatility: Option<FunctionVolatility>,
+    /// Whether the function is STRICT (returns NULL on NULL input).
+    pub strict: bool,
+    /// Security definer mode (SECURITY DEFINER vs SECURITY INVOKER).
+    pub security_definer: bool,
+}
+
+impl CreateFunctionNode {
+    /// Creates a new CREATE FUNCTION node.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        parameters: Vec<FunctionParameter>,
+        returns: DataType,
+        body: impl Into<String>,
+        language: FunctionLanguage,
+    ) -> Self {
+        Self {
+            or_replace: false,
+            name: name.into(),
+            parameters,
+            returns,
+            returns_setof: false,
+            body: body.into(),
+            language,
+            volatility: None,
+            strict: false,
+            security_definer: false,
+        }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets whether the function returns a set.
+    #[must_use]
+    pub const fn with_returns_setof(mut self, returns_setof: bool) -> Self {
+        self.returns_setof = returns_setof;
+        self
+    }
+
+    /// Sets the function volatility.
+    #[must_use]
+    pub fn with_volatility(mut self, volatility: FunctionVolatility) -> Self {
+        self.volatility = Some(volatility);
+        self
+    }
+
+    /// Sets the function as STRICT.
+    #[must_use]
+    pub const fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    /// Sets SECURITY DEFINER mode.
+    #[must_use]
+    pub const fn with_security_definer(mut self, security_definer: bool) -> Self {
+        self.security_definer = security_definer;
+        self
+    }
+}
+
+/// A DROP FUNCTION operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropFunctionNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The function name (may be schema-qualified).
+    pub name: String,
+    /// Optional argument types (for overload resolution).
+    pub arg_types: Vec<DataType>,
+    /// Whether CASCADE is specified.
+    pub cascade: bool,
+}
+
+impl DropFunctionNode {
+    /// Creates a new DROP FUNCTION node.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { if_exists: false, name: name.into(), arg_types: vec![], cascade: false }
+    }
+
+    /// Creates a DROP FUNCTION node with argument types.
+    #[must_use]
+    pub fn with_args(name: impl Into<String>, arg_types: Vec<DataType>) -> Self {
+        Self { if_exists: false, name: name.into(), arg_types, cascade: false }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+
+    /// Sets the CASCADE flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
+// ============================================================================
+// Trigger DDL Nodes
+// ============================================================================
+
+/// A CREATE TRIGGER operation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateTriggerNode {
+    /// Whether OR REPLACE is specified.
+    pub or_replace: bool,
+    /// The trigger name.
+    pub name: String,
+    /// When the trigger fires (BEFORE, AFTER, INSTEAD OF).
+    pub timing: TriggerTiming,
+    /// Events that fire the trigger (INSERT, UPDATE, DELETE, TRUNCATE).
+    pub events: Vec<TriggerEvent>,
+    /// The table the trigger is on.
+    pub table: String,
+    /// Whether this is a row-level or statement-level trigger.
+    pub for_each: TriggerForEach,
+    /// Optional WHEN condition.
+    pub when_clause: Option<Expr>,
+    /// The function to execute.
+    pub function: String,
+    /// Arguments to pass to the function.
+    pub function_args: Vec<String>,
+}
+
+impl CreateTriggerNode {
+    /// Creates a new CREATE TRIGGER node.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        timing: TriggerTiming,
+        events: Vec<TriggerEvent>,
+        table: impl Into<String>,
+        function: impl Into<String>,
+    ) -> Self {
+        Self {
+            or_replace: false,
+            name: name.into(),
+            timing,
+            events,
+            table: table.into(),
+            for_each: TriggerForEach::Row,
+            when_clause: None,
+            function: function.into(),
+            function_args: vec![],
+        }
+    }
+
+    /// Sets the OR REPLACE flag.
+    #[must_use]
+    pub const fn with_or_replace(mut self, or_replace: bool) -> Self {
+        self.or_replace = or_replace;
+        self
+    }
+
+    /// Sets the FOR EACH clause.
+    #[must_use]
+    pub const fn with_for_each(mut self, for_each: TriggerForEach) -> Self {
+        self.for_each = for_each;
+        self
+    }
+
+    /// Sets the WHEN clause.
+    #[must_use]
+    pub fn with_when(mut self, condition: Expr) -> Self {
+        self.when_clause = Some(condition);
+        self
+    }
+
+    /// Sets the function arguments.
+    #[must_use]
+    pub fn with_args(mut self, args: Vec<String>) -> Self {
+        self.function_args = args;
+        self
+    }
+}
+
+/// A DROP TRIGGER operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTriggerNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The trigger name.
+    pub name: String,
+    /// The table the trigger is on.
+    pub table: String,
+    /// Whether CASCADE is specified.
+    pub cascade: bool,
+}
+
+impl DropTriggerNode {
+    /// Creates a new DROP TRIGGER node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, table: impl Into<String>) -> Self {
+        Self { if_exists: false, name: name.into(), table: table.into(), cascade: false }
     }
 
     /// Sets the IF EXISTS flag.
