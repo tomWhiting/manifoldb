@@ -11,7 +11,8 @@ use manifoldb_core::{EdgeId, Entity, EntityId, Label, Value};
 use crate::error::ParseError;
 use crate::exec::context::ExecutionContext;
 use crate::exec::graph_accessor::{
-    CreateEdgeRequest, CreateNodeRequest, DeleteResult, GraphMutator, UpdateNodeRequest,
+    CreateEdgeRequest, CreateNodeRequest, DeleteResult, GraphAccessor, GraphMutator,
+    UpdateNodeRequest,
 };
 use crate::exec::operator::{BoxedOperator, Operator, OperatorBase, OperatorResult, OperatorState};
 use crate::exec::operators::filter::evaluate_expr;
@@ -40,6 +41,8 @@ pub struct GraphForeachOp {
     foreach_node: GraphForeachNode,
     /// Input operator (from MATCH clause).
     input: BoxedOperator,
+    /// Graph accessor for read operations (used by MERGE to find existing nodes).
+    graph_accessor: Option<Arc<dyn GraphAccessor>>,
     /// Graph mutator for write operations.
     graph_mutator: Option<Arc<dyn GraphMutator>>,
 }
@@ -51,7 +54,13 @@ impl GraphForeachOp {
         // FOREACH passes through the input schema - it doesn't modify the output columns
         let schema = input.schema();
 
-        Self { base: OperatorBase::new(schema), foreach_node, input, graph_mutator: None }
+        Self {
+            base: OperatorBase::new(schema),
+            foreach_node,
+            input,
+            graph_accessor: None,
+            graph_mutator: None,
+        }
     }
 
     /// Executes the FOREACH operation for a single input row.
@@ -292,7 +301,7 @@ impl GraphForeachOp {
         match &merge_node.pattern {
             MergePatternSpec::Node { variable, labels, match_properties } => {
                 // Try to find an existing node matching the pattern
-                let existing = self.find_matching_node(labels, match_properties, row, mutator)?;
+                let existing = self.find_matching_node(labels, match_properties, row)?;
 
                 let entity = if let Some(entity) = existing {
                     // Execute ON MATCH actions
@@ -352,8 +361,12 @@ impl GraphForeachOp {
         labels: &[String],
         properties: &[(String, LogicalExpr)],
         row: &Row,
-        mutator: &dyn GraphMutator,
     ) -> OperatorResult<Option<Entity>> {
+        let accessor = self
+            .graph_accessor
+            .as_ref()
+            .ok_or_else(|| ParseError::InvalidGraphOp("no graph storage available".to_string()))?;
+
         // Evaluate properties to match
         let mut match_props: HashMap<String, Value> = HashMap::new();
         for (key, expr) in properties {
@@ -361,10 +374,35 @@ impl GraphForeachOp {
             match_props.insert(key.clone(), value);
         }
 
-        // For a simple implementation, we'd need to iterate over all nodes
-        // This is inefficient but correct. In production, we'd use indexes.
-        // For now, we return None to always create (which is safe but not optimal)
-        let _ = (labels, match_props, mutator);
+        // Get primary label for the scan (use first label if available)
+        let primary_label = labels.first().map(String::as_str);
+
+        // Scan nodes by primary label
+        let nodes = accessor
+            .scan_nodes(primary_label)
+            .map_err(|e| ParseError::InvalidGraphOp(format!("failed to scan nodes: {e}")))?;
+
+        // Find a node that matches all labels and all properties
+        for node in nodes {
+            // Check all labels are present
+            if !labels.iter().all(|l| node.labels.contains(l)) {
+                continue;
+            }
+
+            // Check all properties match
+            if match_props.iter().all(|(key, val)| node.properties.get(key) == Some(val)) {
+                // Found a matching node - convert NodeScanResult to Entity
+                let entity = Entity {
+                    id: node.id,
+                    labels: node.labels.into_iter().map(Label::new).collect(),
+                    properties: node.properties,
+                    vectors: HashMap::new(),
+                };
+                return Ok(Some(entity));
+            }
+        }
+
+        // No match found
         Ok(None)
     }
 
@@ -538,6 +576,7 @@ impl GraphForeachOp {
 impl Operator for GraphForeachOp {
     fn open(&mut self, ctx: &ExecutionContext) -> OperatorResult<()> {
         self.input.open(ctx)?;
+        self.graph_accessor = Some(ctx.graph_arc());
         self.graph_mutator = Some(ctx.graph_mutator_arc());
         self.base.set_open();
         Ok(())
@@ -562,6 +601,7 @@ impl Operator for GraphForeachOp {
 
     fn close(&mut self) -> OperatorResult<()> {
         self.input.close()?;
+        self.graph_accessor = None;
         self.graph_mutator = None;
         self.base.set_closed();
         Ok(())
