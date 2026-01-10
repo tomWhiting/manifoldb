@@ -149,6 +149,14 @@ pub struct GraphStats {
     pub edge_types: Vec<(String, usize)>,
 }
 
+/// A ManifoldDB database instance.
+///
+/// This is the main entry point for interacting with ManifoldDB. It provides
+/// methods for CRUD operations on entities and edges, vector search, and
+/// SQL/Cypher query execution.
+///
+/// `Database` is cheaply cloneable (uses `Arc` internally) and can be shared
+/// across threads.
 #[derive(Clone)]
 pub struct Database {
     /// The inner database state, shared via Arc for cheap cloning.
@@ -799,9 +807,7 @@ impl Database {
         let edges = tx.iter_edges().map_err(Error::Transaction)?;
         let mut edge_type_counts: HashMap<String, usize> = HashMap::new();
         for edge in &edges {
-            *edge_type_counts
-                .entry(edge.edge_type.as_str().to_string())
-                .or_insert(0) += 1;
+            *edge_type_counts.entry(edge.edge_type.as_str().to_string()).or_insert(0) += 1;
         }
 
         // Convert to sorted vectors
@@ -811,12 +817,7 @@ impl Database {
         let mut edge_types: Vec<_> = edge_type_counts.into_iter().collect();
         edge_types.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        Ok(GraphStats {
-            node_count: entities.len(),
-            edge_count: edges.len(),
-            labels,
-            edge_types,
-        })
+        Ok(GraphStats { node_count: entities.len(), edge_count: edges.len(), labels, edge_types })
     }
 
     /// List all unique node labels with their counts.
