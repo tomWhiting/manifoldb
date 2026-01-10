@@ -243,9 +243,8 @@ fn export_entities<T: Transaction, W: Write>(
     };
 
     while let Some((_key, value)) = cursor.next()? {
-        let (entity, _): (manifoldb_core::Entity, _) =
-            bincode::serde::decode_from_slice(&value, bincode::config::standard())
-                .map_err(|e| BackupError::Deserialization(e.to_string()))?;
+        let entity = manifoldb_core::Entity::decode(&value)
+            .map_err(|e| BackupError::Deserialization(e.to_string()))?;
         writer.write_entity(&entity)?;
     }
 

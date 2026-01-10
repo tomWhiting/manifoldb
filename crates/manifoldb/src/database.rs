@@ -45,7 +45,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use manifoldb_core::encoding::keys::encode_edge_key;
+use manifoldb_core::encoding::keys::{encode_edge_key, encode_entity_key};
 use manifoldb_core::encoding::Encoder;
 use manifoldb_core::{Edge, EdgeId, Entity, EntityId};
 use manifoldb_storage::backends::redb::{RedbConfig, RedbEngine};
@@ -1210,14 +1210,9 @@ impl Database {
             .map(|(idx, entity)| {
                 // Create a temporary entity with the correct structure for serialization validation
                 // Actual ID will be assigned in the write phase
-                bincode::serde::encode_to_vec(entity, bincode::config::standard())
-                    .map(|bytes| (idx, bytes))
-                    .map_err(|e| {
-                        Error::Execution(format!(
-                            "Failed to serialize entity at index {}: {}",
-                            idx, e
-                        ))
-                    })
+                entity.encode().map(|bytes| (idx, bytes)).map_err(|e| {
+                    Error::Execution(format!("Failed to serialize entity at index {}: {}", idx, e))
+                })
             })
             .collect();
 
@@ -1259,14 +1254,12 @@ impl Database {
                     let mut entity_with_id = entity.clone();
                     entity_with_id.id = id;
 
-                    bincode::serde::encode_to_vec(&entity_with_id, bincode::config::standard())
-                        .map(|bytes| (id, entity_with_id, bytes))
-                        .map_err(|e| {
-                            Error::Execution(format!(
-                                "Failed to serialize entity at index {}: {}",
-                                idx, e
-                            ))
-                        })
+                    entity_with_id.encode().map(|bytes| (id, entity_with_id, bytes)).map_err(|e| {
+                        Error::Execution(format!(
+                            "Failed to serialize entity at index {}: {}",
+                            idx, e
+                        ))
+                    })
                 })
                 .collect();
 
@@ -1279,7 +1272,7 @@ impl Database {
         let ids: Vec<EntityId> = entities_with_ids.iter().map(|(id, _, _)| *id).collect();
 
         for (id, entity, bytes) in &entities_with_ids {
-            let key = id.as_u64().to_be_bytes();
+            let key = encode_entity_key(*id);
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage
@@ -2468,14 +2461,9 @@ impl Database {
         // This catches errors before we start any writes
         let validation_result: std::result::Result<(), Error> =
             entities.par_iter().enumerate().try_for_each(|(idx, entity)| {
-                bincode::serde::encode_to_vec(entity, bincode::config::standard())
-                    .map(|_| ())
-                    .map_err(|e| {
-                        Error::Execution(format!(
-                            "Failed to serialize entity at index {}: {}",
-                            idx, e
-                        ))
-                    })
+                entity.encode().map(|_| ()).map_err(|e| {
+                    Error::Execution(format!("Failed to serialize entity at index {}: {}", idx, e))
+                })
             });
         validation_result?;
 
@@ -2524,14 +2512,9 @@ impl Database {
                     let mut entity_with_id = (*entity).clone();
                     entity_with_id.id = id;
 
-                    bincode::serde::encode_to_vec(&entity_with_id, bincode::config::standard())
-                        .map(|bytes| (id, entity_with_id, bytes))
-                        .map_err(|e| {
-                            Error::Execution(format!(
-                                "Failed to serialize entity for insert: {}",
-                                e
-                            ))
-                        })
+                    entity_with_id.encode().map(|bytes| (id, entity_with_id, bytes)).map_err(|e| {
+                        Error::Execution(format!("Failed to serialize entity for insert: {}", e))
+                    })
                 })
                 .collect();
         let serialized_inserts = serialized_inserts?;
@@ -2546,7 +2529,8 @@ impl Database {
                 let entity_with_id = (*new_entity).clone();
                 // Note: new_entity should already have the correct ID from the input
 
-                bincode::serde::encode_to_vec(&entity_with_id, bincode::config::standard())
+                entity_with_id
+                    .encode()
                     .map(|bytes| (entity_with_id.id, entity_with_id, old_entity.clone(), bytes))
                     .map_err(|e| {
                         Error::Execution(format!("Failed to serialize entity for update: {}", e))
@@ -2557,7 +2541,7 @@ impl Database {
 
         // Phase 7: Sequential writes for inserts
         for (id, entity, bytes) in &serialized_inserts {
-            let key = id.as_u64().to_be_bytes();
+            let key = encode_entity_key(*id);
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage
@@ -2591,7 +2575,7 @@ impl Database {
 
         // Phase 8: Sequential writes for updates
         for (id, new_entity, old_entity, bytes) in &serialized_updates {
-            let key = id.as_u64().to_be_bytes();
+            let key = encode_entity_key(*id);
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage

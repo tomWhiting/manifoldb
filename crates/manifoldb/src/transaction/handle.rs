@@ -1,6 +1,6 @@
 //! Database transaction handle for user operations.
 
-use manifoldb_core::encoding::keys::encode_edge_key;
+use manifoldb_core::encoding::keys::{encode_edge_key, encode_entity_key};
 use manifoldb_core::encoding::{Decoder, Encoder};
 use manifoldb_core::{DeleteResult, Edge, EdgeId, Entity, EntityId, TransactionError};
 use manifoldb_graph::index::IndexMaintenance;
@@ -150,13 +150,12 @@ impl<T: Transaction> DatabaseTransaction<T> {
     /// Returns `Ok(None)` if the entity does not exist.
     pub fn get_entity(&self, id: EntityId) -> Result<Option<Entity>, TransactionError> {
         let storage = self.storage()?;
-        let key = id.as_u64().to_be_bytes();
+        let key = encode_entity_key(id);
 
         match storage.get(tables::NODES, &key) {
             Ok(Some(bytes)) => {
-                let (entity, _): (Entity, _) =
-                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                        .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+                let entity = Entity::decode(&bytes)
+                    .map_err(|e| TransactionError::Serialization(e.to_string()))?;
                 Ok(Some(entity))
             }
             Ok(None) => Ok(None),
@@ -173,9 +172,8 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let old_entity = self.get_entity(entity.id)?;
 
         let storage = self.storage_mut()?;
-        let key = entity.id.as_u64().to_be_bytes();
-        let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
-            .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+        let key = encode_entity_key(entity.id);
+        let value = entity.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
 
         storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)?;
 
@@ -211,7 +209,7 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let entity = self.get_entity(id)?;
 
         let storage = self.storage_mut()?;
-        let key = id.as_u64().to_be_bytes();
+        let key = encode_entity_key(id);
 
         let deleted = storage.delete(tables::NODES, &key).map_err(storage_error_to_tx_error)?;
 
@@ -404,9 +402,9 @@ impl<T: Transaction> DatabaseTransaction<T> {
         let storage = self.storage_mut()?;
 
         for (entity, old_entity) in entities.iter().zip(old_entities.into_iter()) {
-            let key = entity.id.as_u64().to_be_bytes();
-            let value = bincode::serde::encode_to_vec(entity, bincode::config::standard())
-                .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            let key = encode_entity_key(entity.id);
+            let value =
+                entity.encode().map_err(|e| TransactionError::Serialization(e.to_string()))?;
             storage.put(tables::NODES, &key, &value).map_err(storage_error_to_tx_error)?;
 
             // Remove old label index entries if entity existed
@@ -605,9 +603,8 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         // Iterate through all nodes
         while let Some((_key, value)) = cursor.next().map_err(storage_error_to_tx_error)? {
-            let (entity, _): (Entity, _) =
-                bincode::serde::decode_from_slice(&value, bincode::config::standard())
-                    .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            let entity = Entity::decode(&value)
+                .map_err(|e| TransactionError::Serialization(e.to_string()))?;
             entities.push(entity);
         }
 
