@@ -603,9 +603,8 @@ impl<T: Transaction> DatabaseTransaction<T> {
 
         // Iterate through all nodes
         while let Some((_key, value)) = cursor.next().map_err(storage_error_to_tx_error)? {
-            let (entity, _): (Entity, _) =
-                bincode::serde::decode_from_slice(&value, bincode::config::standard())
-                    .map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            let entity = Entity::decode(&value)
+                .map_err(|e| TransactionError::Serialization(e.to_string()))?;
             entities.push(entity);
         }
 
