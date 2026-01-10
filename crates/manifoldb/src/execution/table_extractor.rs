@@ -151,6 +151,7 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)
         | LogicalPlan::DropView(_)
+        | LogicalPlan::CreateMaterializedView(_)
         | LogicalPlan::CreateSchema(_)
         | LogicalPlan::AlterSchema(_)
         | LogicalPlan::DropSchema(_)
@@ -164,6 +165,18 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         LogicalPlan::CreateTrigger(node) => {
             // Triggers reference a table
             tables.push(node.table.clone());
+        }
+
+        LogicalPlan::RefreshMaterializedView(node) => {
+            // REFRESH invalidates cached queries that reference this view
+            tables.push(node.name.clone());
+        }
+
+        LogicalPlan::DropMaterializedView(node) => {
+            // DROP invalidates cached queries that reference this view
+            for name in &node.names {
+                tables.push(name.clone());
+            }
         }
 
         // Graph DML operations - may have an optional input plan

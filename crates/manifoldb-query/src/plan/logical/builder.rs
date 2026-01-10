@@ -37,9 +37,10 @@ use crate::ast::{
 
 use super::ddl::{
     AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode,
-    CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode,
-    DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode,
-    DropTriggerNode, DropViewNode, TruncateTableNode,
+    CreateIndexNode, CreateMaterializedViewNode, CreateSchemaNode, CreateTableNode,
+    CreateTriggerNode, CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode,
+    DropMaterializedViewNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    RefreshMaterializedViewNode, TruncateTableNode,
 };
 
 use super::expr::{
@@ -138,6 +139,12 @@ pub struct PlanBuilder {
     /// When a view is referenced, it is expanded to its defining query.
     /// Views have lower precedence than CTEs (CTEs shadow views).
     view_definitions: HashMap<String, ViewDefinition>,
+    /// Materialized view definitions indexed by name.
+    /// Materialized views store query results persistently.
+    /// When a materialized view is referenced, for now it expands like a regular view.
+    /// In the future, this will read from cached data instead.
+    /// Materialized views have lower precedence than views and CTEs.
+    materialized_view_definitions: HashMap<String, ViewDefinition>,
     /// Named window definitions for the current query.
     /// These are defined in the WINDOW clause and can be referenced by name in OVER clauses.
     #[allow(dead_code)] // Will be used when named window references are implemented
@@ -152,6 +159,7 @@ impl PlanBuilder {
             alias_counter: 0,
             cte_scope_stack: Vec::new(),
             view_definitions: HashMap::new(),
+            materialized_view_definitions: HashMap::new(),
             named_windows: HashMap::new(),
         }
     }
@@ -212,6 +220,24 @@ impl PlanBuilder {
         builder
     }
 
+    /// Registers a materialized view definition for expansion during query planning.
+    ///
+    /// Materialized views store pre-computed query results. When a materialized view
+    /// is referenced, for now it expands like a regular view. In the future,
+    /// this will read from cached data instead.
+    ///
+    /// Materialized views have lower precedence than CTEs and regular views.
+    pub fn register_materialized_view(&mut self, view: ViewDefinition) {
+        self.materialized_view_definitions.insert(view.name.clone(), view);
+    }
+
+    /// Registers multiple materialized view definitions.
+    pub fn register_materialized_views(&mut self, views: impl IntoIterator<Item = ViewDefinition>) {
+        for view in views {
+            self.register_materialized_view(view);
+        }
+    }
+
     /// Generates a unique alias.
     fn next_alias(&mut self, prefix: &str) -> String {
         self.alias_counter += 1;
@@ -266,6 +292,13 @@ impl PlanBuilder {
             Statement::ExplainAnalyze(explain) => self.build_explain_analyze(explain),
             Statement::Utility(utility) => self.build_utility(utility),
             Statement::MergeSql(merge) => self.build_merge_sql(merge),
+            Statement::CreateMaterializedView(create) => {
+                self.build_create_materialized_view(create)
+            }
+            Statement::DropMaterializedView(drop) => self.build_drop_materialized_view(drop),
+            Statement::RefreshMaterializedView(refresh) => {
+                self.build_refresh_materialized_view(refresh)
+            }
         }
     }
 
@@ -585,6 +618,23 @@ impl PlanBuilder {
                         .as_ref()
                         .map(|a| a.name.name.clone())
                         .unwrap_or_else(|| view_def.name.clone());
+                    return Ok(view_plan.alias(&alias_name));
+                }
+
+                // Check if this is a materialized view reference
+                // Materialized views have lower precedence than regular views
+                // For now, they expand like regular views. In the future, this will
+                // read from cached data instead of re-executing the query.
+                if let Some(mat_view_def) =
+                    self.materialized_view_definitions.get(&table_name).cloned()
+                {
+                    // Build the materialized view's query as the plan
+                    let view_plan = self.build_select(&mat_view_def.query)?;
+                    // Apply alias: use explicit alias if provided, otherwise use view name
+                    let alias_name = alias
+                        .as_ref()
+                        .map(|a| a.name.name.clone())
+                        .unwrap_or_else(|| mat_view_def.name.clone());
                     return Ok(view_plan.alias(&alias_name));
                 }
 
@@ -2156,6 +2206,50 @@ impl PlanBuilder {
             DropViewNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropView(node))
+    }
+
+    /// Builds a logical plan from a CREATE MATERIALIZED VIEW statement.
+    fn build_create_materialized_view(
+        &self,
+        create: &ast::CreateMaterializedViewStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let name = create.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = CreateMaterializedViewNode::new(name, (*create.query).clone())
+            .with_if_not_exists(create.if_not_exists)
+            .with_columns(create.columns.clone());
+
+        Ok(LogicalPlan::CreateMaterializedView(node))
+    }
+
+    /// Builds a logical plan from a DROP MATERIALIZED VIEW statement.
+    fn build_drop_materialized_view(
+        &self,
+        drop: &ast::DropMaterializedViewStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let node = DropMaterializedViewNode::new(names)
+            .with_if_exists(drop.if_exists)
+            .with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropMaterializedView(node))
+    }
+
+    /// Builds a logical plan from a REFRESH MATERIALIZED VIEW statement.
+    fn build_refresh_materialized_view(
+        &self,
+        refresh: &ast::RefreshMaterializedViewStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let name = refresh.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = RefreshMaterializedViewNode::new(name).with_concurrently(refresh.concurrently);
+
+        Ok(LogicalPlan::RefreshMaterializedView(node))
     }
 
     /// Builds a CREATE SCHEMA plan.

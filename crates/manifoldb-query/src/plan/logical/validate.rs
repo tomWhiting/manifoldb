@@ -439,6 +439,30 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::CreateMaterializedView(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE MATERIALIZED VIEW requires a name".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropMaterializedView(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "DROP MATERIALIZED VIEW requires view name".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::RefreshMaterializedView(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "REFRESH MATERIALIZED VIEW requires view name".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::CreateSchema(node) => {
             if node.name.is_empty() {
                 return Err(PlanError::Unsupported("CREATE SCHEMA requires a name".to_string()));
@@ -870,6 +894,9 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)
         | LogicalPlan::DropView(_)
+        | LogicalPlan::CreateMaterializedView(_)
+        | LogicalPlan::DropMaterializedView(_)
+        | LogicalPlan::RefreshMaterializedView(_)
         | LogicalPlan::CreateSchema(_)
         | LogicalPlan::AlterSchema(_)
         | LogicalPlan::DropSchema(_)
