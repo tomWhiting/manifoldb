@@ -457,23 +457,110 @@ fn load_views_into_builder<T: Transaction>(
         }
     }
 
-    // Get all materialized views from the schema
-    let mat_view_names = SchemaManager::list_materialized_views(tx).unwrap_or_default();
-
-    for name in mat_view_names {
-        if let Ok(Some(schema)) = SchemaManager::get_materialized_view(tx, &name) {
-            // Parse the stored query SQL and register the materialized view
-            if let Ok(stmt) = ExtendedParser::parse_single(&schema.query_sql) {
-                if let Statement::Select(select) = stmt {
-                    let view_def =
-                        ViewDefinition::new(&schema.name, *select).with_columns(schema.columns);
-                    builder.register_materialized_view(view_def);
-                }
-            }
-        }
-    }
+    // Note: Materialized views are NOT expanded during planning.
+    // Instead, they are resolved as scans and the cached data is returned
+    // during execution. See try_execute_materialized_view_scan.
 
     Ok(())
+}
+
+/// Try to execute a scan as a materialized view scan.
+///
+/// If the table name refers to a materialized view, returns the cached data.
+/// Returns Ok(None) if the table is not a materialized view.
+fn try_execute_materialized_view_scan<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    table_name: &str,
+    alias: Option<&str>,
+) -> Result<Option<ResultSet>> {
+    // Check if this table name is a materialized view
+    if !SchemaManager::materialized_view_exists(tx, table_name).unwrap_or(false) {
+        return Ok(None);
+    }
+
+    // Get the cached data
+    let data = SchemaManager::get_materialized_view_data(tx, table_name)
+        .map_err(|e| Error::Execution(format!("Failed to get materialized view data: {e}")))?
+        .ok_or_else(|| {
+            Error::Execution(format!(
+                "Materialized view '{}' has not been refreshed yet",
+                table_name
+            ))
+        })?;
+
+    let cached_rows = SchemaManager::get_materialized_view_rows(tx, table_name)
+        .map_err(|e| Error::Execution(format!("Failed to get materialized view rows: {e}")))?
+        .ok_or_else(|| {
+            Error::Execution(format!(
+                "Materialized view '{}' has not been refreshed yet",
+                table_name
+            ))
+        })?;
+
+    // Build schema with the result columns (optionally aliased)
+    let prefix = alias.unwrap_or(table_name);
+    let columns: Vec<String> =
+        data.result_columns.iter().map(|c| format!("{}.{}", prefix, c)).collect();
+    let schema = Arc::new(Schema::new(columns));
+
+    // Convert cached rows to Row objects
+    let rows: Vec<Row> =
+        cached_rows.rows.into_iter().map(|values| Row::new(Arc::clone(&schema), values)).collect();
+
+    Ok(Some(ResultSet::with_rows(schema, rows)))
+}
+
+/// Try to execute a scan as a materialized view and return as entities.
+///
+/// If the table name refers to a materialized view, returns synthetic entities.
+/// Returns Ok(None) if the table is not a materialized view.
+fn try_execute_materialized_view_as_entities<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    table_name: &str,
+) -> Result<Option<Vec<Entity>>> {
+    // Check if this table name is a materialized view
+    if !SchemaManager::materialized_view_exists(tx, table_name).unwrap_or(false) {
+        return Ok(None);
+    }
+
+    // Get the cached data
+    let data = SchemaManager::get_materialized_view_data(tx, table_name)
+        .map_err(|e| Error::Execution(format!("Failed to get materialized view data: {e}")))?
+        .ok_or_else(|| {
+            Error::Execution(format!(
+                "Materialized view '{}' has not been refreshed yet",
+                table_name
+            ))
+        })?;
+
+    let cached_rows = SchemaManager::get_materialized_view_rows(tx, table_name)
+        .map_err(|e| Error::Execution(format!("Failed to get materialized view rows: {e}")))?
+        .ok_or_else(|| {
+            Error::Execution(format!(
+                "Materialized view '{}' has not been refreshed yet",
+                table_name
+            ))
+        })?;
+
+    // Convert cached rows to synthetic entities
+    let entities: Vec<Entity> = cached_rows
+        .rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, values)| {
+            let mut entity = Entity::new(manifoldb_core::EntityId::new(i as u64 + 1));
+            entity = entity.with_label(table_name);
+
+            // Add each column value as a property
+            for (col_name, value) in data.result_columns.iter().zip(values.into_iter()) {
+                entity.set_property(col_name, value);
+            }
+
+            entity
+        })
+        .collect();
+
+    Ok(Some(entities))
 }
 
 /// Build a planner catalog from the schema for index selection.
@@ -1774,9 +1861,16 @@ fn execute_graph_plan<T: Transaction>(
             execute_graph_plan(tx, input, ctx)
         }
         LogicalPlan::Scan(scan_node) => {
-            // Execute a table scan and convert to result set for graph traversal input
             let label = &scan_node.table_name;
-            let alias = scan_node.alias.as_deref().unwrap_or(label);
+            let alias = scan_node.alias.as_deref();
+
+            // Check if this is a materialized view scan
+            if let Some(result) = try_execute_materialized_view_scan(tx, label, alias)? {
+                return Ok(result);
+            }
+
+            // Execute a table scan and convert to result set for graph traversal input
+            let alias = alias.unwrap_or(label);
             let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
 
             // Build schema with prefixed column names
@@ -1977,6 +2071,12 @@ fn execute_logical_plan<T: Transaction>(
         LogicalPlan::Scan(scan_node) => {
             // The table name is the entity label
             let label = &scan_node.table_name;
+
+            // Check if this is a materialized view
+            if let Some(entities) = try_execute_materialized_view_as_entities(tx, label)? {
+                return Ok(entities);
+            }
+
             let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
             Ok(entities)
         }
@@ -3313,6 +3413,12 @@ fn execute_join_input<T: Transaction>(
         LogicalPlan::Scan(scan_node) => {
             let label = &scan_node.table_name;
             let alias = scan_node.alias.as_deref().unwrap_or(label);
+
+            // Check if this is a materialized view
+            if let Some(entities) = try_execute_materialized_view_as_entities(tx, label)? {
+                return Ok((entities, alias.to_string()));
+            }
+
             let entities = tx.iter_entities(Some(label)).map_err(Error::Transaction)?;
             Ok((entities, alias.to_string()))
         }
@@ -4161,33 +4267,47 @@ fn execute_refresh_materialized_view<T: Transaction>(
     tx: &mut DatabaseTransaction<T>,
     node: &RefreshMaterializedViewNode,
 ) -> Result<u64> {
-    use crate::schema::SchemaManager;
+    use crate::schema::{MaterializedViewRows, SchemaManager};
 
-    // Check if the materialized view exists
+    // Check if the materialized view exists and get its schema
     let schema = SchemaManager::get_materialized_view(tx, &node.name)
         .map_err(|e| Error::Execution(format!("Failed to get materialized view: {e}")))?
         .ok_or_else(|| {
             Error::Execution(format!("Materialized view does not exist: {}", node.name))
         })?;
 
-    // TODO: Execute the query and store the results
-    // For now, we store a timestamp to indicate the view was refreshed
-    // Full implementation would:
-    // 1. Parse schema.query_sql
-    // 2. Execute the query
-    // 3. Store the results in the data table
-    // 4. Update the metadata with row count
-    let _ = schema; // Silence unused warning for now
+    // Execute the stored query to get fresh results
+    let result = execute_query(tx, schema.query(), &[])?;
 
+    // Extract column names from the result schema
+    let result_columns: Vec<String> =
+        result.schema().columns().into_iter().map(|c| c.to_string()).collect();
+
+    // Convert the result rows to storable format
+    let rows: Vec<Vec<Value>> = result.iter().map(|row| row.values().to_vec()).collect();
+    let row_count = rows.len() as u64;
+
+    // Store the cached rows
+    let cached_rows = MaterializedViewRows { rows };
+    SchemaManager::store_materialized_view_rows(tx, &node.name, cached_rows)
+        .map_err(|e| Error::Execution(format!("Failed to store materialized view rows: {e}")))?;
+
+    // Update the metadata
     let last_refreshed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    SchemaManager::update_materialized_view_data(tx, &node.name, last_refreshed, 0)
-        .map_err(|e| Error::Execution(format!("Failed to update materialized view data: {e}")))?;
+    SchemaManager::update_materialized_view_data(
+        tx,
+        &node.name,
+        last_refreshed,
+        row_count,
+        result_columns,
+    )
+    .map_err(|e| Error::Execution(format!("Failed to update materialized view data: {e}")))?;
 
-    Ok(0)
+    Ok(row_count)
 }
 
 /// Execute a CREATE COLLECTION statement.

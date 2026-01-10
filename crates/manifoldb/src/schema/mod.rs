@@ -29,6 +29,8 @@ const VIEW_PREFIX: &[u8] = b"schema:view:";
 const MATERIALIZED_VIEW_PREFIX: &[u8] = b"schema:matview:";
 /// Prefix for materialized view data keys.
 const MATERIALIZED_VIEW_DATA_PREFIX: &[u8] = b"schema:matview_data:";
+/// Prefix for materialized view cached rows.
+const MATERIALIZED_VIEW_ROWS_PREFIX: &[u8] = b"schema:matview_rows:";
 /// Key for the list of all tables.
 const TABLES_LIST_KEY: &[u8] = b"schema:tables_list";
 /// Key for the list of all indexes.
@@ -227,6 +229,20 @@ pub struct MaterializedViewData {
     pub last_refreshed: u64,
     /// Number of rows in the cached result.
     pub row_count: u64,
+    /// Column names from the result schema.
+    /// Stored separately from the view schema since the actual columns
+    /// may differ from the optionally specified column aliases.
+    pub result_columns: Vec<String>,
+}
+
+/// Cached rows for a materialized view.
+///
+/// Stores the actual row data from the last REFRESH.
+/// Each row is a vector of Values matching the result_columns in MaterializedViewData.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterializedViewRows {
+    /// The cached row data. Each inner Vec is a row.
+    pub rows: Vec<Vec<manifoldb_core::Value>>,
 }
 
 impl TableSchema {
@@ -937,7 +953,8 @@ impl SchemaManager {
         tx.put_metadata(&key, &value)?;
 
         // Initialize empty data entry
-        let data = MaterializedViewData { last_refreshed: 0, row_count: 0 };
+        let data =
+            MaterializedViewData { last_refreshed: 0, row_count: 0, result_columns: Vec::new() };
         let data_key = Self::materialized_view_data_key(name);
         let data_value = bincode::serde::encode_to_vec(&data, bincode::config::standard())
             .map_err(|e| SchemaError::Serialization(e.to_string()))?;
@@ -988,12 +1005,13 @@ impl SchemaManager {
 
     /// Update materialized view data after a refresh.
     ///
-    /// This updates the last_refreshed timestamp and row_count.
+    /// This updates the last_refreshed timestamp, row_count, and result columns.
     pub fn update_materialized_view_data<T: Transaction>(
         tx: &mut DatabaseTransaction<T>,
         name: &str,
         last_refreshed: u64,
         row_count: u64,
+        result_columns: Vec<String>,
     ) -> Result<(), SchemaError> {
         // Check if materialized view exists
         if !Self::materialized_view_exists(tx, name)? {
@@ -1001,7 +1019,7 @@ impl SchemaManager {
         }
 
         // Update the data
-        let data = MaterializedViewData { last_refreshed, row_count };
+        let data = MaterializedViewData { last_refreshed, row_count, result_columns };
         let data_key = Self::materialized_view_data_key(name);
         let data_value = bincode::serde::encode_to_vec(&data, bincode::config::standard())
             .map_err(|e| SchemaError::Serialization(e.to_string()))?;
@@ -1009,6 +1027,42 @@ impl SchemaManager {
         tx.put_metadata(&data_key, &data_value)?;
 
         Ok(())
+    }
+
+    /// Store cached rows for a materialized view.
+    ///
+    /// This stores the actual query result rows from a REFRESH operation.
+    pub fn store_materialized_view_rows<T: Transaction>(
+        tx: &mut DatabaseTransaction<T>,
+        name: &str,
+        rows: MaterializedViewRows,
+    ) -> Result<(), SchemaError> {
+        let rows_key = Self::materialized_view_rows_key(name);
+        let rows_value = bincode::serde::encode_to_vec(&rows, bincode::config::standard())
+            .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+
+        tx.put_metadata(&rows_key, &rows_value)?;
+
+        Ok(())
+    }
+
+    /// Get cached rows for a materialized view.
+    ///
+    /// Returns the rows from the last REFRESH, or None if never refreshed.
+    pub fn get_materialized_view_rows<T: Transaction>(
+        tx: &DatabaseTransaction<T>,
+        name: &str,
+    ) -> Result<Option<MaterializedViewRows>, SchemaError> {
+        let rows_key = Self::materialized_view_rows_key(name);
+        match tx.get_metadata(&rows_key)? {
+            Some(bytes) => {
+                let (rows, _): (MaterializedViewRows, _) =
+                    bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                        .map_err(|e| SchemaError::Serialization(e.to_string()))?;
+                Ok(Some(rows))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Check if a materialized view exists.
@@ -1089,6 +1143,12 @@ impl SchemaManager {
 
     fn materialized_view_data_key(name: &str) -> Vec<u8> {
         let mut key = MATERIALIZED_VIEW_DATA_PREFIX.to_vec();
+        key.extend_from_slice(name.as_bytes());
+        key
+    }
+
+    fn materialized_view_rows_key(name: &str) -> Vec<u8> {
+        let mut key = MATERIALIZED_VIEW_ROWS_PREFIX.to_vec();
         key.extend_from_slice(name.as_bytes());
         key
     }

@@ -24,6 +24,7 @@ pub mod graph_vector_search;
 pub mod index_maintenance;
 pub mod index_query;
 pub mod match_filter;
+pub mod materialized_view;
 pub mod prepared;
 pub mod procedure;
 pub mod recovery;
