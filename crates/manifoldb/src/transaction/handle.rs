@@ -671,6 +671,41 @@ impl<T: Transaction> DatabaseTransaction<T> {
         Ok(self.iter_entities(label)?.len())
     }
 
+    /// Iterate over all edges.
+    ///
+    /// Returns an empty vector if no edges exist (including if the table hasn't been created).
+    pub fn iter_edges(&self) -> Result<Vec<Edge>, TransactionError> {
+        use manifoldb_storage::StorageError;
+        use std::ops::Bound;
+
+        let storage = self.storage()?;
+
+        let cursor_result = storage.range(tables::EDGES, Bound::Unbounded, Bound::Unbounded);
+
+        let mut cursor = match cursor_result {
+            Ok(c) => c,
+            Err(StorageError::TableNotFound(_)) => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(storage_error_to_tx_error(e)),
+        };
+
+        let mut edges = Vec::new();
+
+        while let Some((_key, value)) = cursor.next().map_err(storage_error_to_tx_error)? {
+            let edge =
+                Edge::decode(&value).map_err(|e| TransactionError::Serialization(e.to_string()))?;
+            edges.push(edge);
+        }
+
+        Ok(edges)
+    }
+
+    /// Count all edges in the database.
+    pub fn count_edges(&self) -> Result<usize, TransactionError> {
+        Ok(self.iter_edges()?.len())
+    }
+
     /// Delete an edge by its ID.
     ///
     /// Returns `true` if the edge existed and was deleted, `false` if it didn't exist.

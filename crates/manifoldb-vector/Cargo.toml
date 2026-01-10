@@ -27,7 +27,7 @@ serde = { workspace = true }
 bincode = { workspace = true }
 
 # SIMD support - portable across x86 (SSE/AVX), ARM (NEON), and WASM
-wide = "0.7"
+wide = "1.1.1"
 serde_json.workspace = true
 
 [dev-dependencies]

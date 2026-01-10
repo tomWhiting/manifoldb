@@ -173,7 +173,7 @@ pub mod collection;
 
 // Public API re-exports
 pub use config::{Config, DatabaseBuilder};
-pub use database::{Database, FromValue, QueryParams, QueryResult, QueryRow};
+pub use database::{Database, FromValue, GraphStats, QueryParams, QueryResult, QueryRow};
 pub use error::{Error, Result};
 pub use filter::Filter;
 pub use metrics::{

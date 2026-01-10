@@ -523,6 +523,32 @@ impl EdgeStore {
 
         Ok(None)
     }
+
+    /// List all unique edge types with their counts.
+    ///
+    /// This scans all edges to collect edge type statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to use
+    ///
+    /// # Returns
+    ///
+    /// A vector of (edge_type, count) pairs sorted by type name.
+    pub fn list_edge_types<T: Transaction>(tx: &T) -> GraphResult<Vec<(EdgeType, usize)>> {
+        use std::collections::HashMap;
+
+        let mut type_counts: HashMap<EdgeType, usize> = HashMap::new();
+
+        Self::for_each(tx, |edge| {
+            *type_counts.entry(edge.edge_type.clone()).or_insert(0) += 1;
+            true
+        })?;
+
+        let mut result: Vec<_> = type_counts.into_iter().collect();
+        result.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

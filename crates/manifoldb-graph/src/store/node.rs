@@ -404,6 +404,34 @@ impl NodeStore {
 
         Ok(None)
     }
+
+    /// List all unique labels with their counts.
+    ///
+    /// This scans all entities to collect label statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to use
+    ///
+    /// # Returns
+    ///
+    /// A vector of (label, count) pairs sorted by label name.
+    pub fn list_labels<T: Transaction>(tx: &T) -> GraphResult<Vec<(Label, usize)>> {
+        use std::collections::HashMap;
+
+        let mut label_counts: HashMap<Label, usize> = HashMap::new();
+
+        Self::for_each(tx, |entity| {
+            for label in &entity.labels {
+                *label_counts.entry(label.clone()).or_insert(0) += 1;
+            }
+            true
+        })?;
+
+        let mut result: Vec<_> = label_counts.into_iter().collect();
+        result.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

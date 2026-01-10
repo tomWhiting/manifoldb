@@ -136,6 +136,19 @@ use crate::transaction::{DatabaseTransaction, TransactionManager};
 ///     db2.query("SELECT * FROM users")?;
 /// });
 /// ```
+/// Graph statistics including node and edge counts with label breakdowns.
+#[derive(Clone, Debug, Default)]
+pub struct GraphStats {
+    /// Total number of nodes in the graph.
+    pub node_count: usize,
+    /// Total number of edges in the graph.
+    pub edge_count: usize,
+    /// Node labels with their counts, sorted by label name.
+    pub labels: Vec<(String, usize)>,
+    /// Edge types with their counts, sorted by type name.
+    pub edge_types: Vec<(String, usize)>,
+}
+
 #[derive(Clone)]
 pub struct Database {
     /// The inner database state, shared via Arc for cheap cloning.
@@ -748,6 +761,82 @@ impl Database {
     pub fn reset_metrics(&self) {
         self.inner.db_metrics.reset();
         self.inner.query_cache.metrics().reset();
+    }
+
+    // =========================================================================
+    // Graph Statistics
+    // =========================================================================
+
+    /// Get graph statistics including node and edge counts with label breakdowns.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use manifoldb::Database;
+    ///
+    /// let db = Database::in_memory()?;
+    /// let stats = db.graph_stats()?;
+    /// println!("Nodes: {}, Edges: {}", stats.node_count, stats.edge_count);
+    /// for (label, count) in &stats.labels {
+    ///     println!("  {}: {}", label, count);
+    /// }
+    /// ```
+    pub fn graph_stats(&self) -> Result<GraphStats> {
+        use std::collections::HashMap;
+
+        let tx = self.begin_read()?;
+
+        // Get all entities and count labels
+        let entities = tx.iter_entities(None).map_err(Error::Transaction)?;
+        let mut label_counts: HashMap<String, usize> = HashMap::new();
+        for entity in &entities {
+            for label in &entity.labels {
+                *label_counts.entry(label.as_str().to_string()).or_insert(0) += 1;
+            }
+        }
+
+        // Get all edges and count types
+        let edges = tx.iter_edges().map_err(Error::Transaction)?;
+        let mut edge_type_counts: HashMap<String, usize> = HashMap::new();
+        for edge in &edges {
+            *edge_type_counts
+                .entry(edge.edge_type.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+
+        // Convert to sorted vectors
+        let mut labels: Vec<_> = label_counts.into_iter().collect();
+        labels.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut edge_types: Vec<_> = edge_type_counts.into_iter().collect();
+        edge_types.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        Ok(GraphStats {
+            node_count: entities.len(),
+            edge_count: edges.len(),
+            labels,
+            edge_types,
+        })
+    }
+
+    /// List all unique node labels with their counts.
+    ///
+    /// # Returns
+    ///
+    /// A vector of (label_name, count) pairs sorted by label name.
+    pub fn list_labels(&self) -> Result<Vec<(String, usize)>> {
+        let stats = self.graph_stats()?;
+        Ok(stats.labels)
+    }
+
+    /// List all unique edge types with their counts.
+    ///
+    /// # Returns
+    ///
+    /// A vector of (edge_type, count) pairs sorted by type name.
+    pub fn list_edge_types(&self) -> Result<Vec<(String, usize)>> {
+        let stats = self.graph_stats()?;
+        Ok(stats.edge_types)
     }
 
     // =========================================================================
