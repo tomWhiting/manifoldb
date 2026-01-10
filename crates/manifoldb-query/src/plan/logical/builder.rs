@@ -135,6 +135,7 @@ pub struct PlanBuilder {
     view_definitions: HashMap<String, ViewDefinition>,
     /// Named window definitions for the current query.
     /// These are defined in the WINDOW clause and can be referenced by name in OVER clauses.
+    #[allow(dead_code)] // Will be used when named window references are implemented
     named_windows: HashMap<String, ast::NamedWindowDefinition>,
 }
 
