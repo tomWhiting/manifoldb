@@ -419,13 +419,100 @@ pub struct WithClause {
     pub query: Box<SelectStatement>,
     /// Whether this is a recursive CTE (WITH RECURSIVE).
     pub recursive: bool,
+    /// Materialization hint for the CTE.
+    pub materialized: MaterializationHint,
+    /// Optional SEARCH clause for controlling traversal order.
+    pub search_clause: Option<SearchClause>,
+    /// Optional CYCLE clause for cycle detection.
+    pub cycle_clause: Option<CycleClause>,
+}
+
+/// Materialization hint for CTEs.
+///
+/// Controls whether the CTE result should be materialized (computed once and stored)
+/// or inlined into the query (potentially re-executed for each reference).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaterializationHint {
+    /// No hint specified - optimizer decides.
+    #[default]
+    Unspecified,
+    /// Force materialization - compute once and store.
+    /// Useful when the CTE is referenced multiple times.
+    Materialized,
+    /// Prevent materialization - inline the subquery.
+    /// Useful when the CTE is referenced once or when predicates
+    /// can be pushed down.
+    NotMaterialized,
+}
+
+/// Search order for recursive CTEs.
+///
+/// Controls the traversal order when executing a recursive CTE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOrder {
+    /// Depth-first traversal - follow each branch to completion before backtracking.
+    DepthFirst,
+    /// Breadth-first traversal - process all nodes at current level before descending.
+    BreadthFirst,
+}
+
+/// SEARCH clause for recursive CTEs.
+///
+/// Example:
+/// ```sql
+/// WITH RECURSIVE tree AS (...)
+/// SEARCH DEPTH FIRST BY id, name SET ordercol
+/// SELECT * FROM tree ORDER BY ordercol;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchClause {
+    /// The search order (DEPTH FIRST or BREADTH FIRST).
+    pub order: SearchOrder,
+    /// The columns to use for ordering within each level.
+    pub by_columns: Vec<Identifier>,
+    /// The name of the sequence column to add for ordering.
+    pub set_column: Identifier,
+}
+
+/// CYCLE clause for recursive CTEs.
+///
+/// Detects cycles during recursive traversal and either marks them
+/// or builds a path array for cycle detection.
+///
+/// Example:
+/// ```sql
+/// WITH RECURSIVE path AS (...)
+/// CYCLE id SET is_cycle USING path_array
+/// SELECT * FROM path WHERE NOT is_cycle;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CycleClause {
+    /// The columns to check for cycle detection.
+    pub columns: Vec<Identifier>,
+    /// The name of the boolean column indicating if a cycle was detected.
+    pub mark_column: Identifier,
+    /// Optional path array column for storing the traversal path.
+    /// Required if USING is specified in the CYCLE clause.
+    pub path_column: Option<Identifier>,
+    /// The value to use when a cycle is detected (default: true).
+    pub cycle_value: Option<Expr>,
+    /// The value to use when no cycle is detected (default: false).
+    pub non_cycle_value: Option<Expr>,
 }
 
 impl WithClause {
     /// Creates a new non-recursive CTE with the given name and query.
     #[must_use]
     pub fn new(name: impl Into<Identifier>, query: SelectStatement) -> Self {
-        Self { name: name.into(), columns: vec![], query: Box::new(query), recursive: false }
+        Self {
+            name: name.into(),
+            columns: vec![],
+            query: Box::new(query),
+            recursive: false,
+            materialized: MaterializationHint::Unspecified,
+            search_clause: None,
+            cycle_clause: None,
+        }
     }
 
     /// Creates a new CTE with column aliases.
@@ -435,7 +522,15 @@ impl WithClause {
         columns: Vec<Identifier>,
         query: SelectStatement,
     ) -> Self {
-        Self { name: name.into(), columns, query: Box::new(query), recursive: false }
+        Self {
+            name: name.into(),
+            columns,
+            query: Box::new(query),
+            recursive: false,
+            materialized: MaterializationHint::Unspecified,
+            search_clause: None,
+            cycle_clause: None,
+        }
     }
 
     /// Creates a new recursive CTE with the given name and query.
@@ -444,7 +539,15 @@ impl WithClause {
     /// and the recursive case that references this CTE by name.
     #[must_use]
     pub fn recursive(name: impl Into<Identifier>, query: SelectStatement) -> Self {
-        Self { name: name.into(), columns: vec![], query: Box::new(query), recursive: true }
+        Self {
+            name: name.into(),
+            columns: vec![],
+            query: Box::new(query),
+            recursive: true,
+            materialized: MaterializationHint::Unspecified,
+            search_clause: None,
+            cycle_clause: None,
+        }
     }
 
     /// Creates a new recursive CTE with column aliases.
@@ -454,7 +557,79 @@ impl WithClause {
         columns: Vec<Identifier>,
         query: SelectStatement,
     ) -> Self {
-        Self { name: name.into(), columns, query: Box::new(query), recursive: true }
+        Self {
+            name: name.into(),
+            columns,
+            query: Box::new(query),
+            recursive: true,
+            materialized: MaterializationHint::Unspecified,
+            search_clause: None,
+            cycle_clause: None,
+        }
+    }
+
+    /// Sets the materialization hint for this CTE.
+    #[must_use]
+    pub fn with_materialization(mut self, hint: MaterializationHint) -> Self {
+        self.materialized = hint;
+        self
+    }
+
+    /// Sets the SEARCH clause for this recursive CTE.
+    #[must_use]
+    pub fn with_search(mut self, search: SearchClause) -> Self {
+        self.search_clause = Some(search);
+        self
+    }
+
+    /// Sets the CYCLE clause for this recursive CTE.
+    #[must_use]
+    pub fn with_cycle(mut self, cycle: CycleClause) -> Self {
+        self.cycle_clause = Some(cycle);
+        self
+    }
+}
+
+impl SearchClause {
+    /// Creates a new SEARCH clause.
+    #[must_use]
+    pub fn new(order: SearchOrder, by_columns: Vec<Identifier>, set_column: Identifier) -> Self {
+        Self { order, by_columns, set_column }
+    }
+
+    /// Creates a SEARCH DEPTH FIRST clause.
+    #[must_use]
+    pub fn depth_first(by_columns: Vec<Identifier>, set_column: Identifier) -> Self {
+        Self::new(SearchOrder::DepthFirst, by_columns, set_column)
+    }
+
+    /// Creates a SEARCH BREADTH FIRST clause.
+    #[must_use]
+    pub fn breadth_first(by_columns: Vec<Identifier>, set_column: Identifier) -> Self {
+        Self::new(SearchOrder::BreadthFirst, by_columns, set_column)
+    }
+}
+
+impl CycleClause {
+    /// Creates a new CYCLE clause.
+    #[must_use]
+    pub fn new(columns: Vec<Identifier>, mark_column: Identifier) -> Self {
+        Self { columns, mark_column, path_column: None, cycle_value: None, non_cycle_value: None }
+    }
+
+    /// Sets the path column for this CYCLE clause.
+    #[must_use]
+    pub fn with_path_column(mut self, path_column: Identifier) -> Self {
+        self.path_column = Some(path_column);
+        self
+    }
+
+    /// Sets custom cycle/non-cycle values.
+    #[must_use]
+    pub fn with_values(mut self, cycle_value: Expr, non_cycle_value: Expr) -> Self {
+        self.cycle_value = Some(cycle_value);
+        self.non_cycle_value = Some(non_cycle_value);
+        self
     }
 }
 

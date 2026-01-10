@@ -66,9 +66,9 @@ pub use node::{
 };
 pub use procedure::{ProcedureCallNode, YieldColumn};
 pub use relational::{
-    AggregateNode, CallSubqueryNode, DistinctNode, FilterNode, JoinNode, JoinType, LimitNode,
-    LogicalGroupingSet, ProjectNode, RecursiveCTENode, ScanNode, SetOpNode, SetOpType, SortNode,
-    UnionNode, UnwindNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, CteCycleConfig, CteSearchConfig, CteSearchOrder, DistinctNode,
+    FilterNode, JoinNode, JoinType, LimitNode, LogicalGroupingSet, ProjectNode, RecursiveCTENode,
+    ScanNode, SetOpNode, SetOpType, SortNode, UnionNode, UnwindNode, ValuesNode, WindowNode,
 };
 pub use schema::{EmptyCatalog, SchemaCatalog, SchemaProvider};
 pub use transaction::{

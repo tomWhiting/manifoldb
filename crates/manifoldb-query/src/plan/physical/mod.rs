@@ -37,10 +37,11 @@ mod node;
 pub use builder::{IndexInfo, IndexType, PhysicalPlanner, PlannerCatalog, TableStats};
 pub use cost::{Cost, CostModel};
 pub use node::{
-    BruteForceSearchNode, CallSubqueryExecNode, FilterExecNode, FullScanNode, GraphExpandExecNode,
-    HashAggregateNode, HashJoinNode, HnswSearchNode, HybridSearchComponentNode, HybridSearchNode,
-    IndexNestedLoopJoinNode, IndexRangeScanNode, IndexScanNode, JoinOrder, LimitExecNode,
-    MergeJoinNode, NestedLoopJoinNode, PhysicalPlan, PhysicalScoreCombinationMethod,
-    ProjectExecNode, ShortestPathExecNode, SortExecNode, SortMergeAggregateNode, SortMergeJoinNode,
-    WindowExecNode, WindowFunctionExpr,
+    BruteForceSearchNode, CallSubqueryExecNode, CteCycleExecConfig, CteSearchExecConfig,
+    FilterExecNode, FullScanNode, GraphExpandExecNode, HashAggregateNode, HashJoinNode,
+    HnswSearchNode, HybridSearchComponentNode, HybridSearchNode, IndexNestedLoopJoinNode,
+    IndexRangeScanNode, IndexScanNode, JoinOrder, LimitExecNode, MergeJoinNode, NestedLoopJoinNode,
+    PhysicalPlan, PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode,
+    ShortestPathExecNode, SortExecNode, SortMergeAggregateNode, SortMergeJoinNode, WindowExecNode,
+    WindowFunctionExpr,
 };

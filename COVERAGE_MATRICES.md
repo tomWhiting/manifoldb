@@ -67,7 +67,11 @@ Recursive CTEs
 ├── Depends on: Non-recursive CTEs (exists)
 ├── RecursiveCTE logical plan node: ✅ Complete
 ├── RecursiveCTEOp physical operator: ✅ Complete
-└── Status: ✅ Complete with tests (Jan 2026)
+├── SEARCH DEPTH FIRST: ✅ Complete (Jan 2026) - VecDeque stack-based DFS
+├── SEARCH BREADTH FIRST: ✅ Complete (Jan 2026) - VecDeque queue-based BFS
+├── CYCLE detection: ✅ Complete (Jan 2026) - path tracking with mark column
+├── MATERIALIZED hint: ✅ Parsed (Jan 2026) - PostgreSQL dialect
+└── Status: ✅ Complete with advanced features and tests (Jan 2026)
 
 Cypher Writing Clauses
 ├── CREATE: ✅ GraphCreate logical node + operator + EXECUTION complete (Jan 2026)
@@ -233,11 +237,11 @@ These feature groups can be implemented independently:
 | CTE reference in main | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - multiple refs supported |
 | CTE shadowing tables | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - CTE takes precedence over base table |
 | WITH RECURSIVE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete† |
-| SEARCH DEPTH FIRST | | | | | | | Not implemented |
-| SEARCH BREADTH FIRST | | | | | | | Not implemented |
-| CYCLE detection | | | | | | | Not implemented |
-| MATERIALIZED hint | | | | | | | Not implemented |
-| NOT MATERIALIZED hint | | | | | | | Not implemented |
+| SEARCH DEPTH FIRST | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - VecDeque stack-based DFS |
+| SEARCH BREADTH FIRST | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - VecDeque queue-based BFS |
+| CYCLE detection | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - path tracking with mark column |
+| MATERIALIZED hint | ✓ | ✓ | | | | | Parsed (Jan 2026) - PostgreSQL dialect |
+| NOT MATERIALIZED hint | ✓ | ✓ | | | | | Parsed (Jan 2026) - PostgreSQL dialect |
 
 ## 1.3 Window Functions
 
@@ -1062,7 +1066,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | Category | Total Features | Fully Implemented | Parsed Only | Not Started |
 |----------|----------------|-------------------|-------------|-------------|
 | SELECT Statement | 52 | 28 | 15 | 9 |
-| CTEs | 10 | 6 | 0 | 4 |
+| CTEs | 11 | 9 | 2 | 0 |
 | Window Functions | 32 | 30 | 0 | 2 |
 | DML (INSERT/UPDATE/DELETE) | 20 | 12 | 5 | 3 |
 | DDL | 44 | 32 | 3 | 9 |
