@@ -1028,6 +1028,68 @@ impl Expr {
     pub fn gt(self, other: Self) -> Self {
         Self::binary(self, BinaryOp::Gt, other)
     }
+
+    /// Converts the expression to a SQL string representation.
+    ///
+    /// This produces a string that can be re-parsed by the SQL parser.
+    /// Used for storing CHECK constraints and other expressions in schema metadata.
+    #[must_use]
+    pub fn to_sql(&self) -> String {
+        match self {
+            Self::Literal(lit) => lit.to_string(),
+            Self::Column(name) => name.to_string(),
+            Self::Parameter(param) => param.to_string(),
+            Self::BinaryOp { left, op, right } => {
+                format!("({} {} {})", left.to_sql(), op, right.to_sql())
+            }
+            Self::UnaryOp { op, operand } => match op {
+                UnaryOp::Not => format!("NOT ({})", operand.to_sql()),
+                UnaryOp::Neg => format!("-({})", operand.to_sql()),
+                UnaryOp::IsNull => format!("({}) IS NULL", operand.to_sql()),
+                UnaryOp::IsNotNull => format!("({}) IS NOT NULL", operand.to_sql()),
+            },
+            Self::Function(func) => {
+                let args = func.args.iter().map(Self::to_sql).collect::<Vec<_>>().join(", ");
+                format!("{}({})", func.name, args)
+            }
+            Self::Cast { expr, data_type } => {
+                format!("CAST({} AS {})", expr.to_sql(), data_type)
+            }
+            Self::Case(case) => {
+                use std::fmt::Write;
+                let mut sql = String::from("CASE");
+                if let Some(operand) = &case.operand {
+                    let _ = write!(sql, " {}", operand.to_sql());
+                }
+                for (when, then) in &case.when_clauses {
+                    let _ = write!(sql, " WHEN {} THEN {}", when.to_sql(), then.to_sql());
+                }
+                if let Some(else_result) = &case.else_result {
+                    let _ = write!(sql, " ELSE {}", else_result.to_sql());
+                }
+                sql.push_str(" END");
+                sql
+            }
+            Self::InList { expr, list, negated } => {
+                let list_sql = list.iter().map(Self::to_sql).collect::<Vec<_>>().join(", ");
+                let not = if *negated { "NOT " } else { "" };
+                format!("({}) {}IN ({})", expr.to_sql(), not, list_sql)
+            }
+            Self::Between { expr, low, high, negated } => {
+                let not = if *negated { "NOT " } else { "" };
+                format!("({}) {}BETWEEN {} AND {}", expr.to_sql(), not, low.to_sql(), high.to_sql())
+            }
+            Self::Wildcard => "*".to_string(),
+            Self::QualifiedWildcard(name) => format!("{}.*", name),
+            Self::Tuple(exprs) => {
+                let inner = exprs.iter().map(Self::to_sql).collect::<Vec<_>>().join(", ");
+                format!("({})", inner)
+            }
+            // For complex expressions not commonly used in CHECK constraints,
+            // fall back to debug representation (these would be rare edge cases)
+            _ => format!("{:?}", self),
+        }
+    }
 }
 
 impl From<i64> for Expr {

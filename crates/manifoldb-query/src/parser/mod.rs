@@ -71,4 +71,4 @@ pub mod sql;
 
 // Re-export commonly used items
 pub use extensions::ExtendedParser;
-pub use sql::{parse_single_statement, parse_sql};
+pub use sql::{parse_check_expression, parse_single_statement, parse_sql};

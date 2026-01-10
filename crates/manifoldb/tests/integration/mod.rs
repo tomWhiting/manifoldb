@@ -9,6 +9,7 @@ pub mod bulk_vectors;
 pub mod collection;
 pub mod combined;
 pub mod concurrency;
+pub mod constraints;
 pub mod correctness;
 pub mod crud;
 pub mod cypher_create;

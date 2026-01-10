@@ -3,6 +3,7 @@
 //! This module bridges the query engine with actual storage access,
 //! converting logical plans into operations on entities and edges.
 
+pub mod constraints;
 mod executor;
 mod graph_accessor;
 mod index_maintenance;

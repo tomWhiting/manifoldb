@@ -262,8 +262,8 @@ impl StoredColumnConstraint {
                 table: table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."),
                 column: column.as_ref().map_or(String::new(), |c| c.name.clone()),
             },
-            ColumnConstraint::Check(expr) => Self::Check { expression: format!("{expr:?}") },
-            ColumnConstraint::Default(expr) => Self::Default { expression: format!("{expr:?}") },
+            ColumnConstraint::Check(expr) => Self::Check { expression: expr.to_sql() },
+            ColumnConstraint::Default(expr) => Self::Default { expression: expr.to_sql() },
         }
     }
 }
@@ -294,7 +294,7 @@ impl StoredTableConstraint {
                 }
             }
             TableConstraint::Check { expr, name } => Self::Check {
-                expression: format!("{expr:?}"),
+                expression: expr.to_sql(),
                 name: name.as_ref().map(|n| n.name.clone()),
             },
         }
@@ -311,7 +311,7 @@ impl IndexSchema {
             columns: node.columns.iter().map(StoredIndexColumn::from_index_column).collect(),
             using: node.using.clone(),
             with_options: node.with.clone(),
-            where_clause: node.where_clause.as_ref().map(|e| format!("{e:?}")),
+            where_clause: node.where_clause.as_ref().map(|e| e.to_sql()),
         }
     }
 }
@@ -320,7 +320,7 @@ impl StoredIndexColumn {
     /// Create from an AST IndexColumn.
     pub fn from_index_column(ic: &IndexColumn) -> Self {
         Self {
-            expr: format!("{:?}", ic.expr),
+            expr: ic.expr.to_sql(),
             ascending: ic.asc.unwrap_or(true),
             nulls_first: ic.nulls_first,
         }
@@ -514,7 +514,7 @@ impl SchemaManager {
                             col.constraints
                                 .retain(|c| !matches!(c, StoredColumnConstraint::Default { .. }));
                             col.constraints.push(StoredColumnConstraint::Default {
-                                expression: format!("{expr:?}"),
+                                expression: expr.to_sql(),
                             });
                         }
                         AlterColumnAction::DropDefault => {
