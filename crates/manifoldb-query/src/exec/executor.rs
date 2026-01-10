@@ -11,6 +11,7 @@ use super::context::ExecutionContext;
 use super::operator::{BoxedOperator, OperatorResult, OperatorState};
 use super::operators::{
     aggregate::{HashAggregateOp, SortMergeAggregateOp},
+    bindings_seed::BindingsSeedOp,
     call_subquery::CallSubqueryOp,
     filter::FilterOp,
     graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp},
@@ -204,6 +205,10 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         }
 
         PhysicalPlan::Empty { columns } => Ok(Box::new(EmptyOp::with_columns(columns.clone()))),
+
+        PhysicalPlan::BindingsSeed { variable_names } => {
+            Ok(Box::new(BindingsSeedOp::new(variable_names.clone())))
+        }
 
         // Unary operators
         PhysicalPlan::Filter { node, input } => {

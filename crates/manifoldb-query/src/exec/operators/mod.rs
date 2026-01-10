@@ -19,7 +19,9 @@
 
 pub mod aggregate;
 pub mod analytics;
+pub mod bindings_seed;
 pub mod call_subquery;
+pub mod correlated_input;
 pub mod filter;
 pub mod graph;
 pub mod graph_create;
@@ -47,6 +49,7 @@ pub use analytics::{
     CommunityDetectionOpConfig, LocalClusteringCoefficientOp, LocalClusteringCoefficientOpConfig,
     PageRankOp, PageRankOpConfig, TriangleCountOp, TriangleCountOpConfig,
 };
+pub use bindings_seed::BindingsSeedOp;
 pub use call_subquery::CallSubqueryOp;
 pub use filter::FilterOp;
 pub use graph::{GraphExpandOp, GraphPathScanOp, ShortestPathOp};
