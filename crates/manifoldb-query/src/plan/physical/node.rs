@@ -66,6 +66,17 @@ pub enum PhysicalPlan {
         columns: Vec<String>,
     },
 
+    /// Bindings seed source for correlated subqueries.
+    ///
+    /// Produces a single row containing variable values extracted from
+    /// the execution context's variable bindings. Used at the root of
+    /// correlated subquery operator trees to materialize outer scope
+    /// variables into a row that downstream operators can consume.
+    BindingsSeed {
+        /// Names of variables to extract from the execution context.
+        variable_names: Vec<String>,
+    },
+
     // ========== Unary Operators ==========
     /// Filter operator.
     Filter {
@@ -2568,6 +2579,7 @@ impl PhysicalPlan {
             | Self::IndexRangeScan(_)
             | Self::Values { .. }
             | Self::Empty { .. }
+            | Self::BindingsSeed { .. }
             | Self::Update { .. }
             | Self::Delete { .. }
             | Self::CreateTable(_)
@@ -2669,6 +2681,7 @@ impl PhysicalPlan {
             | Self::IndexRangeScan(_)
             | Self::Values { .. }
             | Self::Empty { .. }
+            | Self::BindingsSeed { .. }
             | Self::Update { .. }
             | Self::Delete { .. }
             | Self::CreateTable(_)
@@ -2812,6 +2825,7 @@ impl PhysicalPlan {
             Self::IndexRangeScan(_) => "IndexRangeScan",
             Self::Values { .. } => "Values",
             Self::Empty { .. } => "Empty",
+            Self::BindingsSeed { .. } => "BindingsSeed",
             Self::Filter { .. } => "Filter",
             Self::Project { .. } => "Project",
             Self::Sort { .. } => "Sort",
@@ -2891,6 +2905,7 @@ impl PhysicalPlan {
             Self::IndexRangeScan(node) => node.cost,
             Self::Values { cost, .. } => *cost,
             Self::Empty { .. } => Cost::zero(),
+            Self::BindingsSeed { .. } => Cost::zero(),
             Self::Filter { node, .. } => node.cost,
             Self::Project { node, .. } => node.cost,
             Self::Sort { node, .. } => node.cost,
@@ -3055,6 +3070,9 @@ impl DisplayTree<'_> {
             }
             PhysicalPlan::Empty { columns } => {
                 write!(f, "Empty: {} columns", columns.len())?;
+            }
+            PhysicalPlan::BindingsSeed { variable_names } => {
+                write!(f, "BindingsSeed: [{}]", variable_names.join(", "))?;
             }
             PhysicalPlan::Filter { node, .. } => {
                 write!(

@@ -3,6 +3,7 @@
 //! These operators integrate with the manifoldb-graph crate
 //! for graph pattern matching and traversal.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use manifoldb_core::{EdgeType, EntityId, Value};
@@ -39,6 +40,8 @@ pub struct GraphExpandOp {
     position: usize,
     /// Graph accessor for actual storage traversal.
     graph: Option<Arc<dyn GraphAccessor>>,
+    /// Variable bindings from outer scope (for correlated subqueries).
+    variable_bindings: HashMap<String, Value>,
 }
 
 /// An expanded node result.
@@ -75,6 +78,7 @@ impl GraphExpandOp {
             expanded: Vec::new(),
             position: 0,
             graph: None,
+            variable_bindings: HashMap::new(),
         }
     }
 
@@ -258,8 +262,21 @@ impl GraphExpandOp {
     }
 
     /// Gets the source entity ID from the current input row.
+    ///
+    /// First checks the row for the source variable, then falls back to
+    /// variable bindings from the execution context. This enables correlated
+    /// subqueries where the source variable comes from the outer query scope.
     fn get_source_id(&self, row: &Row) -> Option<EntityId> {
-        row.get_by_name(&self.node.src_var).and_then(|v| match v {
+        // First, try to get from the input row
+        if let Some(value) = row.get_by_name(&self.node.src_var) {
+            return match value {
+                Value::Int(id) => Some(EntityId::new(*id as u64)),
+                _ => None,
+            };
+        }
+
+        // Fall back to variable bindings (for correlated subqueries)
+        self.variable_bindings.get(&self.node.src_var).and_then(|v| match v {
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })
@@ -274,6 +291,8 @@ impl Operator for GraphExpandOp {
         self.position = 0;
         // Capture the graph accessor from the context
         self.graph = Some(ctx.graph_arc());
+        // Store variable bindings for correlated subquery support
+        self.variable_bindings.clone_from(ctx.variable_bindings());
         self.base.set_open();
         Ok(())
     }
@@ -369,6 +388,8 @@ pub struct GraphPathScanOp {
     position: usize,
     /// Graph accessor for actual storage traversal.
     graph: Option<Arc<dyn GraphAccessor>>,
+    /// Variable bindings from outer scope (for correlated subqueries).
+    variable_bindings: HashMap<String, Value>,
 }
 
 /// A path result.
@@ -411,6 +432,7 @@ impl GraphPathScanOp {
             paths: Vec::new(),
             position: 0,
             graph: None,
+            variable_bindings: HashMap::new(),
         }
     }
 
@@ -488,10 +510,23 @@ impl GraphPathScanOp {
     }
 
     /// Gets the start entity ID from the input row.
+    ///
+    /// First checks the row for the source variable, then falls back to
+    /// variable bindings from the execution context. This enables correlated
+    /// subqueries where the source variable comes from the outer query scope.
     fn get_start_id(&self, row: &Row) -> Option<EntityId> {
         // First check if there's a src_var in the first step
         if let Some(first_step) = self.steps.first() {
+            // Try to get from the input row
             if let Some(val) = row.get_by_name(&first_step.src_var) {
+                return match val {
+                    Value::Int(id) => Some(EntityId::new(*id as u64)),
+                    _ => None,
+                };
+            }
+
+            // Fall back to variable bindings (for correlated subqueries)
+            if let Some(val) = self.variable_bindings.get(&first_step.src_var) {
                 return match val {
                     Value::Int(id) => Some(EntityId::new(*id as u64)),
                     _ => None,
@@ -515,6 +550,8 @@ impl Operator for GraphPathScanOp {
         self.position = 0;
         // Capture the graph accessor from the context
         self.graph = Some(ctx.graph_arc());
+        // Store variable bindings for correlated subquery support
+        self.variable_bindings.clone_from(ctx.variable_bindings());
         self.base.set_open();
         Ok(())
     }
@@ -696,6 +733,64 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn graph_expand_uses_variable_bindings() {
+        // Test that GraphExpandOp can get the source variable from context bindings
+        // (for correlated subqueries where the source comes from the outer scope)
+
+        // Create an empty input that doesn't have the source variable
+        let empty_input = Box::new(ValuesOp::with_columns(
+            vec!["other".to_string()],
+            vec![vec![Value::Int(100)]],
+        ));
+
+        let node = GraphExpandExecNode::new("src_node", "dst_node", ExpandDirection::Outgoing)
+            .with_length(ExpandLength::Single)
+            .with_cost(Cost::default());
+
+        let mut op = GraphExpandOp::new(node, empty_input);
+
+        // Create context with variable binding for src_node
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("src_node".to_string(), Value::Int(42));
+
+        let ctx = ExecutionContext::with_variable_bindings(bindings);
+        op.open(&ctx).unwrap();
+
+        // Verify that the operator captured the variable bindings
+        assert_eq!(op.variable_bindings.get("src_node"), Some(&Value::Int(42)));
+
+        // The get_source_id should be able to use the binding
+        // (though it will fail at next() because no graph storage)
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn graph_path_scan_uses_variable_bindings() {
+        // Test that GraphPathScanOp can get the start variable from context bindings
+        let empty_input = Box::new(ValuesOp::with_columns(
+            vec!["other".to_string()],
+            vec![vec![Value::Int(100)]],
+        ));
+
+        let steps =
+            vec![GraphExpandExecNode::new("start_node", "end_node", ExpandDirection::Outgoing)];
+
+        let mut op = GraphPathScanOp::new(steps, false, false, empty_input);
+
+        // Create context with variable binding for start_node
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("start_node".to_string(), Value::Int(42));
+
+        let ctx = ExecutionContext::with_variable_bindings(bindings);
+        op.open(&ctx).unwrap();
+
+        // Verify that the operator captured the variable bindings
+        assert_eq!(op.variable_bindings.get("start_node"), Some(&Value::Int(42)));
+
+        op.close().unwrap();
+    }
 }
 
 // ============================================================================
@@ -723,6 +818,8 @@ pub struct ShortestPathOp {
     position: usize,
     /// Graph accessor for actual storage traversal.
     graph: Option<Arc<dyn GraphAccessor>>,
+    /// Variable bindings from outer scope (for correlated subqueries).
+    variable_bindings: HashMap<String, Value>,
 }
 
 impl ShortestPathOp {
@@ -750,6 +847,7 @@ impl ShortestPathOp {
             paths: Vec::new(),
             position: 0,
             graph: None,
+            variable_bindings: HashMap::new(),
         }
     }
 
@@ -763,16 +861,42 @@ impl ShortestPathOp {
     }
 
     /// Gets the source entity ID from the current input row.
+    ///
+    /// First checks the row for the source variable, then falls back to
+    /// variable bindings from the execution context. This enables correlated
+    /// subqueries where the source variable comes from the outer query scope.
     fn get_source_id(&self, row: &Row) -> Option<EntityId> {
-        row.get_by_name(&self.node.src_var).and_then(|v| match v {
+        // First, try to get from the input row
+        if let Some(value) = row.get_by_name(&self.node.src_var) {
+            return match value {
+                Value::Int(id) => Some(EntityId::new(*id as u64)),
+                _ => None,
+            };
+        }
+
+        // Fall back to variable bindings (for correlated subqueries)
+        self.variable_bindings.get(&self.node.src_var).and_then(|v| match v {
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })
     }
 
     /// Gets the target entity ID from the current input row.
+    ///
+    /// First checks the row for the target variable, then falls back to
+    /// variable bindings from the execution context. This enables correlated
+    /// subqueries where the target variable comes from the outer query scope.
     fn get_target_id(&self, row: &Row) -> Option<EntityId> {
-        row.get_by_name(&self.node.dst_var).and_then(|v| match v {
+        // First, try to get from the input row
+        if let Some(value) = row.get_by_name(&self.node.dst_var) {
+            return match value {
+                Value::Int(id) => Some(EntityId::new(*id as u64)),
+                _ => None,
+            };
+        }
+
+        // Fall back to variable bindings (for correlated subqueries)
+        self.variable_bindings.get(&self.node.dst_var).and_then(|v| match v {
             Value::Int(id) => Some(EntityId::new(*id as u64)),
             _ => None,
         })
@@ -831,6 +955,8 @@ impl Operator for ShortestPathOp {
         self.position = 0;
         // Capture the graph accessor from the context
         self.graph = Some(ctx.graph_arc());
+        // Store variable bindings for correlated subquery support
+        self.variable_bindings.clone_from(ctx.variable_bindings());
         self.base.set_open();
         Ok(())
     }
