@@ -54,3 +54,9 @@ export interface ServerStats {
   cpuUsage?: number
   memoryUsage?: number
 }
+
+export interface ConnectionError {
+  code: string
+  message: string
+  timestamp: number
+}

@@ -3,11 +3,12 @@ import { Play } from 'lucide-react'
 import { QueryTabs } from '../editor/QueryTabs'
 import { QueryEditor } from '../editor/QueryEditor'
 import { UnifiedResultView } from '../result-views/UnifiedResultView'
+import { SettingsPanel } from '../settings/SettingsPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { graphqlClient, CYPHER_QUERY } from '../../lib/graphql-client'
 
-export function Workspace() {
+function QueryWorkspace() {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const setTabResult = useAppStore((s) => s.setTabResult)
@@ -85,4 +86,14 @@ export function Workspace() {
       </Group>
     </div>
   )
+}
+
+export function Workspace() {
+  const activeSidebarSection = useAppStore((s) => s.activeSidebarSection)
+
+  if (activeSidebarSection === 'settings') {
+    return <SettingsPanel />
+  }
+
+  return <QueryWorkspace />
 }

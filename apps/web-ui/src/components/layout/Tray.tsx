@@ -1,21 +1,40 @@
-import { Circle, Cpu, HardDrive, Clock } from 'lucide-react'
+import { Circle, Cpu, HardDrive, Clock, RefreshCw } from 'lucide-react'
 import { useAppStore } from '../../stores/app-store'
+import { getReconnectAttempts } from '../../lib/graphql-client'
 import type { ConnectionStatus } from '../../types'
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
+  const reconnectAttempts = getReconnectAttempts()
+
   const statusConfig = {
-    connected: { color: 'text-green-500', label: 'Connected' },
-    disconnected: { color: 'text-neutral-500', label: 'Disconnected' },
-    connecting: { color: 'text-yellow-500', label: 'Connecting...' },
-    error: { color: 'text-red-500', label: 'Error' },
+    connected: {
+      color: 'text-green-500',
+      label: 'Connected',
+      icon: <Circle size={8} className="fill-current text-green-500" />,
+    },
+    disconnected: {
+      color: 'text-neutral-500',
+      label: 'Disconnected',
+      icon: <Circle size={8} className="fill-current text-neutral-500" />,
+    },
+    connecting: {
+      color: 'text-yellow-500',
+      label: reconnectAttempts > 0 ? `Reconnecting (${reconnectAttempts})...` : 'Connecting...',
+      icon: <RefreshCw size={10} className="text-yellow-500 animate-spin" />,
+    },
+    error: {
+      color: 'text-red-500',
+      label: 'Error',
+      icon: <Circle size={8} className="fill-current text-red-500" />,
+    },
   }
 
-  const { color, label } = statusConfig[status]
+  const config = statusConfig[status]
 
   return (
     <button className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-white/5 transition-colors">
-      <Circle size={8} className={`fill-current ${color}`} />
-      <span className="text-xs text-neutral-400">{label}</span>
+      {config.icon}
+      <span className={`text-xs ${config.color}`}>{config.label}</span>
     </button>
   )
 }
