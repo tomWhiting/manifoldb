@@ -10,7 +10,7 @@ use super::VectorSyncStrategy;
 
 /// Well-known table names for graph storage.
 mod tables {
-    pub const NODES: &str = "nodes";
+    pub const NODES: &str = "entities";
     pub const EDGES: &str = "edges";
     pub const EDGES_OUT: &str = "edges_out";
     pub const EDGES_IN: &str = "edges_in";

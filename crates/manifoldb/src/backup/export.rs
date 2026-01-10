@@ -15,7 +15,7 @@ use crate::Database;
 
 /// Well-known table names that should be backed up.
 mod tables {
-    pub const NODES: &str = "nodes";
+    pub const NODES: &str = "entities";
     pub const EDGES: &str = "edges";
     pub const METADATA: &str = "metadata";
 }

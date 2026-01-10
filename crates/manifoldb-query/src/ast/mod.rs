@@ -43,7 +43,7 @@ pub use statement::{
     SavepointStatement, SearchClause, SearchOrder, SelectItem, SelectStatement, SetAction,
     SetGraphStatement, SetOperation, SetOperator, SetSearchPathStatement, SetSessionStatement,
     SetTransactionStatement, SetValue, ShowProceduresStatement, ShowStatement, Statement,
-    ShowProceduresStatement, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
+    TableAlias, TableConstraint, TableRef,
     TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
     TruncateCascade, TruncateIdentity, TruncateTableStatement, UpdateStatement, UtilityStatement,
     VacuumStatement, VectorDef, VectorTypeDef, WithClause, YieldItem,

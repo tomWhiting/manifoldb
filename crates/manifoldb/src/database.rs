@@ -1283,7 +1283,7 @@ impl Database {
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage
-                .put("nodes", &key, bytes)
+                .put("entities", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Phase 5a: Label index maintenance
@@ -2561,7 +2561,7 @@ impl Database {
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage
-                .put("nodes", &key, bytes)
+                .put("entities", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Label index maintenance for insert
@@ -2595,7 +2595,7 @@ impl Database {
             let storage = tx.storage_mut_ref().map_err(Error::Transaction)?;
 
             storage
-                .put("nodes", &key, bytes)
+                .put("entities", &key, bytes)
                 .map_err(|e| Error::Execution(format!("Failed to write entity: {}", e)))?;
 
             // Label index maintenance for update - remove old labels not in new

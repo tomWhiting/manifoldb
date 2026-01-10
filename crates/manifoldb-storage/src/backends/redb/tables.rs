@@ -56,7 +56,7 @@ pub fn table_end_key(table: &str) -> Vec<u8> {
 /// Well-known table names for graph storage.
 pub mod names {
     /// Table for storing node/entity data.
-    pub const NODES: &str = "nodes";
+    pub const NODES: &str = "entities";
 
     /// Table for storing edge/relationship data.
     pub const EDGES: &str = "edges";
