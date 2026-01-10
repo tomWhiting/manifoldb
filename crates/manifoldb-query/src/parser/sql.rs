@@ -8,22 +8,24 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
 use crate::ast::{
-    AlterColumnAction, AlterTableAction, AlterTableStatement, AnalyzeStatement, Assignment,
-    BeginTransaction, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef,
-    ConflictAction, ConflictTarget, CopyDestination, CopyDirection, CopyFormat, CopyOptions,
-    CopySource, CopyStatement, CopyTarget, CreateFunctionStatement, CreateIndexStatement,
-    CreateSchemaStatement, CreateTableStatement, CreateTriggerStatement, CreateViewStatement,
-    DataType, DeleteStatement, DropFunctionStatement, DropIndexStatement, DropSchemaStatement,
-    DropTableStatement, DropTriggerStatement, DropViewStatement, ExplainAnalyzeStatement,
-    ExplainFormat, Expr, FunctionCall, FunctionLanguage, FunctionParameter, FunctionVolatility,
-    Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
-    JoinCondition, JoinType, Literal, NamedWindowDefinition, OnConflict, OrderByExpr,
-    ParameterMode, ParameterRef, QualifiedName, ReleaseSavepointStatement, ResetStatement,
-    RollbackTransaction, SavepointStatement, SelectItem, SelectStatement, SetOperation,
-    SetOperator, SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement,
-    TableAlias, TableConstraint, TableRef, TransactionAccessMode, TransactionStatement,
-    TriggerEvent, TriggerForEach, TriggerTiming, UnaryOp, UpdateStatement, UtilityStatement,
-    VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    AlterColumnAction, AlterIndexAction, AlterIndexStatement, AlterTableAction,
+    AlterTableStatement, AnalyzeStatement, Assignment, BeginTransaction, BinaryOp, CallStatement,
+    CaseExpr, ColumnConstraint, ColumnDef, ConflictAction, ConflictTarget, CopyDestination,
+    CopyDirection, CopyFormat, CopyOptions, CopySource, CopyStatement, CopyTarget,
+    CreateFunctionStatement, CreateIndexStatement, CreateSchemaStatement, CreateTableStatement,
+    CreateTriggerStatement, CreateViewStatement, DataType, DeleteStatement, DropFunctionStatement,
+    DropIndexStatement, DropSchemaStatement, DropTableStatement, DropTriggerStatement,
+    DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
+    FunctionLanguage, FunctionParameter, FunctionVolatility, Identifier, IndexColumn, InsertSource,
+    InsertStatement, IsolationLevel, JoinClause, JoinCondition, JoinType, Literal,
+    NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode, ParameterRef, PartitionBy,
+    QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
+    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
+    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
+    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
+    TriggerForEach, TriggerTiming, TruncateIdentity, TruncateTableStatement, UnaryOp,
+    UpdateStatement, UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -1251,7 +1253,7 @@ fn convert_on_conflict(on: sp::OnInsert) -> ParseResult<OnConflict> {
                         .into_iter()
                         .map(convert_assignment)
                         .collect::<ParseResult<Vec<_>>>()?,
-                    where_clause: update.selection.map(convert_expr).transpose()?.map(Box::new),
+                    where_clause: update.selection.map(convert_expr).transpose()?,
                 },
             };
 
@@ -1380,12 +1382,78 @@ fn convert_create_table(create: sp::CreateTable) -> ParseResult<CreateTableState
         .map(convert_table_constraint)
         .collect::<ParseResult<Vec<_>>>()?;
 
+    // Convert partition specification if present
+    let partition_by = create.partition_by.map(convert_partition_by).transpose()?;
+
     Ok(CreateTableStatement {
         if_not_exists: create.if_not_exists,
         name: convert_object_name(create.name),
         columns,
         constraints,
+        partition_by,
+        partition_of: None, // TODO: Parse PARTITION OF when needed
     })
+}
+
+/// Converts a PARTITION BY specification.
+fn convert_partition_by(pb: Box<sp::Expr>) -> ParseResult<PartitionBy> {
+    // sqlparser represents PARTITION BY as an expression
+    // We need to extract the partition strategy and columns
+    match *pb {
+        sp::Expr::Function(func) => {
+            let name = func.name.to_string().to_uppercase();
+            let columns = convert_function_args(func.args)?;
+            let exprs: Vec<Expr> = columns;
+
+            match name.as_str() {
+                "RANGE" => Ok(PartitionBy::Range { columns: exprs }),
+                "LIST" => Ok(PartitionBy::List { columns: exprs }),
+                "HASH" => Ok(PartitionBy::Hash { columns: exprs }),
+                _ => Err(ParseError::Unsupported(format!("Partition strategy: {name}"))),
+            }
+        }
+        _ => Err(ParseError::Unsupported("Complex PARTITION BY expression".to_string())),
+    }
+}
+
+/// Converts an ALTER INDEX statement.
+fn convert_alter_index(
+    name: sp::ObjectName,
+    operation: sp::AlterIndexOperation,
+) -> ParseResult<AlterIndexStatement> {
+    let index_name = convert_object_name(name);
+    let action = match operation {
+        sp::AlterIndexOperation::RenameIndex { index_name: new_name } => {
+            let new_ident = convert_object_name(new_name)
+                .parts
+                .into_iter()
+                .next()
+                .ok_or_else(|| ParseError::MissingClause("new index name".to_string()))?;
+            AlterIndexAction::RenameIndex { new_name: new_ident }
+        }
+    };
+
+    Ok(AlterIndexStatement { if_exists: false, name: index_name, action })
+}
+
+/// Converts a TRUNCATE statement.
+fn convert_truncate(truncate: sp::Truncate) -> ParseResult<TruncateTableStatement> {
+    use crate::ast::TruncateCascade;
+
+    let names: Vec<QualifiedName> =
+        truncate.table_names.into_iter().map(|t| convert_object_name(t.name)).collect();
+
+    let identity = truncate.identity.map(|i| match i {
+        sp::TruncateIdentityOption::Restart => TruncateIdentity::Restart,
+        sp::TruncateIdentityOption::Continue => TruncateIdentity::Continue,
+    });
+
+    let cascade = truncate.cascade.map(|c| match c {
+        sp::CascadeOption::Cascade => TruncateCascade::Cascade,
+        sp::CascadeOption::Restrict => TruncateCascade::Restrict,
+    });
+
+    Ok(TruncateTableStatement { names, identity, cascade })
 }
 
 /// Converts a column definition.

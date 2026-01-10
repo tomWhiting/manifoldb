@@ -45,9 +45,10 @@ mod vector;
 
 pub use builder::{PlanBuilder, ViewDefinition};
 pub use ddl::{
-    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
-    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
-    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    AlterIndexAction, AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode,
+    CreateFunctionNode, CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode,
+    CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode,
+    DropTableNode, DropTriggerNode, DropViewNode, TruncateTableNode,
 };
 pub use expr::{
     AggregateFunction, HybridCombinationMethod, HybridExprComponent, LogicalExpr,

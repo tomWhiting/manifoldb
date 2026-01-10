@@ -973,3 +973,258 @@ fn test_drop_view_nonexistent_error() {
     let result = db.execute("DROP VIEW nonexistent_view");
     assert!(result.is_err());
 }
+
+// ============================================================================
+// ALTER INDEX Tests
+// ============================================================================
+
+#[test]
+fn test_alter_index_rename() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and index
+    db.execute("CREATE TABLE rename_idx_test (id BIGINT, value TEXT)")
+        .expect("create table failed");
+    db.execute("CREATE INDEX old_idx_name ON rename_idx_test (value)")
+        .expect("create index failed");
+
+    // Rename the index
+    let affected = db
+        .execute("ALTER INDEX old_idx_name RENAME TO new_idx_name")
+        .expect("alter index rename failed");
+    assert_eq!(affected, 0);
+
+    // Old name should not exist, new name should exist
+    // Try to drop by new name - should succeed
+    let affected = db.execute("DROP INDEX new_idx_name").expect("drop renamed index failed");
+    assert_eq!(affected, 0);
+}
+
+// Note: ALTER INDEX IF EXISTS is not supported by the sqlparser library.
+// The test is kept as a documentation of expected behavior when/if support is added.
+// #[test]
+// fn test_alter_index_if_exists() {
+//     let db = Database::in_memory().expect("failed to create db");
+//
+//     // Alter an index that doesn't exist with IF EXISTS - should succeed silently
+//     let affected = db
+//         .execute("ALTER INDEX IF EXISTS nonexistent_idx RENAME TO new_name")
+//         .expect("alter index if exists failed");
+//     assert_eq!(affected, 0);
+// }
+
+#[test]
+fn test_alter_index_nonexistent_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Alter an index that doesn't exist without IF EXISTS - should fail
+    let result = db.execute("ALTER INDEX nonexistent_idx RENAME TO new_name");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_alter_index_rename_to_existing_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and two indexes
+    db.execute("CREATE TABLE idx_rename_test (id BIGINT, a TEXT, b TEXT)")
+        .expect("create table failed");
+    db.execute("CREATE INDEX idx_a ON idx_rename_test (a)").expect("create index a failed");
+    db.execute("CREATE INDEX idx_b ON idx_rename_test (b)").expect("create index b failed");
+
+    // Try to rename idx_a to idx_b (which already exists) - should fail
+    let result = db.execute("ALTER INDEX idx_a RENAME TO idx_b");
+    assert!(result.is_err());
+}
+
+// ============================================================================
+// TRUNCATE TABLE Tests
+// ============================================================================
+
+#[test]
+fn test_truncate_table_basic() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table and insert data
+    db.execute("CREATE TABLE truncate_test (id BIGINT, name TEXT)").expect("create table failed");
+    db.execute("INSERT INTO truncate_test (id, name) VALUES (1, 'Alice')")
+        .expect("insert 1 failed");
+    db.execute("INSERT INTO truncate_test (id, name) VALUES (2, 'Bob')").expect("insert 2 failed");
+    db.execute("INSERT INTO truncate_test (id, name) VALUES (3, 'Charlie')")
+        .expect("insert 3 failed");
+
+    // Verify data exists
+    let result = db.query("SELECT * FROM truncate_test").expect("query failed");
+    assert_eq!(result.len(), 3);
+
+    // Truncate the table
+    let affected = db.execute("TRUNCATE TABLE truncate_test").expect("truncate failed");
+    assert_eq!(affected, 3); // Returns count of deleted rows
+
+    // Verify table is empty
+    let result = db.query("SELECT * FROM truncate_test").expect("query after truncate failed");
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_truncate_table_multiple() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create two tables with data
+    db.execute("CREATE TABLE trunc1 (id BIGINT)").expect("create table 1 failed");
+    db.execute("CREATE TABLE trunc2 (id BIGINT)").expect("create table 2 failed");
+    db.execute("INSERT INTO trunc1 (id) VALUES (1), (2)").expect("insert into trunc1 failed");
+    db.execute("INSERT INTO trunc2 (id) VALUES (3), (4), (5)").expect("insert into trunc2 failed");
+
+    // Truncate both tables at once
+    let affected = db.execute("TRUNCATE TABLE trunc1, trunc2").expect("truncate multiple failed");
+    assert_eq!(affected, 5); // 2 + 3 rows
+
+    // Verify both tables are empty
+    let result1 = db.query("SELECT * FROM trunc1").expect("query trunc1 failed");
+    let result2 = db.query("SELECT * FROM trunc2").expect("query trunc2 failed");
+    assert_eq!(result1.len(), 0);
+    assert_eq!(result2.len(), 0);
+}
+
+#[test]
+fn test_truncate_table_with_restart_identity() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("CREATE TABLE restart_test (id BIGINT, name TEXT)").expect("create table failed");
+    db.execute("INSERT INTO restart_test (id, name) VALUES (1, 'Alice')").expect("insert failed");
+
+    // Truncate with RESTART IDENTITY
+    let affected = db
+        .execute("TRUNCATE TABLE restart_test RESTART IDENTITY")
+        .expect("truncate restart identity failed");
+    assert_eq!(affected, 1);
+
+    // Verify table is empty
+    let result = db.query("SELECT * FROM restart_test").expect("query failed");
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_truncate_table_with_cascade() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("CREATE TABLE cascade_trunc (id BIGINT, name TEXT)").expect("create table failed");
+    db.execute("INSERT INTO cascade_trunc (id, name) VALUES (1, 'Test')").expect("insert failed");
+
+    // Truncate with CASCADE
+    let affected =
+        db.execute("TRUNCATE TABLE cascade_trunc CASCADE").expect("truncate cascade failed");
+    assert_eq!(affected, 1);
+
+    // Verify table is empty
+    let result = db.query("SELECT * FROM cascade_trunc").expect("query failed");
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn test_truncate_table_with_continue_identity() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("CREATE TABLE continue_test (id BIGINT, name TEXT)").expect("create table failed");
+    db.execute("INSERT INTO continue_test (id, name) VALUES (1, 'Alice')").expect("insert failed");
+
+    // Truncate with CONTINUE IDENTITY (default behavior)
+    let affected = db
+        .execute("TRUNCATE TABLE continue_test CONTINUE IDENTITY")
+        .expect("truncate continue identity failed");
+    assert_eq!(affected, 1);
+}
+
+#[test]
+fn test_truncate_table_nonexistent_error() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Truncate a table that doesn't exist - should fail
+    let result = db.execute("TRUNCATE TABLE nonexistent_table");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_truncate_empty_table() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create an empty table
+    db.execute("CREATE TABLE empty_trunc (id BIGINT)").expect("create table failed");
+
+    // Truncate - should succeed and return 0
+    let affected = db.execute("TRUNCATE TABLE empty_trunc").expect("truncate empty failed");
+    assert_eq!(affected, 0);
+}
+
+#[test]
+fn test_truncate_then_insert() {
+    let db = Database::in_memory().expect("failed to create db");
+
+    // Create table with data
+    db.execute("CREATE TABLE trunc_insert (id BIGINT, name TEXT)").expect("create table failed");
+    db.execute("INSERT INTO trunc_insert (id, name) VALUES (1, 'Old')").expect("insert failed");
+
+    // Truncate
+    db.execute("TRUNCATE TABLE trunc_insert").expect("truncate failed");
+
+    // Insert new data
+    db.execute("INSERT INTO trunc_insert (id, name) VALUES (2, 'New')")
+        .expect("insert after truncate failed");
+
+    // Verify new data exists
+    let result = db.query("SELECT * FROM trunc_insert").expect("query failed");
+    assert_eq!(result.len(), 1);
+}
+
+// ============================================================================
+// Partitioned Table Tests (AST/Parser level - storage not yet implemented)
+// ============================================================================
+
+#[test]
+fn test_parse_create_table_partition_by_range() {
+    use manifoldb_query::ExtendedParser;
+
+    // Parse a CREATE TABLE with PARTITION BY RANGE
+    let sql = "CREATE TABLE orders (
+        id BIGINT,
+        order_date DATE,
+        customer_id BIGINT
+    ) PARTITION BY RANGE (order_date)";
+
+    let result = ExtendedParser::parse_single(sql);
+    assert!(result.is_ok(), "Failed to parse PARTITION BY RANGE: {:?}", result);
+}
+
+#[test]
+fn test_parse_create_table_partition_by_list() {
+    use manifoldb_query::ExtendedParser;
+
+    // Parse a CREATE TABLE with PARTITION BY LIST
+    let sql = "CREATE TABLE users (
+        id BIGINT,
+        region TEXT,
+        name TEXT
+    ) PARTITION BY LIST (region)";
+
+    let result = ExtendedParser::parse_single(sql);
+    assert!(result.is_ok(), "Failed to parse PARTITION BY LIST: {:?}", result);
+}
+
+#[test]
+fn test_parse_create_table_partition_by_hash() {
+    use manifoldb_query::ExtendedParser;
+
+    // Parse a CREATE TABLE with PARTITION BY HASH
+    let sql = "CREATE TABLE data (
+        id BIGINT,
+        bucket_key INTEGER,
+        value TEXT
+    ) PARTITION BY HASH (bucket_key)";
+
+    let result = ExtendedParser::parse_single(sql);
+    assert!(result.is_ok(), "Failed to parse PARTITION BY HASH: {:?}", result);
+}

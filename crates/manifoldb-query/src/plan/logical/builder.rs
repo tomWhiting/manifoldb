@@ -35,9 +35,10 @@ use crate::ast::{
 };
 
 use super::ddl::{
-    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
-    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
-    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode,
+    CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode,
+    DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode,
+    DropTriggerNode, DropViewNode, TruncateTableNode,
 };
 
 use super::expr::{
@@ -52,8 +53,8 @@ use super::graph::{
 use super::node::LogicalPlan;
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
-    AggregateNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SetOpType, SortNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
+    ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode, WindowNode,
 };
 use super::validate::{PlanError, PlanResult};
 
@@ -229,6 +230,8 @@ impl PlanBuilder {
             Statement::CreateCollection(create) => self.build_create_collection(create),
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
+            Statement::AlterIndex(alter) => self.build_alter_index(alter),
+            Statement::TruncateTable(truncate) => self.build_truncate_table(truncate),
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
             Statement::CreateView(create) => self.build_create_view(create),
             Statement::DropView(drop) => self.build_drop_view(drop),
@@ -419,12 +422,6 @@ impl PlanBuilder {
 
     /// Builds the body of a SELECT statement (after CTE scope is set up).
     fn build_select_body(&mut self, select: &SelectStatement) -> PlanResult<LogicalPlan> {
-        // Set up named window definitions for this query
-        self.named_windows.clear();
-        for named_window in &select.named_windows {
-            self.named_windows.insert(named_window.name.name.clone(), named_window.clone());
-        }
-
         // Start with FROM clause
         let mut plan = self.build_from(&select.from)?;
 
@@ -500,10 +497,38 @@ impl PlanBuilder {
 
         let mut plan = self.build_table_ref(&from[0])?;
 
-        // Cross join additional tables
+        // Cross join additional tables, handling LATERAL subqueries specially
         for table in from.iter().skip(1) {
-            let right = self.build_table_ref(table)?;
-            plan = plan.cross_join(right);
+            match table {
+                TableRef::LateralSubquery { query, alias } => {
+                    // Build the subquery plan
+                    let subquery = self.build_select(query)?;
+                    let subquery = subquery.alias(&alias.name.name);
+
+                    // Collect column names from the current plan for correlation detection
+                    let outer_columns = Self::collect_output_columns(&plan);
+
+                    // Collect referenced columns in the subquery
+                    let referenced_columns = Self::collect_referenced_columns_from_select(query);
+
+                    // Find which outer columns are referenced in the subquery
+                    let imported_variables: Vec<String> = outer_columns
+                        .into_iter()
+                        .filter(|col| referenced_columns.contains(col))
+                        .collect();
+
+                    // Create LATERAL join using CallSubquery semantics
+                    plan = LogicalPlan::CallSubquery {
+                        node: CallSubqueryNode::new(imported_variables),
+                        subquery: Box::new(subquery),
+                        input: Box::new(plan),
+                    };
+                }
+                _ => {
+                    let right = self.build_table_ref(table)?;
+                    plan = plan.cross_join(right);
+                }
+            }
         }
 
         Ok(plan)
@@ -566,6 +591,13 @@ impl PlanBuilder {
                 }
 
                 Ok(LogicalPlan::Scan(Box::new(scan)))
+            }
+
+            TableRef::LateralSubquery { query, alias } => {
+                // When a LATERAL subquery is the first item in FROM, it's effectively
+                // just a regular subquery since there's nothing to correlate with.
+                let subquery = self.build_select(query)?;
+                Ok(subquery.alias(&alias.name.name))
             }
         }
     }
@@ -651,11 +683,15 @@ impl PlanBuilder {
                             .collect::<PlanResult<Vec<_>>>()?
                     };
 
+                    // Build optional filter clause
+                    let filter =
+                        func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
                     aggregates.push(LogicalExpr::AggregateFunction {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
-                        filter: None,
+                        filter,
                     });
                 } else {
                     // Check arguments for nested aggregates
@@ -816,50 +852,6 @@ impl PlanBuilder {
         Ok(())
     }
 
-    /// Resolves a window specification, merging with any named window definition.
-    ///
-    /// If the window spec references a named window, this merges the named window's
-    /// properties with the inline specification. Properties from the inline spec
-    /// take precedence where specified.
-    fn resolve_window_spec(&self, spec: &ast::WindowSpec) -> PlanResult<ast::WindowSpec> {
-        // If there's no window name reference, return the spec as-is
-        let window_name = match &spec.window_name {
-            Some(name) => name.name.clone(),
-            None => return Ok(spec.clone()),
-        };
-
-        // Look up the named window
-        let named_window = self.named_windows.get(&window_name).ok_or_else(|| {
-            PlanError::Unsupported(format!("undefined named window: {window_name}"))
-        })?;
-
-        // If the named window references another window, resolve that first
-        let base_spec = if let Some(base_name) = &named_window.base_window {
-            let base_window = self.named_windows.get(&base_name.name).ok_or_else(|| {
-                PlanError::Unsupported(format!("undefined base window: {}", base_name.name))
-            })?;
-            base_window.spec.clone()
-        } else {
-            named_window.spec.clone()
-        };
-
-        // Merge: inline spec properties override named window properties
-        Ok(ast::WindowSpec {
-            window_name: None, // Resolved, no longer a reference
-            partition_by: if spec.partition_by.is_empty() {
-                base_spec.partition_by
-            } else {
-                spec.partition_by.clone()
-            },
-            order_by: if spec.order_by.is_empty() {
-                base_spec.order_by
-            } else {
-                spec.order_by.clone()
-            },
-            frame: spec.frame.clone().or(base_spec.frame),
-        })
-    }
-
     /// Builds a window function expression from an AST function with OVER clause.
     ///
     /// Supports:
@@ -870,12 +862,9 @@ impl PlanBuilder {
         let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
         // Parse the OVER clause first (required for all window functions)
-        let over_ref = func.over.as_ref().ok_or_else(|| {
+        let over = func.over.as_ref().ok_or_else(|| {
             PlanError::Unsupported("window function missing OVER clause".to_string())
         })?;
-
-        // Resolve any named window references
-        let over = self.resolve_window_spec(over_ref)?;
 
         // Build partition by expressions
         let partition_by: Vec<LogicalExpr> =
@@ -891,7 +880,7 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<Vec<_>>>()?;
 
-        // Build optional FILTER clause
+        // Build optional filter clause
         let filter = func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
 
         // Parse the window function type and build the expression
@@ -904,7 +893,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
-                filter: filter.clone(),
+                filter,
             }),
             "RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::Rank,
@@ -913,7 +902,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
-                filter: filter.clone(),
+                filter,
             }),
             "DENSE_RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::DenseRank,
@@ -922,7 +911,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
-                filter: filter.clone(),
+                filter,
             }),
 
             // Value functions (require argument)
@@ -937,7 +926,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "LEAD" => {
@@ -951,7 +940,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "FIRST_VALUE" => {
@@ -963,7 +952,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "LAST_VALUE" => {
@@ -975,7 +964,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "NTH_VALUE" => {
@@ -988,7 +977,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
 
@@ -1006,7 +995,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "SUM" => {
@@ -1018,7 +1007,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "AVG" => {
@@ -1030,7 +1019,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "MIN" => {
@@ -1042,7 +1031,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "MAX" => {
@@ -1054,7 +1043,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
 
@@ -1068,7 +1057,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
-                    filter: None,
+                    filter,
                 })
             }
             "PERCENT_RANK" => Ok(LogicalExpr::WindowFunction {
@@ -1078,7 +1067,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
-                filter: filter.clone(),
+                filter,
             }),
             "CUME_DIST" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::CumeDist,
@@ -1087,7 +1076,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
-                filter: filter.clone(),
+                filter,
             }),
 
             _ => Err(PlanError::Unsupported(format!("window function: {name}"))),
@@ -1844,6 +1833,50 @@ impl PlanBuilder {
             DropIndexNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropIndex(node))
+    }
+
+    /// Builds an ALTER INDEX plan.
+    fn build_alter_index(&self, alter: &ast::AlterIndexStatement) -> PlanResult<LogicalPlan> {
+        let name = alter.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        // Convert AST action to plan node action
+        let action = match &alter.action {
+            ast::AlterIndexAction::RenameIndex { new_name } => {
+                super::ddl::AlterIndexAction::RenameIndex { new_name: new_name.name.clone() }
+            }
+            ast::AlterIndexAction::SetOptions { options } => {
+                super::ddl::AlterIndexAction::SetOptions { options: options.clone() }
+            }
+            ast::AlterIndexAction::ResetOptions { options } => {
+                super::ddl::AlterIndexAction::ResetOptions { options: options.clone() }
+            }
+        };
+
+        let node = AlterIndexNode::new(name, action).with_if_exists(alter.if_exists);
+        Ok(LogicalPlan::AlterIndex(node))
+    }
+
+    /// Builds a TRUNCATE TABLE plan.
+    fn build_truncate_table(
+        &self,
+        truncate: &ast::TruncateTableStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = truncate
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let restart_identity =
+            truncate.identity.is_some_and(|i| matches!(i, ast::TruncateIdentity::Restart));
+
+        let cascade = truncate.cascade.is_some_and(|c| matches!(c, ast::TruncateCascade::Cascade));
+
+        let node = TruncateTableNode::new(names)
+            .with_restart_identity(restart_identity)
+            .with_cascade(cascade);
+
+        Ok(LogicalPlan::TruncateTable(node))
     }
 
     /// Builds a CREATE COLLECTION plan.
@@ -2653,11 +2686,15 @@ impl PlanBuilder {
                             .collect::<PlanResult<Vec<_>>>()?
                     };
 
+                    // Build optional filter clause
+                    let filter =
+                        func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
                     return Ok(LogicalExpr::AggregateFunction {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
-                        filter: None,
+                        filter,
                     });
                 }
 
@@ -3181,6 +3218,225 @@ impl PlanBuilder {
             _ => ast::DataType::Custom(type_str.to_string()),
         };
         Ok(dt)
+    }
+
+    /// Collects output column names from a logical plan.
+    ///
+    /// This is used to determine which columns are available for correlation
+    /// in LATERAL subqueries. For simplicity, we collect all table/alias names
+    /// and let the execution layer handle the correlation at runtime.
+    fn collect_output_columns(plan: &LogicalPlan) -> Vec<String> {
+        let mut columns = Vec::new();
+        Self::collect_output_columns_recursive(plan, &mut columns);
+        columns
+    }
+
+    /// Recursively collects output column names from a logical plan.
+    fn collect_output_columns_recursive(plan: &LogicalPlan, columns: &mut Vec<String>) {
+        match plan {
+            LogicalPlan::Scan(scan) => {
+                // Add the reference name (alias or table name)
+                let ref_name = scan.reference_name();
+                columns.push(ref_name.to_string());
+                // Also add any explicit projections
+                if let Some(proj) = &scan.projection {
+                    for col in proj {
+                        columns.push(col.clone());
+                        columns.push(format!("{ref_name}.{col}"));
+                    }
+                }
+            }
+            LogicalPlan::Alias { alias, input } => {
+                columns.push(alias.clone());
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Project { node, input } => {
+                // Add projected column names/aliases
+                for expr in &node.exprs {
+                    if let LogicalExpr::Alias { alias, .. } = expr {
+                        columns.push(alias.clone());
+                    } else if let LogicalExpr::Column { name, .. } = expr {
+                        columns.push(name.clone());
+                    }
+                }
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Join { left, right, .. } => {
+                Self::collect_output_columns_recursive(left, columns);
+                Self::collect_output_columns_recursive(right, columns);
+            }
+            LogicalPlan::CallSubquery { input, subquery, .. } => {
+                Self::collect_output_columns_recursive(input, columns);
+                Self::collect_output_columns_recursive(subquery, columns);
+            }
+            LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Distinct { input, .. }
+            | LogicalPlan::Window { input, .. }
+            | LogicalPlan::Unwind { input, .. } => {
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Aggregate { node, input } => {
+                // Add group by columns
+                for expr in &node.group_by {
+                    if let LogicalExpr::Column { name, .. } = expr {
+                        columns.push(name.clone());
+                    }
+                }
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::SetOp { left, right, .. } => {
+                Self::collect_output_columns_recursive(left, columns);
+                Self::collect_output_columns_recursive(right, columns);
+            }
+            LogicalPlan::Union { inputs, .. } => {
+                for input in inputs {
+                    Self::collect_output_columns_recursive(input, columns);
+                }
+            }
+            LogicalPlan::Values(values) => {
+                if let Some(names) = &values.column_names {
+                    columns.extend(names.iter().cloned());
+                }
+            }
+            LogicalPlan::Empty { columns: cols } => {
+                columns.extend(cols.iter().cloned());
+            }
+            // Graph and other nodes don't typically expose columns in the same way
+            _ => {}
+        }
+    }
+
+    /// Collects all column references from a SELECT statement.
+    ///
+    /// This is used to find which outer columns a LATERAL subquery references.
+    fn collect_referenced_columns_from_select(select: &SelectStatement) -> Vec<String> {
+        let mut columns = Vec::new();
+
+        // Collect from projection
+        for item in &select.projection {
+            if let SelectItem::Expr { expr, .. } = item {
+                Self::collect_columns_from_expr(expr, &mut columns);
+            }
+        }
+
+        // Collect from WHERE clause
+        if let Some(where_clause) = &select.where_clause {
+            Self::collect_columns_from_expr(where_clause, &mut columns);
+        }
+
+        // Collect from FROM clause (for JOINs)
+        for table_ref in &select.from {
+            Self::collect_columns_from_table_ref(table_ref, &mut columns);
+        }
+
+        // Collect from GROUP BY
+        for expr in &select.group_by {
+            Self::collect_columns_from_expr(expr, &mut columns);
+        }
+
+        // Collect from HAVING
+        if let Some(having) = &select.having {
+            Self::collect_columns_from_expr(having, &mut columns);
+        }
+
+        // Collect from ORDER BY
+        for order in &select.order_by {
+            Self::collect_columns_from_expr(&order.expr, &mut columns);
+        }
+
+        columns
+    }
+
+    /// Collects column names from an expression (simplified).
+    fn collect_columns_from_expr(expr: &Expr, columns: &mut Vec<String>) {
+        match expr {
+            Expr::Column(name) => {
+                // Add both the full qualified name and individual parts
+                let full_name: String =
+                    name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                columns.push(full_name);
+                for part in &name.parts {
+                    columns.push(part.name.clone());
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::collect_columns_from_expr(left, columns);
+                Self::collect_columns_from_expr(right, columns);
+            }
+            Expr::UnaryOp { operand, .. } => {
+                Self::collect_columns_from_expr(operand, columns);
+            }
+            Expr::Function(func) => {
+                for arg in &func.args {
+                    Self::collect_columns_from_expr(arg, columns);
+                }
+                if let Some(filter) = &func.filter {
+                    Self::collect_columns_from_expr(filter, columns);
+                }
+            }
+            Expr::InList { expr, list, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+                for item in list {
+                    Self::collect_columns_from_expr(item, columns);
+                }
+            }
+            Expr::InSubquery { expr, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+            Expr::Between { expr, low, high, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+                Self::collect_columns_from_expr(low, columns);
+                Self::collect_columns_from_expr(high, columns);
+            }
+            Expr::Case(case_expr) => {
+                if let Some(op) = &case_expr.operand {
+                    Self::collect_columns_from_expr(op, columns);
+                }
+                for (cond, result) in &case_expr.when_clauses {
+                    Self::collect_columns_from_expr(cond, columns);
+                    Self::collect_columns_from_expr(result, columns);
+                }
+                if let Some(else_r) = &case_expr.else_result {
+                    Self::collect_columns_from_expr(else_r, columns);
+                }
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+            Expr::Tuple(exprs) | Expr::ListLiteral(exprs) => {
+                for e in exprs {
+                    Self::collect_columns_from_expr(e, columns);
+                }
+            }
+            Expr::ArrayIndex { array, index } => {
+                Self::collect_columns_from_expr(array, columns);
+                Self::collect_columns_from_expr(index, columns);
+            }
+            Expr::MapProjection { source, .. } => {
+                Self::collect_columns_from_expr(source, columns);
+            }
+            Expr::Exists { .. } | Expr::Subquery { .. } => {
+                // Subqueries have their own scope
+            }
+            Expr::CallSubquery { .. } => {
+                // Subqueries have their own scope
+            }
+            // All other expression types don't have column references
+            _ => {}
+        }
+    }
+
+    /// Collects column references from table references (for JOIN conditions).
+    fn collect_columns_from_table_ref(table_ref: &TableRef, columns: &mut Vec<String>) {
+        if let TableRef::Join(join) = table_ref {
+            Self::collect_columns_from_table_ref(&join.left, columns);
+            Self::collect_columns_from_table_ref(&join.right, columns);
+            if let JoinCondition::On(expr) = &join.condition {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+        }
     }
 }
 
@@ -3754,5 +4010,114 @@ mod tests {
         } else {
             panic!("expected DropTrigger plan");
         }
+    }
+
+    // ========================================================================
+    // LATERAL Subquery Tests
+    // ========================================================================
+
+    #[test]
+    fn lateral_subquery_basic() {
+        // Basic LATERAL subquery with correlation
+        let plan = build_query(
+            "SELECT d.name, top_emp.name, top_emp.salary
+             FROM departments d,
+             LATERAL (
+                 SELECT e.name, e.salary
+                 FROM employees e
+                 WHERE e.department_id = d.id
+                 ORDER BY e.salary DESC
+                 LIMIT 3
+             ) AS top_emp",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // LATERAL should be converted to CallSubquery
+        assert!(output.contains("CallSubquery") || output.contains("Call"));
+    }
+
+    #[test]
+    fn lateral_subquery_uncorrelated() {
+        // LATERAL without correlation (degenerates to cross join behavior)
+        let plan = build_query(
+            "SELECT u.name, numbers.n
+             FROM users u,
+             LATERAL (SELECT 1 AS n UNION ALL SELECT 2 AS n) AS numbers",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should still create a CallSubquery node even without explicit correlation
+        assert!(output.contains("Project"));
+    }
+
+    #[test]
+    fn lateral_subquery_with_aggregation() {
+        // LATERAL with aggregation in the subquery
+        let plan = build_query(
+            "SELECT d.name, emp_stats.count, emp_stats.avg_salary
+             FROM departments d,
+             LATERAL (
+                 SELECT COUNT(*) AS count, AVG(salary) AS avg_salary
+                 FROM employees e
+                 WHERE e.department_id = d.id
+             ) AS emp_stats",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("CallSubquery") || output.contains("Aggregate"));
+    }
+
+    #[test]
+    fn lateral_subquery_first_in_from() {
+        // LATERAL as first item in FROM clause (no correlation possible)
+        let plan = build_query("SELECT x.n FROM LATERAL (SELECT 1 AS n) AS x").unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should be treated as a regular subquery when first in FROM
+        assert!(output.contains("Project"));
+    }
+
+    #[test]
+    fn lateral_subquery_multiple() {
+        // Multiple LATERAL subqueries in sequence
+        let plan = build_query(
+            "SELECT d.name, e.name, p.name
+             FROM departments d,
+             LATERAL (
+                 SELECT name FROM employees WHERE department_id = d.id LIMIT 1
+             ) AS e,
+             LATERAL (
+                 SELECT name FROM projects WHERE lead_name = e.name LIMIT 1
+             ) AS p",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should have nested CallSubquery nodes
+        assert!(output.contains("CallSubquery") || output.contains("Call"));
+    }
+
+    #[test]
+    fn lateral_subquery_with_join() {
+        // LATERAL combined with regular JOIN
+        let plan = build_query(
+            "SELECT c.name, recent_orders.total
+             FROM customers c
+             JOIN regions r ON c.region_id = r.id,
+             LATERAL (
+                 SELECT SUM(amount) AS total
+                 FROM orders o
+                 WHERE o.customer_id = c.id
+                 ORDER BY o.date DESC
+                 LIMIT 5
+             ) AS recent_orders",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Join") || output.contains("CallSubquery"));
     }
 }

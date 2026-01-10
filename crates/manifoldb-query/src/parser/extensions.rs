@@ -3722,12 +3722,12 @@ impl ExtendedParser {
             let alias_str = &input[as_pos + 4..]; // +4 for " AS "
             let expr = Self::parse_simple_expression(expr_str.trim())?;
             let alias = Identifier::new(alias_str.trim());
-            return Ok(ReturnItem::Expr { expr: Box::new(expr), alias: Some(alias) });
+            return Ok(ReturnItem::Expr { expr, alias: Some(alias) });
         }
 
         // Just an expression
         let expr = Self::parse_simple_expression(input)?;
-        Ok(ReturnItem::Expr { expr: Box::new(expr), alias: None })
+        Ok(ReturnItem::Expr { expr, alias: None })
     }
 
     /// Parses an ORDER BY clause.

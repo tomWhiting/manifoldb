@@ -18,9 +18,10 @@
 use std::fmt;
 
 use super::ddl::{
-    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
-    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
-    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode,
+    CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode,
+    DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode,
+    DropTriggerNode, DropViewNode, TruncateTableNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
@@ -296,8 +297,14 @@ pub enum LogicalPlan {
     /// DROP TABLE operation.
     DropTable(DropTableNode),
 
+    /// TRUNCATE TABLE operation.
+    TruncateTable(TruncateTableNode),
+
     /// CREATE INDEX operation.
     CreateIndex(CreateIndexNode),
+
+    /// ALTER INDEX operation.
+    AlterIndex(AlterIndexNode),
 
     /// DROP INDEX operation.
     DropIndex(DropIndexNode),
@@ -636,7 +643,9 @@ impl LogicalPlan {
             Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
@@ -731,7 +740,9 @@ impl LogicalPlan {
             Self::CreateTable(_)
             | Self::AlterTable(_)
             | Self::DropTable(_)
+            | Self::TruncateTable(_)
             | Self::CreateIndex(_)
+            | Self::AlterIndex(_)
             | Self::DropIndex(_)
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
@@ -814,7 +825,9 @@ impl LogicalPlan {
             Self::CreateTable(_) => "CreateTable",
             Self::AlterTable(_) => "AlterTable",
             Self::DropTable(_) => "DropTable",
+            Self::TruncateTable(_) => "TruncateTable",
             Self::CreateIndex(_) => "CreateIndex",
+            Self::AlterIndex(_) => "AlterIndex",
             Self::DropIndex(_) => "DropIndex",
             Self::CreateCollection(_) => "CreateCollection",
             Self::DropCollection(_) => "DropCollection",
@@ -1112,6 +1125,15 @@ impl DisplayTree<'_> {
                     write!(f, " CASCADE")?;
                 }
             }
+            LogicalPlan::TruncateTable(node) => {
+                write!(f, "TruncateTable: {}", node.names.join(", "))?;
+                if node.restart_identity {
+                    write!(f, " RESTART IDENTITY")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
             LogicalPlan::CreateIndex(node) => {
                 write!(f, "CreateIndex: {} ON {}", node.name, node.table)?;
                 if node.unique {
@@ -1119,6 +1141,12 @@ impl DisplayTree<'_> {
                 }
                 if let Some(method) = &node.using {
                     write!(f, " USING {method}")?;
+                }
+            }
+            LogicalPlan::AlterIndex(node) => {
+                write!(f, "AlterIndex: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
                 }
             }
             LogicalPlan::DropIndex(node) => {

@@ -363,6 +363,14 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::TruncateTable(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::UnknownTable(
+                    "TRUNCATE TABLE requires table name".to_string(),
+                ));
+            }
+        }
+
         LogicalPlan::CreateIndex(node) => {
             if node.name.is_empty() {
                 return Err(PlanError::Unsupported("CREATE INDEX requires index name".to_string()));
@@ -382,6 +390,12 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         LogicalPlan::DropIndex(node) => {
             if node.names.is_empty() {
                 return Err(PlanError::Unsupported("DROP INDEX requires index name".to_string()));
+            }
+        }
+
+        LogicalPlan::AlterIndex(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("ALTER INDEX requires index name".to_string()));
             }
         }
 
@@ -823,7 +837,9 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         LogicalPlan::CreateTable(_)
         | LogicalPlan::AlterTable(_)
         | LogicalPlan::DropTable(_)
+        | LogicalPlan::TruncateTable(_)
         | LogicalPlan::CreateIndex(_)
+        | LogicalPlan::AlterIndex(_)
         | LogicalPlan::DropIndex(_)
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)

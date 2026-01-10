@@ -83,6 +83,12 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             }
         }
 
+        LogicalPlan::TruncateTable(node) => {
+            for name in &node.names {
+                tables.push(name.clone());
+            }
+        }
+
         LogicalPlan::AlterTable(node) => {
             tables.push(node.name.clone());
         }
@@ -92,6 +98,10 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
         }
 
         LogicalPlan::DropIndex(_) => {
+            // Index operations don't directly reference tables
+        }
+
+        LogicalPlan::AlterIndex(_) => {
             // Index operations don't directly reference tables
         }
 
