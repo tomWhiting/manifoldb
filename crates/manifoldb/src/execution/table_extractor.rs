@@ -91,8 +91,14 @@ fn collect_tables_from_plan(plan: &LogicalPlan, tables: &mut Vec<String>) {
             tables.push(node.table.clone());
         }
 
-        LogicalPlan::DropIndex(_) => {
+        LogicalPlan::DropIndex(_) | LogicalPlan::AlterIndex(_) => {
             // Index operations don't directly reference tables
+        }
+
+        LogicalPlan::TruncateTable(node) => {
+            for name in &node.names {
+                tables.push(name.clone());
+            }
         }
 
         LogicalPlan::Project { input, .. }

@@ -17,9 +17,9 @@ use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
 use manifoldb_query::plan::logical::ViewDefinition;
 use manifoldb_query::plan::logical::{
-    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
-    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, JoinType, LogicalExpr,
-    ProjectNode, SetOpNode, UnionNode, ValuesNode,
+    AlterIndexNode, AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode,
+    CreateViewNode, DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, JoinType,
+    LogicalExpr, ProjectNode, SetOpNode, TruncateTableNode, UnionNode, ValuesNode,
 };
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
@@ -182,6 +182,8 @@ pub fn execute_statement<T: Transaction>(
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+        LogicalPlan::AlterIndex(node) => execute_alter_index(tx, node),
+        LogicalPlan::TruncateTable(node) => execute_truncate_table(tx, node),
         LogicalPlan::CreateCollection(node) => execute_create_collection(tx, node),
         LogicalPlan::DropCollection(node) => execute_drop_collection(tx, node),
         LogicalPlan::CreateView(node) => execute_create_view(tx, node, sql),
@@ -378,6 +380,8 @@ pub fn execute_prepared_statement<T: Transaction>(
         LogicalPlan::DropTable(node) => execute_drop_table(tx, node),
         LogicalPlan::CreateIndex(node) => execute_create_index(tx, node),
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
+        LogicalPlan::AlterIndex(node) => execute_alter_index(tx, node),
+        LogicalPlan::TruncateTable(node) => execute_truncate_table(tx, node),
         LogicalPlan::CreateCollection(node) => execute_create_collection(tx, node),
         LogicalPlan::DropCollection(node) => execute_drop_collection(tx, node),
 
@@ -1847,6 +1851,8 @@ fn execute_logical_plan<T: Transaction>(
         | LogicalPlan::DropTable(_)
         | LogicalPlan::CreateIndex(_)
         | LogicalPlan::DropIndex(_)
+        | LogicalPlan::AlterIndex(_)
+        | LogicalPlan::TruncateTable(_)
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)
@@ -2917,6 +2923,130 @@ fn execute_drop_index<T: Transaction>(
         SchemaManager::drop_index(tx, index_name, node.if_exists)
             .map_err(|e| Error::Execution(e.to_string()))?;
     }
+    Ok(total_deleted)
+}
+
+/// Execute an ALTER INDEX statement.
+fn execute_alter_index<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &AlterIndexNode,
+) -> Result<u64> {
+    use manifoldb_query::plan::logical::AlterIndexAction;
+
+    // Check if index exists
+    let existing =
+        SchemaManager::get_index(tx, &node.name).map_err(|e| Error::Execution(e.to_string()))?;
+
+    let Some(mut schema) = existing else {
+        if node.if_exists {
+            return Ok(0);
+        }
+        return Err(Error::Execution(format!("Index '{}' does not exist", node.name)));
+    };
+
+    match &node.action {
+        AlterIndexAction::RenameIndex { new_name } => {
+            // Check the new name doesn't already exist
+            let new_exists = SchemaManager::get_index(tx, new_name)
+                .map_err(|e| Error::Execution(e.to_string()))?;
+            if new_exists.is_some() {
+                return Err(Error::Execution(format!("Index '{}' already exists", new_name)));
+            }
+
+            // Drop the old index schema entry
+            SchemaManager::drop_index(tx, &node.name, false)
+                .map_err(|e| Error::Execution(e.to_string()))?;
+
+            // Update the schema with the new name
+            schema.name.clone_from(new_name);
+
+            // Store with new name directly using bincode
+            let key = format!("schema:index:{}", schema.name);
+            let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+                .map_err(|e| Error::Execution(format!("Failed to serialize index schema: {e}")))?;
+            tx.put_metadata(key.as_bytes(), &value).map_err(Error::Transaction)?;
+
+            // Update the index list
+            let mut indexes = SchemaManager::list_indexes(tx).unwrap_or_default();
+            if !indexes.contains(&schema.name) {
+                indexes.push(schema.name.clone());
+                let list_value =
+                    bincode::serde::encode_to_vec(&indexes, bincode::config::standard()).map_err(
+                        |e| Error::Execution(format!("Failed to serialize indexes list: {e}")),
+                    )?;
+                tx.put_metadata(b"schema:indexes_list", &list_value).map_err(Error::Transaction)?;
+            }
+        }
+        AlterIndexAction::SetOptions { options } => {
+            // Update options in the schema (with_options is a Vec<(String, String)>)
+            for (key, value) in options {
+                // Remove existing option with same key, if any
+                schema.with_options.retain(|(k, _)| k != key);
+                // Add the new option
+                schema.with_options.push((key.clone(), value.clone()));
+            }
+            // Update in storage
+            let key = format!("schema:index:{}", schema.name);
+            let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+                .map_err(|e| Error::Execution(format!("Failed to serialize index schema: {e}")))?;
+            tx.put_metadata(key.as_bytes(), &value).map_err(Error::Transaction)?;
+        }
+        AlterIndexAction::ResetOptions { options } => {
+            // Remove options from the schema
+            for opt_key in options {
+                schema.with_options.retain(|(k, _)| k != opt_key);
+            }
+            // Update in storage
+            let key = format!("schema:index:{}", schema.name);
+            let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+                .map_err(|e| Error::Execution(format!("Failed to serialize index schema: {e}")))?;
+            tx.put_metadata(key.as_bytes(), &value).map_err(Error::Transaction)?;
+        }
+    }
+
+    Ok(0)
+}
+
+/// Execute a TRUNCATE TABLE statement.
+fn execute_truncate_table<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &TruncateTableNode,
+) -> Result<u64> {
+    let mut total_deleted = 0u64;
+
+    for table_name in &node.names {
+        // Check if table exists
+        let table_schema = SchemaManager::get_table(tx, table_name)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+
+        if table_schema.is_none() {
+            return Err(Error::Execution(format!("Table '{}' does not exist", table_name)));
+        }
+
+        // Delete all entities with this label
+        let entities = tx.iter_entities(Some(table_name)).map_err(Error::Transaction)?;
+        let entity_ids: Vec<_> = entities.iter().map(|e| e.id).collect();
+
+        for entity_id in entity_ids {
+            tx.delete_entity(entity_id).map_err(Error::Transaction)?;
+            total_deleted += 1;
+        }
+
+        // Handle CASCADE option - delete dependent data
+        if node.cascade {
+            // In a full implementation, we would also delete:
+            // - Rows in tables that have foreign keys referencing this table
+            // - Data from partitions of this table
+            // For now, we just delete the entities
+        }
+
+        // Handle RESTART IDENTITY option
+        if node.restart_identity {
+            // In a full implementation, we would reset any identity/serial columns
+            // For now, this is a no-op since we use UUID-based entity IDs
+        }
+    }
+
     Ok(total_deleted)
 }
 

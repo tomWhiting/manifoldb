@@ -442,6 +442,8 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         | PhysicalPlan::DropTable(_)
         | PhysicalPlan::CreateIndex(_)
         | PhysicalPlan::DropIndex(_)
+        | PhysicalPlan::AlterIndex(_)
+        | PhysicalPlan::TruncateTable(_)
         | PhysicalPlan::CreateCollection(_)
         | PhysicalPlan::DropCollection(_)
         | PhysicalPlan::CreateView(_)

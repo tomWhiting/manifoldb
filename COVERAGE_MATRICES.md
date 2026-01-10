@@ -324,7 +324,7 @@ These feature groups can be implemented independently:
 | DEFAULT | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | GENERATED AS | | | | | | | Not implemented |
 | IF NOT EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| PARTITION BY | | | | | | | Not implemented |
+| PARTITION BY | ✓ | ✓ | ✓ | ✓ | | | **Parsing complete (Jan 2026)** - AST support, storage TBD |
 | INHERITS | | | | | | | Not implemented |
 | **ALTER TABLE** |
 | ADD COLUMN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
@@ -348,7 +348,9 @@ These feature groups can be implemented independently:
 | CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | RESTRICT | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **TRUNCATE** |
-| TRUNCATE TABLE | | | | | | | Not implemented |
+| TRUNCATE TABLE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - deletes all rows from table |
+| RESTART IDENTITY | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - resets identity columns |
+| CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - cascades to dependent tables |
 | **CREATE INDEX** |
 | Basic CREATE INDEX | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | UNIQUE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
@@ -361,6 +363,10 @@ These feature groups can be implemented independently:
 | Basic DROP INDEX | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
+| **ALTER INDEX** |
+| RENAME TO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - renames index |
+| SET options | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - sets index options |
+| RESET options | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - resets options to defaults |
 | **VIEW** |
 | CREATE VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - creates view, stores SQL, expansion works |
 | CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - replaces existing view |

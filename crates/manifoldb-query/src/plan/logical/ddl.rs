@@ -244,6 +244,93 @@ impl DropIndexNode {
     }
 }
 
+/// An ALTER INDEX operation.
+///
+/// Supports modifications to existing indexes:
+/// - RENAME TO: Rename an index
+/// - SET: Set index options
+/// - RESET: Reset index options to defaults
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterIndexNode {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The index name.
+    pub name: String,
+    /// The action to perform.
+    pub action: AlterIndexAction,
+}
+
+impl AlterIndexNode {
+    /// Creates a new ALTER INDEX node.
+    #[must_use]
+    pub fn new(name: impl Into<String>, action: AlterIndexAction) -> Self {
+        Self { if_exists: false, name: name.into(), action }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn with_if_exists(mut self, if_exists: bool) -> Self {
+        self.if_exists = if_exists;
+        self
+    }
+}
+
+/// An action to perform in an ALTER INDEX statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlterIndexAction {
+    /// RENAME TO: Rename the index.
+    RenameIndex {
+        /// The new index name.
+        new_name: String,
+    },
+    /// SET: Set index options.
+    SetOptions {
+        /// The options to set (key-value pairs).
+        options: Vec<(String, String)>,
+    },
+    /// RESET: Reset index options to defaults.
+    ResetOptions {
+        /// The option names to reset.
+        options: Vec<String>,
+    },
+}
+
+/// A TRUNCATE TABLE operation.
+///
+/// Quickly removes all rows from one or more tables without logging
+/// individual row deletions. More efficient than DELETE for removing all rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TruncateTableNode {
+    /// The table names to truncate.
+    pub names: Vec<String>,
+    /// Whether to restart identity columns.
+    pub restart_identity: bool,
+    /// Whether to cascade to dependent tables.
+    pub cascade: bool,
+}
+
+impl TruncateTableNode {
+    /// Creates a new TRUNCATE TABLE node.
+    #[must_use]
+    pub fn new(names: Vec<String>) -> Self {
+        Self { names, restart_identity: false, cascade: false }
+    }
+
+    /// Sets the restart identity flag.
+    #[must_use]
+    pub const fn with_restart_identity(mut self, restart_identity: bool) -> Self {
+        self.restart_identity = restart_identity;
+        self
+    }
+
+    /// Sets the cascade flag.
+    #[must_use]
+    pub const fn with_cascade(mut self, cascade: bool) -> Self {
+        self.cascade = cascade;
+        self
+    }
+}
+
 /// A CREATE COLLECTION operation for vector collections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateCollectionNode {

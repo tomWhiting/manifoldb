@@ -35,9 +35,10 @@ use crate::ast::{
 };
 
 use super::ddl::{
-    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
-    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
-    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
+    AlterIndexNode, AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode,
+    CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode,
+    DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode,
+    DropTriggerNode, DropViewNode, TruncateTableNode,
 };
 
 use super::expr::{
@@ -221,6 +222,8 @@ impl PlanBuilder {
             Statement::CreateCollection(create) => self.build_create_collection(create),
             Statement::DropTable(drop) => self.build_drop_table(drop),
             Statement::DropIndex(drop) => self.build_drop_index(drop),
+            Statement::AlterIndex(alter) => self.build_alter_index(alter),
+            Statement::TruncateTable(truncate) => self.build_truncate_table(truncate),
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
             Statement::CreateView(create) => self.build_create_view(create),
             Statement::DropView(drop) => self.build_drop_view(drop),
@@ -1763,6 +1766,51 @@ impl PlanBuilder {
             DropIndexNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
 
         Ok(LogicalPlan::DropIndex(node))
+    }
+
+    /// Builds an ALTER INDEX plan.
+    fn build_alter_index(&self, alter: &ast::AlterIndexStatement) -> PlanResult<LogicalPlan> {
+        let name = alter.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        // Convert AST action to plan node action
+        let action = match &alter.action {
+            ast::AlterIndexAction::RenameIndex { new_name } => {
+                super::ddl::AlterIndexAction::RenameIndex { new_name: new_name.name.clone() }
+            }
+            ast::AlterIndexAction::SetOptions { options } => {
+                super::ddl::AlterIndexAction::SetOptions { options: options.clone() }
+            }
+            ast::AlterIndexAction::ResetOptions { options } => {
+                super::ddl::AlterIndexAction::ResetOptions { options: options.clone() }
+            }
+        };
+
+        let node = AlterIndexNode::new(name, action).with_if_exists(alter.if_exists);
+        Ok(LogicalPlan::AlterIndex(node))
+    }
+
+    /// Builds a TRUNCATE TABLE plan.
+    fn build_truncate_table(
+        &self,
+        truncate: &ast::TruncateTableStatement,
+    ) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = truncate
+            .names
+            .iter()
+            .map(|n| n.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join("."))
+            .collect();
+
+        let restart_identity =
+            truncate.identity.is_some_and(|i| matches!(i, ast::TruncateIdentity::Restart));
+
+        let cascade =
+            truncate.cascade.is_some_and(|c| matches!(c, ast::TruncateCascade::Cascade));
+
+        let node = TruncateTableNode::new(names)
+            .with_restart_identity(restart_identity)
+            .with_cascade(cascade);
+
+        Ok(LogicalPlan::TruncateTable(node))
     }
 
     /// Builds a CREATE COLLECTION plan.

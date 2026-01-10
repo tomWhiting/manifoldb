@@ -32,6 +32,10 @@ pub enum Statement {
     DropTable(DropTableStatement),
     /// DROP INDEX statement.
     DropIndex(DropIndexStatement),
+    /// ALTER INDEX statement.
+    AlterIndex(AlterIndexStatement),
+    /// TRUNCATE TABLE statement.
+    TruncateTable(TruncateTableStatement),
     /// DROP COLLECTION statement.
     DropCollection(DropCollectionStatement),
     /// CREATE VIEW statement.
@@ -1328,14 +1332,194 @@ pub struct CreateTableStatement {
     pub columns: Vec<ColumnDef>,
     /// Table constraints.
     pub constraints: Vec<TableConstraint>,
+    /// Partition specification for partitioned tables.
+    pub partition_by: Option<PartitionBy>,
+    /// Parent table for partition definitions (PARTITION OF).
+    pub partition_of: Option<PartitionOf>,
 }
 
 impl CreateTableStatement {
     /// Creates a new CREATE TABLE statement.
     #[must_use]
     pub fn new(name: impl Into<QualifiedName>, columns: Vec<ColumnDef>) -> Self {
-        Self { if_not_exists: false, name: name.into(), columns, constraints: vec![] }
+        Self {
+            if_not_exists: false,
+            name: name.into(),
+            columns,
+            constraints: vec![],
+            partition_by: None,
+            partition_of: None,
+        }
     }
+
+    /// Sets the partition specification.
+    #[must_use]
+    pub fn with_partition_by(mut self, partition_by: PartitionBy) -> Self {
+        self.partition_by = Some(partition_by);
+        self
+    }
+
+    /// Sets this as a partition of another table.
+    #[must_use]
+    pub fn with_partition_of(mut self, partition_of: PartitionOf) -> Self {
+        self.partition_of = Some(partition_of);
+        self
+    }
+}
+
+/// Partition specification for CREATE TABLE ... PARTITION BY.
+///
+/// # Examples
+///
+/// ```sql
+/// CREATE TABLE measurements (
+///   id SERIAL,
+///   measured_at TIMESTAMP,
+///   value DOUBLE PRECISION
+/// ) PARTITION BY RANGE (measured_at);
+///
+/// CREATE TABLE logs (
+///   id SERIAL,
+///   region TEXT,
+///   data JSONB
+/// ) PARTITION BY LIST (region);
+///
+/// CREATE TABLE events (
+///   id SERIAL,
+///   user_id INTEGER,
+///   data JSONB
+/// ) PARTITION BY HASH (user_id);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartitionBy {
+    /// PARTITION BY RANGE: partition by value ranges.
+    Range {
+        /// Columns or expressions to partition by.
+        columns: Vec<Expr>,
+    },
+    /// PARTITION BY LIST: partition by explicit value lists.
+    List {
+        /// Columns or expressions to partition by.
+        columns: Vec<Expr>,
+    },
+    /// PARTITION BY HASH: partition by hash value modulo.
+    Hash {
+        /// Columns or expressions to partition by.
+        columns: Vec<Expr>,
+    },
+}
+
+impl PartitionBy {
+    /// Creates a PARTITION BY RANGE specification.
+    #[must_use]
+    pub fn range(columns: Vec<Expr>) -> Self {
+        Self::Range { columns }
+    }
+
+    /// Creates a PARTITION BY LIST specification.
+    #[must_use]
+    pub fn list(columns: Vec<Expr>) -> Self {
+        Self::List { columns }
+    }
+
+    /// Creates a PARTITION BY HASH specification.
+    #[must_use]
+    pub fn hash(columns: Vec<Expr>) -> Self {
+        Self::Hash { columns }
+    }
+}
+
+/// Partition definition for CREATE TABLE ... PARTITION OF.
+///
+/// # Examples
+///
+/// ```sql
+/// CREATE TABLE measurements_2024 PARTITION OF measurements
+///   FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+///
+/// CREATE TABLE logs_us PARTITION OF logs
+///   FOR VALUES IN ('us-east', 'us-west');
+///
+/// CREATE TABLE events_0 PARTITION OF events
+///   FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartitionOf {
+    /// The parent partitioned table.
+    pub parent: QualifiedName,
+    /// The partition bound specification.
+    pub bound: PartitionBound,
+}
+
+impl PartitionOf {
+    /// Creates a new partition definition.
+    #[must_use]
+    pub fn new(parent: impl Into<QualifiedName>, bound: PartitionBound) -> Self {
+        Self { parent: parent.into(), bound }
+    }
+}
+
+/// Partition bound specification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartitionBound {
+    /// FOR VALUES FROM (start) TO (end) - range partition bound.
+    Range {
+        /// Lower bound values (MINVALUE or explicit values).
+        from: Vec<PartitionRangeValue>,
+        /// Upper bound values (MAXVALUE or explicit values).
+        to: Vec<PartitionRangeValue>,
+    },
+    /// FOR VALUES IN (values) - list partition bound.
+    List {
+        /// Values that belong to this partition.
+        values: Vec<Expr>,
+    },
+    /// FOR VALUES WITH (MODULUS m, REMAINDER r) - hash partition bound.
+    Hash {
+        /// Hash modulus.
+        modulus: u32,
+        /// Hash remainder.
+        remainder: u32,
+    },
+    /// DEFAULT - catch-all partition for unmatched values.
+    Default,
+}
+
+impl PartitionBound {
+    /// Creates a range partition bound.
+    #[must_use]
+    pub fn range(from: Vec<PartitionRangeValue>, to: Vec<PartitionRangeValue>) -> Self {
+        Self::Range { from, to }
+    }
+
+    /// Creates a list partition bound.
+    #[must_use]
+    pub fn list(values: Vec<Expr>) -> Self {
+        Self::List { values }
+    }
+
+    /// Creates a hash partition bound.
+    #[must_use]
+    pub const fn hash(modulus: u32, remainder: u32) -> Self {
+        Self::Hash { modulus, remainder }
+    }
+
+    /// Creates a default partition bound.
+    #[must_use]
+    pub const fn default() -> Self {
+        Self::Default
+    }
+}
+
+/// A value in a range partition bound.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PartitionRangeValue {
+    /// MINVALUE - represents the minimum possible value.
+    MinValue,
+    /// MAXVALUE - represents the maximum possible value.
+    MaxValue,
+    /// An explicit value expression.
+    Value(Expr),
 }
 
 /// A column definition.
@@ -1801,6 +1985,145 @@ pub struct DropIndexStatement {
     pub names: Vec<QualifiedName>,
     /// Whether CASCADE is specified.
     pub cascade: bool,
+}
+
+/// An ALTER INDEX statement.
+///
+/// Supports modifications to existing indexes:
+/// - RENAME TO: Rename an index
+/// - SET: Set index options
+///
+/// # Examples
+///
+/// ```sql
+/// ALTER INDEX idx_users_email RENAME TO idx_email;
+/// ALTER INDEX idx_users_email SET (fillfactor = 70);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterIndexStatement {
+    /// Whether IF EXISTS is specified.
+    pub if_exists: bool,
+    /// The index to alter.
+    pub name: QualifiedName,
+    /// The action to perform.
+    pub action: AlterIndexAction,
+}
+
+impl AlterIndexStatement {
+    /// Creates a new ALTER INDEX statement.
+    #[must_use]
+    pub fn new(name: impl Into<QualifiedName>, action: AlterIndexAction) -> Self {
+        Self { if_exists: false, name: name.into(), action }
+    }
+
+    /// Sets the IF EXISTS flag.
+    #[must_use]
+    pub const fn if_exists(mut self) -> Self {
+        self.if_exists = true;
+        self
+    }
+}
+
+/// An action to perform in an ALTER INDEX statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlterIndexAction {
+    /// RENAME TO: Rename the index.
+    RenameIndex {
+        /// The new index name.
+        new_name: Identifier,
+    },
+    /// SET: Set index options.
+    SetOptions {
+        /// The options to set (key-value pairs).
+        options: Vec<(String, String)>,
+    },
+    /// RESET: Reset index options to defaults.
+    ResetOptions {
+        /// The option names to reset.
+        options: Vec<String>,
+    },
+}
+
+impl AlterIndexAction {
+    /// Creates a RENAME TO action.
+    #[must_use]
+    pub fn rename_to(new_name: impl Into<Identifier>) -> Self {
+        Self::RenameIndex { new_name: new_name.into() }
+    }
+
+    /// Creates a SET OPTIONS action.
+    #[must_use]
+    pub fn set_options(options: Vec<(String, String)>) -> Self {
+        Self::SetOptions { options }
+    }
+
+    /// Creates a RESET OPTIONS action.
+    #[must_use]
+    pub fn reset_options(options: Vec<String>) -> Self {
+        Self::ResetOptions { options }
+    }
+}
+
+/// A TRUNCATE TABLE statement.
+///
+/// Quickly removes all rows from one or more tables without logging individual row deletions.
+/// More efficient than DELETE for removing all rows.
+///
+/// # Examples
+///
+/// ```sql
+/// TRUNCATE TABLE logs;
+/// TRUNCATE TABLE orders, order_items CASCADE;
+/// TRUNCATE TABLE sessions RESTART IDENTITY;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TruncateTableStatement {
+    /// The tables to truncate.
+    pub names: Vec<QualifiedName>,
+    /// Identity column handling: RESTART or CONTINUE.
+    pub identity: Option<TruncateIdentity>,
+    /// Cascade behavior for foreign key references.
+    pub cascade: Option<TruncateCascade>,
+}
+
+impl TruncateTableStatement {
+    /// Creates a new TRUNCATE TABLE statement.
+    #[must_use]
+    pub fn new(names: Vec<QualifiedName>) -> Self {
+        Self { names, identity: None, cascade: None }
+    }
+
+    /// Sets the identity handling option.
+    #[must_use]
+    pub fn with_identity(mut self, identity: TruncateIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// Sets the cascade option.
+    #[must_use]
+    pub fn with_cascade(mut self, cascade: TruncateCascade) -> Self {
+        self.cascade = Some(cascade);
+        self
+    }
+}
+
+/// Identity column handling for TRUNCATE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncateIdentity {
+    /// RESTART IDENTITY: Reset identity sequences to their initial values.
+    Restart,
+    /// CONTINUE IDENTITY: Keep current identity values (default).
+    Continue,
+}
+
+/// Cascade behavior for TRUNCATE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncateCascade {
+    /// CASCADE: Also truncate tables with foreign key references.
+    Cascade,
+    /// RESTRICT: Fail if other tables have foreign key references (default).
+    Restrict,
 }
 
 // ============================================================================
