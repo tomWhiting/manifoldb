@@ -56,8 +56,12 @@ ManifoldDB currently has solid SQL fundamentals and graph pattern matching. This
 - ✅ **ROLLUP/CUBE/GROUPING SETS** - Multi-pass aggregation with GROUPING() function support
 - ✅ **Advanced CTE Features** - SEARCH DEPTH/BREADTH FIRST, CYCLE detection, MATERIALIZED hints
 - ✅ **Entity Table Name Unification** - Fixed nodes→entities mismatch between API layers
+- ✅ **SQL MERGE Execution** - Full execution with WHEN MATCHED/NOT MATCHED UPDATE/DELETE/INSERT
+- ✅ **Constraint Enforcement** - CHECK and FOREIGN KEY validation on INSERT/UPDATE/DELETE
+- ✅ **Correlated CALL {} Subquery** - Variable bindings flow from outer scope into subquery operators
+- ✅ **Advanced SELECT Features** - DISTINCT ON, FETCH WITH TIES (TABLESAMPLE AST only - sqlparser limitation)
 
-### Remaining Work (2 Meta-Tasks)
+### Remaining Work (1 Meta-Task)
 
 Most meta-tasks are complete. The following remain for full SQL/Cypher completion:
 
@@ -66,7 +70,7 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
 | 1 | Type System & Plan Infrastructure | 4 | Medium | ✅ Complete (Jan 2026) |
 | 2 | Advanced CTE Features | 4 | Low | ✅ Complete (Jan 2026) |
 | 3 | Window Function Extensions | 5 | Low | ✅ Complete (Jan 2026) |
-| 4 | Advanced SELECT Features | 3 | Low | **TODO** - DISTINCT ON, WITH TIES, TABLESAMPLE |
+| 4 | Advanced SELECT Features | 3 | Low | ✅ Mostly Complete (Jan 2026) - TABLESAMPLE pending (sqlparser limitation) |
 | 5 | LATERAL Subqueries | 2 | Medium | ✅ Complete (Jan 2026) |
 | 6 | View Expansion & Correlated Subqueries | 4 | Medium | ✅ Complete (Jan 2026) |
 | 7 | DDL: Schema Objects | 3 | Low | ✅ Complete (Jan 2026) |
@@ -193,10 +197,10 @@ Most meta-tasks are complete. The following remain for full SQL/Cypher completio
   - [x] Frame exclusion (EXCLUDE CURRENT ROW, etc.) ✅ Jan 2026
   - [x] FILTER clause on window functions ✅ Jan 2026
 
-- [ ] **Advanced SELECT**
-  - [ ] DISTINCT ON (expression, ...)
-  - [ ] FETCH FIRST ... WITH TIES
-  - [ ] TABLESAMPLE clause
+- [x] **Advanced SELECT** ✅ Jan 2026 (mostly complete)
+  - [x] DISTINCT ON (expression, ...) ✅ Jan 2026
+  - [x] FETCH FIRST ... WITH TIES ✅ Jan 2026 (LimitWithTiesOp)
+  - [ ] TABLESAMPLE clause - **Limited**: AST types ready, sqlparser doesn't fully support, planner returns error
   - [x] LATERAL subqueries ✅ Jan 2026
 
 - [x] **DDL Extensions** ✅ Jan 2026

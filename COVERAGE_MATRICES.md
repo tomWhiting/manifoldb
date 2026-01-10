@@ -169,8 +169,8 @@ These feature groups can be implemented independently:
 | Table function | ✓ | ✓ | | | | | Parsed only |
 | LATERAL subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Uses CallSubqueryOp |
 | VALUES clause | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
-| TABLESAMPLE BERNOULLI | ✓ | ✓ | | | | | Parsed (Jan 2026) - AST types ready, needs planning |
-| TABLESAMPLE SYSTEM | ✓ | ✓ | | | | | Parsed (Jan 2026) - AST types ready, needs planning |
+| TABLESAMPLE BERNOULLI | ✓ | ✓ | | | | | **Limited** - AST types ready, sqlparser parsing incomplete, planning returns error |
+| TABLESAMPLE SYSTEM | ✓ | ✓ | | | | | **Limited** - AST types ready, sqlparser parsing incomplete, planning returns error |
 | **JOIN Types** |
 | INNER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | LEFT OUTER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
