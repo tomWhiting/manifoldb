@@ -57,8 +57,11 @@ use crate::types::{
     Collection, CollectionName, CollectionSchema, NamedVector, Payload, VectorConfig, VectorType,
 };
 
-/// Table name for collection metadata.
-const TABLE_COLLECTIONS: &str = "point_collections";
+/// Table name for point collection metadata.
+pub const TABLE_POINT_COLLECTIONS: &str = "point_collections";
+
+/// Private alias for internal use.
+const TABLE_COLLECTIONS: &str = TABLE_POINT_COLLECTIONS;
 
 /// Table name for point payloads.
 const TABLE_PAYLOADS: &str = "point_payloads";

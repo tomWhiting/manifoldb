@@ -3081,7 +3081,8 @@ impl Database {
         use crate::vector::drop_indexes_for_collection;
         use manifoldb_storage::Cursor;
         use manifoldb_vector::{
-            encoding::encode_collection_vector_prefix, TABLE_COLLECTION_VECTORS,
+            encoding::{encode_collection_key, encode_collection_vector_prefix},
+            TABLE_COLLECTION_VECTORS, TABLE_POINT_COLLECTIONS,
         };
         use std::ops::Bound;
 
@@ -3124,6 +3125,13 @@ impl Database {
             for key in &keys_to_delete {
                 storage.delete(TABLE_COLLECTION_VECTORS, key).map_err(Error::Storage)?;
             }
+        }
+
+        // Delete from point_collections table (used by CollectionHandle/PointStore)
+        {
+            let collection_key = encode_collection_key(name);
+            let storage = tx.storage_mut().map_err(Error::Transaction)?;
+            storage.delete(TABLE_POINT_COLLECTIONS, &collection_key).map_err(Error::Storage)?;
         }
 
         // Delete the collection metadata (if_exists = false to error if not found)

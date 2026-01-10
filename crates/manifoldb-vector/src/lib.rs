@@ -90,7 +90,7 @@ pub use ops::{AnnScan, ExactKnn, SearchConfig, VectorFilter, VectorMatch, Vector
 pub use quantization::{KMeans, KMeansConfig, PQCode, PQConfig, ProductQuantizer};
 pub use store::{
     decode_vector_value, encode_vector_value, CollectionVectorStore, PointStore, SparseVectorStore,
-    VectorStore, TABLE_COLLECTION_VECTORS,
+    VectorStore, TABLE_COLLECTION_VECTORS, TABLE_POINT_COLLECTIONS,
 };
 pub use types::{
     BinaryEmbedding, BinaryEmbeddingSpace, Collection, CollectionName, CollectionSchema, Embedding,
