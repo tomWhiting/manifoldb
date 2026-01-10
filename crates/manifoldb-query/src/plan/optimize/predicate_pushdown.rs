@@ -238,7 +238,14 @@ impl PredicatePushdown {
             | LogicalPlan::CreateCollection(_)
             | LogicalPlan::DropCollection(_)
             | LogicalPlan::CreateView(_)
-            | LogicalPlan::DropView(_) => {
+            | LogicalPlan::DropView(_)
+            | LogicalPlan::CreateSchema(_)
+            | LogicalPlan::AlterSchema(_)
+            | LogicalPlan::DropSchema(_)
+            | LogicalPlan::CreateFunction(_)
+            | LogicalPlan::DropFunction(_)
+            | LogicalPlan::CreateTrigger(_)
+            | LogicalPlan::DropTrigger(_) => {
                 // DDL statements don't have predicates to push
                 plan
             }
@@ -341,7 +348,8 @@ impl PredicatePushdown {
             | LogicalPlan::Copy(_)
             | LogicalPlan::SetSession(_)
             | LogicalPlan::Show(_)
-            | LogicalPlan::Reset(_) => {
+            | LogicalPlan::Reset(_)
+            | LogicalPlan::ShowProcedures(_) => {
                 // Utility statements have no inputs, just apply any predicates as a filter
                 self.apply_predicates(plan, predicates)
             }

@@ -20,11 +20,12 @@ use std::fmt;
 use crate::ast::DistanceMetric;
 use crate::ast::{WindowFrame, WindowFunction};
 use crate::plan::logical::{
-    AlterTableNode, BeginTransactionNode, CommitNode, CreateCollectionNode, CreateIndexNode,
-    CreateTableNode, CreateViewNode, DropCollectionNode, DropIndexNode, DropTableNode,
-    DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode, GraphDeleteNode,
-    GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType, LogicalExpr,
-    ProcedureCallNode, ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType,
+    AlterSchemaNode, AlterTableNode, BeginTransactionNode, CommitNode, CreateCollectionNode,
+    CreateFunctionNode, CreateIndexNode, CreateSchemaNode, CreateTableNode, CreateTriggerNode,
+    CreateViewNode, DropCollectionNode, DropFunctionNode, DropIndexNode, DropSchemaNode,
+    DropTableNode, DropTriggerNode, DropViewNode, ExpandDirection, ExpandLength, GraphCreateNode,
+    GraphDeleteNode, GraphForeachNode, GraphMergeNode, GraphRemoveNode, GraphSetNode, JoinType,
+    LogicalExpr, ProcedureCallNode, ReleaseSavepointNode, RollbackNode, SavepointNode, SetOpType,
     SetTransactionNode, SortOrder,
 };
 
@@ -361,6 +362,27 @@ pub enum PhysicalPlan {
     /// DROP VIEW operation.
     DropView(DropViewNode),
 
+    /// CREATE SCHEMA operation.
+    CreateSchema(CreateSchemaNode),
+
+    /// ALTER SCHEMA operation.
+    AlterSchema(AlterSchemaNode),
+
+    /// DROP SCHEMA operation.
+    DropSchema(DropSchemaNode),
+
+    /// CREATE FUNCTION operation.
+    CreateFunction(CreateFunctionNode),
+
+    /// DROP FUNCTION operation.
+    DropFunction(DropFunctionNode),
+
+    /// CREATE TRIGGER operation.
+    CreateTrigger(CreateTriggerNode),
+
+    /// DROP TRIGGER operation.
+    DropTrigger(DropTriggerNode),
+
     // ========== Graph DML Operations ==========
     /// Cypher CREATE operation.
     GraphCreate {
@@ -454,6 +476,9 @@ pub enum PhysicalPlan {
 
     /// RESET session variable.
     Reset(ResetExecNode),
+
+    /// SHOW PROCEDURES command.
+    ShowProcedures(ShowProceduresExecNode),
 }
 
 // ============================================================================
@@ -2367,6 +2392,21 @@ impl ResetExecNode {
     }
 }
 
+/// SHOW PROCEDURES execution node.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShowProceduresExecNode {
+    /// Whether to only show executable procedures.
+    pub executable: bool,
+}
+
+impl ShowProceduresExecNode {
+    /// Creates a SHOW PROCEDURES node.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 // ============================================================================
 // PhysicalPlan Implementation
 // ============================================================================
@@ -2393,6 +2433,13 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_)
             | Self::ProcedureCall(_)
             // Transaction control nodes (leaf - no inputs)
             | Self::BeginTransaction(_)
@@ -2458,7 +2505,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -2483,6 +2531,13 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_)
             | Self::ProcedureCall(_)
             // Transaction control nodes (leaf - no inputs)
             | Self::BeginTransaction(_)
@@ -2548,7 +2603,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -2571,6 +2627,13 @@ impl PhysicalPlan {
                 | Self::DropCollection(_)
                 | Self::CreateView(_)
                 | Self::DropView(_)
+                | Self::CreateSchema(_)
+                | Self::AlterSchema(_)
+                | Self::DropSchema(_)
+                | Self::CreateFunction(_)
+                | Self::DropFunction(_)
+                | Self::CreateTrigger(_)
+                | Self::DropTrigger(_)
                 | Self::ProcedureCall(_)
                 | Self::BeginTransaction(_)
                 | Self::Commit(_)
@@ -2584,6 +2647,7 @@ impl PhysicalPlan {
                 | Self::SetSession(_)
                 | Self::Show(_)
                 | Self::Reset(_)
+                | Self::ShowProcedures(_)
         )
     }
 
@@ -2632,6 +2696,13 @@ impl PhysicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::CreateView(_) => "CreateView",
             Self::DropView(_) => "DropView",
+            Self::CreateSchema(_) => "CreateSchema",
+            Self::AlterSchema(_) => "AlterSchema",
+            Self::DropSchema(_) => "DropSchema",
+            Self::CreateFunction(_) => "CreateFunction",
+            Self::DropFunction(_) => "DropFunction",
+            Self::CreateTrigger(_) => "CreateTrigger",
+            Self::DropTrigger(_) => "DropTrigger",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
             Self::GraphSet { .. } => "GraphSet",
@@ -2652,6 +2723,7 @@ impl PhysicalPlan {
             Self::SetSession(_) => "SetSession",
             Self::Show(_) => "Show",
             Self::Reset(_) => "Reset",
+            Self::ShowProcedures(_) => "ShowProcedures",
         }
     }
 
@@ -2701,6 +2773,13 @@ impl PhysicalPlan {
             | Self::DropCollection(_)
             | Self::CreateView(_)
             | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_)
             | Self::ProcedureCall(_)
             // Transaction control operations have zero cost
             | Self::BeginTransaction(_)
@@ -2716,7 +2795,8 @@ impl PhysicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => Cost::zero(),
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => Cost::zero(),
             // Graph DML operations - cost is based on input if present
             Self::GraphCreate { .. }
             | Self::GraphMerge { .. }
@@ -3174,6 +3254,46 @@ impl DisplayTree<'_> {
                     write!(f, " CASCADE")?;
                 }
             }
+            PhysicalPlan::CreateSchema(node) => {
+                write!(f, "CreateSchema: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+            }
+            PhysicalPlan::AlterSchema(node) => {
+                write!(f, "AlterSchema: {}", node.name)?;
+            }
+            PhysicalPlan::DropSchema(node) => {
+                write!(f, "DropSchema: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            PhysicalPlan::CreateFunction(node) => {
+                write!(f, "CreateFunction: {}", node.name)?;
+                if node.or_replace {
+                    write!(f, " OR REPLACE")?;
+                }
+                write!(f, " ({} params)", node.parameters.len())?;
+            }
+            PhysicalPlan::DropFunction(node) => {
+                write!(f, "DropFunction: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+            }
+            PhysicalPlan::CreateTrigger(node) => {
+                write!(f, "CreateTrigger: {} ON {}", node.name, node.table)?;
+            }
+            PhysicalPlan::DropTrigger(node) => {
+                write!(f, "DropTrigger: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+            }
             PhysicalPlan::GraphCreate { node, .. } => {
                 write!(
                     f,
@@ -3354,6 +3474,12 @@ impl DisplayTree<'_> {
                     write!(f, ": {name}")?;
                 } else {
                     write!(f, " ALL")?;
+                }
+            }
+            PhysicalPlan::ShowProcedures(node) => {
+                write!(f, "ShowProcedures")?;
+                if node.executable {
+                    write!(f, " EXECUTABLE")?;
                 }
             }
         }

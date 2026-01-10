@@ -413,6 +413,75 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
             }
         }
 
+        LogicalPlan::CreateSchema(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("CREATE SCHEMA requires a name".to_string()));
+            }
+        }
+
+        LogicalPlan::AlterSchema(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "ALTER SCHEMA requires a schema name".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropSchema(node) => {
+            if node.names.is_empty() {
+                return Err(PlanError::Unsupported("DROP SCHEMA requires schema name".to_string()));
+            }
+        }
+
+        LogicalPlan::CreateFunction(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("CREATE FUNCTION requires a name".to_string()));
+            }
+            if node.body.is_empty() {
+                return Err(PlanError::Unsupported("CREATE FUNCTION requires a body".to_string()));
+            }
+        }
+
+        LogicalPlan::DropFunction(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "DROP FUNCTION requires function name".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::CreateTrigger(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported("CREATE TRIGGER requires a name".to_string()));
+            }
+            if node.table.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE TRIGGER requires a table name".to_string(),
+                ));
+            }
+            if node.function.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE TRIGGER requires a function name".to_string(),
+                ));
+            }
+            if node.events.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "CREATE TRIGGER requires at least one event".to_string(),
+                ));
+            }
+        }
+
+        LogicalPlan::DropTrigger(node) => {
+            if node.name.is_empty() {
+                return Err(PlanError::Unsupported(
+                    "DROP TRIGGER requires trigger name".to_string(),
+                ));
+            }
+            if node.table.is_empty() {
+                return Err(PlanError::Unsupported("DROP TRIGGER requires table name".to_string()));
+            }
+        }
+
         LogicalPlan::HybridSearch { node, input } => {
             validate_plan(input)?;
             if node.components.is_empty() {
@@ -491,7 +560,8 @@ pub fn validate_plan(plan: &LogicalPlan) -> PlanResult<()> {
         | LogicalPlan::Copy(_)
         | LogicalPlan::SetSession(_)
         | LogicalPlan::Show(_)
-        | LogicalPlan::Reset(_) => {
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {
             // Utility statements have no structural validation requirements
         }
     }
@@ -758,7 +828,14 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         | LogicalPlan::CreateCollection(_)
         | LogicalPlan::DropCollection(_)
         | LogicalPlan::CreateView(_)
-        | LogicalPlan::DropView(_) => {}
+        | LogicalPlan::DropView(_)
+        | LogicalPlan::CreateSchema(_)
+        | LogicalPlan::AlterSchema(_)
+        | LogicalPlan::DropSchema(_)
+        | LogicalPlan::CreateFunction(_)
+        | LogicalPlan::DropFunction(_)
+        | LogicalPlan::CreateTrigger(_)
+        | LogicalPlan::DropTrigger(_) => {}
 
         // Graph DML
         LogicalPlan::GraphCreate { input, .. } | LogicalPlan::GraphMerge { input, .. } => {
@@ -795,7 +872,8 @@ fn validate_schema_recursive(plan: &LogicalPlan, catalog: &dyn SchemaCatalog) ->
         | LogicalPlan::Copy(_)
         | LogicalPlan::SetSession(_)
         | LogicalPlan::Show(_)
-        | LogicalPlan::Reset(_) => {}
+        | LogicalPlan::Reset(_)
+        | LogicalPlan::ShowProcedures(_) => {}
     }
 
     Ok(())

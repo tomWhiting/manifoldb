@@ -11,16 +11,19 @@ use crate::ast::{
     AlterColumnAction, AlterTableAction, AlterTableStatement, AnalyzeStatement, Assignment,
     BeginTransaction, BinaryOp, CallStatement, CaseExpr, ColumnConstraint, ColumnDef,
     ConflictAction, ConflictTarget, CopyDestination, CopyDirection, CopyFormat, CopyOptions,
-    CopySource, CopyStatement, CopyTarget, CreateIndexStatement, CreateTableStatement,
-    CreateViewStatement, DataType, DeleteStatement, DropIndexStatement, DropTableStatement,
-    DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall, Identifier,
-    IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause, JoinCondition,
-    JoinType, Literal, OnConflict, OrderByExpr, ParameterRef, QualifiedName,
-    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
-    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
-    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
-    TransactionAccessMode, TransactionStatement, UnaryOp, UpdateStatement, UtilityStatement,
-    VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
+    CopySource, CopyStatement, CopyTarget, CreateFunctionStatement, CreateIndexStatement,
+    CreateSchemaStatement, CreateTableStatement, CreateTriggerStatement, CreateViewStatement,
+    DataType, DeleteStatement, DropFunctionStatement, DropIndexStatement, DropSchemaStatement,
+    DropTableStatement, DropTriggerStatement, DropViewStatement, ExplainAnalyzeStatement,
+    ExplainFormat, Expr, FunctionCall, FunctionLanguage, FunctionParameter, FunctionVolatility,
+    Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
+    JoinCondition, JoinType, Literal, OnConflict, OrderByExpr, ParameterMode, ParameterRef,
+    QualifiedName, ReleaseSavepointStatement, ResetStatement, RollbackTransaction,
+    SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
+    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
+    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
+    TriggerForEach, TriggerTiming, UnaryOp, UpdateStatement, UtilityStatement, VacuumStatement,
+    WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -133,6 +136,15 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
                 };
                 Ok(Statement::DropView(drop_stmt))
             }
+            sp::ObjectType::Schema => {
+                // Schema names are simple identifiers, not qualified names
+                let drop_stmt = DropSchemaStatement {
+                    if_exists,
+                    names: names.into_iter().map(|n| Identifier::new(n.to_string())).collect(),
+                    cascade,
+                };
+                Ok(Statement::DropSchema(drop_stmt))
+            }
             _ => Err(ParseError::Unsupported(format!("DROP {object_type:?}"))),
         },
         sp::Statement::Explain { statement, analyze, format, verbose, .. } => {
@@ -202,6 +214,29 @@ fn convert_statement(stmt: sp::Statement) -> ParseResult<Statement> {
                 Identifier::new(name.value),
             ));
             Ok(Statement::Transaction(txn_stmt))
+        }
+        // Schema DDL statements
+        sp::Statement::CreateSchema { schema_name, if_not_exists, .. } => {
+            let create_stmt = convert_create_schema(schema_name, if_not_exists)?;
+            Ok(Statement::CreateSchema(create_stmt))
+        }
+        // Function DDL statements
+        sp::Statement::CreateFunction(create_func) => {
+            let create_stmt = convert_create_function(create_func)?;
+            Ok(Statement::CreateFunction(Box::new(create_stmt)))
+        }
+        sp::Statement::DropFunction(drop_func) => {
+            let drop_stmt = convert_drop_function(drop_func)?;
+            Ok(Statement::DropFunction(drop_stmt))
+        }
+        // Trigger DDL statements
+        sp::Statement::CreateTrigger(create_trigger) => {
+            let create_stmt = convert_create_trigger(create_trigger)?;
+            Ok(Statement::CreateTrigger(Box::new(create_stmt)))
+        }
+        sp::Statement::DropTrigger(drop_trigger) => {
+            let drop_stmt = convert_drop_trigger(drop_trigger)?;
+            Ok(Statement::DropTrigger(drop_stmt))
         }
         _ => Err(ParseError::Unsupported(format!("statement type: {stmt:?}"))),
     }
@@ -668,9 +703,172 @@ fn convert_expr(expr: sp::Expr) -> ParseResult<Expr> {
             // Named parameter like $name
             Ok(Expr::Parameter(ParameterRef::Named(name.value)))
         }
+        // TypedString: DATE '2024-01-15', TIME '10:30:00', TIMESTAMP '2024-01-15T10:30:00'
+        sp::Expr::TypedString(typed_string) => {
+            let sp::TypedString { data_type, value, .. } = typed_string;
+            // Extract string value from ValueWithSpan
+            let str_val = match value.value {
+                sp::Value::SingleQuotedString(s) => s,
+                sp::Value::DoubleQuotedString(s) => s,
+                sp::Value::Number(n, _) => n,
+                _ => return Err(ParseError::InvalidLiteral("expected string value".to_string())),
+            };
+            // Convert typed string to function call: DATE '...' -> TO_DATE('...')
+            // or just return as a string literal with type info stored as a function call
+            match &data_type {
+                sp::DataType::Date => {
+                    // DATE 'value' -> string literal that represents date
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("date".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                sp::DataType::Time(..) => {
+                    // TIME 'value' -> time function call
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("time".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                sp::DataType::Timestamp(..) => {
+                    // TIMESTAMP 'value' -> datetime function call
+                    Ok(Expr::Function(FunctionCall {
+                        name: QualifiedName::simple("datetime".to_string()),
+                        args: vec![Expr::Literal(Literal::String(str_val))],
+                        distinct: false,
+                        filter: None,
+                        over: None,
+                    }))
+                }
+                _ => {
+                    // For other typed strings, just return the string value
+                    Ok(Expr::Literal(Literal::String(str_val)))
+                }
+            }
+        }
+        // INTERVAL '1 day', INTERVAL '2 hours', etc.
+        sp::Expr::Interval(interval) => {
+            // Convert interval to duration function call
+            // INTERVAL 'P1D' or INTERVAL '1 day' -> duration('P1D')
+            let value = match *interval.value {
+                sp::Expr::Value(sp::ValueWithSpan {
+                    value: sp::Value::SingleQuotedString(s),
+                    ..
+                }) => s,
+                sp::Expr::Value(sp::ValueWithSpan {
+                    value: sp::Value::DoubleQuotedString(s),
+                    ..
+                }) => s,
+                sp::Expr::Value(sp::ValueWithSpan { value: sp::Value::Number(n, _), .. }) => {
+                    // If just a number, try to construct with leading_field
+                    let unit = interval
+                        .leading_field
+                        .map(|f| format!("{:?}", f).to_lowercase())
+                        .unwrap_or_else(|| "day".to_string());
+                    format!("{} {}", n, unit)
+                }
+                other => {
+                    // For other expression types, convert and return directly
+                    return convert_expr(other);
+                }
+            };
+
+            // Convert SQL interval format to ISO 8601 duration
+            let duration = convert_sql_interval_to_iso8601(&value);
+
+            Ok(Expr::Function(FunctionCall {
+                name: QualifiedName::simple("duration".to_string()),
+                args: vec![Expr::Literal(Literal::String(duration))],
+                distinct: false,
+                filter: None,
+                over: None,
+            }))
+        }
         // Handle placeholder for positional parameters
         _ => Err(ParseError::Unsupported(format!("expression type: {expr:?}"))),
     }
+}
+
+/// Converts SQL interval format to ISO 8601 duration format.
+///
+/// Examples:
+/// - '1 day' -> 'P1D'
+/// - '2 hours' -> 'PT2H'
+/// - '1 year 2 months' -> 'P1Y2M'
+/// - '1 day 2 hours 30 minutes' -> 'P1DT2H30M'
+fn convert_sql_interval_to_iso8601(value: &str) -> String {
+    // If already in ISO 8601 format, return as-is
+    if value.starts_with('P') {
+        return value.to_string();
+    }
+
+    let value_lower = value.to_lowercase();
+    let mut years = 0i64;
+    let mut months = 0i64;
+    let mut days = 0i64;
+    let mut hours = 0i64;
+    let mut minutes = 0i64;
+    let mut seconds = 0i64;
+
+    // Parse "N unit" pairs
+    let mut current_num: Option<i64> = None;
+    for token in value_lower.split_whitespace() {
+        if let Ok(num) = token.parse::<i64>() {
+            current_num = Some(num);
+        } else if let Some(num) = current_num.take() {
+            match token.trim_end_matches('s') {
+                "year" => years = num,
+                "month" => months = num,
+                "week" => days += num * 7,
+                "day" => days = num,
+                "hour" => hours = num,
+                "minute" | "min" => minutes = num,
+                "second" | "sec" => seconds = num,
+                _ => {}
+            }
+        }
+    }
+
+    use std::fmt::Write;
+
+    // Build ISO 8601 duration string
+    let mut result = String::from("P");
+
+    if years > 0 {
+        let _ = write!(result, "{years}Y");
+    }
+    if months > 0 {
+        let _ = write!(result, "{months}M");
+    }
+    if days > 0 {
+        let _ = write!(result, "{days}D");
+    }
+
+    if hours > 0 || minutes > 0 || seconds > 0 {
+        result.push('T');
+        if hours > 0 {
+            let _ = write!(result, "{hours}H");
+        }
+        if minutes > 0 {
+            let _ = write!(result, "{minutes}M");
+        }
+        if seconds > 0 {
+            let _ = write!(result, "{seconds}S");
+        }
+    }
+
+    if result == "P" {
+        // No values parsed, return original
+        return value.to_string();
+    }
+
+    result
 }
 
 /// Converts an array expression, detecting vector and multi-vector literals.
@@ -1716,6 +1914,200 @@ fn convert_reset(reset: sp::ResetStatement) -> ParseResult<ResetStatement> {
     Ok(ResetStatement { name })
 }
 
+/// Converts a CREATE SCHEMA statement.
+fn convert_create_schema(
+    schema_name: sp::SchemaName,
+    if_not_exists: bool,
+) -> ParseResult<CreateSchemaStatement> {
+    // Extract both name and optional authorization from schema_name
+    let (name, authorization) = match schema_name {
+        sp::SchemaName::Simple(name) => (Identifier::new(name.to_string()), None),
+        sp::SchemaName::UnnamedAuthorization(ident) => {
+            // Only authorization, no name - use authorization as name
+            let auth = Identifier::new(ident.to_string());
+            (auth.clone(), Some(auth))
+        }
+        sp::SchemaName::NamedAuthorization(name, auth) => {
+            (Identifier::new(name.to_string()), Some(Identifier::new(auth.to_string())))
+        }
+    };
+
+    Ok(CreateSchemaStatement { if_not_exists, name, authorization })
+}
+
+/// Converts a CREATE FUNCTION statement.
+fn convert_create_function(
+    create_func: sp::CreateFunction,
+) -> ParseResult<CreateFunctionStatement> {
+    // Convert parameters
+    let parameters = create_func
+        .args
+        .unwrap_or_default()
+        .into_iter()
+        .map(|arg| {
+            let mode = match arg.mode {
+                Some(sp::ArgMode::In) => ParameterMode::In,
+                Some(sp::ArgMode::Out) => ParameterMode::Out,
+                Some(sp::ArgMode::InOut) => ParameterMode::InOut,
+                None => ParameterMode::In,
+            };
+            let name = arg.name.map(|n| Identifier::new(n.to_string()));
+            // data_type is required DataType, convert with fallback to Custom for unsupported types
+            let data_type = convert_data_type(arg.data_type.clone())
+                .unwrap_or_else(|_| DataType::Custom(arg.data_type.to_string()));
+            let default = arg.default_expr.map(|e| e.to_string());
+
+            FunctionParameter { name, mode, data_type, default }
+        })
+        .collect();
+
+    // Convert return type (default to VARCHAR if not specified)
+    let returns = create_func
+        .return_type
+        .and_then(|rt| convert_data_type(rt).ok())
+        .unwrap_or(DataType::Varchar(None));
+
+    // Convert function body - extract the body expression from CreateFunctionBody enum
+    let body = create_func
+        .function_body
+        .map(|fb| match fb {
+            sp::CreateFunctionBody::AsBeforeOptions { body, .. } => body.to_string(),
+            sp::CreateFunctionBody::AsAfterOptions(expr) => expr.to_string(),
+            sp::CreateFunctionBody::Return(expr) => expr.to_string(),
+            sp::CreateFunctionBody::AsReturnExpr(expr) => expr.to_string(),
+            sp::CreateFunctionBody::AsReturnSelect(query) => query.to_string(),
+            sp::CreateFunctionBody::AsBeginEnd(bes) => bes.to_string(),
+        })
+        .unwrap_or_default();
+
+    // Convert language (default to SQL)
+    let func_language = create_func
+        .language
+        .map(|l| {
+            let lang_str = l.to_string().to_uppercase();
+            match lang_str.as_str() {
+                "SQL" => FunctionLanguage::Sql,
+                "PLPGSQL" => FunctionLanguage::PlPgSql,
+                _ => FunctionLanguage::Sql,
+            }
+        })
+        .unwrap_or(FunctionLanguage::Sql);
+
+    // Convert volatility
+    let volatility = create_func.behavior.map(|b| match b {
+        sp::FunctionBehavior::Immutable => FunctionVolatility::Immutable,
+        sp::FunctionBehavior::Stable => FunctionVolatility::Stable,
+        sp::FunctionBehavior::Volatile => FunctionVolatility::Volatile,
+    });
+
+    Ok(CreateFunctionStatement {
+        or_replace: create_func.or_replace,
+        name: QualifiedName::simple(create_func.name.to_string()),
+        parameters,
+        returns,
+        returns_setof: false,
+        body,
+        language: func_language,
+        volatility,
+        strict: false,
+        security_definer: false,
+    })
+}
+
+/// Converts a DROP FUNCTION statement.
+fn convert_drop_function(drop_func: sp::DropFunction) -> ParseResult<DropFunctionStatement> {
+    // Get the first function name (most common case is a single function)
+    let name = drop_func
+        .func_desc
+        .first()
+        .map(|fd| QualifiedName::simple(fd.name.to_string()))
+        .ok_or_else(|| {
+            ParseError::SqlSyntax("DROP FUNCTION requires a function name".to_string())
+        })?;
+
+    // Convert argument types for overload resolution
+    // OperateFunctionArg.data_type is DataType (not Option), so convert directly
+    let arg_types = drop_func
+        .func_desc
+        .first()
+        .and_then(|fd| fd.args.as_ref())
+        .map(|args| {
+            args.iter().filter_map(|arg| convert_data_type(arg.data_type.clone()).ok()).collect()
+        })
+        .unwrap_or_default();
+
+    let cascade = matches!(drop_func.drop_behavior, Some(sp::DropBehavior::Cascade));
+
+    Ok(DropFunctionStatement { if_exists: drop_func.if_exists, name, arg_types, cascade })
+}
+
+/// Converts a CREATE TRIGGER statement.
+fn convert_create_trigger(
+    create_trigger: sp::CreateTrigger,
+) -> ParseResult<CreateTriggerStatement> {
+    // Convert timing - For is not a standard timing, default to Before in that case
+    let timing = match create_trigger.period {
+        Some(sp::TriggerPeriod::Before) => TriggerTiming::Before,
+        Some(sp::TriggerPeriod::After) => TriggerTiming::After,
+        Some(sp::TriggerPeriod::InsteadOf) => TriggerTiming::InsteadOf,
+        Some(sp::TriggerPeriod::For) | None => TriggerTiming::Before, // Default to BEFORE
+    };
+
+    // Convert events
+    let trigger_events = create_trigger
+        .events
+        .into_iter()
+        .map(|e| match e {
+            sp::TriggerEvent::Insert => TriggerEvent::Insert,
+            sp::TriggerEvent::Update(cols) => {
+                let columns = cols.into_iter().map(|c| Identifier::new(c.to_string())).collect();
+                TriggerEvent::Update(columns)
+            }
+            sp::TriggerEvent::Delete => TriggerEvent::Delete,
+            sp::TriggerEvent::Truncate => TriggerEvent::Truncate,
+        })
+        .collect();
+
+    // Get table name as QualifiedName
+    let table = QualifiedName::simple(create_trigger.table_name.to_string());
+
+    // Extract function from exec_body - func_desc contains the function name
+    let function = create_trigger
+        .exec_body
+        .map(|eb| QualifiedName::simple(eb.func_desc.name.to_string()))
+        .unwrap_or_else(|| QualifiedName::simple(String::new()));
+
+    Ok(CreateTriggerStatement {
+        or_replace: create_trigger.or_replace,
+        name: Identifier::new(create_trigger.name.to_string()),
+        timing,
+        events: trigger_events,
+        table,
+        for_each: TriggerForEach::Row, // Default to ROW
+        when_clause: None,
+        function,
+        function_args: vec![],
+    })
+}
+
+/// Converts a DROP TRIGGER statement.
+fn convert_drop_trigger(drop_trigger: sp::DropTrigger) -> ParseResult<DropTriggerStatement> {
+    let cascade = matches!(drop_trigger.option, Some(sp::ReferentialAction::Cascade));
+
+    // table_name is Option<ObjectName>, convert to QualifiedName
+    let table = drop_trigger
+        .table_name
+        .map(|t| QualifiedName::simple(t.to_string()))
+        .unwrap_or_else(|| QualifiedName::simple(String::new()));
+
+    Ok(DropTriggerStatement {
+        if_exists: drop_trigger.if_exists,
+        name: Identifier::new(drop_trigger.trigger_name.to_string()),
+        table,
+        cascade,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2520,6 +2912,257 @@ mod tests {
                 _ => panic!("expected RESET"),
             },
             _ => panic!("expected Utility statement"),
+        }
+    }
+
+    // =====================================================
+    // Tests for Schema DDL statements
+    // =====================================================
+
+    #[test]
+    fn parse_create_schema() {
+        let stmt = parse_single_statement("CREATE SCHEMA myschema").unwrap();
+        match stmt {
+            Statement::CreateSchema(create) => {
+                assert_eq!(create.name.to_string(), "myschema");
+                assert!(!create.if_not_exists);
+                assert!(create.authorization.is_none());
+            }
+            _ => panic!("expected CREATE SCHEMA"),
+        }
+    }
+
+    #[test]
+    fn parse_create_schema_if_not_exists() {
+        let stmt = parse_single_statement("CREATE SCHEMA IF NOT EXISTS myschema").unwrap();
+        match stmt {
+            Statement::CreateSchema(create) => {
+                assert_eq!(create.name.to_string(), "myschema");
+                assert!(create.if_not_exists);
+            }
+            _ => panic!("expected CREATE SCHEMA"),
+        }
+    }
+
+    #[test]
+    fn parse_create_schema_authorization() {
+        let stmt = parse_single_statement("CREATE SCHEMA myschema AUTHORIZATION myuser").unwrap();
+        match stmt {
+            Statement::CreateSchema(create) => {
+                assert_eq!(create.name.to_string(), "myschema");
+                assert!(create.authorization.is_some());
+                assert_eq!(create.authorization.unwrap().name, "myuser");
+            }
+            _ => panic!("expected CREATE SCHEMA"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_schema() {
+        let stmt = parse_single_statement("DROP SCHEMA myschema").unwrap();
+        match stmt {
+            Statement::DropSchema(drop) => {
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].name, "myschema");
+                assert!(!drop.if_exists);
+                assert!(!drop.cascade);
+            }
+            _ => panic!("expected DROP SCHEMA"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_schema_if_exists_cascade() {
+        let stmt = parse_single_statement("DROP SCHEMA IF EXISTS myschema CASCADE").unwrap();
+        match stmt {
+            Statement::DropSchema(drop) => {
+                assert_eq!(drop.names.len(), 1);
+                assert_eq!(drop.names[0].name, "myschema");
+                assert!(drop.if_exists);
+                assert!(drop.cascade);
+            }
+            _ => panic!("expected DROP SCHEMA"),
+        }
+    }
+
+    // =====================================================
+    // Tests for Function DDL statements
+    // =====================================================
+
+    #[test]
+    fn parse_create_function() {
+        let stmt = parse_single_statement(
+            "CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER AS 'SELECT x + 1'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateFunction(create) => {
+                assert_eq!(create.name.to_string(), "add_one");
+                assert_eq!(create.parameters.len(), 1);
+                assert_eq!(create.parameters[0].name.as_ref().unwrap().name, "x");
+                assert!(matches!(create.returns, DataType::Integer));
+            }
+            _ => panic!("expected CREATE FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_create_function_or_replace() {
+        let stmt = parse_single_statement(
+            "CREATE OR REPLACE FUNCTION double_val(n INTEGER) RETURNS INTEGER AS 'SELECT n * 2'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateFunction(create) => {
+                assert!(create.or_replace);
+                assert_eq!(create.name.to_string(), "double_val");
+            }
+            _ => panic!("expected CREATE FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_create_function_with_language() {
+        let stmt = parse_single_statement(
+            "CREATE FUNCTION myfunc() RETURNS INTEGER LANGUAGE SQL AS 'SELECT 1'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateFunction(create) => {
+                assert_eq!(create.language, FunctionLanguage::Sql);
+            }
+            _ => panic!("expected CREATE FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_create_function_immutable() {
+        let stmt = parse_single_statement(
+            "CREATE FUNCTION square(x INTEGER) RETURNS INTEGER IMMUTABLE AS 'SELECT x * x'",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateFunction(create) => {
+                assert_eq!(create.volatility, Some(FunctionVolatility::Immutable));
+            }
+            _ => panic!("expected CREATE FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_function() {
+        let stmt = parse_single_statement("DROP FUNCTION myfunc").unwrap();
+        match stmt {
+            Statement::DropFunction(drop) => {
+                assert_eq!(drop.name.to_string(), "myfunc");
+                assert!(!drop.if_exists);
+                assert!(!drop.cascade);
+            }
+            _ => panic!("expected DROP FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_function_if_exists() {
+        let stmt = parse_single_statement("DROP FUNCTION IF EXISTS myfunc").unwrap();
+        match stmt {
+            Statement::DropFunction(drop) => {
+                assert_eq!(drop.name.to_string(), "myfunc");
+                assert!(drop.if_exists);
+            }
+            _ => panic!("expected DROP FUNCTION"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_function_with_args() {
+        let stmt = parse_single_statement("DROP FUNCTION myfunc(INTEGER, VARCHAR)").unwrap();
+        match stmt {
+            Statement::DropFunction(drop) => {
+                assert_eq!(drop.name.to_string(), "myfunc");
+                assert_eq!(drop.arg_types.len(), 2);
+            }
+            _ => panic!("expected DROP FUNCTION"),
+        }
+    }
+
+    // =====================================================
+    // Tests for Trigger DDL statements
+    // =====================================================
+
+    #[test]
+    fn parse_create_trigger_before_insert() {
+        let stmt = parse_single_statement(
+            "CREATE TRIGGER audit_trigger BEFORE INSERT ON users EXECUTE FUNCTION audit_func()",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateTrigger(create) => {
+                assert_eq!(create.name.name, "audit_trigger");
+                assert_eq!(create.timing, TriggerTiming::Before);
+                assert_eq!(create.events.len(), 1);
+                assert!(matches!(create.events[0], TriggerEvent::Insert));
+                assert_eq!(create.table.to_string(), "users");
+            }
+            _ => panic!("expected CREATE TRIGGER"),
+        }
+    }
+
+    #[test]
+    fn parse_create_trigger_after_update() {
+        let stmt = parse_single_statement(
+            "CREATE TRIGGER log_changes AFTER UPDATE ON orders EXECUTE FUNCTION log_func()",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateTrigger(create) => {
+                assert_eq!(create.name.name, "log_changes");
+                assert_eq!(create.timing, TriggerTiming::After);
+                assert!(matches!(create.events[0], TriggerEvent::Update(_)));
+            }
+            _ => panic!("expected CREATE TRIGGER"),
+        }
+    }
+
+    #[test]
+    fn parse_create_trigger_or_replace() {
+        let stmt = parse_single_statement(
+            "CREATE OR REPLACE TRIGGER my_trigger AFTER DELETE ON items EXECUTE FUNCTION cleanup()",
+        )
+        .unwrap();
+        match stmt {
+            Statement::CreateTrigger(create) => {
+                assert!(create.or_replace);
+                assert_eq!(create.timing, TriggerTiming::After);
+                assert!(matches!(create.events[0], TriggerEvent::Delete));
+            }
+            _ => panic!("expected CREATE TRIGGER"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_trigger() {
+        let stmt = parse_single_statement("DROP TRIGGER my_trigger ON users").unwrap();
+        match stmt {
+            Statement::DropTrigger(drop) => {
+                assert_eq!(drop.name.name, "my_trigger");
+                assert_eq!(drop.table.to_string(), "users");
+                assert!(!drop.if_exists);
+                assert!(!drop.cascade);
+            }
+            _ => panic!("expected DROP TRIGGER"),
+        }
+    }
+
+    #[test]
+    fn parse_drop_trigger_if_exists() {
+        let stmt = parse_single_statement("DROP TRIGGER IF EXISTS my_trigger ON users").unwrap();
+        match stmt {
+            Statement::DropTrigger(drop) => {
+                assert!(drop.if_exists);
+                assert_eq!(drop.name.name, "my_trigger");
+            }
+            _ => panic!("expected DROP TRIGGER"),
         }
     }
 }

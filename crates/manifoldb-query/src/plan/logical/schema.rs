@@ -324,7 +324,14 @@ impl LogicalPlan {
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
-            | Self::DropView(_) => {
+            | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_) => {
                 // DDL statements don't return data
                 Ok(Schema::empty())
             }
@@ -429,6 +436,17 @@ impl LogicalPlan {
                 Ok(Schema::new(vec![
                     TypedColumn::new("name", PlanType::Text),
                     TypedColumn::new("setting", PlanType::Text),
+                ]))
+            }
+
+            Self::ShowProcedures(_) => {
+                // SHOW PROCEDURES returns procedure metadata columns
+                // Modeled after Neo4j's SHOW PROCEDURES output
+                Ok(Schema::new(vec![
+                    TypedColumn::new("name", PlanType::Text),
+                    TypedColumn::new("description", PlanType::Text),
+                    TypedColumn::new("mode", PlanType::Text),
+                    TypedColumn::new("worksOnSystem", PlanType::Boolean),
                 ]))
             }
         }

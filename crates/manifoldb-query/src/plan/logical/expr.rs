@@ -115,6 +115,21 @@ pub enum LogicalExpr {
         negated: bool,
     },
 
+    /// Array subscript access: `array[index]`.
+    ///
+    /// Supports accessing elements from arrays and lists.
+    /// Indices are 1-based (SQL standard) for SQL, 0-based for Cypher.
+    ///
+    /// Examples:
+    /// - `tags[1]` - first element (SQL, 1-based)
+    /// - `matrix[1][2]` - nested access
+    ArrayIndex {
+        /// The array expression.
+        array: Box<LogicalExpr>,
+        /// The index expression.
+        index: Box<LogicalExpr>,
+    },
+
     /// A subquery expression.
     Subquery(Box<super::LogicalPlan>),
 
@@ -660,6 +675,18 @@ impl LogicalExpr {
     #[must_use]
     pub fn between(self, low: Self, high: Self, negated: bool) -> Self {
         Self::Between { expr: Box::new(self), low: Box::new(low), high: Box::new(high), negated }
+    }
+
+    /// Creates an array index expression.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let expr = LogicalExpr::column("tags").array_index(LogicalExpr::integer(1));
+    /// // Represents: tags[1]
+    /// ```
+    #[must_use]
+    pub fn array_index(self, index: Self) -> Self {
+        Self::ArrayIndex { array: Box::new(self), index: Box::new(index) }
     }
 
     /// Creates a CAST expression.
@@ -1288,6 +1315,7 @@ impl fmt::Display for LogicalExpr {
                 }
                 write!(f, " BETWEEN {low} AND {high}")
             }
+            Self::ArrayIndex { array, index } => write!(f, "{array}[{index}]"),
             Self::Subquery(_) => write!(f, "(subquery)"),
             Self::Exists { negated, .. } => {
                 if *negated {
@@ -1978,6 +2006,37 @@ pub enum ScalarFunction {
     /// Returns NULL for null input.
     CypherToString,
 
+    // SQL type conversion functions with format patterns (PostgreSQL-compatible)
+    /// `TO_NUMBER(text, format)`.
+    ///
+    /// Parses a string to a number using PostgreSQL-compatible format patterns.
+    ///
+    /// Format patterns:
+    /// - `9` - Digit (suppresses leading zeros)
+    /// - `0` - Digit (includes leading zeros)
+    /// - `.` or `D` - Decimal point
+    /// - `,` or `G` - Grouping (thousands) separator
+    /// - `PR` - Negative value in angle brackets
+    /// - `S` - Sign (+/-)
+    /// - `L` - Currency symbol
+    /// - `MI` - Minus sign in position
+    /// - `PL` - Plus sign in position
+    ///
+    /// # Examples
+    /// - `TO_NUMBER('12,345.67', '99G999D99')` → 12345.67
+    /// - `TO_NUMBER('$1,234.56', 'L9G999D99')` → 1234.56
+    /// - `TO_NUMBER('(123)', '999PR')` → -123
+    ToNumber,
+    /// `TO_TEXT(value, format)` - Alias for TO_CHAR.
+    ///
+    /// Converts a numeric or temporal value to text using a format pattern.
+    /// This is an alias for TO_CHAR for compatibility.
+    ///
+    /// # Examples
+    /// - `TO_TEXT(12345, '99999')` → '12345'
+    /// - `TO_TEXT(12345.67, '99999.99')` → '12345.67'
+    ToText,
+
     // Cypher spatial functions
     /// `point(map)`.
     ///
@@ -2188,6 +2247,9 @@ impl fmt::Display for ScalarFunction {
             Self::ToInteger => "toInteger",
             Self::ToFloat => "toFloat",
             Self::CypherToString => "toString",
+            // SQL type conversion functions
+            Self::ToNumber => "TO_NUMBER",
+            Self::ToText => "TO_TEXT",
             // Spatial functions
             Self::Point => "point",
             Self::PointDistance => "point.distance",
@@ -2423,5 +2485,23 @@ mod tests {
             false,
         );
         assert_eq!(expr.to_string(), "age BETWEEN 18 AND 65");
+    }
+
+    #[test]
+    fn array_index_expression() {
+        // Simple array subscript
+        let expr = LogicalExpr::column("tags").array_index(LogicalExpr::integer(1));
+        assert_eq!(expr.to_string(), "tags[1]");
+
+        // Nested array subscript (matrix access)
+        let expr = LogicalExpr::column("matrix")
+            .array_index(LogicalExpr::integer(1))
+            .array_index(LogicalExpr::integer(2));
+        assert_eq!(expr.to_string(), "matrix[1][2]");
+
+        // Array index with expression
+        let expr = LogicalExpr::column("items")
+            .array_index(LogicalExpr::column("idx").add(LogicalExpr::integer(1)));
+        assert_eq!(expr.to_string(), "items[(idx + 1)]");
     }
 }

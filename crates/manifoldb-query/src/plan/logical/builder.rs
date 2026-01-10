@@ -20,10 +20,12 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    self, AlterTableStatement, BinaryOp, CallStatement, CreateCollectionStatement,
-    CreateGraphStatement, CreateIndexStatement, CreateNodeRef, CreatePattern, CreateTableStatement,
-    CreateViewStatement, DeleteGraphStatement, DeleteStatement, DropCollectionStatement,
-    DropIndexStatement, DropTableStatement, DropViewStatement, Expr,
+    self, AlterSchemaStatement, AlterTableStatement, BinaryOp, CallStatement,
+    CreateCollectionStatement, CreateFunctionStatement, CreateGraphStatement, CreateIndexStatement,
+    CreateNodeRef, CreatePattern, CreateSchemaStatement, CreateTableStatement,
+    CreateTriggerStatement, CreateViewStatement, DeleteGraphStatement, DeleteStatement,
+    DropCollectionStatement, DropFunctionStatement, DropIndexStatement, DropSchemaStatement,
+    DropTableStatement, DropTriggerStatement, DropViewStatement, Expr,
     ForeachAction as AstForeachAction, ForeachStatement, GraphPattern, InsertSource,
     InsertStatement, JoinClause, JoinCondition, JoinType as AstJoinType, MapProjectionItem,
     MatchStatement, MergeGraphStatement, MergePattern, PathPattern, PropertyCondition,
@@ -33,8 +35,9 @@ use crate::ast::{
 };
 
 use super::ddl::{
-    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
-    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode,
+    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
+    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
+    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
 };
 
 use super::expr::{
@@ -221,9 +224,23 @@ impl PlanBuilder {
             Statement::DropCollection(drop) => self.build_drop_collection(drop),
             Statement::CreateView(create) => self.build_create_view(create),
             Statement::DropView(drop) => self.build_drop_view(drop),
+            Statement::CreateSchema(create) => self.build_create_schema(create),
+            Statement::AlterSchema(alter) => self.build_alter_schema(alter),
+            Statement::DropSchema(drop) => self.build_drop_schema(drop),
+            Statement::CreateFunction(create) => self.build_create_function(create),
+            Statement::DropFunction(drop) => self.build_drop_function(drop),
+            Statement::CreateTrigger(create) => self.build_create_trigger(create),
+            Statement::DropTrigger(drop) => self.build_drop_trigger(drop),
+            Statement::SetSearchPath(_) => {
+                // SET search_path is handled as a utility statement
+                Err(super::validate::PlanError::Unsupported(
+                    "SET search_path is not yet implemented".to_string(),
+                ))
+            }
             Statement::Create(create) => self.build_graph_create(create),
             Statement::Merge(merge) => self.build_graph_merge(merge),
             Statement::Call(call) => self.build_call(call),
+            Statement::ShowProcedures(show) => self.build_show_procedures(show),
             Statement::Set(set) => self.build_graph_set(set),
             Statement::DeleteGraph(delete) => self.build_graph_delete(delete),
             Statement::Remove(remove) => self.build_graph_remove(remove),
@@ -1795,6 +1812,110 @@ impl PlanBuilder {
         Ok(LogicalPlan::DropView(node))
     }
 
+    /// Builds a CREATE SCHEMA plan.
+    fn build_create_schema(&self, create: &CreateSchemaStatement) -> PlanResult<LogicalPlan> {
+        let mut node =
+            CreateSchemaNode::new(&create.name.name).with_if_not_exists(create.if_not_exists);
+
+        if let Some(auth) = &create.authorization {
+            node = node.with_authorization(&auth.name);
+        }
+
+        Ok(LogicalPlan::CreateSchema(node))
+    }
+
+    /// Builds an ALTER SCHEMA plan.
+    fn build_alter_schema(&self, alter: &AlterSchemaStatement) -> PlanResult<LogicalPlan> {
+        let node = AlterSchemaNode::new(&alter.name.name, alter.action.clone());
+        Ok(LogicalPlan::AlterSchema(node))
+    }
+
+    /// Builds a DROP SCHEMA plan.
+    fn build_drop_schema(&self, drop: &DropSchemaStatement) -> PlanResult<LogicalPlan> {
+        let names: Vec<String> = drop.names.iter().map(|n| n.name.clone()).collect();
+        let node =
+            DropSchemaNode::new(names).with_if_exists(drop.if_exists).with_cascade(drop.cascade);
+        Ok(LogicalPlan::DropSchema(node))
+    }
+
+    /// Builds a CREATE FUNCTION plan.
+    fn build_create_function(&self, create: &CreateFunctionStatement) -> PlanResult<LogicalPlan> {
+        let name = create.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let mut node = CreateFunctionNode::new(
+            name,
+            create.parameters.clone(),
+            create.returns.clone(),
+            &create.body,
+            create.language.clone(),
+        )
+        .with_or_replace(create.or_replace)
+        .with_returns_setof(create.returns_setof)
+        .with_strict(create.strict)
+        .with_security_definer(create.security_definer);
+
+        if let Some(vol) = create.volatility {
+            node = node.with_volatility(vol);
+        }
+
+        Ok(LogicalPlan::CreateFunction(Box::new(node)))
+    }
+
+    /// Builds a DROP FUNCTION plan.
+    fn build_drop_function(&self, drop: &DropFunctionStatement) -> PlanResult<LogicalPlan> {
+        let name = drop.name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = if drop.arg_types.is_empty() {
+            DropFunctionNode::new(name)
+        } else {
+            DropFunctionNode::with_args(name, drop.arg_types.clone())
+        }
+        .with_if_exists(drop.if_exists)
+        .with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropFunction(node))
+    }
+
+    /// Builds a CREATE TRIGGER plan.
+    fn build_create_trigger(&mut self, create: &CreateTriggerStatement) -> PlanResult<LogicalPlan> {
+        let table =
+            create.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let function =
+            create.function.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let mut node = CreateTriggerNode::new(
+            &create.name.name,
+            create.timing,
+            create.events.clone(),
+            table,
+            function,
+        )
+        .with_or_replace(create.or_replace)
+        .with_for_each(create.for_each)
+        .with_args(create.function_args.clone());
+
+        if let Some(when) = &create.when_clause {
+            // Validate the when clause can be built
+            let _when_expr = self.build_expr(when)?;
+            // Store the AST expression for serialization
+            node = node.with_when(when.clone());
+        }
+
+        Ok(LogicalPlan::CreateTrigger(Box::new(node)))
+    }
+
+    /// Builds a DROP TRIGGER plan.
+    fn build_drop_trigger(&self, drop: &DropTriggerStatement) -> PlanResult<LogicalPlan> {
+        let table = drop.table.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+
+        let node = DropTriggerNode::new(&drop.name.name, table)
+            .with_if_exists(drop.if_exists)
+            .with_cascade(drop.cascade);
+
+        Ok(LogicalPlan::DropTrigger(node))
+    }
+
     /// Builds a logical plan from a Cypher CREATE statement.
     fn build_graph_create(&mut self, create: &CreateGraphStatement) -> PlanResult<LogicalPlan> {
         // Build optional MATCH clause as input
@@ -2355,6 +2476,55 @@ impl PlanBuilder {
         Ok(LogicalPlan::procedure_call(node))
     }
 
+    /// Builds a SHOW PROCEDURES statement plan.
+    fn build_show_procedures(
+        &mut self,
+        show: &ast::ShowProceduresStatement,
+    ) -> PlanResult<LogicalPlan> {
+        use super::utility::ShowProceduresNode;
+
+        let node = if show.executable {
+            ShowProceduresNode::new().executable()
+        } else {
+            ShowProceduresNode::new()
+        };
+
+        let mut plan = LogicalPlan::ShowProcedures(node);
+
+        // If there are YIELD items (other than wildcard), we need to wrap in a projection
+        if !show.yield_items.is_empty()
+            && !matches!(show.yield_items.first(), Some(ast::YieldItem::Wildcard))
+        {
+            let exprs: Vec<LogicalExpr> = show
+                .yield_items
+                .iter()
+                .filter_map(|item| match item {
+                    ast::YieldItem::Wildcard => None,
+                    ast::YieldItem::Column { name, alias } => {
+                        let col = LogicalExpr::column(&name.name);
+                        if let Some(a) = alias {
+                            Some(LogicalExpr::Alias { expr: Box::new(col), alias: a.name.clone() })
+                        } else {
+                            Some(col)
+                        }
+                    }
+                })
+                .collect();
+
+            if !exprs.is_empty() {
+                plan = plan.project(exprs);
+            }
+        }
+
+        // Apply WHERE filter if present
+        if let Some(ref where_clause) = show.where_clause {
+            let filter_expr = self.build_expr(where_clause)?;
+            plan = plan.filter(filter_expr);
+        }
+
+        Ok(plan)
+    }
+
     /// Builds a logical expression from an AST expression.
     pub fn build_expr(&mut self, expr: &Expr) -> PlanResult<LogicalExpr> {
         match expr {
@@ -2467,6 +2637,8 @@ impl PlanBuilder {
                     "TO_TIMESTAMP" => Some(ScalarFunction::ToTimestamp),
                     "TO_DATE" => Some(ScalarFunction::ToDate),
                     "TO_CHAR" => Some(ScalarFunction::ToChar),
+                    "TO_NUMBER" => Some(ScalarFunction::ToNumber),
+                    "TO_TEXT" => Some(ScalarFunction::ToText),
                     "AGE" => Some(ScalarFunction::Age),
                     "DATE_ADD" => Some(ScalarFunction::DateAdd),
                     "DATE_SUBTRACT" => Some(ScalarFunction::DateSubtract),
@@ -2723,13 +2895,9 @@ impl PlanBuilder {
             }
 
             Expr::ArrayIndex { array, index } => {
-                // Array indexing could be implemented as a function
                 let arr = self.build_expr(array)?;
                 let idx = self.build_expr(index)?;
-                Ok(LogicalExpr::ScalarFunction {
-                    func: ScalarFunction::Custom(0),
-                    args: vec![arr, idx],
-                })
+                Ok(LogicalExpr::ArrayIndex { array: Box::new(arr), index: Box::new(idx) })
             }
 
             Expr::ListComprehension { variable, list_expr, filter_predicate, transform_expr } => {
@@ -3378,5 +3546,131 @@ mod tests {
 
         let output = format!("{}", plan.display_tree());
         assert!(output.contains("Window"));
+    }
+
+    // =====================================================
+    // Tests for Schema DDL plan building
+    // =====================================================
+
+    #[test]
+    fn build_create_schema() {
+        let plan = build_query("CREATE SCHEMA myschema").unwrap();
+        assert_eq!(plan.node_type(), "CreateSchema");
+    }
+
+    #[test]
+    fn build_create_schema_if_not_exists() {
+        let plan = build_query("CREATE SCHEMA IF NOT EXISTS myschema").unwrap();
+        assert_eq!(plan.node_type(), "CreateSchema");
+        if let LogicalPlan::CreateSchema(node) = plan {
+            assert!(node.if_not_exists);
+        } else {
+            panic!("expected CreateSchema plan");
+        }
+    }
+
+    #[test]
+    fn build_drop_schema() {
+        let plan = build_query("DROP SCHEMA myschema").unwrap();
+        assert_eq!(plan.node_type(), "DropSchema");
+    }
+
+    #[test]
+    fn build_drop_schema_cascade() {
+        let plan = build_query("DROP SCHEMA IF EXISTS myschema CASCADE").unwrap();
+        assert_eq!(plan.node_type(), "DropSchema");
+        if let LogicalPlan::DropSchema(node) = plan {
+            assert!(node.if_exists);
+            assert!(node.cascade);
+        } else {
+            panic!("expected DropSchema plan");
+        }
+    }
+
+    // =====================================================
+    // Tests for Function DDL plan building
+    // =====================================================
+
+    #[test]
+    fn build_create_function() {
+        let plan =
+            build_query("CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER AS 'SELECT x + 1'")
+                .unwrap();
+        assert_eq!(plan.node_type(), "CreateFunction");
+    }
+
+    #[test]
+    fn build_create_function_or_replace() {
+        let plan = build_query(
+            "CREATE OR REPLACE FUNCTION double_val(n INTEGER) RETURNS INTEGER AS 'SELECT n * 2'",
+        )
+        .unwrap();
+        assert_eq!(plan.node_type(), "CreateFunction");
+        if let LogicalPlan::CreateFunction(node) = plan {
+            assert!(node.or_replace);
+        } else {
+            panic!("expected CreateFunction plan");
+        }
+    }
+
+    #[test]
+    fn build_drop_function() {
+        let plan = build_query("DROP FUNCTION myfunc").unwrap();
+        assert_eq!(plan.node_type(), "DropFunction");
+    }
+
+    #[test]
+    fn build_drop_function_if_exists() {
+        let plan = build_query("DROP FUNCTION IF EXISTS myfunc").unwrap();
+        assert_eq!(plan.node_type(), "DropFunction");
+        if let LogicalPlan::DropFunction(node) = plan {
+            assert!(node.if_exists);
+        } else {
+            panic!("expected DropFunction plan");
+        }
+    }
+
+    // =====================================================
+    // Tests for Trigger DDL plan building
+    // =====================================================
+
+    #[test]
+    fn build_create_trigger() {
+        let plan = build_query(
+            "CREATE TRIGGER audit_trigger BEFORE INSERT ON users EXECUTE FUNCTION audit_func()",
+        )
+        .unwrap();
+        assert_eq!(plan.node_type(), "CreateTrigger");
+    }
+
+    #[test]
+    fn build_create_trigger_or_replace() {
+        let plan = build_query(
+            "CREATE OR REPLACE TRIGGER my_trigger AFTER DELETE ON items EXECUTE FUNCTION cleanup()",
+        )
+        .unwrap();
+        assert_eq!(plan.node_type(), "CreateTrigger");
+        if let LogicalPlan::CreateTrigger(node) = plan {
+            assert!(node.or_replace);
+        } else {
+            panic!("expected CreateTrigger plan");
+        }
+    }
+
+    #[test]
+    fn build_drop_trigger() {
+        let plan = build_query("DROP TRIGGER my_trigger ON users").unwrap();
+        assert_eq!(plan.node_type(), "DropTrigger");
+    }
+
+    #[test]
+    fn build_drop_trigger_if_exists() {
+        let plan = build_query("DROP TRIGGER IF EXISTS my_trigger ON users").unwrap();
+        assert_eq!(plan.node_type(), "DropTrigger");
+        if let LogicalPlan::DropTrigger(node) = plan {
+            assert!(node.if_exists);
+        } else {
+            panic!("expected DropTrigger plan");
+        }
     }
 }

@@ -445,7 +445,14 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         | PhysicalPlan::CreateCollection(_)
         | PhysicalPlan::DropCollection(_)
         | PhysicalPlan::CreateView(_)
-        | PhysicalPlan::DropView(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
+        | PhysicalPlan::DropView(_)
+        | PhysicalPlan::CreateSchema(_)
+        | PhysicalPlan::AlterSchema(_)
+        | PhysicalPlan::DropSchema(_)
+        | PhysicalPlan::CreateFunction(_)
+        | PhysicalPlan::DropFunction(_)
+        | PhysicalPlan::CreateTrigger(_)
+        | PhysicalPlan::DropTrigger(_) => Ok(Box::new(EmptyOp::with_columns(vec![]))),
 
         // Graph DML operations
         PhysicalPlan::GraphCreate { node, input } => {
@@ -544,6 +551,16 @@ pub fn build_operator_tree(plan: &PhysicalPlan) -> OperatorResult<BoxedOperator>
         PhysicalPlan::Reset(_) => {
             // RESET returns confirmation
             Ok(Box::new(EmptyOp::with_columns(vec!["RESET".to_string()])))
+        }
+        PhysicalPlan::ShowProcedures(_) => {
+            // SHOW PROCEDURES returns procedure metadata columns
+            // In a real implementation, this would query the procedure catalog
+            Ok(Box::new(EmptyOp::with_columns(vec![
+                "name".to_string(),
+                "description".to_string(),
+                "mode".to_string(),
+                "worksOnSystem".to_string(),
+            ])))
         }
     }
 }

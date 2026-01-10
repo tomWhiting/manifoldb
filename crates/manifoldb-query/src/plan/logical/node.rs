@@ -18,8 +18,9 @@
 use std::fmt;
 
 use super::ddl::{
-    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
-    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode,
+    AlterSchemaNode, AlterTableNode, CreateCollectionNode, CreateFunctionNode, CreateIndexNode,
+    CreateSchemaNode, CreateTableNode, CreateTriggerNode, CreateViewNode, DropCollectionNode,
+    DropFunctionNode, DropIndexNode, DropSchemaNode, DropTableNode, DropTriggerNode, DropViewNode,
 };
 use super::expr::{LogicalExpr, SortOrder};
 use super::graph::{
@@ -36,7 +37,8 @@ use super::transaction::{
     SetTransactionNode,
 };
 use super::utility::{
-    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ResetNode, SetSessionNode, ShowNode, VacuumNode,
+    AnalyzeNode, CopyNode, ExplainAnalyzeNode, ResetNode, SetSessionNode, ShowNode,
+    ShowProceduresNode, VacuumNode,
 };
 use super::vector::{AnnSearchNode, HybridSearchNode, VectorDistanceNode};
 
@@ -312,6 +314,27 @@ pub enum LogicalPlan {
     /// DROP VIEW operation.
     DropView(DropViewNode),
 
+    /// CREATE SCHEMA operation.
+    CreateSchema(CreateSchemaNode),
+
+    /// ALTER SCHEMA operation.
+    AlterSchema(AlterSchemaNode),
+
+    /// DROP SCHEMA operation.
+    DropSchema(DropSchemaNode),
+
+    /// CREATE FUNCTION operation.
+    CreateFunction(Box<CreateFunctionNode>),
+
+    /// DROP FUNCTION operation.
+    DropFunction(DropFunctionNode),
+
+    /// CREATE TRIGGER operation.
+    CreateTrigger(Box<CreateTriggerNode>),
+
+    /// DROP TRIGGER operation.
+    DropTrigger(DropTriggerNode),
+
     // ========== Graph DML Nodes ==========
     /// Cypher CREATE operation (nodes and/or relationships).
     GraphCreate {
@@ -405,6 +428,9 @@ pub enum LogicalPlan {
 
     /// RESET session variable.
     Reset(ResetNode),
+
+    /// SHOW PROCEDURES command.
+    ShowProcedures(ShowProceduresNode),
 }
 
 impl LogicalPlan {
@@ -615,7 +641,14 @@ impl LogicalPlan {
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
-            | Self::DropView(_) => vec![],
+            | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_) => vec![],
 
             // Graph DML nodes (optional input)
             Self::GraphCreate { input: Some(input), .. }
@@ -646,7 +679,8 @@ impl LogicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -702,7 +736,14 @@ impl LogicalPlan {
             | Self::CreateCollection(_)
             | Self::DropCollection(_)
             | Self::CreateView(_)
-            | Self::DropView(_) => vec![],
+            | Self::DropView(_)
+            | Self::CreateSchema(_)
+            | Self::AlterSchema(_)
+            | Self::DropSchema(_)
+            | Self::CreateFunction(_)
+            | Self::DropFunction(_)
+            | Self::CreateTrigger(_)
+            | Self::DropTrigger(_) => vec![],
 
             // Graph DML nodes (optional input)
             Self::GraphCreate { input: Some(input), .. }
@@ -729,7 +770,8 @@ impl LogicalPlan {
             | Self::Copy(_)
             | Self::SetSession(_)
             | Self::Show(_)
-            | Self::Reset(_) => vec![],
+            | Self::Reset(_)
+            | Self::ShowProcedures(_) => vec![],
         }
     }
 
@@ -778,6 +820,13 @@ impl LogicalPlan {
             Self::DropCollection(_) => "DropCollection",
             Self::CreateView(_) => "CreateView",
             Self::DropView(_) => "DropView",
+            Self::CreateSchema(_) => "CreateSchema",
+            Self::AlterSchema(_) => "AlterSchema",
+            Self::DropSchema(_) => "DropSchema",
+            Self::CreateFunction(_) => "CreateFunction",
+            Self::DropFunction(_) => "DropFunction",
+            Self::CreateTrigger(_) => "CreateTrigger",
+            Self::DropTrigger(_) => "DropTrigger",
             Self::GraphCreate { .. } => "GraphCreate",
             Self::GraphMerge { .. } => "GraphMerge",
             Self::GraphSet { .. } => "GraphSet",
@@ -798,6 +847,7 @@ impl LogicalPlan {
             Self::SetSession(_) => "SetSession",
             Self::Show(_) => "Show",
             Self::Reset(_) => "Reset",
+            Self::ShowProcedures(_) => "ShowProcedures",
         }
     }
 
@@ -1112,6 +1162,75 @@ impl DisplayTree<'_> {
                     write!(f, " CASCADE")?;
                 }
             }
+            LogicalPlan::CreateSchema(node) => {
+                write!(f, "CreateSchema: {}", node.name)?;
+                if node.if_not_exists {
+                    write!(f, " IF NOT EXISTS")?;
+                }
+                if let Some(ref auth) = node.authorization {
+                    write!(f, " AUTHORIZATION {auth}")?;
+                }
+            }
+            LogicalPlan::AlterSchema(node) => {
+                write!(f, "AlterSchema: {}", node.name)?;
+                match &node.action {
+                    crate::ast::AlterSchemaAction::OwnerTo(owner) => {
+                        write!(f, " OWNER TO {}", owner.name)?;
+                    }
+                    crate::ast::AlterSchemaAction::RenameTo(new_name) => {
+                        write!(f, " RENAME TO {}", new_name.name)?;
+                    }
+                }
+            }
+            LogicalPlan::DropSchema(node) => {
+                write!(f, "DropSchema: {}", node.names.join(", "))?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
+            LogicalPlan::CreateFunction(node) => {
+                write!(f, "CreateFunction: {}", node.name)?;
+                if node.or_replace {
+                    write!(f, " OR REPLACE")?;
+                }
+                write!(f, " ({} params)", node.parameters.len())?;
+                write!(f, " RETURNS {:?}", node.returns)?;
+                write!(f, " LANGUAGE {}", node.language)?;
+            }
+            LogicalPlan::DropFunction(node) => {
+                write!(f, "DropFunction: {}", node.name)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if !node.arg_types.is_empty() {
+                    let types: Vec<_> = node.arg_types.iter().map(|t| format!("{t:?}")).collect();
+                    write!(f, " ({})", types.join(", "))?;
+                }
+            }
+            LogicalPlan::CreateTrigger(node) => {
+                write!(f, "CreateTrigger: {}", node.name)?;
+                if node.or_replace {
+                    write!(f, " OR REPLACE")?;
+                }
+                write!(f, " {} ", node.timing)?;
+                let events: Vec<_> = node.events.iter().map(ToString::to_string).collect();
+                write!(f, "{}", events.join(" OR "))?;
+                write!(f, " ON {}", node.table)?;
+                write!(f, " {}", node.for_each)?;
+                write!(f, " EXECUTE {}", node.function)?;
+            }
+            LogicalPlan::DropTrigger(node) => {
+                write!(f, "DropTrigger: {} ON {}", node.name, node.table)?;
+                if node.if_exists {
+                    write!(f, " IF EXISTS")?;
+                }
+                if node.cascade {
+                    write!(f, " CASCADE")?;
+                }
+            }
             LogicalPlan::GraphCreate { node, .. } => {
                 write!(
                     f,
@@ -1285,6 +1404,12 @@ impl DisplayTree<'_> {
                     write!(f, ": {name}")?;
                 } else {
                     write!(f, " ALL")?;
+                }
+            }
+            LogicalPlan::ShowProcedures(node) => {
+                write!(f, "ShowProcedures")?;
+                if node.executable {
+                    write!(f, " EXECUTABLE")?;
                 }
             }
         }

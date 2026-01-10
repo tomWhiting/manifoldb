@@ -18,8 +18,8 @@ use super::node::{
     HybridSearchComponentNode, HybridSearchNode as PhysicalHybridSearchNode, IndexRangeScanNode,
     IndexScanNode, JoinOrder, LimitExecNode, NestedLoopJoinNode, PhysicalPlan,
     PhysicalScoreCombinationMethod, ProjectExecNode, RecursiveCTEExecNode, ResetExecNode,
-    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, SortExecNode, UnwindExecNode,
-    VacuumExecNode, WindowExecNode, WindowFunctionExpr,
+    SetSessionExecNode, ShortestPathExecNode, ShowExecNode, ShowProceduresExecNode, SortExecNode,
+    UnwindExecNode, VacuumExecNode, WindowExecNode, WindowFunctionExpr,
 };
 use crate::plan::logical::{
     AggregateNode, AnnSearchNode, ExpandNode, HybridSearchNode, JoinNode, JoinType, LogicalExpr,
@@ -409,6 +409,13 @@ impl PhysicalPlanner {
             LogicalPlan::DropCollection(node) => PhysicalPlan::DropCollection(node.clone()),
             LogicalPlan::CreateView(node) => PhysicalPlan::CreateView(node.clone()),
             LogicalPlan::DropView(node) => PhysicalPlan::DropView(node.clone()),
+            LogicalPlan::CreateSchema(node) => PhysicalPlan::CreateSchema(node.clone()),
+            LogicalPlan::AlterSchema(node) => PhysicalPlan::AlterSchema(node.clone()),
+            LogicalPlan::DropSchema(node) => PhysicalPlan::DropSchema(node.clone()),
+            LogicalPlan::CreateFunction(node) => PhysicalPlan::CreateFunction((**node).clone()),
+            LogicalPlan::DropFunction(node) => PhysicalPlan::DropFunction(node.clone()),
+            LogicalPlan::CreateTrigger(node) => PhysicalPlan::CreateTrigger((**node).clone()),
+            LogicalPlan::DropTrigger(node) => PhysicalPlan::DropTrigger(node.clone()),
 
             // Graph DML nodes - build physical plans for these
             LogicalPlan::GraphCreate { node, input } => {
@@ -533,6 +540,9 @@ impl PhysicalPlanner {
             LogicalPlan::Show(node) => PhysicalPlan::Show(ShowExecNode { name: node.name.clone() }),
             LogicalPlan::Reset(node) => {
                 PhysicalPlan::Reset(ResetExecNode { name: node.name.clone() })
+            }
+            LogicalPlan::ShowProcedures(node) => {
+                PhysicalPlan::ShowProcedures(ShowProceduresExecNode { executable: node.executable })
             }
         }
     }

@@ -113,6 +113,12 @@ HAVING Clause Enhancement
 ├── Complex expressions (AND, OR, comparisons): ✅ Complete (Jan 2026)
 ├── Aggregate resolution in HAVING: ✅ Complete (Jan 2026)
 └── Status: ✅ Full HAVING support with complex expressions
+
+Query Optimization
+├── Predicate Pushdown: ✅ Exists
+├── Expression Simplification: ✅ Complete (Jan 2026) - constant folding, boolean algebra, null propagation
+├── Column Pruning: ✅ Exists
+└── Status: ✅ Core optimization passes available
 ```
 
 ### Parallel Work Streams
@@ -364,9 +370,22 @@ These feature groups can be implemented independently:
 | SELECT FROM VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - view expansion in query planning |
 | MATERIALIZED VIEW | | | | | | | Not implemented |
 | **SCHEMA** |
-| CREATE SCHEMA | | | | | | | Not implemented |
-| DROP SCHEMA | | | | | | | Not implemented |
+| CREATE SCHEMA | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE SCHEMA IF NOT EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP SCHEMA | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP SCHEMA CASCADE | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| ALTER SCHEMA | | A | L | O | | | AST node and logical plan only (Jan 2026) |
 | SET search_path | | | | | | | Not implemented |
+| **FUNCTION** |
+| CREATE FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE OR REPLACE FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP FUNCTION | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP FUNCTION IF EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| **TRIGGER** |
+| CREATE TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| CREATE OR REPLACE TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP TRIGGER | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
+| DROP TRIGGER IF EXISTS | P | A | L | O | | T | Parser, AST, LogicalPlan, PhysicalPlan with unit tests (Jan 2026) |
 
 ## 1.9 Transaction Statements
 
@@ -433,11 +452,11 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | **Boolean** |
 | BOOLEAN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | **Temporal** |
-| DATE | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| TIME | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| TIMESTAMP | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| TIMESTAMPTZ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| INTERVAL | ✓ | ✓ | ✓ | | | | Needs exec |
+| DATE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - DATE 'x' literals |
+| TIME | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - TIME 'x' literals |
+| TIMESTAMP | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - TIMESTAMP 'x' literals |
+| TIMESTAMPTZ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) |
+| INTERVAL | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - INTERVAL 'x' to ISO 8601 |
 | **JSON** |
 | JSON | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | JSONB | ✓ | ✓ | ✓ | ✓ | ✓ | | |
@@ -475,7 +494,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | ?\| | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Any key exists |
 | ?& | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - All keys exist |
 | **Array Operators** |
-| [n] subscript | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| [n] subscript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026) - proper ArrayIndex impl |
 | [n:m] slice | ✓ | ✓ | | | | | |
 | @> (contains) | ✓ | ✓ | | | | | |
 | <@ (contained) | ✓ | ✓ | | | | | |
@@ -579,6 +598,8 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | to_timestamp | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | to_date | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | to_char | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
+| to_number | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - SQL format string parsing |
+| to_text | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † - SQL format string output |
 | age | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | date_add | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
 | date_subtract | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Added 2026-01 † |
@@ -749,6 +770,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | YIELD columns | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
 | YIELD * | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
 | YIELD with WHERE | ✓ | ✓ | ✓† | ✓† | | ✓† | Agent impl |
+| SHOW PROCEDURES | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - lists registered procedures |
 
 ## 2.6 Operators
 
@@ -769,7 +791,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | CONTAINS | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | =~ (regex) | ✓ | ✓ | | | | | |
 | **List** |
-| [n] subscript | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| [n] subscript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - proper ArrayIndex LogicalExpr |
 | [m..n] slice | ✓ | ✓ | | | | | |
 | IN | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | + (concat) | ✓ | ✓ | | | | | |
@@ -898,6 +920,9 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | localtime() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | No timezone variant (Jan 2026)† |
 | duration() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ISO 8601 duration & map construction (Jan 2026)† |
 | datetime.truncate() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Truncate to unit (Jan 2026)† |
+| datetime + duration | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Temporal arithmetic (Jan 2026)† |
+| datetime - duration | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Temporal arithmetic (Jan 2026)† |
+| datetime - datetime | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Returns duration (Jan 2026)† |
 | timestamp() | | | | | | | Not impl - use datetime() |
 
 ## 2.14 Spatial Functions
