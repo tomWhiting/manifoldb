@@ -338,11 +338,24 @@ impl SortMergeAggregateOp {
 
     fn update_accumulators(&mut self, row: &Row) -> OperatorResult<()> {
         for (i, agg_expr) in self.aggregates.iter().enumerate() {
-            if let LogicalExpr::AggregateFunction { func, args, .. } = agg_expr {
-                let is_wildcard = args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
-                let arg_values: Vec<Value> =
-                    args.iter().map(|a| evaluate_expr(a, row)).collect::<Result<_, _>>()?;
-                self.accumulators[i].update(func, &arg_values, is_wildcard);
+            if let LogicalExpr::AggregateFunction { func, args, distinct: _, filter } = agg_expr {
+                // Check FILTER clause before updating accumulator
+                let passes_filter = if let Some(filter_expr) = filter {
+                    match evaluate_expr(filter_expr, row) {
+                        Ok(Value::Bool(true)) => true,
+                        _ => false, // Filter out if not true (including NULL)
+                    }
+                } else {
+                    true
+                };
+
+                if passes_filter {
+                    let is_wildcard =
+                        args.first().is_some_and(|a| matches!(a, LogicalExpr::Wildcard));
+                    let arg_values: Vec<Value> =
+                        args.iter().map(|a| evaluate_expr(a, row)).collect::<Result<_, _>>()?;
+                    self.accumulators[i].update(func, &arg_values, is_wildcard);
+                }
             }
         }
         Ok(())
@@ -422,10 +435,11 @@ impl SortMergeAggregateOp {
                         self.update_accumulators(&row)?;
                     } else if self.current_key.is_some() {
                         // New group, output previous group
-                        self.pending_row = Some(row.clone());
                         let result = self.build_result();
 
-                        // Start new group - only clone the key when starting a new group
+                        // Start new group with current row
+                        // Note: We process the row here rather than storing it as pending_row
+                        // to avoid double-accumulation when pending_row is consumed
                         self.current_key = Some(key_buffer.clone());
                         self.current_values = self.compute_group_values(&row)?;
                         self.init_accumulators();
@@ -2919,6 +2933,133 @@ mod tests {
         // Only North should pass (avg 200 > 100)
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].get(0), Some(&Value::from("North")));
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_aggregate_filter_clause() {
+        // Test FILTER clause on aggregates with SortMergeAggregateOp
+        // Data must be pre-sorted by group key for sort-merge aggregation
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "salary".to_string()],
+            vec![
+                // Dept A: salaries 100, 150, 125 -> 3 total, 2 > 120 (150, 125)
+                vec![Value::from("A"), Value::Int(100)],
+                vec![Value::from("A"), Value::Int(150)],
+                vec![Value::from("A"), Value::Int(125)],
+                // Dept B: salaries 200, 180 -> 2 total, 2 > 120
+                vec![Value::from("B"), Value::Int(180)],
+                vec![Value::from("B"), Value::Int(200)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+
+        // COUNT(*) FILTER (WHERE salary > 120) - count only salaries > 120
+        let filter_expr = LogicalExpr::column("salary").gt(LogicalExpr::integer(120));
+        let aggregates = vec![
+            // Regular COUNT(*) for comparison
+            LogicalExpr::count(LogicalExpr::wildcard(), false),
+            // COUNT(*) FILTER (WHERE salary > 120)
+            LogicalExpr::AggregateFunction {
+                func: AggregateFunction::Count,
+                args: vec![LogicalExpr::wildcard()],
+                distinct: false,
+                filter: Some(Box::new(filter_expr)),
+            },
+        ];
+
+        let mut op = SortMergeAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        // Should have 2 groups (A and B)
+        assert_eq!(rows.len(), 2);
+
+        // Check each group
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let total_count = row.get(1).unwrap();
+            let filtered_count = row.get(2).unwrap();
+
+            if dept == &Value::from("A") {
+                // Dept A: 3 total, 2 with salary > 120 (150, 125)
+                assert_eq!(total_count, &Value::Int(3), "A total count");
+                assert_eq!(filtered_count, &Value::Int(2), "A filtered count");
+            } else if dept == &Value::from("B") {
+                // Dept B: 2 total, 2 with salary > 120 (180, 200)
+                assert_eq!(total_count, &Value::Int(2), "B total count");
+                assert_eq!(filtered_count, &Value::Int(2), "B filtered count");
+            }
+        }
+
+        op.close().unwrap();
+    }
+
+    #[test]
+    fn sort_merge_aggregate_sum_with_filter() {
+        // Test SUM with FILTER clause on SortMergeAggregateOp
+        let input: BoxedOperator = Box::new(ValuesOp::with_columns(
+            vec!["dept".to_string(), "salary".to_string()],
+            vec![
+                // Dept A: salaries 100, 150, 125 -> sum all = 375, sum > 120 = 275 (150+125)
+                vec![Value::from("A"), Value::Int(100)],
+                vec![Value::from("A"), Value::Int(150)],
+                vec![Value::from("A"), Value::Int(125)],
+                // Dept B: salaries 180, 200 -> sum all = 380, sum > 120 = 380
+                vec![Value::from("B"), Value::Int(180)],
+                vec![Value::from("B"), Value::Int(200)],
+            ],
+        ));
+
+        let group_by = vec![LogicalExpr::column("dept")];
+
+        // SUM(salary) FILTER (WHERE salary > 120)
+        let filter_expr = LogicalExpr::column("salary").gt(LogicalExpr::integer(120));
+        let aggregates = vec![
+            // Regular SUM for comparison
+            LogicalExpr::sum(LogicalExpr::column("salary"), false),
+            // SUM(salary) FILTER (WHERE salary > 120)
+            LogicalExpr::AggregateFunction {
+                func: AggregateFunction::Sum,
+                args: vec![LogicalExpr::column("salary")],
+                distinct: false,
+                filter: Some(Box::new(filter_expr)),
+            },
+        ];
+
+        let mut op = SortMergeAggregateOp::new(group_by, aggregates, None, input);
+
+        let ctx = ExecutionContext::new();
+        op.open(&ctx).unwrap();
+
+        let mut rows = Vec::new();
+        while let Some(row) = op.next().unwrap() {
+            rows.push(row);
+        }
+
+        assert_eq!(rows.len(), 2);
+
+        for row in &rows {
+            let dept = row.get(0).unwrap();
+            let total_sum = row.get(1).unwrap();
+            let filtered_sum = row.get(2).unwrap();
+
+            if dept == &Value::from("A") {
+                assert_eq!(total_sum, &Value::Float(375.0), "A total sum");
+                assert_eq!(filtered_sum, &Value::Float(275.0), "A filtered sum");
+            } else if dept == &Value::from("B") {
+                assert_eq!(total_sum, &Value::Float(380.0), "B total sum");
+                assert_eq!(filtered_sum, &Value::Float(380.0), "B filtered sum");
+            }
+        }
 
         op.close().unwrap();
     }
