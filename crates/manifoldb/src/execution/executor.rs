@@ -15,9 +15,11 @@ use manifoldb_query::exec::operators::{
 };
 use manifoldb_query::exec::row::{Row, Schema};
 use manifoldb_query::exec::{ExecutionContext, Operator, ResultSet};
+use manifoldb_query::plan::logical::ViewDefinition;
 use manifoldb_query::plan::logical::{
-    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, DropCollectionNode,
-    DropIndexNode, DropTableNode, JoinType, LogicalExpr, SetOpNode, UnionNode,
+    AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
+    DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode, JoinType, LogicalExpr,
+    SetOpNode, UnionNode,
 };
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
@@ -88,7 +90,9 @@ pub fn execute_query_with_catalog<T: Transaction>(
     };
 
     // Build logical plan from the inner statement
+    // Register views so they can be expanded during planning
     let mut builder = PlanBuilder::new();
+    load_views_into_builder(tx, &mut builder)?;
     let logical_plan =
         builder.build_statement(inner_stmt).map_err(|e| Error::Parse(e.to_string()))?;
 
@@ -180,6 +184,8 @@ pub fn execute_statement<T: Transaction>(
         LogicalPlan::DropIndex(node) => execute_drop_index(tx, node),
         LogicalPlan::CreateCollection(node) => execute_create_collection(tx, node),
         LogicalPlan::DropCollection(node) => execute_drop_collection(tx, node),
+        LogicalPlan::CreateView(node) => execute_create_view(tx, node, sql),
+        LogicalPlan::DropView(node) => execute_drop_view(tx, node),
 
         _ => {
             // For SELECT, we shouldn't be here but handle gracefully
@@ -397,6 +403,35 @@ fn create_context_with_limit(params: &[Value], max_rows_in_memory: usize) -> Exe
 
     let config = ExecutionConfig::new().with_max_rows_in_memory(max_rows_in_memory);
     ExecutionContext::with_parameters(param_map).with_config(config)
+}
+
+/// Load view definitions from the schema and register them with the plan builder.
+///
+/// This allows views to be expanded during query planning. Views are stored as
+/// SQL strings in the schema, so they must be re-parsed when loaded.
+fn load_views_into_builder<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    builder: &mut PlanBuilder,
+) -> Result<()> {
+    // Get all views from the schema
+    let view_names = SchemaManager::list_views(tx).unwrap_or_default();
+
+    for name in view_names {
+        if let Ok(Some(schema)) = SchemaManager::get_view(tx, &name) {
+            // The view query is stored as a debug representation, which isn't directly parseable.
+            // We need to store actual SQL in the schema. For now, try to parse it.
+            // If the query_sql is valid SQL, parse and register it.
+            if let Ok(stmt) = ExtendedParser::parse_single(&schema.query_sql) {
+                if let Statement::Select(select) = stmt {
+                    let view_def =
+                        ViewDefinition::new(&schema.name, *select).with_columns(schema.columns);
+                    builder.register_view(view_def);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Build a planner catalog from the schema for index selection.
@@ -2634,6 +2669,80 @@ fn cleanup_btree_index_entries<T: Transaction>(
         .map_err(|e| Error::Execution(e.to_string()))?;
 
     Ok(deleted as u64)
+}
+
+/// Execute a CREATE VIEW statement.
+///
+/// Views are stored as query definitions that can be referenced like tables.
+/// When a view is queried, its definition is expanded inline.
+fn execute_create_view<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &CreateViewNode,
+    sql: &str,
+) -> Result<u64> {
+    // Extract the SELECT query from the original SQL
+    // The query comes after "AS " in "CREATE [OR REPLACE] VIEW name [(columns)] AS SELECT ..."
+    let query_sql = extract_view_query_sql(sql)?;
+
+    // Create view schema with the raw SQL
+    let schema = crate::schema::ViewSchema::new(
+        node.name.clone(),
+        node.columns.iter().map(|c| c.name.clone()).collect(),
+        query_sql,
+    );
+
+    // Store the schema
+    let key = format!("schema:view:{}", node.name);
+    let value = bincode::serde::encode_to_vec(&schema, bincode::config::standard())
+        .map_err(|e| Error::Execution(format!("Failed to serialize view schema: {e}")))?;
+
+    tx.put_metadata(key.as_bytes(), &value).map_err(Error::Transaction)?;
+
+    // Add to views list
+    let mut views = SchemaManager::list_views(tx).unwrap_or_default();
+    if !views.contains(&node.name) {
+        views.push(node.name.clone());
+        let list_value = bincode::serde::encode_to_vec(&views, bincode::config::standard())
+            .map_err(|e| Error::Execution(format!("Failed to serialize views list: {e}")))?;
+        tx.put_metadata(b"schema:views_list", &list_value).map_err(Error::Transaction)?;
+    } else if !node.or_replace {
+        return Err(Error::Execution(format!("View already exists: {}", node.name)));
+    }
+
+    Ok(0) // DDL doesn't return row counts
+}
+
+/// Extract the SELECT query SQL from a CREATE VIEW statement.
+///
+/// Handles various CREATE VIEW syntax forms:
+/// - CREATE VIEW name AS SELECT ...
+/// - CREATE OR REPLACE VIEW name AS SELECT ...
+/// - CREATE VIEW name (col1, col2) AS SELECT ...
+fn extract_view_query_sql(sql: &str) -> Result<String> {
+    // Find " AS " (case insensitive) to locate the start of the query
+    let sql_upper = sql.to_uppercase();
+    if let Some(as_pos) = sql_upper.find(" AS ") {
+        let query_start = as_pos + 4; // Skip " AS "
+        let query_sql = sql[query_start..].trim().to_string();
+        if query_sql.is_empty() {
+            return Err(Error::Parse("CREATE VIEW requires a query after AS".to_string()));
+        }
+        Ok(query_sql)
+    } else {
+        Err(Error::Parse("CREATE VIEW syntax error: missing AS clause".to_string()))
+    }
+}
+
+/// Execute a DROP VIEW statement.
+fn execute_drop_view<T: Transaction>(
+    tx: &mut DatabaseTransaction<T>,
+    node: &DropViewNode,
+) -> Result<u64> {
+    for view_name in &node.names {
+        SchemaManager::drop_view(tx, view_name, node.if_exists)
+            .map_err(|e| Error::Execution(e.to_string()))?;
+    }
+    Ok(0)
 }
 
 /// Execute a CREATE COLLECTION statement.

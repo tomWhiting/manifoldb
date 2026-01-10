@@ -43,7 +43,7 @@ pub mod utility;
 mod validate;
 mod vector;
 
-pub use builder::PlanBuilder;
+pub use builder::{PlanBuilder, ViewDefinition};
 pub use ddl::{
     AlterTableNode, CreateCollectionNode, CreateIndexNode, CreateTableNode, CreateViewNode,
     DropCollectionNode, DropIndexNode, DropTableNode, DropViewNode,

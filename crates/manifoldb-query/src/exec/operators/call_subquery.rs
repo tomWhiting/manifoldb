@@ -105,10 +105,41 @@ impl CallSubqueryOp {
     }
 
     /// Opens the subquery for the current outer row.
+    ///
+    /// For correlated subqueries, this creates a new context with variable bindings
+    /// extracted from the current outer row based on imported_variables.
     fn open_subquery(&mut self) -> OperatorResult<()> {
-        if let Some(ctx) = &self.ctx {
-            // Open the subquery
-            self.subquery.open(ctx)?;
+        if let Some(base_ctx) = &self.ctx {
+            // Create a context with variable bindings from the outer row
+            let subquery_ctx = if self.imported_variables.is_empty() {
+                // Uncorrelated subquery - use base context
+                ExecutionContext::new()
+                    .with_graph(base_ctx.graph_arc())
+                    .with_graph_mutator(base_ctx.graph_mutator_arc())
+            } else if let Some(outer_row) = &self.current_outer_row {
+                // Build variable bindings by extracting values for imported variables
+                let mut bindings = std::collections::HashMap::new();
+                let input_schema = self.input.schema();
+                for var_name in &self.imported_variables {
+                    // Find the column index for this variable
+                    if let Some(idx) = input_schema.index_of(var_name) {
+                        if let Some(value) = outer_row.get(idx) {
+                            bindings.insert(var_name.clone(), value.clone());
+                        }
+                    }
+                }
+                // Create context with bindings, preserving graph accessor etc.
+                ExecutionContext::with_variable_bindings(bindings)
+                    .with_graph(base_ctx.graph_arc())
+                    .with_graph_mutator(base_ctx.graph_mutator_arc())
+            } else {
+                ExecutionContext::new()
+                    .with_graph(base_ctx.graph_arc())
+                    .with_graph_mutator(base_ctx.graph_mutator_arc())
+            };
+
+            // Open the subquery with the prepared context
+            self.subquery.open(&subquery_ctx)?;
             self.subquery_open = true;
         }
         Ok(())
@@ -170,10 +201,12 @@ impl Operator for CallSubqueryOp {
         // Open the input operator
         self.input.open(ctx)?;
 
-        // Clone the context for use in next()
-        // Note: ExecutionContext doesn't implement Clone, so we create a new one
-        // In a real implementation, we'd use Arc<ExecutionContext> or similar
-        self.ctx = Some(ExecutionContext::new());
+        // Store a minimal context that preserves the graph accessor and mutator
+        // This is used as the base for creating subquery-specific contexts
+        let base_ctx = ExecutionContext::new()
+            .with_graph(ctx.graph_arc())
+            .with_graph_mutator(ctx.graph_mutator_arc());
+        self.ctx = Some(base_ctx);
 
         // Initialize state
         self.input_exhausted = false;

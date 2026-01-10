@@ -128,6 +128,10 @@ use super::graph_accessor::{GraphAccessor, GraphMutator, NullGraphAccessor, Null
 pub struct ExecutionContext {
     /// Query parameters (1-indexed).
     parameters: HashMap<u32, Value>,
+    /// Named variable bindings for correlated subqueries.
+    /// Variables imported from an outer scope (e.g., WITH p in CALL { WITH p ... })
+    /// are bound here so inner queries can resolve them.
+    variable_bindings: HashMap<String, Value>,
     /// Whether the query has been cancelled.
     cancelled: AtomicBool,
     /// Execution statistics.
@@ -152,6 +156,7 @@ impl ExecutionContext {
     pub fn new() -> Self {
         Self {
             parameters: HashMap::new(),
+            variable_bindings: HashMap::new(),
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
@@ -167,6 +172,7 @@ impl ExecutionContext {
     pub fn with_parameters(parameters: HashMap<u32, Value>) -> Self {
         Self {
             parameters,
+            variable_bindings: HashMap::new(),
             cancelled: AtomicBool::new(false),
             stats: ExecutionStats::new(),
             config: ExecutionConfig::default(),
@@ -175,6 +181,51 @@ impl ExecutionContext {
             vector_index_provider: None,
             collection_vector_provider: None,
         }
+    }
+
+    /// Creates a context with variable bindings for correlated subqueries.
+    ///
+    /// Variable bindings allow inner queries to access values from outer scopes,
+    /// such as variables imported via WITH in CALL { } subqueries.
+    #[must_use]
+    pub fn with_variable_bindings(bindings: HashMap<String, Value>) -> Self {
+        Self {
+            parameters: HashMap::new(),
+            variable_bindings: bindings,
+            cancelled: AtomicBool::new(false),
+            stats: ExecutionStats::new(),
+            config: ExecutionConfig::default(),
+            graph: Arc::new(NullGraphAccessor),
+            graph_mutator: Arc::new(NullGraphMutator),
+            vector_index_provider: None,
+            collection_vector_provider: None,
+        }
+    }
+
+    /// Sets the variable bindings for correlated subquery execution.
+    #[must_use]
+    pub fn with_bindings(mut self, bindings: HashMap<String, Value>) -> Self {
+        self.variable_bindings = bindings;
+        self
+    }
+
+    /// Adds a single variable binding.
+    pub fn bind_variable(&mut self, name: impl Into<String>, value: Value) {
+        self.variable_bindings.insert(name.into(), value);
+    }
+
+    /// Gets a variable binding by name.
+    #[inline]
+    #[must_use]
+    pub fn get_variable(&self, name: &str) -> Option<&Value> {
+        self.variable_bindings.get(name)
+    }
+
+    /// Returns all variable bindings.
+    #[inline]
+    #[must_use]
+    pub fn variable_bindings(&self) -> &HashMap<String, Value> {
+        &self.variable_bindings
     }
 
     /// Sets the graph accessor for graph traversal operations.

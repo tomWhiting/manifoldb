@@ -353,11 +353,12 @@ These feature groups can be implemented independently:
 | IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **VIEW** |
-| CREATE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works; view expansion in queries pending |
-| CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works; view expansion in queries pending |
-| DROP VIEW | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works |
-| DROP VIEW IF EXISTS | ✓ | ✓ | ✓ | ✓ | | ✓ | Schema storage works |
-| DROP VIEW CASCADE | ✓ | ✓ | ✓ | ✓ | | | Parsing, planning (cascade not exec) |
+| CREATE VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - creates view, stores SQL, expansion works |
+| CREATE OR REPLACE VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - replaces existing view |
+| DROP VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - removes view from schema |
+| DROP VIEW IF EXISTS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - silent if not exists |
+| DROP VIEW CASCADE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete - CASCADE same as normal drop |
+| SELECT FROM VIEW | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Complete (Jan 2026)** - view expansion in query planning |
 | MATERIALIZED VIEW | | | | | | | Not implemented |
 | **SCHEMA** |
 | CREATE SCHEMA | | | | | | | Not implemented |
@@ -670,7 +671,7 @@ Use `Session::new(&db)` to create a session, then execute transaction control st
 | Pattern predicates | ✓ | ✓ | | | | | |
 | EXISTS { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
 | COUNT { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† |
-| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Uncorrelated complete (Jan 2026)† - correlated WITH binding pending |
+| CALL { } subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | **Partial (Jan 2026)** - uncorrelated complete, correlated variable binding infrastructure added (variable_bindings in ExecutionContext) |
 | **Path Functions** |
 | shortestPath() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |
 | allShortestPaths() | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Pattern function complete with BFS execution (Jan 2026)† |

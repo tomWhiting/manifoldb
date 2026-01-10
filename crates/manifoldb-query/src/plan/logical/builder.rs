@@ -54,6 +54,49 @@ use super::relational::{
 };
 use super::validate::{PlanError, PlanResult};
 
+/// A view definition that can be expanded during query planning.
+///
+/// Views are stored query definitions that can be used like tables.
+/// When a view is referenced in a query, its definition is expanded inline.
+///
+/// # Examples
+///
+/// ```
+/// use manifoldb_query::plan::logical::ViewDefinition;
+/// use manifoldb_query::parser::parse_single_statement;
+/// use manifoldb_query::ast::Statement;
+///
+/// // Parse a SELECT statement for the view definition
+/// let stmt = parse_single_statement("SELECT * FROM users WHERE active = true").unwrap();
+/// if let Statement::Select(select) = stmt {
+///     let view = ViewDefinition::new("active_users", *select);
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ViewDefinition {
+    /// The view name.
+    pub name: String,
+    /// Optional column aliases for the view.
+    pub columns: Vec<String>,
+    /// The SELECT statement defining the view.
+    pub query: SelectStatement,
+}
+
+impl ViewDefinition {
+    /// Creates a new view definition.
+    #[must_use]
+    pub fn new(name: impl Into<String>, query: SelectStatement) -> Self {
+        Self { name: name.into(), columns: vec![], query }
+    }
+
+    /// Creates a view definition with column aliases.
+    #[must_use]
+    pub fn with_columns(mut self, columns: Vec<String>) -> Self {
+        self.columns = columns;
+        self
+    }
+}
+
 /// Builds logical plans from AST.
 ///
 /// # Example
@@ -73,13 +116,41 @@ pub struct PlanBuilder {
     /// When a CTE is defined, its plan is stored here.
     /// When a table reference matches a CTE name, the plan is inlined.
     cte_plans: HashMap<String, LogicalPlan>,
+    /// View definitions indexed by name.
+    /// When a view is referenced, it is expanded to its defining query.
+    /// Views have lower precedence than CTEs (CTEs shadow views).
+    view_definitions: HashMap<String, ViewDefinition>,
 }
 
 impl PlanBuilder {
     /// Creates a new plan builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { alias_counter: 0, cte_plans: HashMap::new() }
+        Self { alias_counter: 0, cte_plans: HashMap::new(), view_definitions: HashMap::new() }
+    }
+
+    /// Registers a view definition for expansion during query planning.
+    ///
+    /// When a table reference matches a registered view name, the view's
+    /// query definition is expanded inline. Views have lower precedence
+    /// than CTEs (CTEs shadow views).
+    pub fn register_view(&mut self, view: ViewDefinition) {
+        self.view_definitions.insert(view.name.clone(), view);
+    }
+
+    /// Registers multiple view definitions.
+    pub fn register_views(&mut self, views: impl IntoIterator<Item = ViewDefinition>) {
+        for view in views {
+            self.register_view(view);
+        }
+    }
+
+    /// Creates a plan builder with pre-registered views.
+    #[must_use]
+    pub fn with_views(views: impl IntoIterator<Item = ViewDefinition>) -> Self {
+        let mut builder = Self::new();
+        builder.register_views(views);
+        builder
     }
 
     /// Generates a unique alias.
@@ -358,7 +429,7 @@ impl PlanBuilder {
                 let table_name =
                     name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
 
-                // Check if this is a CTE reference (CTE names shadow actual table names)
+                // Check if this is a CTE reference (CTE names shadow actual table names and views)
                 if let Some(cte_plan) = self.cte_plans.get(&table_name) {
                     // Clone the CTE plan and apply alias if specified
                     let plan = cte_plan.clone();
@@ -366,6 +437,18 @@ impl PlanBuilder {
                         return Ok(plan.alias(&a.name.name));
                     }
                     return Ok(plan);
+                }
+
+                // Check if this is a view reference (views shadow table names)
+                if let Some(view_def) = self.view_definitions.get(&table_name).cloned() {
+                    // Build the view's query as the plan
+                    let view_plan = self.build_select(&view_def.query)?;
+                    // Apply alias: use explicit alias if provided, otherwise use view name
+                    let alias_name = alias
+                        .as_ref()
+                        .map(|a| a.name.name.clone())
+                        .unwrap_or_else(|| view_def.name.clone());
+                    return Ok(view_plan.alias(&alias_name));
                 }
 
                 let mut scan = ScanNode::new(table_name);
