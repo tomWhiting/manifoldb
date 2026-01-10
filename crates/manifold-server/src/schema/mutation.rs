@@ -172,6 +172,37 @@ impl MutationRoot {
         Ok(node)
     }
 
+    /// Update edge properties (merge with existing).
+    async fn update_edge(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        properties: async_graphql::Json<serde_json::Value>,
+    ) -> Result<Edge> {
+        let db = ctx.data::<Arc<Database>>()?;
+        let pubsub = ctx.data::<PubSub>()?;
+
+        let query = format!(
+            "MATCH ()-[r]->() WHERE id(r) = {} SET r += {} RETURN r",
+            id.as_str(),
+            properties.0
+        );
+
+        let result = db.query(&query)?;
+
+        let graph = convert::query_result_to_graph(&result)?;
+        let edge = graph
+            .edges
+            .into_iter()
+            .next()
+            .ok_or_else(|| async_graphql::Error::new("Edge not found"))?;
+
+        // Publish event
+        pubsub.publish_edge_event(EdgeChangeEvent::Updated(edge.clone()));
+
+        Ok(edge)
+    }
+
     // =========================================================================
     // Vector/Collection Mutations
     // =========================================================================

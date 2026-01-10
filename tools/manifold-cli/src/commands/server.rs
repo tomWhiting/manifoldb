@@ -37,9 +37,7 @@ struct ServerState {
 ///
 /// Uses ~/.local/share/manifoldb/ on all platforms for consistency.
 fn data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".local/share/manifoldb")
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".local/share/manifoldb")
 }
 
 /// PID file path (legacy, kept for compatibility).
@@ -249,9 +247,9 @@ fn start_background(database: &Path, host: &str, port: u16, quiet: bool) -> Resu
                 .init();
 
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move {
-                manifold_server::server::run(&db_str, &host_str, port).await
-            })?;
+            rt.block_on(
+                async move { manifold_server::server::run(&db_str, &host_str, port).await },
+            )?;
             Ok(())
         }
         Err(e) => Err(CliError::Daemon(e.to_string())),
@@ -360,11 +358,7 @@ fn status(json_output: bool) -> Result<()> {
 /// to maintain the same configuration.
 fn restart(database: Option<&Path>, host: &str, port: u16, quiet: bool) -> Result<()> {
     // Read saved state before stopping (if server is running)
-    let saved_state = if is_running()? {
-        read_state().ok()
-    } else {
-        None
-    };
+    let saved_state = if is_running()? { read_state().ok() } else { None };
 
     // Stop the server if running
     if saved_state.is_some() {
@@ -378,9 +372,7 @@ fn restart(database: Option<&Path>, host: &str, port: u16, quiet: bool) -> Resul
         // Use saved values unless CLI provided non-default values
         let use_host = if host == "127.0.0.1" { &state.host } else { host };
         let use_port = if port == DEFAULT_PORT { state.port } else { port };
-        let use_db = database
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(&state.database));
+        let use_db = database.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(&state.database));
         (use_host.to_string(), use_port, Some(use_db))
     } else {
         (host.to_string(), port, database.map(PathBuf::from))
