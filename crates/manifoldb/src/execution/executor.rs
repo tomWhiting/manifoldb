@@ -24,6 +24,15 @@ use manifoldb_query::plan::logical::{
 use manifoldb_query::plan::logical::{AnnSearchNode, ExpandNode, PathScanNode, VectorDistanceNode};
 use manifoldb_query::plan::physical::{IndexInfo, IndexType, PlannerCatalog};
 use manifoldb_query::plan::{LogicalPlan, PhysicalPlan, PhysicalPlanner, PlanBuilder};
+use manifoldb_query::procedure::builtins::{
+    execute_all_shortest_paths_with_tx, execute_astar_with_tx, execute_betweenness_with_tx,
+    execute_bfs_with_tx, execute_closeness_with_tx, execute_connected_components_with_tx,
+    execute_cosine_with_tx, execute_degree_with_tx, execute_dfs_with_tx, execute_dijkstra_with_tx,
+    execute_eigenvector_with_tx, execute_jaccard_with_tx, execute_label_propagation_with_tx,
+    execute_louvain_with_tx, execute_node_similarity_with_tx, execute_overlap_with_tx,
+    execute_pagerank_with_tx, execute_shortest_path_with_tx, execute_sssp_with_tx,
+    execute_strongly_connected_with_tx,
+};
 use manifoldb_query::ExtendedParser;
 use manifoldb_storage::Transaction;
 
@@ -557,11 +566,246 @@ fn try_execute_from_physical<T: Transaction>(
             Ok(None)
         }
 
+        PhysicalPlan::ProcedureCall(node) => {
+            // Execute the procedure call by dispatching to the appropriate helper
+            let storage = tx.storage_ref().map_err(|e| Error::Execution(e.to_string()))?;
+            let result =
+                execute_procedure_call(storage, &node.procedure_name, &node.arguments, ctx)?;
+
+            // Convert RowBatch to ResultSet
+            let schema = result.schema_arc();
+            let rows = result.into_rows();
+            Ok(Some(ResultSet::with_rows(schema, rows)))
+        }
+
         _ => {
             // No index scan in this plan - fall back to logical execution
             Ok(None)
         }
     }
+}
+
+/// Execute a procedure call by dispatching to the appropriate helper function.
+fn execute_procedure_call<T: Transaction>(
+    tx: &T,
+    procedure_name: &str,
+    arguments: &[LogicalExpr],
+    ctx: &ExecutionContext,
+) -> Result<manifoldb_query::RowBatch> {
+    // Helper to evaluate argument expressions to Values
+    let eval_args: Vec<Value> = arguments
+        .iter()
+        .map(|arg| evaluate_literal_expr(arg, ctx).unwrap_or(Value::Null))
+        .collect();
+
+    // Helper functions to extract typed arguments
+    let get_int = |idx: usize| -> Option<i64> {
+        eval_args.get(idx).and_then(|v| match v {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        })
+    };
+    let get_float = |idx: usize| -> Option<f64> {
+        eval_args.get(idx).and_then(|v| match v {
+            Value::Float(f) => Some(*f),
+            Value::Int(i) => Some(*i as f64),
+            _ => None,
+        })
+    };
+    let get_string = |idx: usize| -> Option<&str> {
+        eval_args.get(idx).and_then(|v| match v {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        })
+    };
+    let get_array = |idx: usize| -> Option<&[Value]> {
+        eval_args.get(idx).and_then(|v| match v {
+            Value::Array(arr) => Some(arr.as_slice()),
+            _ => None,
+        })
+    };
+
+    // Dispatch based on procedure name
+    let result = match procedure_name {
+        // Centrality algorithms
+        "algo.pageRank" => {
+            let damping = get_float(0).unwrap_or(0.85);
+            let max_iter = get_int(1).unwrap_or(100) as usize;
+            execute_pagerank_with_tx(tx, damping, max_iter)
+        }
+        "algo.betweennessCentrality" => {
+            let normalized = eval_args.first().map_or(true, |v| matches!(v, Value::Bool(true)));
+            let endpoints = eval_args.get(1).is_some_and(|v| matches!(v, Value::Bool(true)));
+            execute_betweenness_with_tx(tx, normalized, endpoints)
+        }
+        "algo.closenessCentrality" => {
+            let harmonic = eval_args.first().is_some_and(|v| matches!(v, Value::Bool(true)));
+            execute_closeness_with_tx(tx, harmonic)
+        }
+        "algo.degreeCentrality" => {
+            let direction = get_string(0);
+            execute_degree_with_tx(tx, direction)
+        }
+        "algo.eigenvectorCentrality" => {
+            let max_iter = get_int(0).unwrap_or(100) as usize;
+            let tolerance = get_float(1).unwrap_or(1e-6);
+            execute_eigenvector_with_tx(tx, max_iter, tolerance)
+        }
+
+        // Community detection
+        "algo.louvain" => {
+            let max_iter = get_int(0).unwrap_or(10) as usize;
+            let tolerance = get_float(1).unwrap_or(0.0001);
+            let weight_prop = get_string(2);
+            execute_louvain_with_tx(tx, max_iter, tolerance, weight_prop)
+        }
+        "algo.labelPropagation" => {
+            let max_iter = get_int(0).unwrap_or(10) as usize;
+            execute_label_propagation_with_tx(tx, max_iter)
+        }
+        "algo.connectedComponents" => {
+            let mode = get_string(0).unwrap_or("weak");
+            execute_connected_components_with_tx(tx, mode)
+        }
+        "algo.stronglyConnectedComponents" => execute_strongly_connected_with_tx(tx),
+
+        // Traversal algorithms
+        "algo.bfs" => {
+            let start_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.bfs requires startNode argument".to_string())
+            })?;
+            let edge_type = get_string(1);
+            let direction = get_string(2);
+            let max_depth = get_int(3);
+            execute_bfs_with_tx(tx, start_id, edge_type, direction, max_depth)
+        }
+        "algo.dfs" => {
+            let start_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.dfs requires startNode argument".to_string())
+            })?;
+            let edge_type = get_string(1);
+            let direction = get_string(2);
+            let max_depth = get_int(3);
+            execute_dfs_with_tx(tx, start_id, edge_type, direction, max_depth)
+        }
+
+        // Path finding algorithms
+        "algo.shortestPath" => {
+            let source_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.shortestPath requires source argument".to_string())
+            })?;
+            let target_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.shortestPath requires target argument".to_string())
+            })?;
+            let edge_type = get_string(2);
+            let max_depth = get_int(3);
+            execute_shortest_path_with_tx(tx, source_id, target_id, edge_type, max_depth)
+        }
+        "algo.dijkstra" => {
+            let source_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.dijkstra requires source argument".to_string())
+            })?;
+            let target_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.dijkstra requires target argument".to_string())
+            })?;
+            let weight_prop = get_string(2);
+            let default_weight = get_float(3).unwrap_or(1.0);
+            let max_weight = get_float(4);
+            execute_dijkstra_with_tx(
+                tx,
+                source_id,
+                target_id,
+                weight_prop,
+                default_weight,
+                max_weight,
+            )
+        }
+        "algo.astar" => {
+            let source_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.astar requires source argument".to_string())
+            })?;
+            let target_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.astar requires target argument".to_string())
+            })?;
+            let weight_prop = get_string(2);
+            let lat_prop = get_string(3);
+            let lon_prop = get_string(4);
+            let max_cost = get_float(5);
+            execute_astar_with_tx(
+                tx,
+                source_id,
+                target_id,
+                weight_prop,
+                lat_prop,
+                lon_prop,
+                max_cost,
+            )
+        }
+        "algo.allShortestPaths" => {
+            let source_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.allShortestPaths requires source argument".to_string())
+            })?;
+            let target_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.allShortestPaths requires target argument".to_string())
+            })?;
+            let edge_type = get_string(2);
+            let max_depth = get_int(3);
+            execute_all_shortest_paths_with_tx(tx, source_id, target_id, edge_type, max_depth)
+        }
+        "algo.sssp" => {
+            let source_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.sssp requires source argument".to_string())
+            })?;
+            let weight_prop = get_string(1);
+            let max_weight = get_float(2);
+            execute_sssp_with_tx(tx, source_id, weight_prop, max_weight)
+        }
+
+        // Similarity algorithms
+        "algo.nodeSimilarity" => {
+            let label = get_string(0);
+            let edge_type = get_string(1);
+            let top_k = get_int(2);
+            let similarity_cutoff = get_float(3).unwrap_or(0.0);
+            execute_node_similarity_with_tx(tx, label, edge_type, top_k, similarity_cutoff)
+        }
+        "algo.jaccard" => {
+            let node1_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.jaccard requires node1 argument".to_string())
+            })?;
+            let node2_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.jaccard requires node2 argument".to_string())
+            })?;
+            let edge_type = get_string(2);
+            execute_jaccard_with_tx(tx, node1_id, node2_id, edge_type)
+        }
+        "algo.overlap" => {
+            let node1_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.overlap requires node1 argument".to_string())
+            })?;
+            let node2_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.overlap requires node2 argument".to_string())
+            })?;
+            let edge_type = get_string(2);
+            execute_overlap_with_tx(tx, node1_id, node2_id, edge_type)
+        }
+        "algo.cosine" => {
+            let node1_id = get_int(0).ok_or_else(|| {
+                Error::Execution("algo.cosine requires node1 argument".to_string())
+            })?;
+            let node2_id = get_int(1).ok_or_else(|| {
+                Error::Execution("algo.cosine requires node2 argument".to_string())
+            })?;
+            let properties = get_array(2).unwrap_or(&[]);
+            execute_cosine_with_tx(tx, node1_id, node2_id, properties)
+        }
+
+        _ => {
+            return Err(Error::Execution(format!("Unknown procedure: {procedure_name}")));
+        }
+    };
+
+    result.map_err(|e| Error::Execution(format!("Procedure execution failed: {e}")))
 }
 
 /// Execute a physical plan and return the result set.

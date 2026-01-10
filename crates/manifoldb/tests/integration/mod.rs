@@ -24,6 +24,7 @@ pub mod index_maintenance;
 pub mod index_query;
 pub mod match_filter;
 pub mod prepared;
+pub mod procedure;
 pub mod recovery;
 pub mod scale;
 pub mod session_transactions;
