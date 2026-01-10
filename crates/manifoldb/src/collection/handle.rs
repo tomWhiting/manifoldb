@@ -40,9 +40,11 @@ use serde_json::Value as JsonValue;
 use super::config::VectorConfig;
 use super::error::{ApiError, ApiResult};
 use super::filter::Filter;
+use super::manager::CollectionManager;
 use super::metadata::CollectionName;
 use super::point::{PointStruct, ScoredPoint, Vector};
 use super::search::{FusionStrategy, HybridSearchBuilder, SearchBuilder};
+use crate::transaction::{DatabaseTransaction, VectorSyncStrategy};
 
 /// A handle to a collection for performing point operations and search.
 ///
@@ -107,6 +109,15 @@ impl<E: StorageEngine> CollectionHandle<E> {
 
         // Create the collection in the point store
         point_store.create_collection(&vector_name, schema)?;
+
+        // Register the collection with CollectionManager for integration with drop_collection
+        {
+            let storage_tx = point_store.engine().begin_write()?;
+            let mut db_tx =
+                DatabaseTransaction::new_write(0, storage_tx, VectorSyncStrategy::Synchronous);
+            CollectionManager::create(&mut db_tx, &name, vectors.iter().cloned())?;
+            db_tx.commit()?;
+        }
 
         Ok(Self { point_store, name, vector_name, vectors: vectors.into_iter().collect() })
     }

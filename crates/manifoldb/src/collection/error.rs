@@ -102,6 +102,18 @@ impl From<manifoldb_vector::error::VectorError> for ApiError {
     }
 }
 
+impl From<manifoldb_storage::StorageError> for ApiError {
+    fn from(err: manifoldb_storage::StorageError) -> Self {
+        Self::Storage(err.to_string())
+    }
+}
+
+impl From<manifoldb_core::TransactionError> for ApiError {
+    fn from(err: manifoldb_core::TransactionError) -> Self {
+        Self::Storage(err.to_string())
+    }
+}
+
 /// A specialized `Result` type for collection API operations.
 pub type ApiResult<T> = std::result::Result<T, ApiError>;
 

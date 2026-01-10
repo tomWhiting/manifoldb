@@ -103,6 +103,6 @@ pub use inverted_index::{
     InvertedIndex, InvertedIndexMeta, PostingEntry, PostingList, ScoringFunction, SearchResult,
 };
 pub use multi_vector_store::MultiVectorStore;
-pub use point_store::PointStore;
+pub use point_store::{PointStore, TABLE_POINT_COLLECTIONS};
 pub use sparse_store::SparseVectorStore;
 pub use vector_store::VectorStore;

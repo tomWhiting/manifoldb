@@ -96,11 +96,7 @@ fn test_collections_can_be_reopened() {
     assert_eq!(beta.name(), "beta");
 }
 
-// NOTE: drop_collection requires integration between CollectionHandle and CollectionManager.
-// The Collection API creates collections via PointStore but drop_collection uses CollectionManager.
-// These tests are marked as ignored until integration is complete.
 #[test]
-#[ignore = "requires CollectionHandle/CollectionManager integration"]
 fn test_drop_collection() {
     let db = Database::in_memory().expect("failed to create db");
 
@@ -123,7 +119,6 @@ fn test_drop_collection() {
 }
 
 #[test]
-#[ignore = "requires CollectionHandle/CollectionManager integration"]
 fn test_drop_collection_with_data() {
     let db = Database::in_memory().expect("failed to create db");
 
