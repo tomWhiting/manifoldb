@@ -1167,6 +1167,46 @@ impl PhysicalPlanner {
             JoinType::RightSemi | JoinType::RightAnti => right_rows,
         };
 
+        // Handle USING columns by synthesizing equijoin conditions
+        // For NATURAL JOIN / JOIN USING, using_columns contains the column names
+        // that should be equal between left and right sides
+        if !node.using_columns.is_empty() {
+            // Build equijoin keys from USING columns
+            // For USING(col1, col2), we need left.col1 = right.col1 AND left.col2 = right.col2
+            let left_keys: Vec<LogicalExpr> =
+                node.using_columns.iter().map(|col| LogicalExpr::column(col)).collect();
+            let right_keys: Vec<LogicalExpr> =
+                node.using_columns.iter().map(|col| LogicalExpr::column(col)).collect();
+
+            // Use hash join for USING joins (they're always equijoins)
+            let cost = self.cost_model.hash_join_cost(
+                left_rows.min(right_rows),
+                left_rows.max(right_rows),
+                output_rows,
+            );
+
+            let (build_keys, probe_keys, join_order) = if left_rows <= right_rows {
+                (left_keys, right_keys, JoinOrder::LeftBuild)
+            } else {
+                (right_keys, left_keys, JoinOrder::RightBuild)
+            };
+
+            let (build_plan, probe_plan) = match join_order {
+                JoinOrder::LeftBuild => (left_plan, right_plan),
+                JoinOrder::RightBuild => (right_plan, left_plan),
+            };
+
+            return PhysicalPlan::HashJoin {
+                node: Box::new(
+                    HashJoinNode::new(node.join_type, build_keys, probe_keys)
+                        .with_join_order(join_order)
+                        .with_cost(cost),
+                ),
+                build: Box::new(build_plan),
+                probe: Box::new(probe_plan),
+            };
+        }
+
         // Check if we can use a hash join (need equijoin condition)
         if let Some(condition) = &node.condition {
             if let Some((left_key, right_key)) = self.extract_equijoin_keys(condition) {
@@ -1201,6 +1241,7 @@ impl PhysicalPlanner {
         }
 
         // Fall back to nested loop join
+        // Note: USING joins are always handled by hash join above, so we use the original condition
         let cost = self.cost_model.nested_loop_cost(left_rows, right_rows, output_rows);
 
         PhysicalPlan::NestedLoopJoin {
@@ -1992,5 +2033,161 @@ mod tests {
         assert_eq!(node.vector_column, "dense");
         assert_eq!(node.index_name, Some("my_collection_dense_hnsw".to_string()));
         assert_eq!(node.collection_name, Some("my_collection".to_string()));
+    }
+
+    #[test]
+    fn plan_join_using_single_column() {
+        // Test JOIN ... USING(id) creates a hash join with proper keys
+        let users = LogicalPlan::scan("users");
+        let orders = LogicalPlan::scan("orders");
+
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(JoinType::Inner, vec!["id".to_string()])),
+            left: Box::new(users),
+            right: Box::new(orders),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        // USING joins should use hash join since they're equijoins
+        assert_eq!(physical.node_type(), "HashJoin");
+
+        // Verify hash join has proper keys
+        if let PhysicalPlan::HashJoin { node, .. } = &physical {
+            assert_eq!(node.build_keys.len(), 1);
+            assert_eq!(node.probe_keys.len(), 1);
+            // Keys should be column references to "id"
+            assert!(
+                matches!(&node.build_keys[0], LogicalExpr::Column { name, .. } if name == "id")
+            );
+            assert!(
+                matches!(&node.probe_keys[0], LogicalExpr::Column { name, .. } if name == "id")
+            );
+        } else {
+            panic!("Expected HashJoin plan");
+        }
+    }
+
+    #[test]
+    fn plan_join_using_multiple_columns() {
+        // Test JOIN ... USING(dept_id, location_id) creates hash join with multiple keys
+        let employees = LogicalPlan::scan("employees");
+        let departments = LogicalPlan::scan("departments");
+
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(
+                JoinType::Inner,
+                vec!["dept_id".to_string(), "location_id".to_string()],
+            )),
+            left: Box::new(employees),
+            right: Box::new(departments),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        assert_eq!(physical.node_type(), "HashJoin");
+
+        if let PhysicalPlan::HashJoin { node, .. } = &physical {
+            // Should have two keys for the two USING columns
+            assert_eq!(node.build_keys.len(), 2);
+            assert_eq!(node.probe_keys.len(), 2);
+        } else {
+            panic!("Expected HashJoin plan");
+        }
+    }
+
+    #[test]
+    fn plan_natural_join() {
+        // NATURAL JOIN is represented as a JOIN with using_columns populated
+        // by the logical planner (common columns between tables)
+        let users = LogicalPlan::scan("users");
+        let profiles = LogicalPlan::scan("profiles");
+
+        // Simulate NATURAL JOIN - assuming logical planner identified "user_id" as common
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(JoinType::Inner, vec!["user_id".to_string()])),
+            left: Box::new(users),
+            right: Box::new(profiles),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        // NATURAL JOIN should use hash join
+        assert_eq!(physical.node_type(), "HashJoin");
+    }
+
+    #[test]
+    fn plan_left_join_using() {
+        // Test LEFT JOIN ... USING(id)
+        let users = LogicalPlan::scan("users");
+        let orders = LogicalPlan::scan("orders");
+
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(JoinType::Left, vec!["id".to_string()])),
+            left: Box::new(users),
+            right: Box::new(orders),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        assert_eq!(physical.node_type(), "HashJoin");
+
+        if let PhysicalPlan::HashJoin { node, .. } = &physical {
+            assert_eq!(node.join_type, JoinType::Left);
+        } else {
+            panic!("Expected HashJoin plan");
+        }
+    }
+
+    #[test]
+    fn plan_right_join_using() {
+        // Test RIGHT JOIN ... USING(id)
+        let users = LogicalPlan::scan("users");
+        let orders = LogicalPlan::scan("orders");
+
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(JoinType::Right, vec!["id".to_string()])),
+            left: Box::new(users),
+            right: Box::new(orders),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        assert_eq!(physical.node_type(), "HashJoin");
+
+        if let PhysicalPlan::HashJoin { node, .. } = &physical {
+            assert_eq!(node.join_type, JoinType::Right);
+        } else {
+            panic!("Expected HashJoin plan");
+        }
+    }
+
+    #[test]
+    fn plan_full_join_using() {
+        // Test FULL JOIN ... USING(id)
+        let users = LogicalPlan::scan("users");
+        let orders = LogicalPlan::scan("orders");
+
+        let logical = LogicalPlan::Join {
+            node: Box::new(JoinNode::using(JoinType::Full, vec!["id".to_string()])),
+            left: Box::new(users),
+            right: Box::new(orders),
+        };
+
+        let planner = PhysicalPlanner::new();
+        let physical = planner.plan(&logical);
+
+        assert_eq!(physical.node_type(), "HashJoin");
+
+        if let PhysicalPlan::HashJoin { node, .. } = &physical {
+            assert_eq!(node.join_type, JoinType::Full);
+        } else {
+            panic!("Expected HashJoin plan");
+        }
     }
 }
