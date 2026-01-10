@@ -173,14 +173,12 @@ mod standard_sql {
         )
         .unwrap();
         match stmt {
-            Statement::Select(select) => {
-                match &select.group_by {
-                    GroupByClause::Rollup(exprs) => {
-                        assert_eq!(exprs.len(), 2);
-                    }
-                    _ => panic!("expected ROLLUP clause"),
+            Statement::Select(select) => match &select.group_by {
+                GroupByClause::Rollup(exprs) => {
+                    assert_eq!(exprs.len(), 2);
                 }
-            }
+                _ => panic!("expected ROLLUP clause"),
+            },
             _ => panic!("expected SELECT"),
         }
     }
@@ -192,14 +190,12 @@ mod standard_sql {
         )
         .unwrap();
         match stmt {
-            Statement::Select(select) => {
-                match &select.group_by {
-                    GroupByClause::Cube(exprs) => {
-                        assert_eq!(exprs.len(), 2);
-                    }
-                    _ => panic!("expected CUBE clause"),
+            Statement::Select(select) => match &select.group_by {
+                GroupByClause::Cube(exprs) => {
+                    assert_eq!(exprs.len(), 2);
                 }
-            }
+                _ => panic!("expected CUBE clause"),
+            },
             _ => panic!("expected SELECT"),
         }
     }
@@ -232,10 +228,8 @@ mod standard_sql {
     #[test]
     fn parse_rollup_expand_grouping_sets() {
         // Test that ROLLUP correctly expands to grouping sets
-        let stmt = parse_single_statement(
-            "SELECT a, b, COUNT(*) FROM t GROUP BY ROLLUP(a, b)",
-        )
-        .unwrap();
+        let stmt =
+            parse_single_statement("SELECT a, b, COUNT(*) FROM t GROUP BY ROLLUP(a, b)").unwrap();
         match stmt {
             Statement::Select(select) => {
                 let sets = select.group_by.expand_grouping_sets();
@@ -252,10 +246,8 @@ mod standard_sql {
     #[test]
     fn parse_cube_expand_grouping_sets() {
         // Test that CUBE correctly expands to grouping sets
-        let stmt = parse_single_statement(
-            "SELECT a, b, COUNT(*) FROM t GROUP BY CUBE(a, b)",
-        )
-        .unwrap();
+        let stmt =
+            parse_single_statement("SELECT a, b, COUNT(*) FROM t GROUP BY CUBE(a, b)").unwrap();
         match stmt {
             Statement::Select(select) => {
                 let sets = select.group_by.expand_grouping_sets();

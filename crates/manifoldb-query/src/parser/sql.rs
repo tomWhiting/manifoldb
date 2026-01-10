@@ -18,14 +18,15 @@ use crate::ast::{
     DropViewStatement, ExplainAnalyzeStatement, ExplainFormat, Expr, FunctionCall,
     FunctionLanguage, FunctionParameter, FunctionVolatility, GroupByClause, GroupingSet,
     Identifier, IndexColumn, InsertSource, InsertStatement, IsolationLevel, JoinClause,
-    JoinCondition, JoinType, Literal, NamedWindowDefinition, OnConflict, OrderByExpr, ParameterMode,
-    ParameterRef, PartitionBy, PartitionOf, QualifiedName, ReleaseSavepointStatement, ResetStatement,
-    RollbackTransaction, SavepointStatement, SelectItem, SelectStatement, SetOperation, SetOperator,
-    SetSessionStatement, SetTransactionStatement, SetValue, ShowStatement, Statement, TableAlias,
-    TableConstraint, TableRef, TransactionAccessMode, TransactionStatement, TriggerEvent,
-    TriggerForEach, TriggerTiming, TruncateCascade, TruncateIdentity, TruncateTableStatement,
-    UnaryOp, UpdateStatement, UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowSpec, WithClause,
+    JoinCondition, JoinType, Literal, NamedWindowDefinition, OnConflict, OrderByExpr,
+    ParameterMode, ParameterRef, PartitionBy, PartitionOf, QualifiedName,
+    ReleaseSavepointStatement, ResetStatement, RollbackTransaction, SavepointStatement, SelectItem,
+    SelectStatement, SetOperation, SetOperator, SetSessionStatement, SetTransactionStatement,
+    SetValue, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
+    TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
+    TruncateCascade, TruncateIdentity, TruncateTableStatement, UnaryOp, UpdateStatement,
+    UtilityStatement, VacuumStatement, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowSpec,
+    WithClause,
 };
 use crate::error::{ParseError, ParseResult};
 
@@ -613,8 +614,10 @@ fn convert_group_by(group_by: sp::GroupByExpr) -> ParseResult<GroupByClause> {
             // In that case, we need to expand into GROUPING SETS
             let mut has_grouping = false;
             for expr in &exprs {
-                if matches!(expr, sp::Expr::Rollup(_) | sp::Expr::Cube(_) | sp::Expr::GroupingSets(_))
-                {
+                if matches!(
+                    expr,
+                    sp::Expr::Rollup(_) | sp::Expr::Cube(_) | sp::Expr::GroupingSets(_)
+                ) {
                     has_grouping = true;
                     break;
                 }

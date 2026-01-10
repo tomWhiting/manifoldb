@@ -288,10 +288,8 @@ impl HashAggregateOp {
                 key_buffer.clear();
                 for base_expr in &self.group_by {
                     // Check if this expression is in the current grouping set
-                    let in_set = grouping_set
-                        .0
-                        .iter()
-                        .any(|e| format!("{e:?}") == format!("{base_expr:?}"));
+                    let in_set =
+                        grouping_set.0.iter().any(|e| format!("{e:?}") == format!("{base_expr:?}"));
                     if in_set {
                         let value = evaluate_expr(base_expr, row)?;
                         encode_value(&value, &mut key_buffer);
@@ -330,14 +328,9 @@ impl HashAggregateOp {
                         agg_expr
                     {
                         // Check FILTER clause before updating accumulator
-                        let passes_filter = if let Some(filter_expr) = filter {
-                            match evaluate_expr(filter_expr, row) {
-                                Ok(Value::Bool(true)) => true,
-                                _ => false,
-                            }
-                        } else {
-                            true
-                        };
+                        let passes_filter = filter.as_ref().map_or(true, |filter_expr| {
+                            matches!(evaluate_expr(filter_expr, row), Ok(Value::Bool(true)))
+                        });
 
                         if passes_filter {
                             let is_wildcard =

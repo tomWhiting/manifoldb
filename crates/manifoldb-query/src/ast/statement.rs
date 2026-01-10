@@ -614,9 +614,7 @@ impl GroupByClause {
     #[must_use]
     pub fn base_expressions(&self) -> Vec<&Expr> {
         match self {
-            Self::Simple(exprs) | Self::Rollup(exprs) | Self::Cube(exprs) => {
-                exprs.iter().collect()
-            }
+            Self::Simple(exprs) | Self::Rollup(exprs) | Self::Cube(exprs) => exprs.iter().collect(),
             Self::GroupingSets(sets) => {
                 // Collect unique expressions from all sets
                 let mut seen = std::collections::HashSet::new();
