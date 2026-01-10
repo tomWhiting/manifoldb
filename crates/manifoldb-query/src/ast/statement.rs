@@ -973,6 +973,30 @@ pub enum TableRef {
         /// Optional alias.
         alias: Option<TableAlias>,
     },
+    /// A LATERAL subquery.
+    ///
+    /// LATERAL allows the subquery to reference columns from preceding
+    /// FROM items. Each row from the left side produces a new evaluation
+    /// of the subquery.
+    ///
+    /// # Example
+    /// ```sql
+    /// SELECT d.name, top_emp.name, top_emp.salary
+    /// FROM departments d,
+    /// LATERAL (
+    ///   SELECT name, salary
+    ///   FROM employees e
+    ///   WHERE e.department_id = d.id
+    ///   ORDER BY salary DESC
+    ///   LIMIT 3
+    /// ) AS top_emp;
+    /// ```
+    LateralSubquery {
+        /// The subquery that can reference preceding FROM items.
+        query: Box<SelectStatement>,
+        /// Required alias for lateral subqueries.
+        alias: TableAlias,
+    },
 }
 
 impl TableRef {
@@ -986,6 +1010,12 @@ impl TableRef {
     #[must_use]
     pub fn aliased(name: impl Into<QualifiedName>, alias: impl Into<TableAlias>) -> Self {
         Self::Table { name: name.into(), alias: Some(alias.into()) }
+    }
+
+    /// Creates a lateral subquery reference.
+    #[must_use]
+    pub fn lateral(query: SelectStatement, alias: impl Into<TableAlias>) -> Self {
+        Self::LateralSubquery { query: Box::new(query), alias: alias.into() }
     }
 }
 

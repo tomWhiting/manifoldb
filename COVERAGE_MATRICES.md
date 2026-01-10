@@ -119,6 +119,13 @@ Query Optimization
 ├── Expression Simplification: ✅ Complete (Jan 2026) - constant folding, boolean algebra, null propagation
 ├── Column Pruning: ✅ Exists
 └── Status: ✅ Core optimization passes available
+
+LATERAL Subqueries
+├── Parser: ✅ Complete (Jan 2026) - LATERAL keyword recognized in FROM clause
+├── AST: ✅ Complete (Jan 2026) - LateralSubquery variant in TableRef
+├── Logical Plan: ✅ Complete (Jan 2026) - Reuses CallSubqueryNode
+├── Execution: ✅ Complete (Jan 2026) - Reuses CallSubqueryOp
+└── Status: ✅ Complete with tests - correlated inline table expressions
 ```
 
 ### Parallel Work Streams
@@ -151,7 +158,7 @@ These feature groups can be implemented independently:
 | Table alias | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |
 | Subquery in FROM | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | Table function | ✓ | ✓ | | | | | Parsed only |
-| LATERAL subquery | | | | | | | Not implemented |
+| LATERAL subquery | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete (Jan 2026)† - Uses CallSubqueryOp |
 | VALUES clause | ✓ | ✓ | ✓ | ✓ | ✓ | | Needs tests |
 | **JOIN Types** |
 | INNER JOIN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Complete |

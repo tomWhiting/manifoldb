@@ -505,13 +505,16 @@ fn convert_table_factor(factor: sp::TableFactor) -> ParseResult<TableRef> {
             name: convert_object_name(name),
             alias: alias.map(convert_table_alias),
         }),
-        sp::TableFactor::Derived { subquery, alias, .. } => {
+        sp::TableFactor::Derived { subquery, alias, lateral } => {
             let alias =
                 alias.ok_or_else(|| ParseError::MissingClause("alias for subquery".to_string()))?;
-            Ok(TableRef::Subquery {
-                query: Box::new(convert_query(*subquery)?),
-                alias: convert_table_alias(alias),
-            })
+            let query = Box::new(convert_query(*subquery)?);
+            let alias = convert_table_alias(alias);
+            if lateral {
+                Ok(TableRef::LateralSubquery { query, alias })
+            } else {
+                Ok(TableRef::Subquery { query, alias })
+            }
         }
         sp::TableFactor::TableFunction { expr, alias } => {
             // Extract function name and args from the expression
@@ -533,7 +536,10 @@ fn convert_table_factor(factor: sp::TableFactor) -> ParseResult<TableRef> {
                     TableRef::Table { alias: ref mut a, .. } => {
                         *a = Some(convert_table_alias(alias))
                     }
-                    TableRef::Subquery { alias: ref mut a, .. } => *a = convert_table_alias(alias),
+                    TableRef::Subquery { alias: ref mut a, .. }
+                    | TableRef::LateralSubquery { alias: ref mut a, .. } => {
+                        *a = convert_table_alias(alias)
+                    }
                     _ => {}
                 }
             }
@@ -3163,6 +3169,96 @@ mod tests {
                 assert_eq!(drop.name.name, "my_trigger");
             }
             _ => panic!("expected DROP TRIGGER"),
+        }
+    }
+
+    // ========================================================================
+    // LATERAL Subquery Parsing Tests
+    // ========================================================================
+
+    #[test]
+    fn parse_lateral_subquery_basic() {
+        let stmt = parse_single_statement(
+            "SELECT d.name, e.name FROM departments d, LATERAL (SELECT name FROM employees WHERE department_id = d.id) AS e"
+        ).unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.from.len(), 2);
+                // First is a table
+                assert!(matches!(select.from[0], TableRef::Table { .. }));
+                // Second should be a LateralSubquery
+                assert!(matches!(select.from[1], TableRef::LateralSubquery { .. }));
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_lateral_subquery_with_limit() {
+        let stmt = parse_single_statement(
+            "SELECT * FROM users u, LATERAL (SELECT * FROM orders o WHERE o.user_id = u.id ORDER BY date DESC LIMIT 5) AS recent_orders"
+        ).unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.from.len(), 2);
+                if let TableRef::LateralSubquery { query, alias } = &select.from[1] {
+                    assert_eq!(alias.name.name, "recent_orders");
+                    // Check limit is in subquery
+                    assert!(query.limit.is_some());
+                } else {
+                    panic!("expected LateralSubquery");
+                }
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_lateral_first_in_from() {
+        let stmt = parse_single_statement("SELECT x.n FROM LATERAL (SELECT 1 AS n) AS x").unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.from.len(), 1);
+                assert!(matches!(select.from[0], TableRef::LateralSubquery { .. }));
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_multiple_lateral_subqueries() {
+        let stmt = parse_single_statement(
+            "SELECT * FROM t1, LATERAL (SELECT * FROM t2 WHERE t2.x = t1.x) AS a, LATERAL (SELECT * FROM t3 WHERE t3.y = a.y) AS b"
+        ).unwrap();
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.from.len(), 3);
+                assert!(matches!(select.from[0], TableRef::Table { .. }));
+                assert!(matches!(select.from[1], TableRef::LateralSubquery { .. }));
+                assert!(matches!(select.from[2], TableRef::LateralSubquery { .. }));
+            }
+            _ => panic!("expected SELECT"),
+        }
+    }
+
+    #[test]
+    fn parse_lateral_vs_regular_subquery() {
+        // Regular subquery (not lateral)
+        let stmt1 =
+            parse_single_statement("SELECT * FROM users u, (SELECT 1 AS n) AS nums").unwrap();
+        // LATERAL subquery
+        let stmt2 =
+            parse_single_statement("SELECT * FROM users u, LATERAL (SELECT 1 AS n) AS nums")
+                .unwrap();
+
+        match (stmt1, stmt2) {
+            (Statement::Select(s1), Statement::Select(s2)) => {
+                // Regular subquery should be Subquery variant
+                assert!(matches!(s1.from[1], TableRef::Subquery { .. }));
+                // LATERAL should be LateralSubquery variant
+                assert!(matches!(s2.from[1], TableRef::LateralSubquery { .. }));
+            }
+            _ => panic!("expected SELECT statements"),
         }
     }
 }

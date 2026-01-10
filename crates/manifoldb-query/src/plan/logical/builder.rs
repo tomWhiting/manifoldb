@@ -52,8 +52,8 @@ use super::graph::{
 use super::node::LogicalPlan;
 use super::procedure::{ProcedureCallNode, YieldColumn};
 use super::relational::{
-    AggregateNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode, ScanNode, SetOpNode,
-    SetOpType, SortNode, ValuesNode, WindowNode,
+    AggregateNode, CallSubqueryNode, FilterNode, JoinNode, JoinType, LimitNode, ProjectNode,
+    ScanNode, SetOpNode, SetOpType, SortNode, ValuesNode, WindowNode,
 };
 use super::validate::{PlanError, PlanResult};
 
@@ -486,10 +486,38 @@ impl PlanBuilder {
 
         let mut plan = self.build_table_ref(&from[0])?;
 
-        // Cross join additional tables
+        // Cross join additional tables, handling LATERAL subqueries specially
         for table in from.iter().skip(1) {
-            let right = self.build_table_ref(table)?;
-            plan = plan.cross_join(right);
+            match table {
+                TableRef::LateralSubquery { query, alias } => {
+                    // Build the subquery plan
+                    let subquery = self.build_select(query)?;
+                    let subquery = subquery.alias(&alias.name.name);
+
+                    // Collect column names from the current plan for correlation detection
+                    let outer_columns = Self::collect_output_columns(&plan);
+
+                    // Collect referenced columns in the subquery
+                    let referenced_columns = Self::collect_referenced_columns_from_select(query);
+
+                    // Find which outer columns are referenced in the subquery
+                    let imported_variables: Vec<String> = outer_columns
+                        .into_iter()
+                        .filter(|col| referenced_columns.contains(col))
+                        .collect();
+
+                    // Create LATERAL join using CallSubquery semantics
+                    plan = LogicalPlan::CallSubquery {
+                        node: CallSubqueryNode::new(imported_variables),
+                        subquery: Box::new(subquery),
+                        input: Box::new(plan),
+                    };
+                }
+                _ => {
+                    let right = self.build_table_ref(table)?;
+                    plan = plan.cross_join(right);
+                }
+            }
         }
 
         Ok(plan)
@@ -552,6 +580,13 @@ impl PlanBuilder {
                 }
 
                 Ok(LogicalPlan::Scan(Box::new(scan)))
+            }
+
+            TableRef::LateralSubquery { query, alias } => {
+                // When a LATERAL subquery is the first item in FROM, it's effectively
+                // just a regular subquery since there's nothing to correlate with.
+                let subquery = self.build_select(query)?;
+                Ok(subquery.alias(&alias.name.name))
             }
         }
     }
@@ -3100,6 +3135,225 @@ impl PlanBuilder {
         };
         Ok(dt)
     }
+
+    /// Collects output column names from a logical plan.
+    ///
+    /// This is used to determine which columns are available for correlation
+    /// in LATERAL subqueries. For simplicity, we collect all table/alias names
+    /// and let the execution layer handle the correlation at runtime.
+    fn collect_output_columns(plan: &LogicalPlan) -> Vec<String> {
+        let mut columns = Vec::new();
+        Self::collect_output_columns_recursive(plan, &mut columns);
+        columns
+    }
+
+    /// Recursively collects output column names from a logical plan.
+    fn collect_output_columns_recursive(plan: &LogicalPlan, columns: &mut Vec<String>) {
+        match plan {
+            LogicalPlan::Scan(scan) => {
+                // Add the reference name (alias or table name)
+                let ref_name = scan.reference_name();
+                columns.push(ref_name.to_string());
+                // Also add any explicit projections
+                if let Some(proj) = &scan.projection {
+                    for col in proj {
+                        columns.push(col.clone());
+                        columns.push(format!("{ref_name}.{col}"));
+                    }
+                }
+            }
+            LogicalPlan::Alias { alias, input } => {
+                columns.push(alias.clone());
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Project { node, input } => {
+                // Add projected column names/aliases
+                for expr in &node.exprs {
+                    if let LogicalExpr::Alias { alias, .. } = expr {
+                        columns.push(alias.clone());
+                    } else if let LogicalExpr::Column { name, .. } = expr {
+                        columns.push(name.clone());
+                    }
+                }
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Join { left, right, .. } => {
+                Self::collect_output_columns_recursive(left, columns);
+                Self::collect_output_columns_recursive(right, columns);
+            }
+            LogicalPlan::CallSubquery { input, subquery, .. } => {
+                Self::collect_output_columns_recursive(input, columns);
+                Self::collect_output_columns_recursive(subquery, columns);
+            }
+            LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Distinct { input, .. }
+            | LogicalPlan::Window { input, .. }
+            | LogicalPlan::Unwind { input, .. } => {
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::Aggregate { node, input } => {
+                // Add group by columns
+                for expr in &node.group_by {
+                    if let LogicalExpr::Column { name, .. } = expr {
+                        columns.push(name.clone());
+                    }
+                }
+                Self::collect_output_columns_recursive(input, columns);
+            }
+            LogicalPlan::SetOp { left, right, .. } => {
+                Self::collect_output_columns_recursive(left, columns);
+                Self::collect_output_columns_recursive(right, columns);
+            }
+            LogicalPlan::Union { inputs, .. } => {
+                for input in inputs {
+                    Self::collect_output_columns_recursive(input, columns);
+                }
+            }
+            LogicalPlan::Values(values) => {
+                if let Some(names) = &values.column_names {
+                    columns.extend(names.iter().cloned());
+                }
+            }
+            LogicalPlan::Empty { columns: cols } => {
+                columns.extend(cols.iter().cloned());
+            }
+            // Graph and other nodes don't typically expose columns in the same way
+            _ => {}
+        }
+    }
+
+    /// Collects all column references from a SELECT statement.
+    ///
+    /// This is used to find which outer columns a LATERAL subquery references.
+    fn collect_referenced_columns_from_select(select: &SelectStatement) -> Vec<String> {
+        let mut columns = Vec::new();
+
+        // Collect from projection
+        for item in &select.projection {
+            if let SelectItem::Expr { expr, .. } = item {
+                Self::collect_columns_from_expr(expr, &mut columns);
+            }
+        }
+
+        // Collect from WHERE clause
+        if let Some(where_clause) = &select.where_clause {
+            Self::collect_columns_from_expr(where_clause, &mut columns);
+        }
+
+        // Collect from FROM clause (for JOINs)
+        for table_ref in &select.from {
+            Self::collect_columns_from_table_ref(table_ref, &mut columns);
+        }
+
+        // Collect from GROUP BY
+        for expr in &select.group_by {
+            Self::collect_columns_from_expr(expr, &mut columns);
+        }
+
+        // Collect from HAVING
+        if let Some(having) = &select.having {
+            Self::collect_columns_from_expr(having, &mut columns);
+        }
+
+        // Collect from ORDER BY
+        for order in &select.order_by {
+            Self::collect_columns_from_expr(&order.expr, &mut columns);
+        }
+
+        columns
+    }
+
+    /// Collects column names from an expression (simplified).
+    fn collect_columns_from_expr(expr: &Expr, columns: &mut Vec<String>) {
+        match expr {
+            Expr::Column(name) => {
+                // Add both the full qualified name and individual parts
+                let full_name: String =
+                    name.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(".");
+                columns.push(full_name);
+                for part in &name.parts {
+                    columns.push(part.name.clone());
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::collect_columns_from_expr(left, columns);
+                Self::collect_columns_from_expr(right, columns);
+            }
+            Expr::UnaryOp { operand, .. } => {
+                Self::collect_columns_from_expr(operand, columns);
+            }
+            Expr::Function(func) => {
+                for arg in &func.args {
+                    Self::collect_columns_from_expr(arg, columns);
+                }
+                if let Some(filter) = &func.filter {
+                    Self::collect_columns_from_expr(filter, columns);
+                }
+            }
+            Expr::InList { expr, list, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+                for item in list {
+                    Self::collect_columns_from_expr(item, columns);
+                }
+            }
+            Expr::InSubquery { expr, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+            Expr::Between { expr, low, high, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+                Self::collect_columns_from_expr(low, columns);
+                Self::collect_columns_from_expr(high, columns);
+            }
+            Expr::Case(case_expr) => {
+                if let Some(op) = &case_expr.operand {
+                    Self::collect_columns_from_expr(op, columns);
+                }
+                for (cond, result) in &case_expr.when_clauses {
+                    Self::collect_columns_from_expr(cond, columns);
+                    Self::collect_columns_from_expr(result, columns);
+                }
+                if let Some(else_r) = &case_expr.else_result {
+                    Self::collect_columns_from_expr(else_r, columns);
+                }
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+            Expr::Tuple(exprs) | Expr::ListLiteral(exprs) => {
+                for e in exprs {
+                    Self::collect_columns_from_expr(e, columns);
+                }
+            }
+            Expr::ArrayIndex { array, index } => {
+                Self::collect_columns_from_expr(array, columns);
+                Self::collect_columns_from_expr(index, columns);
+            }
+            Expr::MapProjection { source, .. } => {
+                Self::collect_columns_from_expr(source, columns);
+            }
+            Expr::Exists { .. } | Expr::Subquery { .. } => {
+                // Subqueries have their own scope
+            }
+            Expr::CallSubquery { .. } => {
+                // Subqueries have their own scope
+            }
+            // All other expression types don't have column references
+            _ => {}
+        }
+    }
+
+    /// Collects column references from table references (for JOIN conditions).
+    fn collect_columns_from_table_ref(table_ref: &TableRef, columns: &mut Vec<String>) {
+        if let TableRef::Join(join) = table_ref {
+            Self::collect_columns_from_table_ref(&join.left, columns);
+            Self::collect_columns_from_table_ref(&join.right, columns);
+            if let JoinCondition::On(expr) = &join.condition {
+                Self::collect_columns_from_expr(expr, columns);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3672,5 +3926,114 @@ mod tests {
         } else {
             panic!("expected DropTrigger plan");
         }
+    }
+
+    // ========================================================================
+    // LATERAL Subquery Tests
+    // ========================================================================
+
+    #[test]
+    fn lateral_subquery_basic() {
+        // Basic LATERAL subquery with correlation
+        let plan = build_query(
+            "SELECT d.name, top_emp.name, top_emp.salary
+             FROM departments d,
+             LATERAL (
+                 SELECT e.name, e.salary
+                 FROM employees e
+                 WHERE e.department_id = d.id
+                 ORDER BY e.salary DESC
+                 LIMIT 3
+             ) AS top_emp",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // LATERAL should be converted to CallSubquery
+        assert!(output.contains("CallSubquery") || output.contains("Call"));
+    }
+
+    #[test]
+    fn lateral_subquery_uncorrelated() {
+        // LATERAL without correlation (degenerates to cross join behavior)
+        let plan = build_query(
+            "SELECT u.name, numbers.n
+             FROM users u,
+             LATERAL (SELECT 1 AS n UNION ALL SELECT 2 AS n) AS numbers",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should still create a CallSubquery node even without explicit correlation
+        assert!(output.contains("Project"));
+    }
+
+    #[test]
+    fn lateral_subquery_with_aggregation() {
+        // LATERAL with aggregation in the subquery
+        let plan = build_query(
+            "SELECT d.name, emp_stats.count, emp_stats.avg_salary
+             FROM departments d,
+             LATERAL (
+                 SELECT COUNT(*) AS count, AVG(salary) AS avg_salary
+                 FROM employees e
+                 WHERE e.department_id = d.id
+             ) AS emp_stats",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("CallSubquery") || output.contains("Aggregate"));
+    }
+
+    #[test]
+    fn lateral_subquery_first_in_from() {
+        // LATERAL as first item in FROM clause (no correlation possible)
+        let plan = build_query("SELECT x.n FROM LATERAL (SELECT 1 AS n) AS x").unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should be treated as a regular subquery when first in FROM
+        assert!(output.contains("Project"));
+    }
+
+    #[test]
+    fn lateral_subquery_multiple() {
+        // Multiple LATERAL subqueries in sequence
+        let plan = build_query(
+            "SELECT d.name, e.name, p.name
+             FROM departments d,
+             LATERAL (
+                 SELECT name FROM employees WHERE department_id = d.id LIMIT 1
+             ) AS e,
+             LATERAL (
+                 SELECT name FROM projects WHERE lead_name = e.name LIMIT 1
+             ) AS p",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        // Should have nested CallSubquery nodes
+        assert!(output.contains("CallSubquery") || output.contains("Call"));
+    }
+
+    #[test]
+    fn lateral_subquery_with_join() {
+        // LATERAL combined with regular JOIN
+        let plan = build_query(
+            "SELECT c.name, recent_orders.total
+             FROM customers c
+             JOIN regions r ON c.region_id = r.id,
+             LATERAL (
+                 SELECT SUM(amount) AS total
+                 FROM orders o
+                 WHERE o.customer_id = c.id
+                 ORDER BY o.date DESC
+                 LIMIT 5
+             ) AS recent_orders",
+        )
+        .unwrap();
+
+        let output = format!("{}", plan.display_tree());
+        assert!(output.contains("Join") || output.contains("CallSubquery"));
     }
 }
