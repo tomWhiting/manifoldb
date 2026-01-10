@@ -899,6 +899,8 @@ pub struct WindowFunctionExpr {
     /// Window frame specification for controlling which rows are included in calculations.
     /// If None, uses the default frame based on function type and ORDER BY presence.
     pub frame: Option<WindowFrame>,
+    /// Optional FILTER clause to conditionally include rows in window computation.
+    pub filter: Option<Box<LogicalExpr>>,
     /// Output column alias.
     pub alias: String,
 }
@@ -919,6 +921,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
             alias: alias.into(),
         }
     }
@@ -940,6 +943,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame: None,
+            filter: None,
             alias: alias.into(),
         }
     }
@@ -953,6 +957,7 @@ impl WindowFunctionExpr {
         partition_by: Vec<LogicalExpr>,
         order_by: Vec<SortOrder>,
         frame: Option<WindowFrame>,
+        filter: Option<LogicalExpr>,
         alias: impl Into<String>,
     ) -> Self {
         Self {
@@ -962,6 +967,7 @@ impl WindowFunctionExpr {
             partition_by,
             order_by,
             frame,
+            filter: filter.map(Box::new),
             alias: alias.into(),
         }
     }

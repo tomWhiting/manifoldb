@@ -1116,6 +1116,7 @@ impl PhysicalPlanner {
                     partition_by,
                     order_by,
                     frame,
+                    filter,
                 } = expr
                 {
                     Some(WindowFunctionExpr::with_frame(
@@ -1125,6 +1126,7 @@ impl PhysicalPlanner {
                         partition_by.clone(),
                         order_by.clone(),
                         frame.clone(),
+                        filter.as_ref().map(|f| (**f).clone()),
                         alias.clone(),
                     ))
                 } else {

@@ -132,13 +132,21 @@ pub struct PlanBuilder {
     /// When a view is referenced, it is expanded to its defining query.
     /// Views have lower precedence than CTEs (CTEs shadow views).
     view_definitions: HashMap<String, ViewDefinition>,
+    /// Named window definitions for the current query.
+    /// These are defined in the WINDOW clause and can be referenced by name in OVER clauses.
+    named_windows: HashMap<String, ast::NamedWindowDefinition>,
 }
 
 impl PlanBuilder {
     /// Creates a new plan builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { alias_counter: 0, cte_scope_stack: Vec::new(), view_definitions: HashMap::new() }
+        Self {
+            alias_counter: 0,
+            cte_scope_stack: Vec::new(),
+            view_definitions: HashMap::new(),
+            named_windows: HashMap::new(),
+        }
     }
 
     /// Looks up a CTE by name, searching from innermost scope outward.
@@ -411,6 +419,12 @@ impl PlanBuilder {
 
     /// Builds the body of a SELECT statement (after CTE scope is set up).
     fn build_select_body(&mut self, select: &SelectStatement) -> PlanResult<LogicalPlan> {
+        // Set up named window definitions for this query
+        self.named_windows.clear();
+        for named_window in &select.named_windows {
+            self.named_windows.insert(named_window.name.name.clone(), named_window.clone());
+        }
+
         // Start with FROM clause
         let mut plan = self.build_from(&select.from)?;
 
@@ -641,6 +655,7 @@ impl PlanBuilder {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
+                        filter: None,
                     });
                 } else {
                     // Check arguments for nested aggregates
@@ -801,6 +816,50 @@ impl PlanBuilder {
         Ok(())
     }
 
+    /// Resolves a window specification, merging with any named window definition.
+    ///
+    /// If the window spec references a named window, this merges the named window's
+    /// properties with the inline specification. Properties from the inline spec
+    /// take precedence where specified.
+    fn resolve_window_spec(&self, spec: &ast::WindowSpec) -> PlanResult<ast::WindowSpec> {
+        // If there's no window name reference, return the spec as-is
+        let window_name = match &spec.window_name {
+            Some(name) => name.name.clone(),
+            None => return Ok(spec.clone()),
+        };
+
+        // Look up the named window
+        let named_window = self.named_windows.get(&window_name).ok_or_else(|| {
+            PlanError::Unsupported(format!("undefined named window: {window_name}"))
+        })?;
+
+        // If the named window references another window, resolve that first
+        let base_spec = if let Some(base_name) = &named_window.base_window {
+            let base_window = self.named_windows.get(&base_name.name).ok_or_else(|| {
+                PlanError::Unsupported(format!("undefined base window: {}", base_name.name))
+            })?;
+            base_window.spec.clone()
+        } else {
+            named_window.spec.clone()
+        };
+
+        // Merge: inline spec properties override named window properties
+        Ok(ast::WindowSpec {
+            window_name: None, // Resolved, no longer a reference
+            partition_by: if spec.partition_by.is_empty() {
+                base_spec.partition_by
+            } else {
+                spec.partition_by.clone()
+            },
+            order_by: if spec.order_by.is_empty() {
+                base_spec.order_by
+            } else {
+                spec.order_by.clone()
+            },
+            frame: spec.frame.clone().or(base_spec.frame),
+        })
+    }
+
     /// Builds a window function expression from an AST function with OVER clause.
     ///
     /// Supports:
@@ -811,9 +870,12 @@ impl PlanBuilder {
         let name = func.name.parts.last().map(|p| p.name.to_uppercase()).unwrap_or_default();
 
         // Parse the OVER clause first (required for all window functions)
-        let over = func.over.as_ref().ok_or_else(|| {
+        let over_ref = func.over.as_ref().ok_or_else(|| {
             PlanError::Unsupported("window function missing OVER clause".to_string())
         })?;
+
+        // Resolve any named window references
+        let over = self.resolve_window_spec(over_ref)?;
 
         // Build partition by expressions
         let partition_by: Vec<LogicalExpr> =
@@ -829,6 +891,9 @@ impl PlanBuilder {
             })
             .collect::<PlanResult<Vec<_>>>()?;
 
+        // Build optional FILTER clause
+        let filter = func.filter.as_ref().map(|f| self.build_expr(f)).transpose()?.map(Box::new);
+
         // Parse the window function type and build the expression
         match name.as_str() {
             // Ranking functions (no arguments)
@@ -839,6 +904,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter: filter.clone(),
             }),
             "RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::Rank,
@@ -847,6 +913,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter: filter.clone(),
             }),
             "DENSE_RANK" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::DenseRank,
@@ -855,6 +922,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter: filter.clone(),
             }),
 
             // Value functions (require argument)
@@ -869,6 +937,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "LEAD" => {
@@ -882,6 +951,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "FIRST_VALUE" => {
@@ -893,6 +963,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "LAST_VALUE" => {
@@ -904,6 +975,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "NTH_VALUE" => {
@@ -916,6 +988,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
 
@@ -933,6 +1006,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "SUM" => {
@@ -944,6 +1018,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "AVG" => {
@@ -955,6 +1030,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "MIN" => {
@@ -966,6 +1042,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "MAX" => {
@@ -977,6 +1054,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
 
@@ -990,6 +1068,7 @@ impl PlanBuilder {
                     partition_by,
                     order_by,
                     frame: over.frame.clone(),
+                    filter: None,
                 })
             }
             "PERCENT_RANK" => Ok(LogicalExpr::WindowFunction {
@@ -999,6 +1078,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter: filter.clone(),
             }),
             "CUME_DIST" => Ok(LogicalExpr::WindowFunction {
                 func: WindowFunction::CumeDist,
@@ -1007,6 +1087,7 @@ impl PlanBuilder {
                 partition_by,
                 order_by,
                 frame: over.frame.clone(),
+                filter: filter.clone(),
             }),
 
             _ => Err(PlanError::Unsupported(format!("window function: {name}"))),
@@ -2576,6 +2657,7 @@ impl PlanBuilder {
                         func: agg_func,
                         args,
                         distinct: func.distinct,
+                        filter: None,
                     });
                 }
 

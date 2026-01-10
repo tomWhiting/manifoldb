@@ -15,9 +15,9 @@ pub mod vector;
 // Re-export commonly used types at the module level
 pub use expr::{
     AggregateWindowFunction, BinaryOp, CaseExpr, Expr, FunctionCall, HybridCombinationMethod,
-    HybridSearchComponent, Identifier, Literal, MapProjectionItem, OrderByExpr, ParameterRef,
-    QualifiedName, UnaryOp, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunction,
-    WindowSpec,
+    HybridSearchComponent, Identifier, Literal, MapProjectionItem, NamedWindowDefinition,
+    OrderByExpr, ParameterRef, QualifiedName, UnaryOp, WindowFrame, WindowFrameBound,
+    WindowFrameExclusion, WindowFrameUnits, WindowFunction, WindowSpec,
 };
 pub use pattern::{
     EdgeDirection, EdgeLength, EdgePattern, GraphPattern, LabelExpression, NodePattern,
@@ -42,8 +42,8 @@ pub use statement::{
     SetSearchPathStatement, SetSessionStatement, SetTransactionStatement, SetValue,
     ShowProceduresStatement, ShowStatement, Statement, TableAlias, TableConstraint, TableRef,
     TransactionAccessMode, TransactionStatement, TriggerEvent, TriggerForEach, TriggerTiming,
-    UpdateStatement, UtilityStatement,
-    VacuumStatement, VectorDef, VectorTypeDef, WithClause, YieldItem,
+    UpdateStatement, UtilityStatement, VacuumStatement, VectorDef, VectorTypeDef, WithClause,
+    YieldItem,
 };
 pub use vector::{
     DistanceMetric, VectorAggregate, VectorAggregateOp, VectorSearch, VectorSearchParams,

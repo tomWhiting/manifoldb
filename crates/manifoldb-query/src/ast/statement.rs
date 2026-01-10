@@ -2,7 +2,7 @@
 //!
 //! This module defines the top-level statement types for parsed queries.
 
-use super::expr::{Expr, Identifier, OrderByExpr, QualifiedName};
+use super::expr::{Expr, Identifier, NamedWindowDefinition, OrderByExpr, QualifiedName};
 use super::pattern::GraphPattern;
 
 /// A parsed SQL statement.
@@ -479,6 +479,10 @@ pub struct SelectStatement {
     pub group_by: Vec<Expr>,
     /// Optional HAVING clause.
     pub having: Option<Expr>,
+    /// Named window definitions (WINDOW clause).
+    ///
+    /// Example: `WINDOW w AS (PARTITION BY department ORDER BY hire_date)`
+    pub named_windows: Vec<NamedWindowDefinition>,
     /// Optional ORDER BY clause.
     pub order_by: Vec<OrderByExpr>,
     /// Optional LIMIT clause.
@@ -504,6 +508,7 @@ impl SelectStatement {
             where_clause: None,
             group_by: vec![],
             having: None,
+            named_windows: vec![],
             order_by: vec![],
             limit: None,
             offset: None,
@@ -675,7 +680,7 @@ impl MatchStatement {
             .map(|item| match item {
                 ReturnItem::Wildcard => SelectItem::Wildcard,
                 ReturnItem::Expr { expr, alias } => {
-                    SelectItem::Expr { expr: expr.clone(), alias: alias.clone() }
+                    SelectItem::Expr { expr: (**expr).clone(), alias: alias.clone() }
                 }
             })
             .collect();
@@ -691,6 +696,7 @@ impl MatchStatement {
             where_clause: self.where_clause.clone(),
             group_by: vec![],
             having: None,
+            named_windows: vec![],
             order_by: self.order_by.clone(),
             limit: self.limit.clone(),
             offset: self.skip.clone(), // Cypher SKIP = SQL OFFSET
@@ -707,7 +713,7 @@ pub enum ReturnItem {
     /// An expression, optionally aliased.
     Expr {
         /// The expression to return.
-        expr: Expr,
+        expr: Box<Expr>,
         /// Optional alias (AS name).
         alias: Option<Identifier>,
     },
@@ -722,14 +728,14 @@ impl ReturnItem {
 
     /// Creates an unaliased expression return item.
     #[must_use]
-    pub const fn expr(expr: Expr) -> Self {
-        Self::Expr { expr, alias: None }
+    pub fn expr(expr: Expr) -> Self {
+        Self::Expr { expr: Box::new(expr), alias: None }
     }
 
     /// Creates an aliased expression return item.
     #[must_use]
     pub fn aliased(expr: Expr, alias: impl Into<Identifier>) -> Self {
-        Self::Expr { expr, alias: Some(alias.into()) }
+        Self::Expr { expr: Box::new(expr), alias: Some(alias.into()) }
     }
 }
 
@@ -1201,7 +1207,7 @@ pub enum ConflictAction {
         /// The assignments.
         assignments: Vec<Assignment>,
         /// Optional WHERE clause.
-        where_clause: Option<Expr>,
+        where_clause: Option<Box<Expr>>,
     },
 }
 

@@ -413,12 +413,28 @@ impl std::fmt::Display for AggregateWindowFunction {
 /// Window specification for window functions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
+    /// Reference to a named window (from WINDOW clause).
+    /// When set, the window inherits definition from this named window.
+    pub window_name: Option<Identifier>,
     /// Partition by expressions.
     pub partition_by: Vec<Expr>,
     /// Order by expressions.
     pub order_by: Vec<OrderByExpr>,
     /// Window frame specification.
     pub frame: Option<WindowFrame>,
+}
+
+/// A named window definition from the WINDOW clause.
+///
+/// Example: `WINDOW w AS (PARTITION BY department ORDER BY hire_date)`
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedWindowDefinition {
+    /// The window name.
+    pub name: Identifier,
+    /// Reference to another named window (window inheritance).
+    pub base_window: Option<Identifier>,
+    /// The window specification.
+    pub spec: WindowSpec,
 }
 
 /// Window frame specification.
@@ -430,6 +446,23 @@ pub struct WindowFrame {
     pub start: WindowFrameBound,
     /// Frame end bound (if BETWEEN was used).
     pub end: Option<WindowFrameBound>,
+    /// Frame exclusion (EXCLUDE CURRENT ROW, etc.).
+    pub exclusion: Option<WindowFrameExclusion>,
+}
+
+/// Window frame exclusion clause.
+///
+/// Specifies which rows to exclude from the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrameExclusion {
+    /// EXCLUDE CURRENT ROW - exclude the current row from the frame.
+    CurrentRow,
+    /// EXCLUDE GROUP - exclude the current row and its ordering peers.
+    Group,
+    /// EXCLUDE TIES - exclude ordering peers but not the current row.
+    Ties,
+    /// EXCLUDE NO OTHERS - don't exclude any rows (default).
+    NoOthers,
 }
 
 /// Window frame units.
