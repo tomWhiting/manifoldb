@@ -436,7 +436,7 @@ export function SchemaEditor() {
         />
       ) : activeMode === 'labels' ? (
         <Group orientation="horizontal" className="flex-1">
-          <Panel id="labels-list" defaultSize={30} minSize={20} maxSize={50}>
+          <Panel id="labels-list" defaultSize="30%" minSize="20%" maxSize="50%">
             <div className="h-full overflow-hidden border-r border-border bg-bg-secondary">
               <LabelEditor
                 labels={labels}
@@ -452,7 +452,7 @@ export function SchemaEditor() {
             </div>
           </Panel>
           <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
-          <Panel id="label-details" minSize={40}>
+          <Panel id="label-details" minSize="40%">
             <div className="h-full p-4">
               {selectedLabel ? (
                 <LabelDetailView
@@ -476,7 +476,7 @@ export function SchemaEditor() {
         </Group>
       ) : activeMode === 'relationships' ? (
         <Group orientation="horizontal" className="flex-1">
-          <Panel id="relationships-list" defaultSize={30} minSize={20} maxSize={50}>
+          <Panel id="relationships-list" defaultSize="30%" minSize="20%" maxSize="50%">
             <div className="h-full overflow-hidden border-r border-border bg-bg-secondary">
               <RelationshipEditor
                 relationships={relationships}
@@ -493,7 +493,7 @@ export function SchemaEditor() {
             </div>
           </Panel>
           <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
-          <Panel id="relationship-details" minSize={40}>
+          <Panel id="relationship-details" minSize="40%">
             <div className="h-full p-4">
               {selectedRelationship ? (
                 <RelationshipDetailView

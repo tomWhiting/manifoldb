@@ -80,10 +80,20 @@ export interface QueryError {
   details?: string
 }
 
+// Server connection types
+export interface ServerConnection {
+  id: string
+  name: string
+  url: string
+  isDefault?: boolean
+}
+
 // Settings types
 export interface ConnectionSettings {
   serverUrl: string
   connectionTimeout: number // in milliseconds
+  servers: ServerConnection[]
+  activeServerId: string | null
 }
 
 export interface EditorSettings {
