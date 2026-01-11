@@ -4,9 +4,10 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 interface CollapsibleSectionProps {
   title: string
   icon: React.ReactNode
-  count: number
+  count?: number
   defaultOpen?: boolean
   children: React.ReactNode
+  className?: string
 }
 
 export function CollapsibleSection({
@@ -15,11 +16,12 @@ export function CollapsibleSection({
   count,
   defaultOpen = true,
   children,
+  className = '',
 }: CollapsibleSectionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen)
 
   return (
-    <div className="border-b border-border last:border-b-0">
+    <div className={`border-b border-border last:border-b-0 ${className}`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-2 w-full px-4 py-3 text-left hover:bg-bg-tertiary transition-colors"
@@ -31,9 +33,11 @@ export function CollapsibleSection({
         )}
         <span className="text-text-muted flex-shrink-0">{icon}</span>
         <span className="text-sm font-medium text-text-primary flex-1">{title}</span>
-        <span className="text-xs text-text-muted bg-bg-tertiary px-2 py-0.5 rounded-full">
-          {count}
-        </span>
+        {count !== undefined && (
+          <span className="text-xs text-text-muted bg-bg-tertiary px-2 py-0.5 rounded-full">
+            {count}
+          </span>
+        )}
       </button>
       {isOpen && <div className="pb-2">{children}</div>}
     </div>

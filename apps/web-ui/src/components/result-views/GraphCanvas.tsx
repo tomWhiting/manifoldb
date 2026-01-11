@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useAppStore } from '../../stores/app-store'
+import { useInspectorStore } from '../../stores/inspector-store'
 import { useForceLayout } from '../../hooks/useForceLayout'
 import {
   type LayoutNode,
@@ -9,10 +10,12 @@ import {
   labelToLightColor,
   getNodeRadius,
   screenToWorld,
+  worldToScreen,
   findNodeAtPosition,
   findEdgeAtPosition,
 } from '../../utils/graph-layout'
 import { RotateCcw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+import { InspectorContainer, ContextMenu, type ContextMenuTarget } from '../inspector'
 
 interface InteractionState {
   mode: 'idle' | 'panning' | 'dragging'
@@ -34,12 +37,20 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set())
   const [hoveredNode, setHoveredNode] = useState<LayoutNode | null>(null)
   const [hoveredEdge, setHoveredEdge] = useState<LayoutEdge | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    target: ContextMenuTarget
+    position: { x: number; y: number }
+  } | null>(null)
   const interactionRef = useRef<InteractionState>({
     mode: 'idle',
     startX: 0,
     startY: 0,
     draggedNodeId: null,
   })
+
+  // Inspector store
+  const openNodeInspector = useInspectorStore((s) => s.openNodeInspector)
+  const openEdgeInspector = useInspectorStore((s) => s.openEdgeInspector)
 
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
@@ -305,12 +316,102 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
       const node = findNodeAtPosition(x, y, layout, transform)
 
       if (node) {
-        // TODO: Expand neighbors - this would require fetching more data
-        // For now, just select the node
+        // Open node inspector on double-click
+        const screenPos = worldToScreen(node.x, node.y, transform)
+        openNodeInspector(node, { x: screenPos.x + 50, y: screenPos.y })
         setSelectedNodes(new Set([node.id]))
+      } else {
+        // Check for edge double-click
+        const edge = findEdgeAtPosition(x, y, layout, transform)
+        if (edge) {
+          const sourceNode = layout.nodes.get(edge.source)
+          const targetNode = layout.nodes.get(edge.target)
+          if (sourceNode && targetNode) {
+            openEdgeInspector(edge, sourceNode, targetNode, { x: e.clientX, y: e.clientY })
+          }
+        }
       }
     },
+    [layout, transform, openNodeInspector, openEdgeInspector]
+  )
+
+  // Handle right-click context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault()
+      if (!layout) return
+
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      // Check for node first
+      const node = findNodeAtPosition(x, y, layout, transform)
+      if (node) {
+        setContextMenu({
+          target: { type: 'node', node },
+          position: { x: e.clientX, y: e.clientY },
+        })
+        return
+      }
+
+      // Check for edge
+      const edge = findEdgeAtPosition(x, y, layout, transform)
+      if (edge) {
+        const sourceNode = layout.nodes.get(edge.source)
+        const targetNode = layout.nodes.get(edge.target)
+        if (sourceNode && targetNode) {
+          setContextMenu({
+            target: { type: 'edge', edge, sourceNode, targetNode },
+            position: { x: e.clientX, y: e.clientY },
+          })
+        }
+        return
+      }
+
+      // Close context menu if clicked on empty canvas
+      setContextMenu(null)
+    },
     [layout, transform]
+  )
+
+  // Handler for inspecting from context menu
+  const handleInspect = useCallback(() => {
+    if (!contextMenu?.target) return
+
+    if (contextMenu.target.type === 'node') {
+      openNodeInspector(contextMenu.target.node, {
+        x: contextMenu.position.x + 20,
+        y: contextMenu.position.y,
+      })
+    } else if (contextMenu.target.type === 'edge') {
+      openEdgeInspector(
+        contextMenu.target.edge,
+        contextMenu.target.sourceNode,
+        contextMenu.target.targetNode,
+        { x: contextMenu.position.x + 20, y: contextMenu.position.y }
+      )
+    }
+  }, [contextMenu, openNodeInspector, openEdgeInspector])
+
+  // Handler for navigating to a node (from edge inspector or context menu)
+  const handleNavigateToNode = useCallback(
+    (nodeId: string) => {
+      if (!layout) return
+
+      const node = layout.nodes.get(nodeId)
+      if (!node) return
+
+      // Select the node
+      setSelectedNodes(new Set([nodeId]))
+
+      // Open inspector for the node
+      const screenPos = worldToScreen(node.x, node.y, transform)
+      openNodeInspector(node, { x: screenPos.x + 50, y: screenPos.y })
+    },
+    [layout, transform, openNodeInspector]
   )
 
   // Toolbar handlers
@@ -373,6 +474,7 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheel}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
       />
 
       {/* Toolbar */}
@@ -420,6 +522,39 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
       <div className="absolute bottom-2 right-2 text-xs text-text-muted bg-bg-secondary/80 backdrop-blur-sm rounded px-2 py-1 border border-border">
         {Math.round(transform.scale * 100)}%
       </div>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <ContextMenu
+          target={contextMenu.target}
+          position={contextMenu.position}
+          onClose={() => setContextMenu(null)}
+          onInspect={handleInspect}
+          onNavigateToSource={
+            contextMenu.target?.type === 'edge'
+              ? () => {
+                  const target = contextMenu.target
+                  if (target?.type === 'edge') {
+                    handleNavigateToNode(target.sourceNode.id)
+                  }
+                }
+              : undefined
+          }
+          onNavigateToTarget={
+            contextMenu.target?.type === 'edge'
+              ? () => {
+                  const target = contextMenu.target
+                  if (target?.type === 'edge') {
+                    handleNavigateToNode(target.targetNode.id)
+                  }
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {/* Inspector windows */}
+      <InspectorContainer onNavigateToNode={handleNavigateToNode} />
     </div>
   )
 }
