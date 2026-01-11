@@ -1,126 +1,642 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import { useAppStore } from '../../stores/app-store'
+import { useForceLayout } from '../../hooks/useForceLayout'
+import {
+  type LayoutNode,
+  type LayoutEdge,
+  type ViewTransform,
+  labelToColor,
+  labelToLightColor,
+  getNodeRadius,
+  screenToWorld,
+  findNodeAtPosition,
+  findEdgeAtPosition,
+} from '../../utils/graph-layout'
+import { RotateCcw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+
+interface InteractionState {
+  mode: 'idle' | 'panning' | 'dragging'
+  startX: number
+  startY: number
+  draggedNodeId: string | null
+}
 
 export function GraphCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
+  const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set())
+  const [hoveredNode, setHoveredNode] = useState<LayoutNode | null>(null)
+  const [hoveredEdge, setHoveredEdge] = useState<LayoutEdge | null>(null)
+  const interactionRef = useRef<InteractionState>({
+    mode: 'idle',
+    startX: 0,
+    startY: 0,
+    draggedNodeId: null,
+  })
+
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTab = tabs.find((t) => t.id === activeTabId)
+  const result = activeTab?.result
 
+  const {
+    layout,
+    transform,
+    isSimulating,
+    resetLayout,
+    setTransform,
+    pan,
+    zoom,
+    fixNode,
+    releaseNode,
+    reheat,
+  } = useForceLayout({
+    nodes: result?.nodes || [],
+    edges: result?.edges || [],
+    width: dimensions.width,
+    height: dimensions.height,
+    preservePositions: true,
+  })
+
+  // Handle resize
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const { width, height } = entries[0].contentRect
+      setDimensions({ width, height })
+    })
+    resizeObserver.observe(container)
+
+    return () => resizeObserver.disconnect()
+  }, [])
+
+  // Set up canvas for high-DPI
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || dimensions.width === 0) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dimensions.width * dpr
+    canvas.height = dimensions.height * dpr
+    canvas.style.width = `${dimensions.width}px`
+    canvas.style.height = `${dimensions.height}px`
+  }, [dimensions])
+
+  // Render function
+  const render = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Handle resize
-    const resizeObserver = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect
-      canvas.width = width * window.devicePixelRatio
-      canvas.height = height * window.devicePixelRatio
-      canvas.style.width = `${width}px`
-      canvas.style.height = `${height}px`
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio)
-      render()
-    })
-    resizeObserver.observe(canvas)
+    const dpr = window.devicePixelRatio || 1
+    const width = dimensions.width
+    const height = dimensions.height
 
-    function render() {
-      if (!ctx || !canvas) return
-      const width = canvas.width / window.devicePixelRatio
-      const height = canvas.height / window.devicePixelRatio
+    // Reset transform and clear
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.fillStyle = '#0a0a0a'
+    ctx.fillRect(0, 0, width, height)
 
-      // Clear
-      ctx.fillStyle = '#0a0a0a'
-      ctx.fillRect(0, 0, width, height)
+    // Draw grid
+    drawGrid(ctx, width, height, transform)
 
-      // Draw grid
-      ctx.strokeStyle = '#1a1a1a'
-      ctx.lineWidth = 1
-      const gridSize = 40
-      for (let x = 0; x < width; x += gridSize) {
-        ctx.beginPath()
-        ctx.moveTo(x, 0)
-        ctx.lineTo(x, height)
-        ctx.stroke()
-      }
-      for (let y = 0; y < height; y += gridSize) {
-        ctx.beginPath()
-        ctx.moveTo(0, y)
-        ctx.lineTo(width, y)
-        ctx.stroke()
-      }
-
-      // Draw nodes if we have results
-      const result = activeTab?.result
-      if (result?.nodes && result.nodes.length > 0) {
-        const nodes = result.nodes
-        const centerX = width / 2
-        const centerY = height / 2
-        const radius = Math.min(width, height) * 0.3
-
-        nodes.forEach((node, i) => {
-          const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2
-          const x = centerX + Math.cos(angle) * radius
-          const y = centerY + Math.sin(angle) * radius
-
-          // Node circle
-          ctx.beginPath()
-          ctx.arc(x, y, 20, 0, Math.PI * 2)
-          ctx.fillStyle = '#3b82f6'
-          ctx.fill()
-          ctx.strokeStyle = '#60a5fa'
-          ctx.lineWidth = 2
-          ctx.stroke()
-
-          // Node label
-          ctx.fillStyle = '#fff'
-          ctx.font = '10px system-ui'
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'middle'
-          const label = node.labels[0] || node.id.slice(0, 4)
-          ctx.fillText(label, x, y)
-        })
-
-        // Draw edges
-        if (result.edges) {
-          const nodePositions = new Map<string, { x: number; y: number }>()
-          nodes.forEach((node, i) => {
-            const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2
-            nodePositions.set(node.id, {
-              x: centerX + Math.cos(angle) * radius,
-              y: centerY + Math.sin(angle) * radius,
-            })
-          })
-
-          result.edges.forEach((edge) => {
-            const source = nodePositions.get(edge.sourceId)
-            const target = nodePositions.get(edge.targetId)
-            if (source && target) {
-              ctx.beginPath()
-              ctx.moveTo(source.x, source.y)
-              ctx.lineTo(target.x, target.y)
-              ctx.strokeStyle = '#525252'
-              ctx.lineWidth = 1
-              ctx.stroke()
-            }
-          })
-        }
-      } else {
-        // No data message
-        ctx.fillStyle = '#525252'
-        ctx.font = '14px system-ui'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('Run a query to visualize results', width / 2, height / 2)
-      }
+    if (!layout || layout.nodes.size === 0) {
+      // No data message
+      ctx.fillStyle = '#525252'
+      ctx.font = '14px system-ui'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('Run a query to visualize results', width / 2, height / 2)
+      return
     }
 
+    // Apply view transform
+    ctx.save()
+    ctx.translate(transform.x, transform.y)
+    ctx.scale(transform.scale, transform.scale)
+
+    // Draw edges first (below nodes)
+    for (const edge of layout.edges) {
+      drawEdge(ctx, edge, layout, transform, selectedNodes, hoveredEdge)
+    }
+
+    // Draw nodes
+    for (const node of layout.nodes.values()) {
+      drawNode(ctx, node, selectedNodes.has(node.id), hoveredNode?.id === node.id)
+    }
+
+    ctx.restore()
+
+    // Draw edge label on hover (in screen space)
+    if (hoveredEdge) {
+      drawEdgeLabel(ctx, hoveredEdge, layout, transform)
+    }
+  }, [layout, transform, selectedNodes, hoveredNode, hoveredEdge, dimensions])
+
+  // Render on changes
+  useEffect(() => {
     render()
+  }, [render])
 
-    return () => resizeObserver.disconnect()
-  }, [activeTab?.result])
+  // Mouse event handlers
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!layout) return
 
-  return <canvas ref={canvasRef} className="w-full h-full" />
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      const node = findNodeAtPosition(x, y, layout, transform)
+
+      if (node) {
+        // Start dragging node
+        interactionRef.current = {
+          mode: 'dragging',
+          startX: x,
+          startY: y,
+          draggedNodeId: node.id,
+        }
+        const worldPos = screenToWorld(x, y, transform)
+        fixNode(node.id, worldPos.x, worldPos.y)
+
+        // Handle selection
+        if (e.shiftKey) {
+          // Multi-select toggle
+          setSelectedNodes((prev) => {
+            const next = new Set(prev)
+            if (next.has(node.id)) {
+              next.delete(node.id)
+            } else {
+              next.add(node.id)
+            }
+            return next
+          })
+        } else if (!selectedNodes.has(node.id)) {
+          // Single select
+          setSelectedNodes(new Set([node.id]))
+        }
+      } else {
+        // Start panning
+        interactionRef.current = {
+          mode: 'panning',
+          startX: x,
+          startY: y,
+          draggedNodeId: null,
+        }
+
+        // Clear selection on canvas click (unless shift held)
+        if (!e.shiftKey) {
+          setSelectedNodes(new Set())
+        }
+      }
+    },
+    [layout, transform, selectedNodes, fixNode]
+  )
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!layout) return
+
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+      const interaction = interactionRef.current
+
+      if (interaction.mode === 'panning') {
+        const dx = x - interaction.startX
+        const dy = y - interaction.startY
+        pan(dx, dy)
+        interaction.startX = x
+        interaction.startY = y
+      } else if (interaction.mode === 'dragging' && interaction.draggedNodeId) {
+        const worldPos = screenToWorld(x, y, transform)
+        fixNode(interaction.draggedNodeId, worldPos.x, worldPos.y)
+        reheat()
+      } else {
+        // Update hover state
+        const node = findNodeAtPosition(x, y, layout, transform)
+        setHoveredNode(node)
+
+        if (!node) {
+          const edge = findEdgeAtPosition(x, y, layout, transform)
+          setHoveredEdge(edge)
+        } else {
+          setHoveredEdge(null)
+        }
+
+        // Update cursor
+        if (canvasRef.current) {
+          canvasRef.current.style.cursor = node ? 'grab' : 'default'
+        }
+      }
+    },
+    [layout, transform, pan, fixNode, reheat]
+  )
+
+  const handleMouseUp = useCallback(() => {
+    const interaction = interactionRef.current
+
+    if (interaction.mode === 'dragging' && interaction.draggedNodeId) {
+      releaseNode(interaction.draggedNodeId)
+      reheat()
+    }
+
+    interactionRef.current = {
+      mode: 'idle',
+      startX: 0,
+      startY: 0,
+      draggedNodeId: null,
+    }
+
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = hoveredNode ? 'grab' : 'default'
+    }
+  }, [releaseNode, reheat, hoveredNode])
+
+  const handleMouseLeave = useCallback(() => {
+    handleMouseUp()
+    setHoveredNode(null)
+    setHoveredEdge(null)
+  }, [handleMouseUp])
+
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLCanvasElement>) => {
+      e.preventDefault()
+
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      // Zoom in/out based on wheel direction
+      const factor = e.deltaY < 0 ? 1.1 : 0.9
+      zoom(factor, x, y)
+    },
+    [zoom]
+  )
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!layout) return
+
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      const node = findNodeAtPosition(x, y, layout, transform)
+
+      if (node) {
+        // TODO: Expand neighbors - this would require fetching more data
+        // For now, just select the node
+        setSelectedNodes(new Set([node.id]))
+      }
+    },
+    [layout, transform]
+  )
+
+  // Toolbar handlers
+  const handleZoomIn = useCallback(() => {
+    zoom(1.25, dimensions.width / 2, dimensions.height / 2)
+  }, [zoom, dimensions])
+
+  const handleZoomOut = useCallback(() => {
+    zoom(0.8, dimensions.width / 2, dimensions.height / 2)
+  }, [zoom, dimensions])
+
+  const handleFitView = useCallback(() => {
+    if (!layout || layout.nodes.size === 0) return
+
+    // Calculate bounding box of all nodes
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity
+
+    for (const node of layout.nodes.values()) {
+      const r = getNodeRadius(node.connectionCount)
+      minX = Math.min(minX, node.x - r)
+      minY = Math.min(minY, node.y - r)
+      maxX = Math.max(maxX, node.x + r)
+      maxY = Math.max(maxY, node.y + r)
+    }
+
+    const graphWidth = maxX - minX
+    const graphHeight = maxY - minY
+    const padding = 50
+
+    const scaleX = (dimensions.width - padding * 2) / graphWidth
+    const scaleY = (dimensions.height - padding * 2) / graphHeight
+    const scale = Math.min(scaleX, scaleY, 2) // Cap at 2x zoom
+
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+
+    setTransform({
+      x: dimensions.width / 2 - centerX * scale,
+      y: dimensions.height / 2 - centerY * scale,
+      scale,
+    })
+  }, [layout, dimensions, setTransform])
+
+  const handleReset = useCallback(() => {
+    resetLayout()
+    setSelectedNodes(new Set())
+  }, [resetLayout])
+
+  return (
+    <div ref={containerRef} className="relative w-full h-full">
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onWheel={handleWheel}
+        onDoubleClick={handleDoubleClick}
+      />
+
+      {/* Toolbar */}
+      <div className="absolute top-2 right-2 flex gap-1 bg-bg-secondary/80 backdrop-blur-sm rounded-md p-1 border border-border">
+        <button
+          onClick={handleZoomIn}
+          className="p-1.5 rounded hover:bg-bg-tertiary transition-colors"
+          title="Zoom in"
+        >
+          <ZoomIn size={16} className="text-text-muted" />
+        </button>
+        <button
+          onClick={handleZoomOut}
+          className="p-1.5 rounded hover:bg-bg-tertiary transition-colors"
+          title="Zoom out"
+        >
+          <ZoomOut size={16} className="text-text-muted" />
+        </button>
+        <button
+          onClick={handleFitView}
+          className="p-1.5 rounded hover:bg-bg-tertiary transition-colors"
+          title="Fit to view"
+        >
+          <Maximize2 size={16} className="text-text-muted" />
+        </button>
+        <div className="w-px bg-border mx-0.5" />
+        <button
+          onClick={handleReset}
+          className="p-1.5 rounded hover:bg-bg-tertiary transition-colors"
+          title="Reset layout"
+        >
+          <RotateCcw size={16} className="text-text-muted" />
+        </button>
+      </div>
+
+      {/* Simulation indicator */}
+      {isSimulating && (
+        <div className="absolute bottom-2 left-2 flex items-center gap-2 text-xs text-text-muted bg-bg-secondary/80 backdrop-blur-sm rounded px-2 py-1 border border-border">
+          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          Layout settling...
+        </div>
+      )}
+
+      {/* Zoom indicator */}
+      <div className="absolute bottom-2 right-2 text-xs text-text-muted bg-bg-secondary/80 backdrop-blur-sm rounded px-2 py-1 border border-border">
+        {Math.round(transform.scale * 100)}%
+      </div>
+    </div>
+  )
+}
+
+// Drawing helper functions
+
+function drawGrid(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  transform: ViewTransform
+) {
+  const gridSize = 40 * transform.scale
+  const offsetX = transform.x % gridSize
+  const offsetY = transform.y % gridSize
+
+  ctx.strokeStyle = '#1a1a1a'
+  ctx.lineWidth = 1
+
+  for (let x = offsetX; x < width; x += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, height)
+    ctx.stroke()
+  }
+
+  for (let y = offsetY; y < height; y += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(width, y)
+    ctx.stroke()
+  }
+}
+
+function drawNode(
+  ctx: CanvasRenderingContext2D,
+  node: LayoutNode,
+  isSelected: boolean,
+  isHovered: boolean
+) {
+  const radius = getNodeRadius(node.connectionCount)
+  const color = labelToColor(node.label)
+  const lightColor = labelToLightColor(node.label)
+
+  // Glow effect for selected/hovered
+  if (isSelected || isHovered) {
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, radius + 6, 0, Math.PI * 2)
+    ctx.fillStyle = isSelected ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 255, 255, 0.15)'
+    ctx.fill()
+  }
+
+  // Node shadow
+  ctx.beginPath()
+  ctx.arc(node.x + 2, node.y + 2, radius, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
+  ctx.fill()
+
+  // Node fill
+  ctx.beginPath()
+  ctx.arc(node.x, node.y, radius, 0, Math.PI * 2)
+  const gradient = ctx.createRadialGradient(
+    node.x - radius * 0.3,
+    node.y - radius * 0.3,
+    0,
+    node.x,
+    node.y,
+    radius
+  )
+  gradient.addColorStop(0, lightColor)
+  gradient.addColorStop(1, color)
+  ctx.fillStyle = gradient
+  ctx.fill()
+
+  // Node border
+  ctx.strokeStyle = isSelected ? '#3b82f6' : isHovered ? '#fff' : color
+  ctx.lineWidth = isSelected ? 3 : isHovered ? 2 : 1.5
+  ctx.stroke()
+
+  // Node label
+  ctx.fillStyle = '#fff'
+  ctx.font = `bold ${Math.max(10, radius * 0.6)}px system-ui`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+
+  // Truncate label if too long
+  const maxChars = Math.floor(radius / 4)
+  const label = node.label.length > maxChars ? node.label.slice(0, maxChars) + '…' : node.label
+  ctx.fillText(label, node.x, node.y)
+}
+
+function drawEdge(
+  ctx: CanvasRenderingContext2D,
+  edge: LayoutEdge,
+  layout: { nodes: Map<string, LayoutNode> },
+  _transform: ViewTransform,
+  selectedNodes: Set<string>,
+  hoveredEdge: LayoutEdge | null
+) {
+  const source = layout.nodes.get(edge.source)
+  const target = layout.nodes.get(edge.target)
+  if (!source || !target) return
+
+  const isHighlighted =
+    hoveredEdge?.id === edge.id ||
+    selectedNodes.has(edge.source) ||
+    selectedNodes.has(edge.target)
+
+  // Calculate control point for curve (for multiple edges)
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1
+
+  // Perpendicular offset for curved edges
+  let offsetX = 0,
+    offsetY = 0
+  if (edge.curveTotal > 1) {
+    const curveOffset = ((edge.curveIndex - (edge.curveTotal - 1) / 2) * 30)
+    offsetX = (-dy / dist) * curveOffset
+    offsetY = (dx / dist) * curveOffset
+  }
+
+  const midX = (source.x + target.x) / 2 + offsetX
+  const midY = (source.y + target.y) / 2 + offsetY
+
+  // Draw edge line
+  ctx.beginPath()
+  ctx.moveTo(source.x, source.y)
+
+  if (edge.curveTotal > 1) {
+    ctx.quadraticCurveTo(midX, midY, target.x, target.y)
+  } else {
+    ctx.lineTo(target.x, target.y)
+  }
+
+  ctx.strokeStyle = isHighlighted ? '#6b7280' : '#3f3f46'
+  ctx.lineWidth = isHighlighted ? 2 : 1
+  ctx.stroke()
+
+  // Draw arrowhead
+  const sourceRadius = getNodeRadius(source.connectionCount)
+  const targetRadius = getNodeRadius(target.connectionCount)
+
+  // Calculate arrow position (at edge of target node)
+  let arrowX: number, arrowY: number, angle: number
+
+  if (edge.curveTotal > 1) {
+    // For curved edges, calculate tangent at target
+    const t = 0.95
+    const ax = source.x * (1 - t) * (1 - t) + midX * 2 * (1 - t) * t + target.x * t * t
+    const ay = source.y * (1 - t) * (1 - t) + midY * 2 * (1 - t) * t + target.y * t * t
+    angle = Math.atan2(target.y - ay, target.x - ax)
+    arrowX = target.x - Math.cos(angle) * targetRadius
+    arrowY = target.y - Math.sin(angle) * targetRadius
+  } else {
+    angle = Math.atan2(dy, dx)
+    arrowX = target.x - Math.cos(angle) * targetRadius
+    arrowY = target.y - Math.sin(angle) * targetRadius
+  }
+
+  // Suppress unused variable warning
+  void sourceRadius
+
+  const arrowSize = isHighlighted ? 10 : 8
+  ctx.beginPath()
+  ctx.moveTo(arrowX, arrowY)
+  ctx.lineTo(
+    arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
+    arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+  )
+  ctx.lineTo(
+    arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
+    arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+  )
+  ctx.closePath()
+  ctx.fillStyle = isHighlighted ? '#6b7280' : '#3f3f46'
+  ctx.fill()
+}
+
+function drawEdgeLabel(
+  ctx: CanvasRenderingContext2D,
+  edge: LayoutEdge,
+  layout: { nodes: Map<string, LayoutNode> },
+  transform: ViewTransform
+) {
+  const source = layout.nodes.get(edge.source)
+  const target = layout.nodes.get(edge.target)
+  if (!source || !target) return
+
+  // Calculate midpoint in world coordinates
+  const dx = target.x - source.x
+  const dy = target.y - source.y
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1
+
+  let midX = (source.x + target.x) / 2
+  let midY = (source.y + target.y) / 2
+
+  if (edge.curveTotal > 1) {
+    const curveOffset = ((edge.curveIndex - (edge.curveTotal - 1) / 2) * 30)
+    midX += (-dy / dist) * curveOffset
+    midY += (dx / dist) * curveOffset
+  }
+
+  // Convert to screen coordinates
+  const screenX = midX * transform.scale + transform.x
+  const screenY = midY * transform.scale + transform.y
+
+  // Draw label background
+  ctx.font = '11px system-ui'
+  const text = edge.type
+  const metrics = ctx.measureText(text)
+  const padding = 4
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'
+  ctx.fillRect(
+    screenX - metrics.width / 2 - padding,
+    screenY - 7 - padding,
+    metrics.width + padding * 2,
+    14 + padding * 2
+  )
+
+  ctx.fillStyle = '#fff'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(text, screenX, screenY)
 }
