@@ -1,7 +1,9 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react'
 import { useAppStore } from '../../stores/app-store'
 import { useInspectorStore } from '../../stores/inspector-store'
 import { useForceLayout } from '../../hooks/useForceLayout'
+import { useVectorOverlay } from '../../hooks/useVectorOverlay'
+import { useNodeVectors } from '../../hooks/useNodeVectors'
 import {
   type LayoutNode,
   type LayoutEdge,
@@ -14,8 +16,10 @@ import {
   findNodeAtPosition,
   findEdgeAtPosition,
 } from '../../utils/graph-layout'
+import { convexHull, clusterToColor } from '../../utils/vector-projection'
 import { RotateCcw, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import { InspectorContainer, ContextMenu, type ContextMenuTarget } from '../inspector'
+import { VectorOverlayControls, VectorOverlayLegend } from './VectorOverlay'
 
 interface InteractionState {
   mode: 'idle' | 'panning' | 'dragging'
@@ -74,6 +78,23 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
     width: dimensions.width,
     height: dimensions.height,
     preservePositions: true,
+  })
+
+  // Get node IDs for vector fetching
+  const nodeIds = useMemo(
+    () => (result?.nodes || []).map((n) => n.id),
+    [result?.nodes]
+  )
+
+  // Fetch vector embeddings for displayed nodes
+  const { vectors: nodeVectors } = useNodeVectors({
+    nodeIds,
+    enabled: nodeIds.length > 0,
+  })
+
+  // Vector overlay state and controls
+  const vectorOverlay = useVectorOverlay({
+    nodeVectors,
   })
 
   // Handle resize
@@ -142,9 +163,24 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
       drawEdge(ctx, edge, layout, transform, selectedNodes, hoveredEdge)
     }
 
+    // Draw cluster boundaries if enabled
+    if (vectorOverlay.state.enabled && vectorOverlay.state.mode === 'clusters' &&
+        vectorOverlay.state.showClusterBoundaries && vectorOverlay.clusters) {
+      drawClusterBoundaries(ctx, vectorOverlay.clusters, layout.nodes)
+    }
+
     // Draw nodes
     for (const node of layout.nodes.values()) {
-      drawNode(ctx, node, selectedNodes.has(node.id), hoveredNode?.id === node.id)
+      const overlayColor = vectorOverlay.getNodeColor(node.id, '')
+      const overlayOpacity = vectorOverlay.getNodeOpacity(node.id)
+      drawNode(
+        ctx,
+        node,
+        selectedNodes.has(node.id),
+        hoveredNode?.id === node.id,
+        overlayColor || undefined,
+        overlayOpacity
+      )
     }
 
     ctx.restore()
@@ -153,7 +189,7 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
     if (hoveredEdge) {
       drawEdgeLabel(ctx, hoveredEdge, layout, transform)
     }
-  }, [layout, transform, selectedNodes, hoveredNode, hoveredEdge, dimensions])
+  }, [layout, transform, selectedNodes, hoveredNode, hoveredEdge, dimensions, vectorOverlay])
 
   // Render on changes
   useEffect(() => {
@@ -174,6 +210,15 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
       const node = findNodeAtPosition(x, y, layout, transform)
 
       if (node) {
+        // If vector overlay is in similarity mode and waiting for reference, set it
+        if (vectorOverlay.state.enabled &&
+            vectorOverlay.state.mode === 'similarity' &&
+            !vectorOverlay.state.referenceNodeId) {
+          vectorOverlay.setReferenceNode(node.id)
+          setSelectedNodes(new Set([node.id]))
+          return
+        }
+
         // Start dragging node
         interactionRef.current = {
           mode: 'dragging',
@@ -215,7 +260,7 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
         }
       }
     },
-    [layout, transform, selectedNodes, fixNode]
+    [layout, transform, selectedNodes, fixNode, vectorOverlay]
   )
 
   const handleMouseMove = useCallback(
@@ -553,6 +598,15 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
         />
       )}
 
+      {/* Vector overlay controls */}
+      <VectorOverlayControls
+        overlay={vectorOverlay}
+        hasVectorData={nodeVectors.length > 0}
+      />
+
+      {/* Vector overlay legend */}
+      <VectorOverlayLegend overlay={vectorOverlay} />
+
       {/* Inspector windows */}
       <InspectorContainer onNavigateToNode={handleNavigateToNode} />
     </div>
@@ -560,6 +614,19 @@ export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
 }
 
 // Drawing helper functions
+
+/**
+ * Adjust the lightness of an HSL color string
+ */
+function adjustColorLightness(hslColor: string, adjustment: number): string {
+  const match = hslColor.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/)
+  if (!match) return hslColor
+
+  const h = parseInt(match[1])
+  const s = parseInt(match[2])
+  const l = Math.min(100, parseInt(match[3]) + adjustment)
+  return `hsl(${h}, ${s}%, ${l}%)`
+}
 
 function drawGrid(
   ctx: CanvasRenderingContext2D,
@@ -593,11 +660,18 @@ function drawNode(
   ctx: CanvasRenderingContext2D,
   node: LayoutNode,
   isSelected: boolean,
-  isHovered: boolean
+  isHovered: boolean,
+  overlayColor?: string,
+  overlayOpacity: number = 1
 ) {
   const radius = getNodeRadius(node.connectionCount)
-  const color = labelToColor(node.label)
-  const lightColor = labelToLightColor(node.label)
+  // Use overlay color if provided, otherwise use label-based color
+  const color = overlayColor || labelToColor(node.label)
+  const lightColor = overlayColor
+    ? adjustColorLightness(overlayColor, 15)
+    : labelToLightColor(node.label)
+
+  ctx.globalAlpha = overlayOpacity
 
   // Glow effect for selected/hovered
   if (isSelected || isHovered) {
@@ -644,6 +718,62 @@ function drawNode(
   const maxChars = Math.floor(radius / 4)
   const label = node.label.length > maxChars ? node.label.slice(0, maxChars) + '…' : node.label
   ctx.fillText(label, node.x, node.y)
+
+  // Reset opacity
+  ctx.globalAlpha = 1
+}
+
+/**
+ * Draw cluster boundaries as semi-transparent hulls
+ */
+function drawClusterBoundaries(
+  ctx: CanvasRenderingContext2D,
+  clusters: { clusters: Map<number, string[]>; labels: Map<string, number> },
+  nodes: Map<string, LayoutNode>
+) {
+  for (const [clusterId, memberIds] of clusters.clusters) {
+    // Get positions of all nodes in this cluster
+    const clusterPoints: { x: number; y: number }[] = []
+    for (const nodeId of memberIds) {
+      const node = nodes.get(nodeId)
+      if (node) {
+        clusterPoints.push({ x: node.x, y: node.y })
+      }
+    }
+
+    if (clusterPoints.length < 3) continue
+
+    // Calculate convex hull
+    const hull = convexHull(clusterPoints)
+    if (hull.length < 3) continue
+
+    // Get cluster color
+    const color = clusterToColor(clusterId, clusters.clusters.size)
+
+    // Draw filled hull with transparency
+    ctx.beginPath()
+    ctx.moveTo(hull[0].x, hull[0].y)
+    for (let i = 1; i < hull.length; i++) {
+      ctx.lineTo(hull[i].x, hull[i].y)
+    }
+    ctx.closePath()
+
+    // Fill with transparent color
+    const fillMatch = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/)
+    if (fillMatch) {
+      ctx.fillStyle = `hsla(${fillMatch[1]}, ${fillMatch[2]}%, ${fillMatch[3]}%, 0.1)`
+    } else {
+      ctx.fillStyle = 'rgba(100, 100, 100, 0.1)'
+    }
+    ctx.fill()
+
+    // Draw border
+    ctx.strokeStyle = color
+    ctx.lineWidth = 2
+    ctx.setLineDash([5, 5])
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
 }
 
 function drawEdge(
