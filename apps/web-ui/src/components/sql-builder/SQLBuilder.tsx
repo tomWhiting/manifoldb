@@ -113,31 +113,32 @@ function TableListItem({ name, columns, onAddTable, onAddColumn, isAdded }: Tabl
 
   return (
     <div className="border-b border-border last:border-b-0">
-      <button
+      <div
         className={`
-          w-full flex items-center gap-2 px-3 py-2 text-left
+          w-full flex items-center gap-2 px-3 py-2
           hover:bg-bg-tertiary transition-colors
           ${isAdded ? 'text-accent' : 'text-text-secondary'}
         `}
-        onClick={() => setIsExpanded(!isExpanded)}
       >
-        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <Table2 size={14} />
-        <span className="text-sm flex-1 truncate">{name}</span>
+        <button
+          className="flex items-center gap-2 flex-1 text-left"
+          onClick={() => setIsExpanded(!isExpanded)}
+        >
+          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Table2 size={14} />
+          <span className="text-sm flex-1 truncate">{name}</span>
+        </button>
         {isAdded ? (
           <Check size={14} className="text-accent" />
         ) : (
           <button
             className="p-1 hover:bg-border rounded text-text-muted hover:text-accent"
-            onClick={(e) => {
-              e.stopPropagation()
-              onAddTable(name)
-            }}
+            onClick={() => onAddTable(name)}
           >
             +
           </button>
         )}
-      </button>
+      </div>
 
       {isExpanded && (
         <div className="bg-bg-tertiary py-1">
@@ -482,7 +483,7 @@ export function SQLBuilder() {
       {/* Main content */}
       <Group orientation="horizontal" className="flex-1">
         {/* Left sidebar - Table list */}
-        <Panel id="table-list" defaultSize={20} minSize={15} maxSize={30}>
+        <Panel id="table-list" defaultSize="20%" minSize="15%" maxSize="30%">
           <div className="h-full overflow-hidden border-r border-border bg-bg-secondary">
             <div className="flex flex-col h-full">
               <div className="px-3 py-2 border-b border-border">
@@ -520,10 +521,10 @@ export function SQLBuilder() {
         <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
 
         {/* Center - Builder area */}
-        <Panel id="builder" minSize={40}>
+        <Panel id="builder" minSize="40%">
           <Group orientation="vertical" className="h-full">
             {/* Table canvas */}
-            <Panel id="canvas" defaultSize={50} minSize={30}>
+            <Panel id="canvas" defaultSize="50%" minSize="30%">
               <div className="h-full border-b border-border">
                 <TableCanvas
                   tables={state.tables}
@@ -542,7 +543,7 @@ export function SQLBuilder() {
             <Separator className="h-1 bg-border hover:bg-accent transition-colors cursor-row-resize" />
 
             {/* Query configuration */}
-            <Panel id="config" defaultSize={50} minSize={20}>
+            <Panel id="config" defaultSize="50%" minSize="20%">
               <div className="h-full overflow-y-auto bg-bg-secondary">
                 <CollapsibleSection
                   title="Columns"
@@ -603,10 +604,10 @@ export function SQLBuilder() {
         <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
 
         {/* Right panel - SQL preview & results */}
-        <Panel id="sql-results" defaultSize={30} minSize={20}>
+        <Panel id="sql-results" defaultSize="30%" minSize="20%">
           <Group orientation="vertical" className="h-full">
             {/* SQL Preview */}
-            <Panel id="sql-preview" defaultSize={40} minSize={20}>
+            <Panel id="sql-preview" defaultSize="40%" minSize="20%">
               <div className="h-full flex flex-col border-b border-border">
                 <div className="px-3 py-2 border-b border-border bg-bg-secondary flex items-center justify-between">
                   <h3 className="text-xs font-medium text-text-muted uppercase tracking-wide">
@@ -624,7 +625,7 @@ export function SQLBuilder() {
             <Separator className="h-1 bg-border hover:bg-accent transition-colors cursor-row-resize" />
 
             {/* Results */}
-            <Panel id="results" defaultSize={60} minSize={20}>
+            <Panel id="results" defaultSize="60%" minSize="20%">
               <div className="h-full flex flex-col">
                 <div className="px-3 py-2 border-b border-border bg-bg-secondary">
                   <h3 className="text-xs font-medium text-text-muted uppercase tracking-wide">
