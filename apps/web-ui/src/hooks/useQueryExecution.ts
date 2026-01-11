@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { useAppStore } from '../stores/app-store'
 import { useHistoryStore } from '../stores/history-store'
 import { executeCypherQuery, executeSqlQuery } from '../lib/graphql-client'
+import { logQuery } from '../stores/logs-store'
 import type { QueryError } from '../types'
 
 type QueryLanguage = 'cypher' | 'sql'
@@ -192,6 +193,18 @@ export function useQueryExecution(): UseQueryExecutionReturn {
               status: 'error',
               errorMessage: formattedMessage,
             })
+
+            // Log failed query
+            logQuery({
+              query,
+              language,
+              executionTime,
+              error: {
+                type: result.error.type,
+                message: result.error.message,
+                details: result.error.details,
+              },
+            })
           }
         } else {
           // Record successful query in history
@@ -201,6 +214,14 @@ export function useQueryExecution(): UseQueryExecutionReturn {
             timestamp: Date.now(),
             executionTime: result.executionTime ?? executionTime,
             status: 'success',
+            rowCount: result.rowCount,
+          })
+
+          // Log successful query
+          logQuery({
+            query,
+            language,
+            executionTime: result.executionTime ?? executionTime,
             rowCount: result.rowCount,
           })
         }

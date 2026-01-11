@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useState, useRef } from 'react'
 import { toast } from 'sonner'
 import { useAppStore } from '../stores/app-store'
 import {
@@ -9,6 +9,7 @@ import {
   reconnect,
   getReconnectAttempts,
 } from '../lib/graphql-client'
+import { logConnection } from '../stores/logs-store'
 import type { ConnectionStatus, ConnectionError } from '../types'
 
 interface UseConnectionReturn {
@@ -26,6 +27,7 @@ export function useConnection(): UseConnectionReturn {
   const status = useAppStore((s) => s.connectionStatus)
 
   const [reconnectAttempts, setReconnectAttempts] = useState(0)
+  const prevStatusRef = useRef<ConnectionStatus | null>(null)
 
   useEffect(() => {
     const storedUrl = getStoredServerUrl()
@@ -36,6 +38,12 @@ export function useConnection(): UseConnectionReturn {
     const unsubscribeStatus = subscribeToConnectionStatus((newStatus: ConnectionStatus) => {
       setConnectionStatus(newStatus)
       setReconnectAttempts(getReconnectAttempts())
+
+      // Log connection status changes (avoid duplicate logs)
+      if (prevStatusRef.current !== newStatus) {
+        logConnection({ status: newStatus, serverUrl })
+        prevStatusRef.current = newStatus
+      }
 
       if (newStatus === 'connected') {
         toast.success('Connected to server')
@@ -52,6 +60,9 @@ export function useConnection(): UseConnectionReturn {
         message = `Connection error: ${error.message}`
       }
 
+      // Log connection error
+      logConnection({ status: 'error', serverUrl, error: message })
+
       toast.error(message, {
         description: reconnectAttempts > 0 ? `Reconnecting (attempt ${reconnectAttempts})...` : undefined,
       })
@@ -61,7 +72,7 @@ export function useConnection(): UseConnectionReturn {
       unsubscribeStatus()
       unsubscribeErrors()
     }
-  }, [setConnectionStatus, reconnectAttempts])
+  }, [setConnectionStatus, reconnectAttempts, serverUrl])
 
   const connect = useCallback(
     (url: string): boolean => {
