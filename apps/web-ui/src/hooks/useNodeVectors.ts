@@ -3,20 +3,26 @@ import { graphqlClient } from '../lib/graphql-client'
 import type { VectorData } from './useVectorOverlay'
 
 /**
- * Query to get vector embeddings for nodes
- * This fetches vectors stored in node properties or linked from a vector collection
+ * Query to get vector embeddings for nodes from CollectionVectorStore
  */
 const NODE_VECTORS_QUERY = `
-  query GetNodeVectors($nodeIds: [String!]!) {
-    nodeVectors(nodeIds: $nodeIds) {
+  query GetNodeVectors($nodeIds: [ID!]!, $collection: String, $vectorName: String) {
+    nodeVectors(nodeIds: $nodeIds, collection: $collection, vectorName: $vectorName) {
       nodeId
-      vector
+      collection
+      vectorName
+      values
+      dimension
     }
   }
 `
 
 export interface UseNodeVectorsOptions {
   nodeIds: string[]
+  /** Optional collection to filter vectors by */
+  collection?: string
+  /** Optional vector name to filter by */
+  vectorName?: string
   enabled?: boolean
 }
 
@@ -27,23 +33,24 @@ export interface UseNodeVectorsResult {
   refresh: () => Promise<void>
 }
 
+interface NodeVectorResponse {
+  nodeId: string
+  collection: string | null
+  vectorName: string | null
+  values: number[]
+  dimension: number
+}
+
 /**
- * Hook to fetch vector embeddings for graph nodes.
+ * Hook to fetch vector embeddings for graph nodes from CollectionVectorStore.
  *
- * Note: This requires a GraphQL endpoint that supports fetching vectors for nodes.
- * The actual implementation depends on how vectors are stored in the database.
- *
- * TODO: SERVER NOT IMPLEMENTED - The `nodeVectors` GraphQL query does not exist yet.
- * See: crates/manifold-server/src/schema/ - needs nodeVectors resolver
- * See: crates/manifoldb-vector/src/store/collection_vector_store.rs - has the infrastructure
- *
- * FIXME: FAKE DATA FALLBACK BELOW - This hook currently generates FAKE vectors when
- * the server query fails. This is UNACCEPTABLE in production. The fallback code
- * (generateFallbackVectors, generateDeterministicVector) must be removed once the
- * server implements the nodeVectors query.
+ * Uses the nodeVectors GraphQL query which fetches vectors from the
+ * CollectionVectorStore - the single source of truth for vector data.
  */
 export function useNodeVectors({
   nodeIds,
+  collection,
+  vectorName,
   enabled = true,
 }: UseNodeVectorsOptions): UseNodeVectorsResult {
   const [vectors, setVectors] = useState<VectorData[]>([])
@@ -53,6 +60,7 @@ export function useNodeVectors({
   const refresh = useCallback(async () => {
     if (!enabled || nodeIds.length === 0) {
       setVectors([])
+      setError(null)
       return
     }
 
@@ -61,86 +69,38 @@ export function useNodeVectors({
 
     try {
       const result = await graphqlClient
-        .query(NODE_VECTORS_QUERY, { nodeIds })
+        .query(NODE_VECTORS_QUERY, { nodeIds, collection, vectorName })
         .toPromise()
 
       if (result.error) {
-        // If the query fails (endpoint not implemented), use fallback
-        console.warn('NodeVectors query not available, using fallback')
-        setVectors(generateFallbackVectors(nodeIds))
+        setError(result.error.message)
+        setVectors([])
         return
       }
 
-      interface NodeVectorResponse {
-        nodeId: string
-        vector: number[]
-      }
-
       const data = result.data?.nodeVectors as NodeVectorResponse[] | undefined
-      if (data) {
-        setVectors(data.map((v) => ({ nodeId: v.nodeId, vector: v.vector })))
+      if (data && data.length > 0) {
+        // Map server response to VectorData format
+        setVectors(data.map((v) => ({
+          nodeId: v.nodeId,
+          vector: v.values,
+        })))
       } else {
-        setVectors(generateFallbackVectors(nodeIds))
+        // No vectors found for these nodes (not an error, just empty)
+        setVectors([])
       }
     } catch (err) {
-      console.warn('Failed to fetch node vectors, using fallback:', err)
-      setVectors(generateFallbackVectors(nodeIds))
+      const message = err instanceof Error ? err.message : 'Failed to fetch node vectors'
+      setError(message)
+      setVectors([])
     } finally {
       setIsLoading(false)
     }
-  }, [nodeIds, enabled])
+  }, [nodeIds, collection, vectorName, enabled])
 
   useEffect(() => {
     refresh()
   }, [refresh])
 
   return { vectors, isLoading, error, refresh }
-}
-
-// =============================================================================
-// FIXME: FAKE DATA GENERATION - REMOVE WHEN SERVER IMPLEMENTS nodeVectors QUERY
-// =============================================================================
-// These functions generate FAKE vectors that look real but are meaningless.
-// They use a deterministic hash so the same node ID always gets the same fake vector,
-// which masks the problem by making the UI appear to work.
-//
-// This is UNACCEPTABLE. When the nodeVectors query fails, we should:
-// 1. Set an error state
-// 2. Show a clear error message to the user
-// 3. NOT display any vector visualization
-//
-// The server needs to implement: nodeVectors(nodeIds: [String!]!) -> [NodeVector!]!
-// Using: crates/manifoldb-vector/src/store/collection_vector_store.rs
-// =============================================================================
-
-/** @deprecated FAKE DATA - Remove when server implements nodeVectors */
-function generateFallbackVectors(nodeIds: string[]): VectorData[] {
-  return nodeIds.map((nodeId) => ({
-    nodeId,
-    vector: generateDeterministicVector(nodeId, 128),
-  }))
-}
-
-/** @deprecated FAKE DATA - Remove when server implements nodeVectors */
-function generateDeterministicVector(id: string, dimension: number): number[] {
-  const vector: number[] = []
-
-  // Use a simple hash function to seed the random generation
-  let hash = 0
-  for (let i = 0; i < id.length; i++) {
-    hash = ((hash << 5) - hash) + id.charCodeAt(i)
-    hash = hash & hash
-  }
-
-  // Generate vector components using the hash as a seed
-  for (let i = 0; i < dimension; i++) {
-    // Simple LCG-based pseudo-random number generator
-    hash = (hash * 1103515245 + 12345) & 0x7fffffff
-    // Normalize to [-1, 1] range
-    vector.push((hash / 0x7fffffff) * 2 - 1)
-  }
-
-  // Normalize the vector to unit length
-  const magnitude = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0))
-  return vector.map((v) => v / magnitude)
 }
