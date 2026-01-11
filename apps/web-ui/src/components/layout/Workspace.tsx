@@ -6,6 +6,7 @@ import { QueryEditor } from '../editor/QueryEditor'
 import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
+import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { useQueryExecution } from '../../hooks/useQueryExecution'
@@ -92,6 +93,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'schema') {
     return <SchemaPanel />
+  }
+
+  if (activeSidebarSection === 'collections') {
+    return <CollectionsPanel />
   }
 
   return <QueryWorkspace />
