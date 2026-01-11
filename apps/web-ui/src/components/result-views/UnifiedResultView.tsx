@@ -18,7 +18,7 @@ export function UnifiedResultView() {
   return (
     <div className="flex flex-col h-full">
       {/* View mode switcher */}
-      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-neutral-800 bg-neutral-900/50">
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-bg-secondary/50">
         {viewModes.map((mode) => {
           const Icon = mode.icon
           const isActive = activeViewMode === mode.id
@@ -31,8 +31,8 @@ export function UnifiedResultView() {
                 transition-colors duration-150
                 ${
                   isActive
-                    ? 'bg-blue-600/20 text-blue-400'
-                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/5'
+                    ? 'bg-accent-muted text-accent'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-bg-tertiary'
                 }
               `}
             >

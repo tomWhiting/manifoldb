@@ -10,7 +10,7 @@ export function QueryEditor() {
 
   if (!activeTab) {
     return (
-      <div className="flex items-center justify-center h-full text-neutral-500">
+      <div className="flex items-center justify-center h-full text-text-muted">
         No query open
       </div>
     )

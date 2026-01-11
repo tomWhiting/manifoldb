@@ -7,6 +7,7 @@ import type {
   QueryTab,
   QueryResult,
   ServerStats,
+  Theme,
 } from '../types'
 
 interface AppState {
@@ -32,6 +33,9 @@ interface AppState {
   // Command palette
   commandPaletteOpen: boolean
 
+  // Theme
+  theme: Theme
+
   // Actions
   setConnectionStatus: (status: ConnectionStatus) => void
   setServerUrl: (url: string) => void
@@ -47,10 +51,23 @@ interface AppState {
   setTabExecuting: (id: string, isExecuting: boolean) => void
   setStats: (stats: ServerStats | null) => void
   toggleCommandPalette: () => void
+  setTheme: (theme: Theme) => void
+  cycleTheme: () => void
 }
 
 let tabIdCounter = 0
 const generateTabId = () => `tab-${++tabIdCounter}`
+
+const THEME_STORAGE_KEY = 'manifoldb-theme'
+
+const getInitialTheme = (): Theme => {
+  if (typeof window === 'undefined') return 'system'
+  const stored = localStorage.getItem(THEME_STORAGE_KEY)
+  if (stored === 'dark' || stored === 'light' || stored === 'system') {
+    return stored
+  }
+  return 'system'
+}
 
 export const useAppStore = create<AppState>((set) => ({
   // Initial state
@@ -75,6 +92,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   stats: null,
   commandPaletteOpen: false,
+  theme: getInitialTheme(),
 
   // Actions
   setConnectionStatus: (status) => set({ connectionStatus: status }),
@@ -125,4 +143,16 @@ export const useAppStore = create<AppState>((set) => ({
   setStats: (stats) => set({ stats }),
 
   toggleCommandPalette: () => set((state) => ({ commandPaletteOpen: !state.commandPaletteOpen })),
+
+  setTheme: (theme) => {
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+    set({ theme })
+  },
+
+  cycleTheme: () =>
+    set((state) => {
+      const nextTheme: Theme = state.theme === 'system' ? 'dark' : state.theme === 'dark' ? 'light' : 'system'
+      localStorage.setItem(THEME_STORAGE_KEY, nextTheme)
+      return { theme: nextTheme }
+    }),
 }))

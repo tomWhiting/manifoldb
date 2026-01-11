@@ -58,7 +58,7 @@ export function Workspace() {
   return (
     <div className="flex flex-col h-full">
       {/* Query tabs with run button */}
-      <div className="flex items-center border-b border-neutral-800">
+      <div className="flex items-center border-b border-border">
         <QueryTabs />
         <div className="flex-1" />
         <div className="px-2">
@@ -68,7 +68,7 @@ export function Workspace() {
             tooltip="Run query (Cmd+Enter)"
             variant="default"
             disabled={activeTab?.isExecuting}
-            className="bg-blue-600 hover:bg-blue-500 text-white"
+            className="bg-accent hover:bg-accent-hover text-white"
           />
         </div>
       </div>
@@ -78,7 +78,7 @@ export function Workspace() {
         <Panel id="editor" minSize={20}>
           <QueryEditor />
         </Panel>
-        <Separator className="h-1 bg-neutral-800 hover:bg-blue-600 transition-colors cursor-row-resize" />
+        <Separator className="h-1 bg-border hover:bg-accent transition-colors cursor-row-resize" />
         <Panel id="results" minSize={20}>
           <UnifiedResultView />
         </Panel>

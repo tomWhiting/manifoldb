@@ -16,8 +16,8 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
     }
 
     const variantClasses = {
-      ghost: 'hover:bg-white/10 text-neutral-400 hover:text-neutral-200',
-      default: 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300',
+      ghost: 'hover:bg-bg-tertiary text-text-muted hover:text-text-secondary',
+      default: 'bg-bg-tertiary hover:bg-border text-text-secondary',
     }
 
     return (
@@ -27,7 +27,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
         className={`
           inline-flex items-center justify-center rounded-md
           transition-colors duration-150
-          focus:outline-none focus:ring-2 focus:ring-blue-500/50
+          focus:outline-none focus:ring-2 focus:ring-accent/50
           disabled:opacity-50 disabled:cursor-not-allowed
           ${sizeClasses[size]}
           ${variantClasses[variant]}

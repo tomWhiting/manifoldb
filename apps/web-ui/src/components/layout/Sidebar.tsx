@@ -57,7 +57,7 @@ function SidebarItem({
       className={`
         w-full flex items-center gap-3 px-3 py-2 rounded-md
         transition-colors duration-150
-        ${active ? 'bg-blue-600/20 text-blue-400' : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200'}
+        ${active ? 'bg-accent-muted text-accent' : 'text-text-muted hover:bg-bg-tertiary hover:text-text-secondary'}
         ${collapsed ? 'justify-center' : ''}
       `}
       title={collapsed ? item.label : undefined}
@@ -99,7 +99,7 @@ export function Sidebar() {
       </nav>
 
       {/* Divider */}
-      <div className="mx-3 my-2 border-t border-neutral-800" />
+      <div className="mx-3 my-2 border-t border-border" />
 
       {/* Bottom navigation */}
       <nav className="px-2 space-y-1">

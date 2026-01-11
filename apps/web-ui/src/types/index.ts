@@ -1,5 +1,7 @@
 export type ViewMode = 'graph' | 'table' | 'json'
 
+export type Theme = 'dark' | 'light' | 'system'
+
 export type WorkspaceMode = 'query' | 'sql-builder' | 'schema' | 'collections'
 
 export type SidebarSection =

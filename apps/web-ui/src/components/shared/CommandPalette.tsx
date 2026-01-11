@@ -10,9 +10,12 @@ import {
   PanelLeftClose,
   Settings,
   Moon,
+  Sun,
+  Monitor,
   Layers,
 } from 'lucide-react'
 import { useAppStore } from '../../stores/app-store'
+import { useTheme } from '../../hooks/useTheme'
 
 export function CommandPalette() {
   const open = useAppStore((s) => s.commandPaletteOpen)
@@ -21,6 +24,10 @@ export function CommandPalette() {
   const setViewMode = useAppStore((s) => s.setViewMode)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
   const tabs = useAppStore((s) => s.tabs)
+  const { theme, cycleTheme, setTheme } = useTheme()
+
+  const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor
+  const themeLabel = theme === 'dark' ? 'Dark' : theme === 'light' ? 'Light' : 'System'
 
   // Global keyboard shortcut
   useEffect(() => {
@@ -51,19 +58,19 @@ export function CommandPalette() {
       <div className="absolute inset-0 bg-black/50" onClick={toggleCommandPalette} />
 
       {/* Command dialog */}
-      <Command className="relative w-full max-w-lg bg-neutral-900 rounded-lg shadow-2xl border border-neutral-800 overflow-hidden">
+      <Command className="relative w-full max-w-lg bg-bg-secondary rounded-lg shadow-2xl border border-border overflow-hidden">
         <Command.Input
           placeholder="Type a command or search..."
-          className="w-full px-4 py-3 bg-transparent text-neutral-100 placeholder-neutral-500 outline-none border-b border-neutral-800"
+          className="w-full px-4 py-3 bg-transparent text-text-primary placeholder-text-muted outline-none border-b border-border"
           autoFocus
         />
 
         <Command.List className="max-h-80 overflow-auto p-2">
-          <Command.Empty className="py-6 text-center text-sm text-neutral-500">
+          <Command.Empty className="py-6 text-center text-sm text-text-muted">
             No results found.
           </Command.Empty>
 
-          <Command.Group heading="Query" className="text-xs text-neutral-500 px-2 py-1.5">
+          <Command.Group heading="Query" className="text-xs text-text-muted px-2 py-1.5">
             <CommandItem
               icon={<Plus size={16} />}
               onSelect={() =>
@@ -83,7 +90,7 @@ export function CommandPalette() {
             </CommandItem>
           </Command.Group>
 
-          <Command.Group heading="View" className="text-xs text-neutral-500 px-2 py-1.5">
+          <Command.Group heading="View" className="text-xs text-text-muted px-2 py-1.5">
             <CommandItem
               icon={<GitBranch size={16} />}
               onSelect={() => runCommand(() => setViewMode('graph'))}
@@ -104,7 +111,7 @@ export function CommandPalette() {
             </CommandItem>
           </Command.Group>
 
-          <Command.Group heading="Layout" className="text-xs text-neutral-500 px-2 py-1.5">
+          <Command.Group heading="Layout" className="text-xs text-text-muted px-2 py-1.5">
             <CommandItem
               icon={<SplitSquareHorizontal size={16} />}
               onSelect={() => runCommand(() => {})}
@@ -119,12 +126,33 @@ export function CommandPalette() {
             </CommandItem>
           </Command.Group>
 
-          <Command.Group heading="Settings" className="text-xs text-neutral-500 px-2 py-1.5">
+          <Command.Group heading="Settings" className="text-xs text-text-muted px-2 py-1.5">
             <CommandItem icon={<Settings size={16} />} onSelect={() => runCommand(() => {})}>
               Open Settings
             </CommandItem>
-            <CommandItem icon={<Moon size={16} />} onSelect={() => runCommand(() => {})}>
-              Toggle Theme
+            <CommandItem
+              icon={<ThemeIcon size={16} />}
+              onSelect={() => runCommand(cycleTheme)}
+            >
+              Theme: {themeLabel}
+            </CommandItem>
+            <CommandItem
+              icon={<Moon size={16} />}
+              onSelect={() => runCommand(() => setTheme('dark'))}
+            >
+              Theme: Dark
+            </CommandItem>
+            <CommandItem
+              icon={<Sun size={16} />}
+              onSelect={() => runCommand(() => setTheme('light'))}
+            >
+              Theme: Light
+            </CommandItem>
+            <CommandItem
+              icon={<Monitor size={16} />}
+              onSelect={() => runCommand(() => setTheme('system'))}
+            >
+              Theme: System
             </CommandItem>
             <CommandItem icon={<Layers size={16} />} onSelect={() => runCommand(() => {})}>
               Toggle Vector Overlay
@@ -148,9 +176,9 @@ function CommandItem({
   return (
     <Command.Item
       onSelect={onSelect}
-      className="flex items-center gap-3 px-2 py-2 rounded text-sm text-neutral-300 cursor-pointer data-[selected=true]:bg-neutral-800 data-[selected=true]:text-neutral-100"
+      className="flex items-center gap-3 px-2 py-2 rounded text-sm text-text-secondary cursor-pointer data-[selected=true]:bg-bg-tertiary data-[selected=true]:text-text-primary"
     >
-      <span className="text-neutral-500">{icon}</span>
+      <span className="text-text-muted">{icon}</span>
       {children}
     </Command.Item>
   )

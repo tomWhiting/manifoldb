@@ -13,9 +13,9 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
   const { color, label } = statusConfig[status]
 
   return (
-    <button className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-white/5 transition-colors">
+    <button className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-bg-tertiary transition-colors">
       <Circle size={8} className={`fill-current ${color}`} />
-      <span className="text-xs text-neutral-400">{label}</span>
+      <span className="text-xs text-text-muted">{label}</span>
     </button>
   )
 }
@@ -24,14 +24,14 @@ function ResourceIndicator() {
   const stats = useAppStore((s) => s.stats)
 
   return (
-    <button className="flex items-center gap-3 px-3 py-1.5 rounded hover:bg-white/5 transition-colors">
+    <button className="flex items-center gap-3 px-3 py-1.5 rounded hover:bg-bg-tertiary transition-colors">
       <div className="flex items-center gap-1.5">
-        <Cpu size={12} className="text-neutral-500" />
-        <span className="text-xs text-neutral-400">{stats?.cpuUsage ?? 0}%</span>
+        <Cpu size={12} className="text-text-muted" />
+        <span className="text-xs text-text-muted">{stats?.cpuUsage ?? 0}%</span>
       </div>
       <div className="flex items-center gap-1.5">
-        <HardDrive size={12} className="text-neutral-500" />
-        <span className="text-xs text-neutral-400">
+        <HardDrive size={12} className="text-text-muted" />
+        <span className="text-xs text-text-muted">
           {stats?.nodeCount ?? 0} nodes / {stats?.edgeCount ?? 0} edges
         </span>
       </div>
@@ -54,18 +54,18 @@ function QueryStatus() {
     <div className="flex items-center gap-3 px-3 py-1.5">
       {isExecuting && (
         <div className="flex items-center gap-1.5">
-          <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-xs text-neutral-400">Executing...</span>
+          <div className="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+          <span className="text-xs text-text-muted">Executing...</span>
         </div>
       )}
       {!isExecuting && executionTime !== undefined && (
         <>
           <div className="flex items-center gap-1.5">
-            <Clock size={12} className="text-neutral-500" />
-            <span className="text-xs text-neutral-400">{executionTime.toFixed(0)}ms</span>
+            <Clock size={12} className="text-text-muted" />
+            <span className="text-xs text-text-muted">{executionTime.toFixed(0)}ms</span>
           </div>
           {rowCount !== undefined && (
-            <span className="text-xs text-neutral-400">{rowCount} rows</span>
+            <span className="text-xs text-text-muted">{rowCount} rows</span>
           )}
         </>
       )}
