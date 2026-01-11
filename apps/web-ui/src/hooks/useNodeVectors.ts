@@ -33,8 +33,14 @@ export interface UseNodeVectorsResult {
  * Note: This requires a GraphQL endpoint that supports fetching vectors for nodes.
  * The actual implementation depends on how vectors are stored in the database.
  *
- * For demo purposes, this can also use mock data or fallback to generating
- * vectors from node properties.
+ * TODO: SERVER NOT IMPLEMENTED - The `nodeVectors` GraphQL query does not exist yet.
+ * See: crates/manifold-server/src/schema/ - needs nodeVectors resolver
+ * See: crates/manifoldb-vector/src/store/collection_vector_store.rs - has the infrastructure
+ *
+ * FIXME: FAKE DATA FALLBACK BELOW - This hook currently generates FAKE vectors when
+ * the server query fails. This is UNACCEPTABLE in production. The fallback code
+ * (generateFallbackVectors, generateDeterministicVector) must be removed once the
+ * server implements the nodeVectors query.
  */
 export function useNodeVectors({
   nodeIds,
@@ -91,11 +97,23 @@ export function useNodeVectors({
   return { vectors, isLoading, error, refresh }
 }
 
-/**
- * Generate fallback vectors for demonstration.
- * Creates deterministic pseudo-random vectors based on node IDs.
- * This allows the vector overlay to work even without a vector database.
- */
+// =============================================================================
+// FIXME: FAKE DATA GENERATION - REMOVE WHEN SERVER IMPLEMENTS nodeVectors QUERY
+// =============================================================================
+// These functions generate FAKE vectors that look real but are meaningless.
+// They use a deterministic hash so the same node ID always gets the same fake vector,
+// which masks the problem by making the UI appear to work.
+//
+// This is UNACCEPTABLE. When the nodeVectors query fails, we should:
+// 1. Set an error state
+// 2. Show a clear error message to the user
+// 3. NOT display any vector visualization
+//
+// The server needs to implement: nodeVectors(nodeIds: [String!]!) -> [NodeVector!]!
+// Using: crates/manifoldb-vector/src/store/collection_vector_store.rs
+// =============================================================================
+
+/** @deprecated FAKE DATA - Remove when server implements nodeVectors */
 function generateFallbackVectors(nodeIds: string[]): VectorData[] {
   return nodeIds.map((nodeId) => ({
     nodeId,
@@ -103,10 +121,7 @@ function generateFallbackVectors(nodeIds: string[]): VectorData[] {
   }))
 }
 
-/**
- * Generate a deterministic pseudo-random vector from a string ID.
- * Uses a simple hash-based approach to create reproducible vectors.
- */
+/** @deprecated FAKE DATA - Remove when server implements nodeVectors */
 function generateDeterministicVector(id: string, dimension: number): number[] {
   const vector: number[] = []
 

@@ -1,6 +1,6 @@
 import { Circle, Cpu, HardDrive, Clock, RefreshCw } from 'lucide-react'
 import { useAppStore } from '../../stores/app-store'
-import { getReconnectAttempts } from '../../lib/graphql-client'
+import { getReconnectAttempts, reconnect } from '../../lib/graphql-client'
 import type { ConnectionStatus } from '../../types'
 
 function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
@@ -31,8 +31,18 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
 
   const config = statusConfig[status]
 
+  const handleClick = () => {
+    if (status !== 'connecting') {
+      reconnect()
+    }
+  }
+
   return (
-    <button className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-bg-tertiary transition-colors">
+    <button
+      onClick={handleClick}
+      className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-bg-tertiary transition-colors"
+      title={status === 'connected' ? 'Click to reconnect' : 'Click to connect'}
+    >
       {config.icon}
       <span className={`text-xs ${config.color}`}>{config.label}</span>
     </button>

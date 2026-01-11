@@ -114,9 +114,11 @@ function cleanupWsClient(): void {
 }
 
 function createWsClientInstance(wsUrl: string): WSClient {
+  console.log('[GraphQL WS] Creating client for:', wsUrl)
   return createWSClient({
     url: wsUrl,
     connectionParams: {},
+    lazy: false, // Force immediate connection
     shouldRetry: () => true,
     retryAttempts: Infinity,
     retryWait: async (retries: number) => {
@@ -151,17 +153,49 @@ function createWsClientInstance(wsUrl: string): WSClient {
       closed: (event: unknown) => {
         const closeEvent = event as CloseEvent | undefined
         console.log('[GraphQL WS] Closed', closeEvent?.code, closeEvent?.reason)
-        if (closeEvent?.code === 1000) {
-          notifyStatusChange('disconnected')
-        }
+        // Always set to disconnected when closed - the library will handle reconnection
+        notifyStatusChange('disconnected')
       },
     },
   })
 }
 
 function createUrqlClientInstance(httpUrl: string, ws: WSClient): Client {
+  // Custom fetch to force POST method (manifold server only accepts POST for GraphQL)
+  // urql puts query params in URL for GET, but we need them in body for POST
+  const customFetch: typeof fetch = async (input, init) => {
+    const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const url = new URL(inputUrl)
+
+    // Extract GraphQL params from URL if present (urql's GET-style encoding)
+    const query = url.searchParams.get('query')
+    const operationName = url.searchParams.get('operationName')
+    const variables = url.searchParams.get('variables')
+
+    // Clear URL params - POST should have clean URL
+    url.search = ''
+
+    // Build proper POST body
+    const parsedVariables = variables ? JSON.parse(variables) : undefined
+    const body = JSON.stringify({
+      query,
+      operationName,
+      variables: parsedVariables,
+    })
+
+    return fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+      body,
+    })
+  }
+
   return createClient({
     url: httpUrl,
+    fetch: customFetch,
     exchanges: [
       cacheExchange,
       fetchExchange,
@@ -246,9 +280,9 @@ export const CYPHER_QUERY = `
       }
       edges {
         id
-        type
-        sourceId
-        targetId
+        edgeType
+        source
+        target
         properties
       }
     }
@@ -293,10 +327,19 @@ export const GRAPH_CHANGES_SUBSCRIPTION = `
   }
 `
 
+// Server response edge type (different field names than UI type)
+interface ServerEdge {
+  id: string
+  edgeType: string
+  source: string
+  target: string
+  properties: Record<string, unknown>
+}
+
 interface CypherResponse {
   cypher: {
     nodes: GraphNode[]
-    edges: GraphEdge[]
+    edges: ServerEdge[]
   }
 }
 
@@ -411,7 +454,14 @@ export async function executeCypherQuery(
 
     const data = result.data?.cypher
     const nodes = data?.nodes ?? []
-    const edges = data?.edges ?? []
+    // Map server edge fields to UI expected fields
+    const edges = (data?.edges ?? []).map((edge) => ({
+      id: edge.id,
+      type: edge.edgeType,
+      sourceId: edge.source,
+      targetId: edge.target,
+      properties: edge.properties,
+    }))
 
     return {
       nodes,
