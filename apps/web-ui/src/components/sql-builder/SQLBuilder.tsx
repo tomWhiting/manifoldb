@@ -534,7 +534,6 @@ export function SQLBuilder() {
                   onMoveTable={handleMoveTable}
                   onRemoveTable={handleRemoveTable}
                   onAddJoin={handleAddJoin}
-                  onRemoveJoin={handleRemoveJoin}
                   onEditJoin={setEditingJoin}
                 />
               </div>

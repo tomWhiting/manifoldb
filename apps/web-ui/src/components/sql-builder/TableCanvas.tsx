@@ -178,7 +178,6 @@ interface TableCanvasProps {
   onMoveTable: (id: string, x: number, y: number) => void
   onRemoveTable: (id: string) => void
   onAddJoin: (join: Omit<TableJoin, 'id'>) => void
-  onRemoveJoin: (id: string) => void
   onEditJoin: (id: string) => void
   availableTables: string[]
 }
@@ -310,8 +309,9 @@ export function TableCanvas({
         }}
       />
 
-      {/* SVG for join lines */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none">
+      {/* SVG for join lines - pointer-events enabled for join line clicks */}
+      <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: 'none' }}>
+        <g style={{ pointerEvents: 'auto' }}>
         {joins.map(join => {
           const positions = getJoinPositions(join)
           if (!positions) return null
@@ -326,6 +326,7 @@ export function TableCanvas({
             />
           )
         })}
+        </g>
       </svg>
 
       {/* Table cards */}
