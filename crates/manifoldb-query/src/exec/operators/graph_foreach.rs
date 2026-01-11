@@ -421,7 +421,6 @@ impl GraphForeachOp {
                     id: node.id,
                     labels: node.labels.into_iter().map(Label::new).collect(),
                     properties: node.properties,
-                    vectors: HashMap::new(),
                 };
                 return Ok(Some(entity));
             }

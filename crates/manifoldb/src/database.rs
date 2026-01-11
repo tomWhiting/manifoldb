@@ -3037,102 +3037,6 @@ impl Database {
     // Collection API
     // ========================================================================
 
-    /// Create a new collection with the given name.
-    ///
-    /// Returns a [`CollectionBuilder`] for configuring the collection's vectors
-    /// and indexes. Call `.build()` to finalize the collection creation.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name for the collection (e.g., "documents", "products")
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the collection name is invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use manifoldb::{Database, collection::DistanceMetric};
-    ///
-    /// let db = Database::in_memory()?;
-    ///
-    /// // Create a collection with a dense vector
-    /// let collection = db.create_collection("documents")?
-    ///     .with_dense_vector("text_embedding", 768, DistanceMetric::Cosine)
-    ///     .build()?;
-    ///
-    /// // Create a hybrid collection with dense and sparse vectors
-    /// let collection = db.create_collection("articles")?
-    ///     .with_dense_vector("semantic", 384, DistanceMetric::DotProduct)
-    ///     .with_sparse_vector("keywords")
-    ///     .build()?;
-    /// ```
-    pub fn create_collection(
-        &self,
-        name: &str,
-    ) -> Result<
-        crate::collection::CollectionBuilder<
-            std::sync::Arc<manifoldb_storage::backends::RedbEngine>,
-        >,
-    > {
-        let coll_name = crate::collection::CollectionName::new(name)
-            .map_err(|e| Error::Collection(e.to_string()))?;
-
-        Ok(crate::collection::CollectionBuilder::new(self.inner.manager.engine_arc(), coll_name))
-    }
-
-    /// Get a handle to an existing collection.
-    ///
-    /// Returns a [`CollectionHandle`] that can be used to perform point operations
-    /// and vector searches on the collection.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the collection to open
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The collection name is invalid
-    /// - The collection doesn't exist
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use manifoldb::Database;
-    ///
-    /// let db = Database::in_memory()?;
-    ///
-    /// // Create a collection first
-    /// db.create_collection("documents")?
-    ///     .with_dense_vector("embedding", 384, DistanceMetric::Cosine)
-    ///     .build()?;
-    ///
-    /// // Later, get a handle to the collection
-    /// let collection = db.collection("documents")?;
-    ///
-    /// // Use the handle for operations
-    /// let results = collection.search("embedding")
-    ///     .query(query_vector)
-    ///     .limit(10)
-    ///     .execute()?;
-    /// ```
-    pub fn collection(
-        &self,
-        name: &str,
-    ) -> Result<
-        crate::collection::CollectionHandle<
-            std::sync::Arc<manifoldb_storage::backends::RedbEngine>,
-        >,
-    > {
-        let coll_name = crate::collection::CollectionName::new(name)
-            .map_err(|e| Error::Collection(e.to_string()))?;
-
-        crate::collection::CollectionHandle::open(self.inner.manager.engine_arc(), coll_name)
-            .map_err(|e| Error::Collection(e.to_string()))
-    }
-
     /// Drop a collection and all its data.
     ///
     /// This permanently deletes:
@@ -3158,23 +3062,21 @@ impl Database {
     ///
     /// let db = Database::in_memory()?;
     ///
-    /// // Create and then drop a collection
-    /// db.create_collection("temp")?
-    ///     .with_dense_vector("v", 128, DistanceMetric::Cosine)
-    ///     .build()?;
+    /// // Create a collection using DDL, then drop it
+    /// db.query("CREATE COLLECTION temp (v VECTOR(128) USING hnsw WITH (distance = 'cosine'))")?;
     ///
     /// db.drop_collection("temp")?;
     ///
     /// // Collection no longer exists
-    /// assert!(db.collection("temp").is_err());
+    /// let collections = db.list_collections()?;
+    /// assert!(!collections.contains(&"temp".to_string()));
     /// ```
     pub fn drop_collection(&self, name: &str) -> Result<()> {
         use crate::collection::{CollectionManager, CollectionName};
         use crate::vector::drop_indexes_for_collection;
         use manifoldb_storage::Cursor;
         use manifoldb_vector::{
-            encoding::{encode_collection_key, encode_collection_vector_prefix},
-            TABLE_COLLECTION_VECTORS, TABLE_POINT_COLLECTIONS,
+            encoding::encode_collection_vector_prefix, TABLE_COLLECTION_VECTORS,
         };
         use std::ops::Bound;
 
@@ -3219,13 +3121,6 @@ impl Database {
             }
         }
 
-        // Delete from point_collections table (used by CollectionHandle/PointStore)
-        {
-            let collection_key = encode_collection_key(name);
-            let storage = tx.storage_mut().map_err(Error::Transaction)?;
-            storage.delete(TABLE_POINT_COLLECTIONS, &collection_key).map_err(Error::Storage)?;
-        }
-
         // Delete the collection metadata (if_exists = false to error if not found)
         CollectionManager::delete(&mut tx, &coll_name, false)
             .map_err(|e| Error::Collection(e.to_string()))?;
@@ -3250,13 +3145,9 @@ impl Database {
     ///
     /// let db = Database::in_memory()?;
     ///
-    /// db.create_collection("users")?
-    ///     .with_dense_vector("embedding", 128, DistanceMetric::Cosine)
-    ///     .build()?;
-    ///
-    /// db.create_collection("products")?
-    ///     .with_dense_vector("embedding", 256, DistanceMetric::Cosine)
-    ///     .build()?;
+    /// // Create collections using DDL
+    /// db.query("CREATE COLLECTION users (embedding VECTOR(128) USING hnsw)")?;
+    /// db.query("CREATE COLLECTION products (embedding VECTOR(256) USING hnsw)")?;
     ///
     /// let collections = db.list_collections()?;
     /// assert!(collections.contains(&"users".to_string()));
@@ -3270,143 +3161,6 @@ impl Database {
             CollectionManager::list(&tx).map_err(|e| Error::Collection(e.to_string()))?;
 
         Ok(collections.into_iter().map(|c| c.as_str().to_string()).collect())
-    }
-
-    // ========================================================================
-    // Unified Entity API
-    // ========================================================================
-
-    /// Create a search builder for vector similarity search.
-    ///
-    /// This is the unified search API that returns [`ScoredEntity`] results
-    /// instead of collection-specific point types.
-    ///
-    /// # Arguments
-    ///
-    /// * `collection` - The name of the collection to search
-    /// * `vector_name` - The name of the vector field to search
-    ///
-    /// # Returns
-    ///
-    /// A [`EntitySearchBuilder`] that can be configured with query vector,
-    /// filters, and limits before executing the search.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the collection doesn't exist.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use manifoldb::{Database, Filter, ScoredEntity};
-    ///
-    /// let db = Database::in_memory()?;
-    ///
-    /// // Create collection and insert data...
-    ///
-    /// // Search for similar entities
-    /// let results: Vec<ScoredEntity> = db.search("documents", "embedding")
-    ///     .query(query_vector)
-    ///     .filter(Filter::eq("language", "rust"))
-    ///     .limit(10)
-    ///     .execute()?;
-    ///
-    /// for result in results {
-    ///     println!("Entity {}: score {:.4}", result.entity.id.as_u64(), result.score);
-    /// }
-    /// ```
-    pub fn search(
-        &self,
-        collection: &str,
-        vector_name: &str,
-    ) -> Result<crate::search::EntitySearchBuilder> {
-        let handle = self.collection(collection)?;
-        let engine = self.inner.manager.engine_arc();
-        Ok(crate::search::EntitySearchBuilder::new(handle, engine, vector_name))
-    }
-
-    /// Upsert an entity into a collection.
-    ///
-    /// This is the unified upsert API that handles entities with optional vectors.
-    /// The entity's properties are stored as payload, and any vectors attached
-    /// to the entity are stored in the appropriate vector indexes.
-    ///
-    /// # Arguments
-    ///
-    /// * `collection` - The name of the collection to upsert into
-    /// * `entity` - The entity to upsert (may include vectors via `with_vector()`)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The collection doesn't exist
-    /// - Vector dimensions don't match the collection schema
-    /// - A storage error occurs
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use manifoldb::{Database, Entity, EntityId, VectorData, DistanceMetric};
-    ///
-    /// let db = Database::in_memory()?;
-    ///
-    /// // Create collection with vector configuration
-    /// db.create_collection("documents")?
-    ///     .with_dense_vector("embedding", 768, DistanceMetric::Cosine)
-    ///     .build()?;
-    ///
-    /// // Create entity with vector
-    /// let entity = Entity::new(EntityId::new(1))
-    ///     .with_label("Document")
-    ///     .with_property("title", "Hello World")
-    ///     .with_property("language", "rust")
-    ///     .with_vector("embedding", vec![0.1f32; 768]);
-    ///
-    /// // Upsert entity (stores both properties and vectors)
-    /// db.upsert("documents", &entity)?;
-    /// ```
-    pub fn upsert(&self, collection: &str, entity: &Entity) -> Result<()> {
-        use crate::search::entity_to_point_struct;
-
-        let handle = self.collection(collection)?;
-        let point = entity_to_point_struct(entity, collection);
-
-        handle.upsert_point(point).map_err(|e| Error::Collection(e.to_string()))
-    }
-
-    /// Upsert multiple entities into a collection.
-    ///
-    /// More efficient than calling `upsert` multiple times.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use manifoldb::{Database, Entity, EntityId};
-    ///
-    /// let db = Database::in_memory()?;
-    ///
-    /// let entities: Vec<Entity> = (0..100)
-    ///     .map(|i| {
-    ///         Entity::new(EntityId::new(i))
-    ///             .with_label("Document")
-    ///             .with_property("index", i as i64)
-    ///             .with_vector("embedding", vec![0.1f32; 768])
-    ///     })
-    ///     .collect();
-    ///
-    /// db.upsert_batch("documents", &entities)?;
-    /// ```
-    pub fn upsert_batch(&self, collection: &str, entities: &[Entity]) -> Result<()> {
-        use crate::search::entity_to_point_struct;
-
-        let handle = self.collection(collection)?;
-
-        for entity in entities {
-            let point = entity_to_point_struct(entity, collection);
-            handle.upsert_point(point).map_err(|e| Error::Collection(e.to_string()))?;
-        }
-
-        Ok(())
     }
 }
 

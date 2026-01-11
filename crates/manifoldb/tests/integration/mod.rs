@@ -6,7 +6,6 @@
 pub mod bulk_delete;
 pub mod bulk_delete_edges;
 pub mod bulk_vectors;
-pub mod collection;
 pub mod combined;
 pub mod concurrency;
 pub mod constraints;
@@ -20,7 +19,6 @@ pub mod cypher_remove;
 pub mod ddl;
 pub mod e2e;
 pub mod graph;
-pub mod graph_vector_search;
 pub mod index_maintenance;
 pub mod index_query;
 pub mod match_filter;

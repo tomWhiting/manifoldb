@@ -160,14 +160,12 @@ pub mod index;
 pub mod metrics;
 pub mod prepared;
 pub mod schema;
-mod search;
 pub mod session;
 pub mod transaction;
 pub mod vector;
 
-// Collection module - internal implementation details
-// Note: This is being deprecated in favor of the unified Entity API.
-// Users should use Entity.with_vector() and db.search() instead.
+// Collection module - configuration and metadata types for vector collections.
+// Collections are created via DDL and searched via GraphQL.
 #[doc(hidden)]
 pub mod collection;
 
@@ -182,7 +180,6 @@ pub use metrics::{
     VectorMetrics, VectorMetricsSnapshot,
 };
 pub use prepared::{PreparedStatement, PreparedStatementCache};
-pub use search::{EntitySearchBuilder, TraversalConstraint, TraversalPatternBuilder};
 pub use transaction::{
     BatchWriter, BatchWriterConfig, BatchedTransaction, DatabaseTransaction, TransactionManager,
     TransactionManagerConfig, VectorSyncStrategy, WriteBuffer, WriteOp, WriteQueue,

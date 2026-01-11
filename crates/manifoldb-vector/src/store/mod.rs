@@ -24,12 +24,6 @@
 //! - Independent operations: Update vectors without touching entities
 //! - Cascade deletion: Delete all vectors when entity is removed
 //!
-//! ## Point collections (Qdrant-style)
-//!
-//! The [`PointStore`] manages points with multiple named vectors and JSON payloads.
-//! Points are organized into collections, and each point can have any combination
-//! of dense, sparse, or multi-vectors.
-//!
 //! ## Inverted index for sparse vectors
 //!
 //! The [`InvertedIndex`] provides efficient top-k similarity search for sparse vectors
@@ -59,40 +53,10 @@
 //! // Retrieve it
 //! let retrieved = store.get(EntityId::new(1), &name)?;
 //! ```
-//!
-//! # Example (Point collections)
-//!
-//! ```ignore
-//! use manifoldb_vector::store::PointStore;
-//! use manifoldb_vector::types::{CollectionName, CollectionSchema, VectorConfig, Payload, NamedVector};
-//! use manifoldb_core::PointId;
-//! use std::collections::HashMap;
-//!
-//! // Create a point store
-//! let store = PointStore::new(engine);
-//!
-//! // Create a collection with schema
-//! let name = CollectionName::new("documents")?;
-//! let schema = CollectionSchema::new()
-//!     .with_vector("dense", VectorConfig::dense(384))
-//!     .with_vector("sparse", VectorConfig::sparse(30522));
-//! store.create_collection(&name, schema)?;
-//!
-//! // Insert a point
-//! let mut payload = Payload::new();
-//! payload.insert("title", "Hello World".into());
-//!
-//! let mut vectors = HashMap::new();
-//! vectors.insert("dense".to_string(), NamedVector::Dense(vec![0.1; 384]));
-//! vectors.insert("sparse".to_string(), NamedVector::Sparse(vec![(100, 0.5)]));
-//!
-//! store.upsert_point(&name, PointId::new(1), payload, vectors)?;
-//! ```
 
 mod collection_vector_store;
 mod inverted_index;
 mod multi_vector_store;
-mod point_store;
 mod sparse_store;
 mod vector_store;
 
@@ -103,6 +67,5 @@ pub use inverted_index::{
     InvertedIndex, InvertedIndexMeta, PostingEntry, PostingList, ScoringFunction, SearchResult,
 };
 pub use multi_vector_store::MultiVectorStore;
-pub use point_store::{PointStore, TABLE_POINT_COLLECTIONS};
 pub use sparse_store::SparseVectorStore;
 pub use vector_store::VectorStore;

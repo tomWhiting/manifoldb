@@ -18,7 +18,7 @@
 
 use manifoldb_core::PointId;
 
-use super::point_keys::hash_name;
+use super::keys::hash_name;
 
 /// Key prefix for posting lists.
 pub const PREFIX_POSTING: u8 = 0x30;

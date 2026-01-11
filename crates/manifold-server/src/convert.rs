@@ -160,6 +160,31 @@ fn extract_graph_elements(
     }
 }
 
+/// Convert a VectorType to GraphQL VectorTypeEnum.
+pub fn vector_type_to_graphql(vector_type: &VectorType) -> VectorTypeEnum {
+    match vector_type {
+        VectorType::Dense { .. } => VectorTypeEnum::Dense,
+        VectorType::Sparse { .. } => VectorTypeEnum::Sparse,
+        VectorType::Multi { .. } => VectorTypeEnum::Multi,
+        VectorType::Binary { .. } => VectorTypeEnum::Binary,
+    }
+}
+
+/// Convert a DistanceType to GraphQL DistanceMetricEnum.
+pub fn distance_to_graphql(distance: &DistanceType) -> DistanceMetricEnum {
+    match distance {
+        DistanceType::Dense(m) => match m {
+            DistanceMetric::Cosine => DistanceMetricEnum::Cosine,
+            DistanceMetric::DotProduct => DistanceMetricEnum::DotProduct,
+            DistanceMetric::Euclidean => DistanceMetricEnum::Euclidean,
+            DistanceMetric::Manhattan => DistanceMetricEnum::Manhattan,
+            DistanceMetric::Chebyshev => DistanceMetricEnum::Chebyshev,
+        },
+        DistanceType::Sparse(_) => DistanceMetricEnum::DotProduct,
+        DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
+    }
+}
+
 /// Convert ManifoldDB vector configs to GraphQL VectorConfigInfo.
 pub fn vector_configs_to_graphql(vectors: &HashMap<String, VectorConfig>) -> Vec<VectorConfigInfo> {
     vectors

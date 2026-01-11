@@ -8,6 +8,9 @@ description = "GraphQL server for ManifoldDB"
 [dependencies]
 # Internal
 manifoldb.workspace = true
+manifoldb-core.workspace = true
+manifoldb-vector.workspace = true
+manifoldb-storage.workspace = true
 
 # GraphQL
 async-graphql = { version = "7", features = ["playground"] }

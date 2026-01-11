@@ -5,11 +5,12 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, Object, Result, ID};
-use manifoldb::{Database, DistanceMetric, Entity, EntityId};
+use manifoldb::collection::{CollectionManager, CollectionName};
+use manifoldb::Database;
 
 use super::types::{
     CollectionInfo, CreateCollectionInput, CreateEdgeInput, CreateNodeInput, DistanceMetricEnum,
-    Edge, Node, QueryResult, UpsertVectorInput,
+    Edge, Node, QueryResult, UpsertVectorInput, VectorConfigInfo,
 };
 use crate::convert;
 use crate::pubsub::{EdgeChangeEvent, NodeChangeEvent, PubSub};
@@ -287,34 +288,55 @@ impl MutationRoot {
     ) -> Result<CollectionInfo> {
         let db = ctx.data::<Arc<Database>>()?;
 
-        // Start building the collection
-        let mut builder = db.create_collection(&input.name)?;
-
-        // Add vector configurations
+        // Build the DDL query for creating the collection
+        let mut vector_defs = Vec::new();
         for vec_config in &input.vectors {
             let distance = vec_config
                 .distance_metric
-                .map(graphql_distance_to_manifold)
-                .unwrap_or(DistanceMetric::Cosine);
+                .map(graphql_distance_to_ddl_string)
+                .unwrap_or_else(|| "cosine".to_string());
 
-            builder = builder.with_dense_vector(
-                &vec_config.name,
-                vec_config.dimension as usize,
-                distance,
-            );
+            vector_defs.push(format!(
+                "{} VECTOR({}) USING hnsw WITH (distance = '{}')",
+                vec_config.name, vec_config.dimension, distance
+            ));
         }
 
-        // Build the collection
-        let handle = builder.build()?;
+        let ddl = format!(
+            "CREATE COLLECTION {} ({})",
+            input.name,
+            vector_defs.join(", ")
+        );
 
-        // Return collection info
-        let vectors = handle.vectors();
-        let point_count = handle.count_points().unwrap_or(0);
+        // Execute the DDL
+        db.query(&ddl)?;
+
+        // Fetch the collection info to return
+        let tx = db.begin_read()?;
+        let coll_name = CollectionName::new(&input.name)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
+        let collection = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
+            .ok_or_else(|| async_graphql::Error::new("Collection not found after creation"))?;
+
+        let vectors: Vec<VectorConfigInfo> = collection
+            .vectors()
+            .iter()
+            .map(|(name, config)| {
+                let vector_type = convert::vector_type_to_graphql(&config.vector_type);
+                VectorConfigInfo {
+                    name: name.clone(),
+                    vector_type,
+                    dimension: config.dimension().map(|d| d as i32),
+                    distance_metric: convert::distance_to_graphql(&config.distance),
+                }
+            })
+            .collect();
 
         Ok(CollectionInfo {
             name: input.name,
-            vectors: convert::vector_configs_to_graphql(vectors),
-            point_count: point_count as i32,
+            vectors,
+            point_count: 0, // New collection has no points
         })
     }
 
@@ -332,62 +354,80 @@ impl MutationRoot {
         collection: String,
         input: UpsertVectorInput,
     ) -> Result<ID> {
+        use manifoldb::vector::update_point_vector_in_index;
+        use manifoldb_vector::types::VectorData;
+        use manifoldb_vector::{encode_vector_value, encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
+
         let db = ctx.data::<Arc<Database>>()?;
 
         // Generate or parse the ID
-        let entity_id = if let Some(ref id) = input.id {
+        let point_id: u64 = if let Some(ref id) = input.id {
             let id_str = id.as_str();
             id_str
                 .parse::<u64>()
-                .map(EntityId::new)
                 .map_err(|_| async_graphql::Error::new(format!("Invalid ID: {}", id_str)))?
         } else {
             // Generate a new ID using UUID v7 (time-ordered with random component)
             let uuid = uuid::Uuid::now_v7();
             // Use lower 64 bits which contains timestamp + random data
-            EntityId::new(uuid.as_u128() as u64)
+            uuid.as_u128() as u64
         };
 
-        // Build the entity
-        let mut entity = Entity::new(entity_id);
+        // Get collection ID
+        let coll_name = CollectionName::new(&collection)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
 
-        // Add payload as properties
-        if let Some(ref payload) = input.payload {
-            if let Some(obj) = payload.0.as_object() {
-                for (key, value) in obj {
-                    if let Some(prop_value) = json_to_value(value) {
-                        entity = entity.with_property(key.clone(), prop_value);
-                    }
-                }
-            }
-        }
+        let mut tx = db.begin()?;
 
-        // Add vectors
+        let coll = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
+            .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", collection)))?;
+
+        let collection_id = coll.id();
+        let entity_id = manifoldb::EntityId::new(point_id);
+        let point_id_core = manifoldb_core::PointId::new(point_id);
+
+        // Upsert each vector
         for vec_input in &input.vectors {
             let vector: Vec<f32> = vec_input.values.iter().map(|v| *v as f32).collect();
-            entity = entity.with_vector(vec_input.name.clone(), vector);
+            let vector_data = VectorData::Dense(vector.clone());
+
+            // Store vector in collection_vectors table
+            let key = encode_collection_vector_key(collection_id, entity_id, &vec_input.name);
+            let value = encode_vector_value(&vector_data, &vec_input.name);
+            {
+                use manifoldb_storage::Transaction;
+                tx.storage_mut()
+                    .map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?
+                    .put(TABLE_COLLECTION_VECTORS, &key, &value)
+                    .map_err(|e| async_graphql::Error::new(format!("Failed to store vector: {}", e)))?;
+            }
+
+            // Update HNSW index if it exists
+            update_point_vector_in_index(&mut tx, &collection, &vec_input.name, point_id_core, &vector)
+                .map_err(|e| async_graphql::Error::new(format!("Failed to update index: {}", e)))?;
         }
 
-        // Upsert the entity
-        db.upsert(&collection, &entity)?;
+        tx.commit()?;
 
-        Ok(ID(entity_id.as_u64().to_string()))
+        Ok(ID(point_id.to_string()))
     }
 }
 
-/// Convert GraphQL distance metric to ManifoldDB distance metric.
-fn graphql_distance_to_manifold(metric: DistanceMetricEnum) -> DistanceMetric {
+/// Convert GraphQL distance metric to DDL string.
+fn graphql_distance_to_ddl_string(metric: DistanceMetricEnum) -> String {
     match metric {
-        DistanceMetricEnum::Cosine => DistanceMetric::Cosine,
-        DistanceMetricEnum::DotProduct => DistanceMetric::DotProduct,
-        DistanceMetricEnum::Euclidean => DistanceMetric::Euclidean,
-        DistanceMetricEnum::Manhattan => DistanceMetric::Manhattan,
-        DistanceMetricEnum::Chebyshev => DistanceMetric::Chebyshev,
-        DistanceMetricEnum::Hamming => DistanceMetric::Cosine, // Binary uses Hamming but we default to Cosine for dense
+        DistanceMetricEnum::Cosine => "cosine".to_string(),
+        DistanceMetricEnum::DotProduct => "dot_product".to_string(),
+        DistanceMetricEnum::Euclidean => "euclidean".to_string(),
+        DistanceMetricEnum::Manhattan => "manhattan".to_string(),
+        DistanceMetricEnum::Chebyshev => "chebyshev".to_string(),
+        DistanceMetricEnum::Hamming => "cosine".to_string(), // Binary uses Hamming but we default to Cosine for dense
     }
 }
 
 /// Convert JSON value to ManifoldDB Value.
+#[allow(dead_code)]
 fn json_to_value(json: &serde_json::Value) -> Option<manifoldb::Value> {
     match json {
         serde_json::Value::Null => Some(manifoldb::Value::Null),

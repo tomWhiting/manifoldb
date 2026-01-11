@@ -5,11 +5,13 @@
 use std::sync::Arc;
 
 use async_graphql::{Context, Object, Result, ID};
+use manifoldb::collection::{CollectionManager, CollectionName};
 use manifoldb::Database;
+use manifoldb_vector::types::Embedding;
 
 use super::types::{
     CollectionInfo, Direction, EdgeTypeInfo, GraphResult, GraphStats, LabelInfo, Node, TableResult,
-    VectorSearchInput, VectorSearchResult,
+    VectorConfigInfo, VectorSearchInput, VectorSearchResult,
 };
 use crate::convert;
 
@@ -171,53 +173,59 @@ impl QueryRoot {
         collection: String,
         input: VectorSearchInput,
     ) -> Result<Vec<VectorSearchResult>> {
+        use manifoldb::vector::search_named_vector_index;
+
         let db = ctx.data::<Arc<Database>>()?;
 
         // Convert f64 query vector to f32
         let query_vector: Vec<f32> = input.query_vector.iter().map(|v| *v as f32).collect();
 
-        // Build the search
-        let mut search = db.search(&collection, &input.vector_name)?;
-        search = search.query(query_vector);
+        let tx = db.begin_read()?;
 
-        if let Some(limit) = input.limit {
-            search = search.limit(limit as usize);
-        }
+        // Create embedding for search
+        let query_embedding = Embedding::new(query_vector)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid query vector: {}", e)))?;
 
-        if let Some(offset) = input.offset {
-            search = search.offset(offset as usize);
-        }
+        let limit = input.limit.unwrap_or(10) as usize;
+        let offset = input.offset.unwrap_or(0) as usize;
 
-        if let Some(threshold) = input.score_threshold {
-            search = search.score_threshold(threshold as f32);
-        }
+        // Search using the HNSW index
+        let results = search_named_vector_index(
+            &tx,
+            &collection,
+            &input.vector_name,
+            &query_embedding,
+            limit + offset, // Fetch extra for offset
+            None,
+        )
+        .map_err(|e| async_graphql::Error::new(format!("Search failed: {}", e)))?;
 
-        // Execute the search
-        let results = search.execute()?;
+        // Get collection ID for payload lookup
+        let coll_name = CollectionName::new(&collection)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
+        // Verify collection exists
+        CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
+            .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", collection)))?;
 
-        // Determine whether to include payload in results
-        let include_payload = input.with_payload.unwrap_or(true);
+        // Apply offset and convert to GraphQL results
+        let threshold = input.score_threshold.map(|t| t as f32);
 
-        // Convert to GraphQL results
         let search_results: Vec<VectorSearchResult> = results
             .into_iter()
-            .map(|scored| {
-                let payload = if include_payload && !scored.entity.properties.is_empty() {
-                    let json_obj: serde_json::Map<String, serde_json::Value> = scored
-                        .entity
-                        .properties
-                        .iter()
-                        .map(|(k, v)| (k.clone(), convert::value_to_json(v)))
-                        .collect();
-                    Some(async_graphql::Json(serde_json::Value::Object(json_obj)))
-                } else {
-                    None
-                };
+            .skip(offset)
+            .take(limit)
+            .filter(|r| threshold.map_or(true, |t| r.distance <= t))
+            .map(|result| {
+                // Convert distance to score (lower distance = higher score)
+                let score = 1.0 / (1.0 + result.distance as f64);
 
+                // Payloads are not stored with vectors in the current implementation
+                // Users can store metadata via entity properties if needed
                 VectorSearchResult {
-                    id: ID(scored.entity.id.as_u64().to_string()),
-                    score: scored.score as f64,
-                    payload,
+                    id: ID(result.entity_id.as_u64().to_string()),
+                    score,
+                    payload: None,
                 }
             })
             .collect();
@@ -228,13 +236,67 @@ impl QueryRoot {
 
 /// Helper function to get collection info.
 fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<CollectionInfo> {
-    let handle = db.collection(name)?;
-    let vectors = handle.vectors();
-    let point_count = handle.count_points().unwrap_or(0);
+    use manifoldb_vector::{encoding::encode_collection_vector_prefix, TABLE_COLLECTION_VECTORS};
+    use std::ops::Bound;
+
+    let tx = db.begin_read()?;
+    let coll_name = CollectionName::new(name)
+        .map_err(|e| manifoldb::Error::Collection(e.to_string()))?;
+    let collection = CollectionManager::get(&tx, &coll_name)
+        .map_err(|e| manifoldb::Error::Collection(e.to_string()))?
+        .ok_or_else(|| manifoldb::Error::Collection(format!("Collection '{}' not found", name)))?;
+
+    let vectors: Vec<VectorConfigInfo> = collection
+        .vectors()
+        .iter()
+        .map(|(vec_name, config)| {
+            let vector_type = convert::vector_type_to_graphql(&config.vector_type);
+            VectorConfigInfo {
+                name: vec_name.clone(),
+                vector_type,
+                dimension: config.dimension().map(|d| d as i32),
+                distance_metric: convert::distance_to_graphql(&config.distance),
+            }
+        })
+        .collect();
+
+    // Count vectors in the collection by scanning the prefix
+    let collection_id = collection.id();
+    let prefix = encode_collection_vector_prefix(collection_id);
+    let prefix_end = {
+        let mut end = prefix.clone();
+        for byte in end.iter_mut().rev() {
+            if *byte < 0xFF {
+                *byte += 1;
+                break;
+            }
+        }
+        end
+    };
+
+    let storage = tx.storage_ref().map_err(|e| manifoldb::Error::Transaction(e))?;
+    let mut cursor = {
+        use manifoldb_storage::Transaction;
+        storage
+            .range(
+                TABLE_COLLECTION_VECTORS,
+                Bound::Included(prefix.as_slice()),
+                Bound::Excluded(prefix_end.as_slice()),
+            )
+            .map_err(|e| manifoldb::Error::Storage(e))?
+    };
+
+    let mut point_count = 0;
+    while {
+        use manifoldb_storage::Cursor;
+        cursor.next().map_err(|e| manifoldb::Error::Storage(e))?
+    }.is_some() {
+        point_count += 1;
+    }
 
     Ok(CollectionInfo {
         name: name.to_string(),
-        vectors: convert::vector_configs_to_graphql(vectors),
-        point_count: point_count as i32,
+        vectors,
+        point_count,
     })
 }

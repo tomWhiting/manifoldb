@@ -36,13 +36,13 @@
 //! assert!(alice.has_label("Person"));
 //! assert_eq!(alice.get_property("name"), Some(&Value::String("Alice".into())));
 //!
-//! // Entity with vector embeddings for similarity search
+//! // Entity with vector embedding stored as a property
 //! let doc = Entity::new(EntityId::new(3))
 //!     .with_label("Document")
 //!     .with_property("title", "Example")
-//!     .with_vector("dense", vec![0.1f32, 0.2, 0.3]);
+//!     .with_property("embedding", Value::Vector(vec![0.1f32, 0.2, 0.3]));
 //!
-//! assert!(doc.has_vector("dense"));
+//! assert!(doc.get_property("embedding").is_some());
 //! ```
 //!
 //! # Modules
