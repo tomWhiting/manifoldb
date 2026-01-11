@@ -1,9 +1,9 @@
-import { GitBranch, Table, Braces, AlertCircle } from 'lucide-react'
+import { Loader2, GitBranch, Table, Braces, AlertCircle } from 'lucide-react'
 import { useAppStore } from '../../stores/app-store'
 import { GraphCanvas } from './GraphCanvas'
 import { TableView } from './TableView'
 import { JSONView } from './JSONView'
-import type { ViewMode, QueryError } from '../../types'
+import type { ViewMode, QueryError, QueryResult } from '../../types'
 
 const viewModes: { id: ViewMode; icon: typeof GitBranch; label: string }[] = [
   { id: 'graph', icon: GitBranch, label: 'Graph' },
@@ -45,13 +45,21 @@ function ErrorDisplay({ error }: { error: QueryError }) {
   )
 }
 
-export function UnifiedResultView() {
+interface UnifiedResultViewProps {
+  result?: QueryResult
+  isExecuting?: boolean
+}
+
+export function UnifiedResultView({ result: propResult, isExecuting }: UnifiedResultViewProps = {}) {
   const activeViewMode = useAppStore((s) => s.activeViewMode)
   const setViewMode = useAppStore((s) => s.setViewMode)
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTab = tabs.find((t) => t.id === activeTabId)
-  const error = activeTab?.result?.error
+
+  // Use prop result if provided, otherwise fall back to app store
+  const result = propResult ?? activeTab?.result
+  const error = result?.error
 
   return (
     <div className="flex flex-col h-full">
@@ -79,6 +87,12 @@ export function UnifiedResultView() {
             </button>
           )
         })}
+        {isExecuting && (
+          <div className="flex items-center gap-1.5 ml-auto text-xs text-text-muted">
+            <Loader2 size={14} className="animate-spin" />
+            Executing...
+          </div>
+        )}
       </div>
 
       {/* View content */}
@@ -87,9 +101,9 @@ export function UnifiedResultView() {
           <ErrorDisplay error={error} />
         ) : (
           <>
-            {activeViewMode === 'graph' && <GraphCanvas />}
-            {activeViewMode === 'table' && <TableView />}
-            {activeViewMode === 'json' && <JSONView />}
+            {activeViewMode === 'graph' && <GraphCanvas result={result} />}
+            {activeViewMode === 'table' && <TableView result={result} />}
+            {activeViewMode === 'json' && <JSONView result={result} />}
           </>
         )}
       </div>

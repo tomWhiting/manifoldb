@@ -21,7 +21,13 @@ interface InteractionState {
   draggedNodeId: string | null
 }
 
-export function GraphCanvas() {
+import type { QueryResult } from '../../types'
+
+interface GraphCanvasProps {
+  result?: QueryResult
+}
+
+export function GraphCanvas({ result: propResult }: GraphCanvasProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 })
@@ -38,7 +44,7 @@ export function GraphCanvas() {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTab = tabs.find((t) => t.id === activeTabId)
-  const result = activeTab?.result
+  const result = propResult ?? activeTab?.result
 
   const {
     layout,

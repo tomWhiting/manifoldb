@@ -40,11 +40,17 @@ import { toast } from 'sonner'
 const ROW_HEIGHT = 36
 const MAX_CELL_LENGTH = 100
 
-export function TableView() {
+import type { QueryResult } from '../../types'
+
+interface TableViewProps {
+  result?: QueryResult
+}
+
+export function TableView({ result: propResult }: TableViewProps = {}) {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTab = tabs.find((t) => t.id === activeTabId)
-  const result = activeTab?.result
+  const result = propResult ?? activeTab?.result
 
   if (!result) {
     return (

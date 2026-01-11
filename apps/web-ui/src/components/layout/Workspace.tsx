@@ -1,89 +1,61 @@
 import { useEffect } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { Play, Square } from 'lucide-react'
-import { QueryTabs } from '../editor/QueryTabs'
-import { QueryEditor } from '../editor/QueryEditor'
-import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
 import { OverviewPanel } from '../sidebar/OverviewPanel'
 import { HistoryPanel } from '../sidebar/HistoryPanel'
 import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { QueryPanel } from '../sidebar/QueryPanel'
-import { IconButton } from '../shared/IconButton'
+import { QueryPane } from './QueryPane'
+import { SplitPaneLayout } from './SplitPaneLayout'
 import { useAppStore } from '../../stores/app-store'
-import { useQueryExecution } from '../../hooks/useQueryExecution'
+import { useWorkspaceStore } from '../../stores/workspace-store'
 
-function QueryWorkspace() {
-  const tabs = useAppStore((s) => s.tabs)
-  const activeTabId = useAppStore((s) => s.activeTabId)
-  const activeTab = tabs.find((t) => t.id === activeTabId)
+function SplitQueryWorkspace() {
+  const layout = useWorkspaceStore((s) => s.layout)
+  const updateSizes = useWorkspaceStore((s) => s.updateSizes)
+  const splitPane = useWorkspaceStore((s) => s.splitPane)
+  const closePane = useWorkspaceStore((s) => s.closePane)
 
-  const { execute, cancel, isExecuting } = useQueryExecution()
-
+  // Global keyboard shortcuts for split operations
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
       const modKey = isMac ? e.metaKey : e.ctrlKey
 
-      if (modKey && e.key === 'Enter') {
+      // Cmd+\ for vertical split
+      if (modKey && e.key === '\\' && !e.shiftKey) {
         e.preventDefault()
-        if (!isExecuting) {
-          execute()
-        }
+        splitPane(layout.activePaneId, 'vertical')
       }
 
-      if (modKey && e.key === '.') {
+      // Cmd+Shift+\ for horizontal split
+      if (modKey && e.key === '\\' && e.shiftKey) {
         e.preventDefault()
-        if (isExecuting) {
-          cancel()
-        }
+        splitPane(layout.activePaneId, 'horizontal')
+      }
+
+      // Cmd+W to close pane (only if multiple panes)
+      if (modKey && e.key === 'w' && Object.keys(layout.panes).length > 1) {
+        e.preventDefault()
+        closePane(layout.activePaneId)
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [execute, cancel, isExecuting])
+  }, [layout.activePaneId, layout.panes, splitPane, closePane])
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Query tabs with run/cancel button */}
-      <div className="flex items-center border-b border-border">
-        <QueryTabs />
-        <div className="flex-1" />
-        <div className="px-2">
-          {isExecuting ? (
-            <IconButton
-              icon={<Square size={14} className="fill-current" />}
-              onClick={cancel}
-              tooltip="Cancel query (Cmd+.)"
-              variant="default"
-              className="bg-red-600 hover:bg-red-700 text-white"
-            />
-          ) : (
-            <IconButton
-              icon={<Play size={16} className="fill-current" />}
-              onClick={execute}
-              tooltip="Run query (Cmd+Enter)"
-              variant="default"
-              disabled={!activeTab}
-              className="bg-accent hover:bg-accent-hover text-white"
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Split panes: Editor and Results */}
-      <Group orientation="vertical" className="flex-1" defaultLayout={{ editor: 40, results: 60 }}>
-        <Panel id="editor" minSize={20}>
-          <QueryEditor />
-        </Panel>
-        <Separator className="h-1 bg-border hover:bg-accent transition-colors cursor-row-resize" />
-        <Panel id="results" minSize={20}>
-          <UnifiedResultView />
-        </Panel>
-      </Group>
-    </div>
+    <SplitPaneLayout
+      node={layout.root}
+      panes={layout.panes}
+      activePaneId={layout.activePaneId}
+      onSizesChange={updateSizes}
+      renderPane={(pane, isActive) => (
+        <QueryPane pane={pane} isActive={isActive} />
+      )}
+    />
   )
 }
 
@@ -120,11 +92,11 @@ export function Workspace() {
         </Panel>
         <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
         <Panel id="query-workspace" minSize={40}>
-          <QueryWorkspace />
+          <SplitQueryWorkspace />
         </Panel>
       </Group>
     )
   }
 
-  return <QueryWorkspace />
+  return <SplitQueryWorkspace />
 }

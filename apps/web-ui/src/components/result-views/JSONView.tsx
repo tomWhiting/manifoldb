@@ -13,11 +13,17 @@ import { useAppStore } from '../../stores/app-store'
 import { JSONTree } from './JSONTree'
 import { useJSONTree, useJSONSearch, type JsonValue } from './useJSONTree'
 
-export function JSONView() {
+import type { QueryResult } from '../../types'
+
+interface JSONViewProps {
+  result?: QueryResult
+}
+
+export function JSONView({ result: propResult }: JSONViewProps = {}) {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const activeTab = tabs.find((t) => t.id === activeTabId)
-  const result = activeTab?.result
+  const result = propResult ?? activeTab?.result
 
   const [showSearch, setShowSearch] = useState(false)
   const [copied, setCopied] = useState(false)

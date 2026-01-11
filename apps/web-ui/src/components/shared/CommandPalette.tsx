@@ -7,6 +7,8 @@ import {
   Table,
   Braces,
   SplitSquareHorizontal,
+  SplitSquareVertical,
+  XCircle,
   PanelLeftClose,
   Settings,
   Moon,
@@ -15,16 +17,24 @@ import {
   Layers,
 } from 'lucide-react'
 import { useAppStore } from '../../stores/app-store'
+import { useWorkspaceStore } from '../../stores/workspace-store'
 import { useTheme } from '../../hooks/useTheme'
 
 export function CommandPalette() {
   const open = useAppStore((s) => s.commandPaletteOpen)
   const toggleCommandPalette = useAppStore((s) => s.toggleCommandPalette)
-  const addTab = useAppStore((s) => s.addTab)
   const setViewMode = useAppStore((s) => s.setViewMode)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
-  const tabs = useAppStore((s) => s.tabs)
+
+  const layout = useWorkspaceStore((s) => s.layout)
+  const splitPane = useWorkspaceStore((s) => s.splitPane)
+  const closePane = useWorkspaceStore((s) => s.closePane)
+  const addTab = useWorkspaceStore((s) => s.addTab)
+  const canSplit = useWorkspaceStore((s) => s.canSplit)
+
   const { theme, cycleTheme, setTheme } = useTheme()
+  const paneCount = Object.keys(layout.panes).length
+  const activePane = layout.panes[layout.activePaneId]
 
   const ThemeIcon = theme === 'dark' ? Moon : theme === 'light' ? Sun : Monitor
   const themeLabel = theme === 'dark' ? 'Dark' : theme === 'light' ? 'Light' : 'System'
@@ -75,8 +85,8 @@ export function CommandPalette() {
               icon={<Plus size={16} />}
               onSelect={() =>
                 runCommand(() =>
-                  addTab({
-                    title: `Query ${tabs.length + 1}`,
+                  addTab(layout.activePaneId, {
+                    title: `Query ${(activePane?.tabs.length ?? 0) + 1}`,
                     content: '// New query\n',
                     language: 'cypher',
                   })
@@ -112,12 +122,33 @@ export function CommandPalette() {
           </Command.Group>
 
           <Command.Group heading="Layout" className="text-xs text-text-muted px-2 py-1.5">
-            <CommandItem
-              icon={<SplitSquareHorizontal size={16} />}
-              onSelect={() => runCommand(() => {})}
-            >
-              Split Horizontal
-            </CommandItem>
+            {canSplit() && (
+              <>
+                <CommandItem
+                  icon={<SplitSquareVertical size={16} />}
+                  onSelect={() => runCommand(() => splitPane(layout.activePaneId, 'vertical'))}
+                  shortcut="Cmd+\"
+                >
+                  Split Vertical
+                </CommandItem>
+                <CommandItem
+                  icon={<SplitSquareHorizontal size={16} />}
+                  onSelect={() => runCommand(() => splitPane(layout.activePaneId, 'horizontal'))}
+                  shortcut="Cmd+Shift+\"
+                >
+                  Split Horizontal
+                </CommandItem>
+              </>
+            )}
+            {paneCount > 1 && (
+              <CommandItem
+                icon={<XCircle size={16} />}
+                onSelect={() => runCommand(() => closePane(layout.activePaneId))}
+                shortcut="Cmd+W"
+              >
+                Close Pane
+              </CommandItem>
+            )}
             <CommandItem
               icon={<PanelLeftClose size={16} />}
               onSelect={() => runCommand(toggleSidebar)}
@@ -168,10 +199,12 @@ function CommandItem({
   children,
   icon,
   onSelect,
+  shortcut,
 }: {
   children: React.ReactNode
   icon: React.ReactNode
   onSelect: () => void
+  shortcut?: string
 }) {
   return (
     <Command.Item
@@ -179,7 +212,10 @@ function CommandItem({
       className="flex items-center gap-3 px-2 py-2 rounded text-sm text-text-secondary cursor-pointer data-[selected=true]:bg-bg-tertiary data-[selected=true]:text-text-primary"
     >
       <span className="text-text-muted">{icon}</span>
-      {children}
+      <span className="flex-1">{children}</span>
+      {shortcut && (
+        <span className="text-xs text-text-muted/50">{shortcut}</span>
+      )}
     </Command.Item>
   )
 }

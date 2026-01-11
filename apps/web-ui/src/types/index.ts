@@ -140,3 +140,34 @@ export interface VectorSearchResult {
   score: number
   payload: Record<string, unknown> | null
 }
+
+// Split Pane Types
+export type SplitDirection = 'horizontal' | 'vertical'
+
+export interface PaneState {
+  id: string
+  tabs: QueryTab[]
+  activeTabId: string | null
+  result?: QueryResult
+  isExecuting?: boolean
+}
+
+export interface SplitNode {
+  type: 'split'
+  direction: SplitDirection
+  children: [LayoutNode, LayoutNode]
+  sizes: [number, number] // Percentages
+}
+
+export interface LeafNode {
+  type: 'leaf'
+  paneId: string
+}
+
+export type LayoutNode = SplitNode | LeafNode
+
+export interface WorkspaceLayout {
+  root: LayoutNode
+  panes: Record<string, PaneState>
+  activePaneId: string
+}
