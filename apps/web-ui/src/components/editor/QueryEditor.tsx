@@ -1,10 +1,12 @@
 import CodeMirror from '@uiw/react-codemirror'
 import { useAppStore } from '../../stores/app-store'
+import { useTheme } from '../../hooks/useTheme'
 
 export function QueryEditor() {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
   const updateTabContent = useAppStore((s) => s.updateTabContent)
+  const { isDark } = useTheme()
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
 
@@ -21,7 +23,7 @@ export function QueryEditor() {
       value={activeTab.content}
       onChange={(value) => updateTabContent(activeTab.id, value)}
       height="100%"
-      theme="dark"
+      theme={isDark ? 'dark' : 'light'}
       basicSetup={{
         lineNumbers: true,
         highlightActiveLineGutter: true,

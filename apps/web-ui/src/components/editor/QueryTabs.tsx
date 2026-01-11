@@ -18,7 +18,7 @@ export function QueryTabs() {
   }
 
   return (
-    <div className="flex items-center gap-1 px-2 py-1 bg-bg-secondary border-b border-border">
+    <div className="flex items-center gap-1 px-2 py-1 bg-bg-secondary">
       {tabs.map((tab) => (
         <button
           key={tab.id}
