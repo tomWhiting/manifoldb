@@ -4,6 +4,7 @@ import { QueryTabs } from '../editor/QueryTabs'
 import { QueryEditor } from '../editor/QueryEditor'
 import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
+import { SchemaPanel } from '../sidebar/SchemaPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { graphqlClient, CYPHER_QUERY } from '../../lib/graphql-client'
@@ -93,6 +94,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'settings') {
     return <SettingsPanel />
+  }
+
+  if (activeSidebarSection === 'schema') {
+    return <SchemaPanel />
   }
 
   return <QueryWorkspace />
