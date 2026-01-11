@@ -6,6 +6,7 @@ import { QueryEditor } from '../editor/QueryEditor'
 import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
+import { QueryPanel } from '../sidebar/QueryPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { useQueryExecution } from '../../hooks/useQueryExecution'
@@ -92,6 +93,22 @@ export function Workspace() {
 
   if (activeSidebarSection === 'schema') {
     return <SchemaPanel />
+  }
+
+  if (activeSidebarSection === 'query') {
+    return (
+      <Group orientation="horizontal" className="h-full">
+        <Panel id="query-panel" defaultSize={25} minSize={15} maxSize={40}>
+          <div className="h-full overflow-hidden border-r border-border bg-bg-secondary">
+            <QueryPanel />
+          </div>
+        </Panel>
+        <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
+        <Panel id="query-workspace" minSize={40}>
+          <QueryWorkspace />
+        </Panel>
+      </Group>
+    )
   }
 
   return <QueryWorkspace />
