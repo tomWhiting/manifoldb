@@ -162,26 +162,34 @@ function createWsClientInstance(wsUrl: string): WSClient {
 
 function createUrqlClientInstance(httpUrl: string, ws: WSClient): Client {
   // Custom fetch to force POST method (manifold server only accepts POST for GraphQL)
-  // urql puts query params in URL for GET, but we need them in body for POST
+  // urql may put query params in URL for GET, but we need them in body for POST
   const customFetch: typeof fetch = async (input, init) => {
     const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const url = new URL(inputUrl)
 
-    // Extract GraphQL params from URL if present (urql's GET-style encoding)
-    const query = url.searchParams.get('query')
-    const operationName = url.searchParams.get('operationName')
-    const variables = url.searchParams.get('variables')
+    // Check if params are in URL (GET-style) or body (POST-style)
+    const urlQuery = url.searchParams.get('query')
 
     // Clear URL params - POST should have clean URL
     url.search = ''
 
-    // Build proper POST body
-    const parsedVariables = variables ? JSON.parse(variables) : undefined
-    const body = JSON.stringify({
-      query,
-      operationName,
-      variables: parsedVariables,
-    })
+    let body: string
+    if (urlQuery) {
+      // GET-style: params are in URL, need to move to body
+      const operationName = url.searchParams.get('operationName')
+      const variables = url.searchParams.get('variables')
+      const parsedVariables = variables ? JSON.parse(variables) : undefined
+      body = JSON.stringify({
+        query: urlQuery,
+        operationName,
+        variables: parsedVariables,
+      })
+    } else if (init?.body) {
+      // POST-style: params already in body, use as-is
+      body = typeof init.body === 'string' ? init.body : JSON.stringify(init.body)
+    } else {
+      throw new Error('No GraphQL query found in request')
+    }
 
     return fetch(url.toString(), {
       method: 'POST',
