@@ -429,3 +429,81 @@ export async function executeCypherQuery(
     }
   }
 }
+
+interface SqlResponse {
+  sql: {
+    columns: string[]
+    rows: unknown[][]
+  }
+}
+
+export async function executeSqlQuery(
+  query: string,
+  options?: ExecuteQueryOptions
+): Promise<QueryResult> {
+  const startTime = performance.now()
+  const client = getClient()
+
+  try {
+    if (options?.signal?.aborted) {
+      return {
+        executionTime: 0,
+        error: { type: 'cancelled', message: 'Query cancelled' },
+      }
+    }
+
+    const resultPromise = client
+      .query<SqlResponse>(SQL_QUERY, { query })
+      .toPromise()
+
+    const abortPromise = options?.signal
+      ? new Promise<never>((_, reject) => {
+          options.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Query cancelled', 'AbortError'))
+          })
+        })
+      : null
+
+    const result = abortPromise
+      ? await Promise.race([resultPromise, abortPromise])
+      : await resultPromise
+
+    const executionTime = performance.now() - startTime
+
+    if (result.error) {
+      return {
+        executionTime,
+        error: parseUrqlError(result.error),
+        raw: { error: result.error },
+      }
+    }
+
+    const data = result.data?.sql
+    const columns: string[] = data?.columns ?? []
+    const rawRows: unknown[][] = data?.rows ?? []
+
+    // Convert columnar data to row objects for table display
+    const rows: Record<string, unknown>[] = rawRows.map((row) => {
+      const rowObj: Record<string, unknown> = {}
+      columns.forEach((col, i) => {
+        rowObj[col] = row[i] ?? null
+      })
+      return rowObj
+    })
+
+    return {
+      rows,
+      columns,
+      raw: data,
+      executionTime,
+      rowCount: rows.length,
+    }
+  } catch (err) {
+    const executionTime = performance.now() - startTime
+    return {
+      executionTime,
+      error: parseGraphQLError(err),
+      raw: { error: String(err) },
+    }
+  }
+}

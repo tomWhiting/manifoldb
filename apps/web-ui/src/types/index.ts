@@ -22,6 +22,7 @@ export interface QueryResult {
   nodes?: GraphNode[]
   edges?: GraphEdge[]
   rows?: Record<string, unknown>[]
+  columns?: string[]
   raw?: unknown
   executionTime?: number
   rowCount?: number
@@ -62,6 +63,11 @@ export interface ConnectionError {
   code: string
   message: string
   timestamp: number
+}
+
+export interface SQLResult {
+  columns: string[]
+  rows: unknown[][]
 }
 
 export interface QueryError {
