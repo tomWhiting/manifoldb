@@ -1,4 +1,4 @@
-import type { AppSettings, EditorSettings, QuerySettings, Theme } from '../types'
+import type { AppSettings, EditorSettings, QuerySettings } from '../types'
 
 const SETTINGS_STORAGE_KEY = 'manifoldb-settings'
 
@@ -14,7 +14,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
     wordWrap: false,
     autoComplete: true,
   },
-  theme: 'system',
   query: {
     defaultLimit: 100,
     autoExecuteOnLoad: false,
@@ -33,7 +32,6 @@ export function loadSettings(): AppSettings {
     return {
       connection: { ...DEFAULT_SETTINGS.connection, ...parsed.connection },
       editor: { ...DEFAULT_SETTINGS.editor, ...parsed.editor },
-      theme: parsed.theme ?? DEFAULT_SETTINGS.theme,
       query: { ...DEFAULT_SETTINGS.query, ...parsed.query },
     }
   } catch {
@@ -80,12 +78,6 @@ export function updateQuerySettings(
     ...current,
     query: { ...current.query, ...updates },
   }
-  saveSettings(updated)
-  return updated
-}
-
-export function updateTheme(current: AppSettings, theme: Theme): AppSettings {
-  const updated = { ...current, theme }
   saveSettings(updated)
   return updated
 }

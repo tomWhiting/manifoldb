@@ -86,6 +86,6 @@ export interface QuerySettings {
 export interface AppSettings {
   connection: ConnectionSettings
   editor: EditorSettings
-  theme: Theme
   query: QuerySettings
+  // Note: Theme is managed separately via app-store for backward compatibility
 }

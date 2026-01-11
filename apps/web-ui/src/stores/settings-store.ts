@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AppSettings, EditorSettings, QuerySettings, Theme } from '../types'
+import type { AppSettings, EditorSettings, QuerySettings } from '../types'
 import {
   loadSettings,
   saveSettings,
@@ -17,7 +17,6 @@ interface SettingsState extends AppSettings {
     key: K,
     value: QuerySettings[K]
   ) => void
-  setTheme: (theme: Theme) => void
   setConnectionTimeout: (timeout: number) => void
   resetToDefaults: () => void
 }
@@ -37,7 +36,6 @@ export const useSettingsStore = create<SettingsState>((set) => {
         saveSettings({
           connection: updated.connection,
           editor: updated.editor,
-          theme: updated.theme,
           query: updated.query,
         })
         return updated
@@ -53,20 +51,6 @@ export const useSettingsStore = create<SettingsState>((set) => {
         saveSettings({
           connection: updated.connection,
           editor: updated.editor,
-          theme: updated.theme,
-          query: updated.query,
-        })
-        return updated
-      })
-    },
-
-    setTheme: (theme) => {
-      set((state) => {
-        const updated = { ...state, theme }
-        saveSettings({
-          connection: updated.connection,
-          editor: updated.editor,
-          theme: updated.theme,
           query: updated.query,
         })
         return updated
@@ -82,7 +66,6 @@ export const useSettingsStore = create<SettingsState>((set) => {
         saveSettings({
           connection: updated.connection,
           editor: updated.editor,
-          theme: updated.theme,
           query: updated.query,
         })
         return updated
