@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   TableProperties,
+  PenTool,
 } from 'lucide-react'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
@@ -31,6 +32,7 @@ const topNavItems: NavItem[] = [
   { id: 'modules', icon: Package, label: 'Query Modules' },
   { id: 'collections', icon: Database, label: 'Collections' },
   { id: 'schema', icon: GitBranch, label: 'Schema' },
+  { id: 'schema-editor', icon: PenTool, label: 'Schema Editor' },
   { id: 'import-export', icon: Import, label: 'Import/Export' },
   { id: 'logs', icon: FileText, label: 'Logs' },
 ]
