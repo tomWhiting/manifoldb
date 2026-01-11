@@ -75,6 +75,16 @@ function formatTimestamp(timestamp: number): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+/** Escape a label or relationship type for use in Cypher queries */
+function escapeCypherIdentifier(name: string): string {
+  // If the name contains special characters, wrap in backticks
+  // and escape any backticks within the name
+  if (/[^a-zA-Z0-9_]/.test(name)) {
+    return '`' + name.replace(/`/g, '``') + '`'
+  }
+  return name
+}
+
 export function SchemaPanel() {
   const { schema, isLoading, error, refresh } = useSchema()
   const activeTabId = useAppStore((s) => s.activeTabId)
@@ -89,12 +99,14 @@ export function SchemaPanel() {
   }
 
   const handleLabelClick = (label: LabelInfo) => {
-    const query = `MATCH (n:${label.name}) RETURN n LIMIT 10`
+    const escapedLabel = escapeCypherIdentifier(label.name)
+    const query = `MATCH (n:${escapedLabel}) RETURN n LIMIT 10`
     runSampleQuery(query)
   }
 
   const handleEdgeTypeClick = (edgeType: EdgeTypeInfo) => {
-    const query = `MATCH ()-[r:${edgeType.name}]->() RETURN r LIMIT 10`
+    const escapedType = escapeCypherIdentifier(edgeType.name)
+    const query = `MATCH ()-[r:${escapedType}]->() RETURN r LIMIT 10`
     runSampleQuery(query)
   }
 
