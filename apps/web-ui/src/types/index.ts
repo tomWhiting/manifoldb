@@ -62,3 +62,30 @@ export interface ConnectionError {
   message: string
   timestamp: number
 }
+
+// Settings types
+export interface ConnectionSettings {
+  serverUrl: string
+  connectionTimeout: number // in milliseconds
+}
+
+export interface EditorSettings {
+  fontSize: number
+  tabSize: 2 | 4
+  lineNumbers: boolean
+  wordWrap: boolean
+  autoComplete: boolean
+}
+
+export interface QuerySettings {
+  defaultLimit: number
+  autoExecuteOnLoad: boolean
+  historyLimit: number
+}
+
+export interface AppSettings {
+  connection: ConnectionSettings
+  editor: EditorSettings
+  query: QuerySettings
+  // Note: Theme is managed separately via app-store for backward compatibility
+}
