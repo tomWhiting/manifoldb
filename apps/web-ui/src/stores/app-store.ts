@@ -49,6 +49,7 @@ interface AppState {
   updateTabContent: (id: string, content: string) => void
   setTabResult: (id: string, result: QueryResult | undefined) => void
   setTabExecuting: (id: string, isExecuting: boolean) => void
+  setTabLanguage: (id: string, language: 'cypher' | 'sql') => void
   setStats: (stats: ServerStats | null) => void
   toggleCommandPalette: () => void
   setTheme: (theme: Theme) => void
@@ -138,6 +139,11 @@ export const useAppStore = create<AppState>((set) => ({
   setTabExecuting: (id, isExecuting) =>
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === id ? { ...t, isExecuting } : t)),
+    })),
+
+  setTabLanguage: (id, language) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === id ? { ...t, language } : t)),
     })),
 
   setStats: (stats) => set({ stats }),

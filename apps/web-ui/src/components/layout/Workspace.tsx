@@ -6,54 +6,18 @@ import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
-import { graphqlClient, CYPHER_QUERY } from '../../lib/graphql-client'
+import { useQueryExecution } from '../../hooks/useQueryExecution'
 
 function QueryWorkspace() {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
-  const setTabResult = useAppStore((s) => s.setTabResult)
-  const setTabExecuting = useAppStore((s) => s.setTabExecuting)
 
   const activeTab = tabs.find((t) => t.id === activeTabId)
+  const { executeActiveTab } = useQueryExecution()
 
   const handleRunQuery = async () => {
     if (!activeTab || !activeTabId) return
-
-    setTabExecuting(activeTabId, true)
-    const startTime = performance.now()
-
-    try {
-      const result = await graphqlClient
-        .query(CYPHER_QUERY, { query: activeTab.content })
-        .toPromise()
-
-      const executionTime = performance.now() - startTime
-
-      if (result.error) {
-        console.error('Query error:', result.error)
-        setTabResult(activeTabId, {
-          raw: { error: result.error.message },
-          executionTime,
-        })
-      } else {
-        const data = result.data?.cypher
-        setTabResult(activeTabId, {
-          nodes: data?.nodes ?? [],
-          edges: data?.edges ?? [],
-          raw: data,
-          executionTime,
-          rowCount: (data?.nodes?.length ?? 0) + (data?.edges?.length ?? 0),
-        })
-      }
-    } catch (err) {
-      console.error('Query failed:', err)
-      setTabResult(activeTabId, {
-        raw: { error: String(err) },
-        executionTime: performance.now() - startTime,
-      })
-    } finally {
-      setTabExecuting(activeTabId, false)
-    }
+    await executeActiveTab()
   }
 
   return (
