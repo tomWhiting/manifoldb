@@ -8,7 +8,7 @@ export function TableView() {
 
   if (!result) {
     return (
-      <div className="flex items-center justify-center h-full text-neutral-500">
+      <div className="flex items-center justify-center h-full text-text-muted">
         Run a query to see results
       </div>
     )
@@ -18,7 +18,7 @@ export function TableView() {
   const nodes = result.nodes ?? []
   if (nodes.length === 0 && !result.rows) {
     return (
-      <div className="flex items-center justify-center h-full text-neutral-500">
+      <div className="flex items-center justify-center h-full text-text-muted">
         No data to display
       </div>
     )
@@ -34,12 +34,12 @@ export function TableView() {
   return (
     <div className="h-full overflow-auto">
       <table className="w-full text-sm">
-        <thead className="sticky top-0 bg-neutral-900">
+        <thead className="sticky top-0 bg-bg-secondary">
           <tr>
             {columns.map((col) => (
               <th
                 key={col}
-                className="px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase border-b border-neutral-800"
+                className="px-3 py-2 text-left text-xs font-medium text-text-muted uppercase border-b border-border"
               >
                 {col}
               </th>
@@ -48,20 +48,20 @@ export function TableView() {
         </thead>
         <tbody>
           {nodes.map((node, i) => (
-            <tr key={node.id} className={i % 2 === 0 ? 'bg-neutral-950' : 'bg-neutral-900/50'}>
-              <td className="px-3 py-2 text-neutral-300 font-mono text-xs">{node.id}</td>
-              <td className="px-3 py-2 text-neutral-300">
+            <tr key={node.id} className={i % 2 === 0 ? 'bg-bg-primary' : 'bg-bg-secondary/50'}>
+              <td className="px-3 py-2 text-text-secondary font-mono text-xs">{node.id}</td>
+              <td className="px-3 py-2 text-text-secondary">
                 {node.labels.map((label) => (
                   <span
                     key={label}
-                    className="inline-block px-1.5 py-0.5 mr-1 text-xs bg-blue-600/20 text-blue-400 rounded"
+                    className="inline-block px-1.5 py-0.5 mr-1 text-xs bg-accent-muted text-accent rounded"
                   >
                     {label}
                   </span>
                 ))}
               </td>
               {Array.from(propertyKeys).map((key) => (
-                <td key={key} className="px-3 py-2 text-neutral-300">
+                <td key={key} className="px-3 py-2 text-text-secondary">
                   {formatValue(node.properties[key])}
                 </td>
               ))}

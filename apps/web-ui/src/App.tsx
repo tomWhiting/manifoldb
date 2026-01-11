@@ -7,6 +7,7 @@ import { Tray } from './components/layout/Tray'
 import { CommandPalette } from './components/shared/CommandPalette'
 import { graphqlClient } from './lib/graphql-client'
 import { useConnection } from './hooks/useConnection'
+import { useTheme } from './hooks/useTheme'
 
 function ConnectionManager() {
   useConnection()
@@ -14,6 +15,9 @@ function ConnectionManager() {
 }
 
 function App() {
+  // Initialize theme system
+  useTheme()
+
   return (
     <Provider value={graphqlClient}>
       <ConnectionManager />

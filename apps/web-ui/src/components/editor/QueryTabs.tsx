@@ -18,7 +18,7 @@ export function QueryTabs() {
   }
 
   return (
-    <div className="flex items-center gap-1 px-2 py-1 bg-neutral-900 border-b border-neutral-800">
+    <div className="flex items-center gap-1 px-2 py-1 bg-bg-secondary">
       {tabs.map((tab) => (
         <button
           key={tab.id}
@@ -28,8 +28,8 @@ export function QueryTabs() {
             transition-colors duration-150
             ${
               activeTabId === tab.id
-                ? 'bg-neutral-950 text-neutral-100'
-                : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/50'
+                ? 'bg-bg-primary text-text-primary'
+                : 'text-text-muted hover:text-text-secondary hover:bg-bg-tertiary'
             }
           `}
         >
@@ -41,7 +41,7 @@ export function QueryTabs() {
                 removeTab(tab.id)
               }}
               className={`
-                p-0.5 rounded hover:bg-neutral-700
+                p-0.5 rounded hover:bg-bg-tertiary
                 ${activeTabId === tab.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
               `}
             >

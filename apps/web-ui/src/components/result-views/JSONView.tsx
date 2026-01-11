@@ -8,7 +8,7 @@ export function JSONView() {
 
   if (!result) {
     return (
-      <div className="flex items-center justify-center h-full text-neutral-500">
+      <div className="flex items-center justify-center h-full text-text-muted">
         Run a query to see results
       </div>
     )
@@ -18,7 +18,7 @@ export function JSONView() {
 
   return (
     <div className="h-full overflow-auto p-4">
-      <pre className="text-sm font-mono text-neutral-300 whitespace-pre-wrap">{json}</pre>
+      <pre className="text-sm font-mono text-text-secondary whitespace-pre-wrap">{json}</pre>
     </div>
   )
 }
