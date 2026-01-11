@@ -326,7 +326,7 @@ export function QueryPane({ pane, isActive }: QueryPaneProps) {
 
       {/* Editor and Results split */}
       <Group orientation="vertical" className="flex-1">
-        <Panel id={`${pane.id}-editor`} minSize={20}>
+        <Panel id={`${pane.id}-editor`} defaultSize={20} minSize={10}>
           {activeTab ? (
             <CodeMirror
               value={activeTab.content}
@@ -359,7 +359,7 @@ export function QueryPane({ pane, isActive }: QueryPaneProps) {
           )}
         </Panel>
         <Separator className="h-1 bg-border hover:bg-accent transition-colors cursor-row-resize" />
-        <Panel id={`${pane.id}-results`} minSize={20}>
+        <Panel id={`${pane.id}-results`} defaultSize={80} minSize={20}>
           <PaneResultView result={activeTab?.result} isExecuting={isExecuting} />
         </Panel>
       </Group>

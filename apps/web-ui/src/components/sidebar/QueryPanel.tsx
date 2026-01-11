@@ -11,6 +11,7 @@ import {
   FileCode,
   Copy,
 } from 'lucide-react'
+import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { useQueryExecution } from '../../hooks/useQueryExecution'
 import { CollapsibleSection } from '../shared/CollapsibleSection'
@@ -223,33 +224,25 @@ export function QueryPanel() {
       </div>
 
       {/* Quick Actions */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-bg-secondary">
-        <button
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-bg-secondary">
+        <IconButton
+          icon={<Play size={16} className="fill-current" />}
           onClick={handleRunQuery}
           disabled={!activeTab || isExecuting}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-accent hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded transition-colors"
-          title="Run query (Cmd+Enter)"
-        >
-          <Play size={14} className="fill-current" />
-          <span>Run</span>
-        </button>
-        <button
+          tooltip="Run query (Cmd+Enter)"
+          className="bg-accent hover:bg-accent-hover text-white"
+        />
+        <IconButton
+          icon={<Trash2 size={16} />}
           onClick={handleClearEditor}
           disabled={!activeTabId}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-bg-tertiary hover:bg-border disabled:opacity-50 disabled:cursor-not-allowed text-text-secondary text-sm rounded transition-colors"
-          title="Clear editor"
-        >
-          <Trash2 size={14} />
-          <span>Clear</span>
-        </button>
-        <button
+          tooltip="Clear editor"
+        />
+        <IconButton
+          icon={<Wand2 size={16} />}
           disabled
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-bg-tertiary text-text-muted text-sm rounded opacity-50 cursor-not-allowed"
-          title="Format query (coming soon)"
-        >
-          <Wand2 size={14} />
-          <span>Format</span>
-        </button>
+          tooltip="Format query (coming soon)"
+        />
       </div>
 
       {/* Search */}

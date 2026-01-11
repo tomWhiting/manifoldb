@@ -106,13 +106,15 @@ export function Workspace() {
     return (
       <Group orientation="horizontal" className="h-full">
         <Panel id="query-panel" defaultSize={25} minSize={15} maxSize={40}>
-          <div className="h-full overflow-hidden border-r border-border bg-bg-secondary">
+          <div className="relative z-10 h-full overflow-hidden border-r border-border bg-bg-secondary">
             <QueryPanel />
           </div>
         </Panel>
-        <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize" />
+        <Separator className="w-1 bg-border hover:bg-accent transition-colors cursor-col-resize z-20" />
         <Panel id="query-workspace" minSize={40}>
-          <SplitQueryWorkspace />
+          <div className="relative z-0 h-full w-full overflow-hidden">
+            <SplitQueryWorkspace />
+          </div>
         </Panel>
       </Group>
     )

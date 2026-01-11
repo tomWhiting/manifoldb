@@ -1,11 +1,20 @@
-import type { AppSettings, EditorSettings, QuerySettings } from '../types'
+import type { AppSettings, EditorSettings, QuerySettings, ServerConnection } from '../types'
 
 const SETTINGS_STORAGE_KEY = 'manifoldb-settings'
+
+const DEFAULT_SERVER: ServerConnection = {
+  id: 'default',
+  name: 'Local Server',
+  url: 'http://localhost:6010/graphql',
+  isDefault: true,
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   connection: {
     serverUrl: 'http://localhost:6010/graphql',
     connectionTimeout: 30000,
+    servers: [DEFAULT_SERVER],
+    activeServerId: 'default',
   },
   editor: {
     fontSize: 14,
@@ -29,8 +38,14 @@ export function loadSettings(): AppSettings {
     }
     const parsed = JSON.parse(stored) as Partial<AppSettings>
     // Merge with defaults to ensure all fields exist
+    const connection = { ...DEFAULT_SETTINGS.connection, ...parsed.connection }
+    // Ensure servers array exists and has at least the default server
+    if (!connection.servers || connection.servers.length === 0) {
+      connection.servers = DEFAULT_SETTINGS.connection.servers
+      connection.activeServerId = DEFAULT_SETTINGS.connection.activeServerId
+    }
     return {
-      connection: { ...DEFAULT_SETTINGS.connection, ...parsed.connection },
+      connection,
       editor: { ...DEFAULT_SETTINGS.editor, ...parsed.editor },
       query: { ...DEFAULT_SETTINGS.query, ...parsed.query },
     }
