@@ -10,8 +10,8 @@ use manifoldb::Database;
 use manifoldb_vector::types::Embedding;
 
 use super::types::{
-    CollectionInfo, Direction, EdgeTypeInfo, GraphResult, GraphStats, LabelInfo, Node, TableResult,
-    VectorConfigInfo, VectorSearchInput, VectorSearchResult,
+    CollectionInfo, Direction, EdgeTypeInfo, GraphResult, GraphStats, LabelInfo, Node, NodeVector,
+    TableResult, VectorConfigInfo, VectorSearchInput, VectorSearchResult,
 };
 use crate::convert;
 
@@ -231,6 +231,166 @@ impl QueryRoot {
             .collect();
 
         Ok(search_results)
+    }
+
+    /// Get vectors for specific node IDs.
+    ///
+    /// This query retrieves the raw vector data stored for the specified nodes.
+    /// If collection and vector_name are provided, only vectors from that specific
+    /// collection and vector field are returned. Otherwise, all vectors for the
+    /// nodes are returned.
+    async fn node_vectors(
+        &self,
+        ctx: &Context<'_>,
+        node_ids: Vec<ID>,
+        collection: Option<String>,
+        vector_name: Option<String>,
+    ) -> Result<Vec<NodeVector>> {
+        use manifoldb_core::EntityId;
+        use manifoldb_storage::{Cursor, Transaction as StorageTransaction};
+        use manifoldb_vector::encoding::{
+            decode_collection_vector_key, encode_entity_vector_prefix,
+        };
+        use manifoldb_vector::store::decode_vector_value;
+        use manifoldb_vector::TABLE_COLLECTION_VECTORS;
+        use std::ops::Bound;
+
+        let db = ctx.data::<Arc<Database>>()?;
+        let tx = db.begin_read()?;
+
+        let mut results = Vec::new();
+
+        // If collection is specified, get the collection ID
+        let collection_info = if let Some(ref coll_name) = collection {
+            let name = CollectionName::new(coll_name)
+                .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
+            let coll = CollectionManager::get(&tx, &name)
+                .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
+                .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", coll_name)))?;
+            Some((coll.id(), coll_name.clone()))
+        } else {
+            None
+        };
+
+        // Get storage reference for range scans
+        let storage = tx.storage_ref()
+            .map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?;
+
+        // Process each node ID
+        for node_id in node_ids {
+            let entity_id = EntityId::new(
+                node_id.as_str().parse::<u64>()
+                    .map_err(|_| async_graphql::Error::new(format!("Invalid node ID: {}", node_id.as_str())))?
+            );
+
+            if let Some((collection_id, ref coll_name)) = collection_info {
+                // Get vectors for specific collection
+                let prefix = encode_entity_vector_prefix(collection_id, entity_id);
+                let prefix_end = {
+                    let mut end = prefix.clone();
+                    for byte in end.iter_mut().rev() {
+                        if *byte < 0xFF {
+                            *byte += 1;
+                            break;
+                        }
+                    }
+                    end
+                };
+
+                let mut cursor = storage.range(
+                    TABLE_COLLECTION_VECTORS,
+                    Bound::Included(prefix.as_slice()),
+                    Bound::Excluded(prefix_end.as_slice()),
+                ).map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?;
+
+                while let Some((key, value)) = cursor.next()
+                    .map_err(|e| async_graphql::Error::new(format!("Cursor error: {}", e)))? {
+                    if let Some(decoded_key) = decode_collection_vector_key(&key) {
+                        // If vector_name is specified, filter by it
+                        if let Some(ref vn) = vector_name {
+                            let hash = manifoldb_vector::encoding::hash_name(vn);
+                            if decoded_key.vector_name_hash != hash {
+                                continue;
+                            }
+                        }
+
+                        if let Ok((vector_data, vec_name)) = decode_vector_value(&value) {
+                            // Filter by vector_name if specified
+                            if let Some(ref vn) = vector_name {
+                                if vec_name != *vn {
+                                    continue;
+                                }
+                            }
+
+                            if let Some(dense) = vector_data.as_dense() {
+                                results.push(NodeVector {
+                                    node_id: node_id.clone(),
+                                    collection: Some(coll_name.clone()),
+                                    vector_name: Some(vec_name),
+                                    values: dense.iter().map(|v| *v as f64).collect(),
+                                    dimension: dense.len() as i32,
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
+                // No collection specified - scan all collections for this entity
+                // This is more expensive but provides a complete picture
+                let collection_names = db.list_collections()
+                    .map_err(|e| async_graphql::Error::new(format!("Failed to list collections: {}", e)))?;
+
+                for coll_name in collection_names {
+                    if let Ok(name) = CollectionName::new(&coll_name) {
+                        if let Ok(Some(coll)) = CollectionManager::get(&tx, &name) {
+                            let collection_id = coll.id();
+                            let prefix = encode_entity_vector_prefix(collection_id, entity_id);
+                            let prefix_end = {
+                                let mut end = prefix.clone();
+                                for byte in end.iter_mut().rev() {
+                                    if *byte < 0xFF {
+                                        *byte += 1;
+                                        break;
+                                    }
+                                }
+                                end
+                            };
+
+                            if let Ok(mut cursor) = storage.range(
+                                TABLE_COLLECTION_VECTORS,
+                                Bound::Included(prefix.as_slice()),
+                                Bound::Excluded(prefix_end.as_slice()),
+                            ) {
+                                while let Ok(Some((key, value))) = cursor.next() {
+                                    if let Some(_decoded_key) = decode_collection_vector_key(&key) {
+                                        if let Ok((vector_data, vec_name)) = decode_vector_value(&value) {
+                                            // Filter by vector_name if specified
+                                            if let Some(ref vn) = vector_name {
+                                                if vec_name != *vn {
+                                                    continue;
+                                                }
+                                            }
+
+                                            if let Some(dense) = vector_data.as_dense() {
+                                                results.push(NodeVector {
+                                                    node_id: node_id.clone(),
+                                                    collection: Some(coll_name.clone()),
+                                                    vector_name: Some(vec_name),
+                                                    values: dense.iter().map(|v| *v as f64).collect(),
+                                                    dimension: dense.len() as i32,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }
 

@@ -2,7 +2,19 @@
 //!
 //! This is the main HNSW (Hierarchical Navigable Small World) index implementation.
 //! It provides approximate nearest neighbor search with O(log N) complexity.
+//!
+//! ## Architecture
+//!
+//! The HNSW index stores the graph structure (nodes and their connections) but does NOT
+//! store the actual embedding vectors. Instead, vectors are cached in memory during
+//! operations and can be provided externally via a vector fetcher pattern.
+//!
+//! This separation allows:
+//! - Vectors to be stored in a single location (CollectionVectorStore)
+//! - HNSW to focus purely on the navigation graph
+//! - Reduced disk I/O since vectors aren't duplicated in the HNSW index
 
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 use manifoldb_core::EntityId;
@@ -70,6 +82,17 @@ impl LevelGenerator {
 ///
 /// This is the main index structure that provides approximate nearest neighbor
 /// search with configurable precision-performance tradeoffs.
+///
+/// ## Vector Storage
+///
+/// The HNSW index maintains an in-memory cache of embeddings for all indexed entities.
+/// This cache is populated when:
+/// - Vectors are inserted via `insert()` or `insert_batch()`
+/// - The index is loaded from storage (vectors must be provided separately)
+///
+/// The graph structure (nodes and connections) is persisted to storage, but the actual
+/// embedding vectors are NOT stored in the HNSW tables. Instead, vectors should be
+/// persisted separately (e.g., in CollectionVectorStore) and loaded into the cache.
 pub struct HnswIndex<E: StorageEngine> {
     /// The storage engine.
     engine: E,
@@ -81,6 +104,9 @@ pub struct HnswIndex<E: StorageEngine> {
     config: HnswConfig,
     /// Level generator for new nodes.
     level_gen: RwLock<LevelGenerator>,
+    /// In-memory cache of embeddings for all indexed entities.
+    /// This cache is used during search operations to compute distances.
+    embeddings: RwLock<HashMap<EntityId, Embedding>>,
 }
 
 impl<E: StorageEngine> HnswIndex<E> {
@@ -136,12 +162,16 @@ impl<E: StorageEngine> HnswIndex<E> {
                 pq_training_samples: 1000, // Default
             };
 
+            // Note: When loading from storage, embeddings cache is empty.
+            // Embeddings must be loaded separately (e.g., from CollectionVectorStore)
+            // using load_embeddings() before the index can be used for search.
             return Ok(Self {
                 engine,
                 table,
                 graph: RwLock::new(graph),
                 config: config.clone(),
                 level_gen: RwLock::new(LevelGenerator::new(config.ml)),
+                embeddings: RwLock::new(HashMap::new()),
             });
         }
 
@@ -170,12 +200,16 @@ impl<E: StorageEngine> HnswIndex<E> {
             graph: RwLock::new(graph),
             config: config.clone(),
             level_gen: RwLock::new(LevelGenerator::new(config.ml)),
+            embeddings: RwLock::new(HashMap::new()),
         })
     }
 
     /// Open an existing HNSW index from storage.
     ///
     /// Returns an error if the index does not exist.
+    ///
+    /// Note: After opening, the embeddings cache will be empty. You must call
+    /// `load_embeddings()` or manually populate the cache before performing searches.
     pub fn open(engine: E, name: &str) -> Result<Self, VectorError> {
         let table = table_name(name);
 
@@ -202,7 +236,36 @@ impl<E: StorageEngine> HnswIndex<E> {
             graph: RwLock::new(graph),
             config: config.clone(),
             level_gen: RwLock::new(LevelGenerator::new(config.ml)),
+            embeddings: RwLock::new(HashMap::new()),
         })
+    }
+
+    /// Load embeddings into the cache from an iterator.
+    ///
+    /// This should be called after `open()` to populate the embeddings cache
+    /// before performing search operations. The embeddings should be fetched
+    /// from the external storage (e.g., CollectionVectorStore).
+    ///
+    /// # Errors
+    ///
+    /// Returns `VectorError::LockPoisoned` if the internal lock is poisoned.
+    pub fn load_embeddings<I>(&self, embeddings: I) -> Result<(), VectorError>
+    where
+        I: IntoIterator<Item = (EntityId, Embedding)>,
+    {
+        let mut cache = self.embeddings.write().map_err(|_| VectorError::LockPoisoned)?;
+        for (entity_id, embedding) in embeddings {
+            cache.insert(entity_id, embedding);
+        }
+        Ok(())
+    }
+
+    /// Get a single embedding from the cache.
+    ///
+    /// Returns `None` if the embedding is not in the cache.
+    pub fn get_embedding(&self, entity_id: EntityId) -> Result<Option<Embedding>, VectorError> {
+        let cache = self.embeddings.read().map_err(|_| VectorError::LockPoisoned)?;
+        Ok(cache.get(&entity_id).cloned())
     }
 
     /// Get the configuration for this index.
@@ -239,18 +302,31 @@ impl<E: StorageEngine> HnswIndex<E> {
     /// Insert a node, connecting it to the graph.
     ///
     /// This implements the HNSW insert algorithm (Algorithm 1 from the paper).
+    ///
+    /// The `embeddings_cache` parameter provides access to embeddings for all nodes.
+    /// This should be a reference to the `embeddings` field.
     fn insert_internal(
         &self,
         graph: &mut HnswGraph,
         entity_id: EntityId,
         embedding: &Embedding,
+        embeddings_cache: &HashMap<EntityId, Embedding>,
     ) -> Result<(), VectorError> {
+        // Create a vector fetcher closure that uses the embeddings cache
+        let get_vector = |id: EntityId| -> Option<Embedding> {
+            // For the newly inserted node, use the provided embedding
+            if id == entity_id {
+                return Some(embedding.clone());
+            }
+            embeddings_cache.get(&id).cloned()
+        };
+
         // Generate random level for this node
         let node_level =
             self.level_gen.write().map_err(|_| VectorError::LockPoisoned)?.generate_level();
 
-        // Create the new node
-        let new_node = HnswNode::new(entity_id, embedding.clone(), node_level);
+        // Create the new node (no embedding stored in node)
+        let new_node = HnswNode::new(entity_id, node_level);
 
         // If graph is empty, just insert as entry point
         if graph.is_empty() {
@@ -274,7 +350,7 @@ impl<E: StorageEngine> HnswIndex<E> {
         let mut current_ep = vec![entry_point];
 
         for layer in (node_level + 1..=current_max_layer).rev() {
-            let candidates = search_layer(graph, embedding, &current_ep, 1, layer);
+            let candidates = search_layer(graph, embedding, &current_ep, 1, layer, &get_vector);
             current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
             if current_ep.is_empty() {
                 current_ep = vec![entry_point];
@@ -290,11 +366,11 @@ impl<E: StorageEngine> HnswIndex<E> {
         for layer in (0..=start_layer).rev() {
             // Search for candidates
             let candidates =
-                search_layer(graph, embedding, &current_ep, self.config.ef_construction, layer);
+                search_layer(graph, embedding, &current_ep, self.config.ef_construction, layer, &get_vector);
 
             // Select neighbors using heuristic
             let m = if layer == 0 { self.config.m_max0 } else { self.config.m };
-            let neighbors = select_neighbors_heuristic(graph, embedding, &candidates, m, false);
+            let neighbors = select_neighbors_heuristic(graph, embedding, &candidates, m, false, &get_vector);
 
             // Connect the new node to its neighbors
             if let Some(node) = graph.get_node_mut(entity_id) {
@@ -302,7 +378,7 @@ impl<E: StorageEngine> HnswIndex<E> {
             }
 
             // Add bidirectional connections and collect neighbors that need pruning
-            let mut neighbors_to_prune = Vec::new();
+            let mut neighbors_to_prune: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
             let max_conn = if layer == 0 { self.config.m_max0 } else { self.config.m };
 
             for &neighbor_id in &neighbors {
@@ -314,24 +390,25 @@ impl<E: StorageEngine> HnswIndex<E> {
                         // Collect data needed for pruning (can't do it here due to borrow)
                         let neighbor_conn_ids: Vec<EntityId> =
                             neighbor.connections_at(layer).to_vec();
-                        let neighbor_embedding = neighbor.embedding.clone();
-                        neighbors_to_prune.push((
-                            neighbor_id,
-                            neighbor_conn_ids,
-                            neighbor_embedding,
-                        ));
+                        neighbors_to_prune.push((neighbor_id, neighbor_conn_ids));
                     }
                 }
             }
 
             // Now prune neighbors that have too many connections
-            for (neighbor_id, neighbor_conn_ids, neighbor_embedding) in neighbors_to_prune {
+            for (neighbor_id, neighbor_conn_ids) in neighbors_to_prune {
+                // Get the neighbor's embedding from the cache
+                let neighbor_embedding = match get_vector(neighbor_id) {
+                    Some(emb) => emb,
+                    None => continue, // Skip if we can't get the embedding
+                };
+
                 // Build candidates by looking up each neighbor's embedding
                 let neighbor_connections: Vec<Candidate> = neighbor_conn_ids
                     .iter()
                     .filter_map(|&id| {
-                        graph.get_node(id).map(|n| {
-                            Candidate::new(id, graph.distance(&neighbor_embedding, &n.embedding))
+                        get_vector(id).map(|emb| {
+                            Candidate::new(id, graph.distance(&neighbor_embedding, &emb))
                         })
                     })
                     .collect();
@@ -343,6 +420,7 @@ impl<E: StorageEngine> HnswIndex<E> {
                     &neighbor_connections,
                     max_conn,
                     false,
+                    &get_vector,
                 );
 
                 // Apply the pruned connections
@@ -418,11 +496,29 @@ impl<E: StorageEngine> HnswIndex<E> {
     ///
     /// This method inserts all nodes into the graph first, then connects them,
     /// and finally persists all changes in a single batch operation.
+    ///
+    /// The `embeddings_cache` parameter provides access to all embeddings including
+    /// previously inserted ones.
     fn insert_batch_internal(
         &self,
         graph: &mut HnswGraph,
         embeddings: &[(EntityId, &Embedding)],
+        embeddings_cache: &HashMap<EntityId, Embedding>,
     ) -> Result<(), VectorError> {
+        // Create a combined lookup that includes both the cache and the new embeddings
+        let new_embeddings_map: HashMap<EntityId, &Embedding> =
+            embeddings.iter().map(|(id, e)| (*id, *e)).collect();
+
+        // Create a vector fetcher closure
+        let get_vector = |id: EntityId| -> Option<Embedding> {
+            // First check the new embeddings being inserted
+            if let Some(&emb) = new_embeddings_map.get(&id) {
+                return Some(emb.clone());
+            }
+            // Then check the existing cache
+            embeddings_cache.get(&id).cloned()
+        };
+
         // Phase 1: Generate levels and create nodes
         let mut new_nodes: Vec<(EntityId, &Embedding, usize)> =
             Vec::with_capacity(embeddings.len());
@@ -441,7 +537,8 @@ impl<E: StorageEngine> HnswIndex<E> {
             std::collections::HashSet::new();
 
         for (entity_id, embedding, node_level) in &new_nodes {
-            let new_node = HnswNode::new(*entity_id, (*embedding).clone(), *node_level);
+            // Create the new node (no embedding stored in node)
+            let new_node = HnswNode::new(*entity_id, *node_level);
 
             // If graph is empty, just insert as entry point
             if graph.is_empty() {
@@ -459,7 +556,7 @@ impl<E: StorageEngine> HnswIndex<E> {
             let mut current_ep = vec![entry_point];
 
             for layer in (node_level + 1..=current_max_layer).rev() {
-                let candidates = search_layer(graph, embedding, &current_ep, 1, layer);
+                let candidates = search_layer(graph, embedding, &current_ep, 1, layer, &get_vector);
                 current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
                 if current_ep.is_empty() {
                     current_ep = vec![entry_point];
@@ -474,10 +571,10 @@ impl<E: StorageEngine> HnswIndex<E> {
 
             for layer in (0..=start_layer).rev() {
                 let candidates =
-                    search_layer(graph, embedding, &current_ep, self.config.ef_construction, layer);
+                    search_layer(graph, embedding, &current_ep, self.config.ef_construction, layer, &get_vector);
 
                 let m = if layer == 0 { self.config.m_max0 } else { self.config.m };
-                let neighbors = select_neighbors_heuristic(graph, embedding, &candidates, m, false);
+                let neighbors = select_neighbors_heuristic(graph, embedding, &candidates, m, false, &get_vector);
 
                 // Connect the new node to its neighbors
                 if let Some(node) = graph.get_node_mut(*entity_id) {
@@ -486,7 +583,7 @@ impl<E: StorageEngine> HnswIndex<E> {
 
                 // Add bidirectional connections and track affected neighbors
                 let max_conn = if layer == 0 { self.config.m_max0 } else { self.config.m };
-                let mut neighbors_to_prune = Vec::new();
+                let mut neighbors_to_prune: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
 
                 for &neighbor_id in &neighbors {
                     affected_neighbors.insert(neighbor_id);
@@ -496,26 +593,23 @@ impl<E: StorageEngine> HnswIndex<E> {
                         if neighbor.connections_at(layer).len() > max_conn {
                             let neighbor_conn_ids: Vec<EntityId> =
                                 neighbor.connections_at(layer).to_vec();
-                            let neighbor_embedding = neighbor.embedding.clone();
-                            neighbors_to_prune.push((
-                                neighbor_id,
-                                neighbor_conn_ids,
-                                neighbor_embedding,
-                            ));
+                            neighbors_to_prune.push((neighbor_id, neighbor_conn_ids));
                         }
                     }
                 }
 
                 // Prune neighbors that have too many connections
-                for (neighbor_id, neighbor_conn_ids, neighbor_embedding) in neighbors_to_prune {
+                for (neighbor_id, neighbor_conn_ids) in neighbors_to_prune {
+                    let neighbor_embedding = match get_vector(neighbor_id) {
+                        Some(emb) => emb,
+                        None => continue,
+                    };
+
                     let neighbor_connections: Vec<Candidate> = neighbor_conn_ids
                         .iter()
                         .filter_map(|&id| {
-                            graph.get_node(id).map(|n| {
-                                Candidate::new(
-                                    id,
-                                    graph.distance(&neighbor_embedding, &n.embedding),
-                                )
+                            get_vector(id).map(|emb| {
+                                Candidate::new(id, graph.distance(&neighbor_embedding, &emb))
                             })
                         })
                         .collect();
@@ -526,6 +620,7 @@ impl<E: StorageEngine> HnswIndex<E> {
                         &neighbor_connections,
                         max_conn,
                         false,
+                        &get_vector,
                     );
 
                     if let Some(neighbor) = graph.get_node_mut(neighbor_id) {
@@ -611,7 +706,16 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
             self.delete_internal(&mut graph, entity_id)?;
         }
 
-        self.insert_internal(&mut graph, entity_id, embedding)
+        // Get a snapshot of the current embeddings cache for the insert operation
+        let embeddings_cache = self.embeddings.read().map_err(|_| VectorError::LockPoisoned)?.clone();
+
+        // Insert the node
+        self.insert_internal(&mut graph, entity_id, embedding, &embeddings_cache)?;
+
+        // Add the embedding to the cache
+        self.embeddings.write().map_err(|_| VectorError::LockPoisoned)?.insert(entity_id, embedding.clone());
+
+        Ok(())
     }
 
     fn insert_batch(&mut self, embeddings: &[(EntityId, &Embedding)]) -> Result<(), VectorError> {
@@ -636,13 +740,31 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
             }
         }
 
+        // Get a snapshot of the current embeddings cache
+        let embeddings_cache = self.embeddings.read().map_err(|_| VectorError::LockPoisoned)?.clone();
+
         // Batch insert all embeddings
-        self.insert_batch_internal(&mut graph, embeddings)
+        self.insert_batch_internal(&mut graph, embeddings, &embeddings_cache)?;
+
+        // Add all embeddings to the cache
+        let mut cache = self.embeddings.write().map_err(|_| VectorError::LockPoisoned)?;
+        for (entity_id, embedding) in embeddings {
+            cache.insert(*entity_id, (*embedding).clone());
+        }
+
+        Ok(())
     }
 
     fn delete(&mut self, entity_id: EntityId) -> Result<bool, VectorError> {
         let mut graph = self.graph.write().map_err(|_| VectorError::LockPoisoned)?;
-        self.delete_internal(&mut graph, entity_id)
+        let deleted = self.delete_internal(&mut graph, entity_id)?;
+
+        // Remove from embeddings cache
+        if deleted {
+            self.embeddings.write().map_err(|_| VectorError::LockPoisoned)?.remove(&entity_id);
+        }
+
+        Ok(deleted)
     }
 
     fn search(
@@ -665,6 +787,12 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
             return Ok(Vec::new());
         }
 
+        // Create vector fetcher from the embeddings cache
+        let embeddings_cache = self.embeddings.read().map_err(|_| VectorError::LockPoisoned)?;
+        let get_vector = |id: EntityId| -> Option<Embedding> {
+            embeddings_cache.get(&id).cloned()
+        };
+
         // ef_search defaults to configured value, but is always at least k
         let ef = ef_search.unwrap_or(self.config.ef_search).max(k);
         let entry_point = graph
@@ -675,7 +803,7 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         let mut current_ep = vec![entry_point];
 
         for layer in (1..=graph.max_layer).rev() {
-            let candidates = search_layer(&graph, query, &current_ep, 1, layer);
+            let candidates = search_layer(&graph, query, &current_ep, 1, layer, &get_vector);
             current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
             if current_ep.is_empty() {
                 current_ep = vec![entry_point];
@@ -683,7 +811,7 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         }
 
         // Search layer 0 with full ef
-        let candidates = search_layer(&graph, query, &current_ep, ef, 0);
+        let candidates = search_layer(&graph, query, &current_ep, ef, 0, &get_vector);
 
         // Return top k results
         let results: Vec<SearchResult> = candidates
@@ -720,6 +848,12 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
             return Ok(Vec::new());
         }
 
+        // Create vector fetcher from the embeddings cache
+        let embeddings_cache = self.embeddings.read().map_err(|_| VectorError::LockPoisoned)?;
+        let get_vector = |id: EntityId| -> Option<Embedding> {
+            embeddings_cache.get(&id).cloned()
+        };
+
         // Get filtered search config
         let filter_config = config.unwrap_or_default();
 
@@ -737,7 +871,7 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         let mut current_ep = vec![entry_point];
 
         for layer in (1..=graph.max_layer).rev() {
-            let candidates = search_layer(&graph, query, &current_ep, 1, layer);
+            let candidates = search_layer(&graph, query, &current_ep, 1, layer, &get_vector);
             current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
             if current_ep.is_empty() {
                 current_ep = vec![entry_point];
@@ -745,7 +879,7 @@ impl<E: StorageEngine> VectorIndex for HnswIndex<E> {
         }
 
         // Search layer 0 with filter applied during traversal
-        let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &predicate);
+        let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &get_vector, predicate);
 
         // Return top k results
         let results: Vec<SearchResult> = candidates
@@ -1337,6 +1471,13 @@ mod tests {
             for i in 0..50 {
                 assert!(index.contains(EntityId::new(i)).unwrap());
             }
+
+            // Load embeddings (in real usage, these would come from external storage)
+            // Here we regenerate them since the test uses a deterministic function
+            let embeddings: Vec<(EntityId, Embedding)> = (0..50)
+                .map(|i| (EntityId::new(i as u64), create_test_embedding(4, i as f32)))
+                .collect();
+            index.load_embeddings(embeddings).unwrap();
 
             // Verify search works
             let query = create_test_embedding(4, 25.0);

@@ -13,12 +13,14 @@ use crate::distance::DistanceMetric;
 use crate::types::Embedding;
 
 /// A node in the HNSW graph.
+///
+/// Note: HnswNode does NOT store the embedding vector. Vectors are stored
+/// separately in the CollectionVectorStore and fetched on-demand during
+/// search operations. This avoids data duplication and reduces memory usage.
 #[derive(Debug, Clone)]
 pub struct HnswNode {
     /// The entity ID this node represents.
     pub entity_id: EntityId,
-    /// The embedding vector.
-    pub embedding: Embedding,
     /// The maximum layer this node appears in.
     pub max_layer: usize,
     /// Connections to other nodes, indexed by layer.
@@ -29,9 +31,9 @@ pub struct HnswNode {
 impl HnswNode {
     /// Create a new HNSW node.
     #[inline]
-    pub fn new(entity_id: EntityId, embedding: Embedding, max_layer: usize) -> Self {
+    pub fn new(entity_id: EntityId, max_layer: usize) -> Self {
         let connections = vec![Vec::new(); max_layer + 1];
-        Self { entity_id, embedding, max_layer, connections }
+        Self { entity_id, max_layer, connections }
     }
 
     /// Get the connections at a specific layer.
@@ -135,11 +137,23 @@ impl HnswGraph {
         }
     }
 
-    /// Calculate the distance from a query to a node.
+    /// Calculate the distance from a query to a node using an external vector fetcher.
+    ///
+    /// The vector fetcher is responsible for providing the embedding for a given entity ID.
+    /// This allows vectors to be stored externally (e.g., in CollectionVectorStore) rather
+    /// than duplicated in the HNSW graph nodes.
     #[inline]
     #[must_use]
-    pub fn distance_to_node(&self, query: &Embedding, entity_id: EntityId) -> Option<f32> {
-        self.nodes.get(&entity_id).map(|node| self.distance(query, &node.embedding))
+    pub fn distance_to_node<F>(&self, query: &Embedding, entity_id: EntityId, get_vector: &F) -> Option<f32>
+    where
+        F: Fn(EntityId) -> Option<Embedding>,
+    {
+        // Only compute distance if the node exists in the graph AND we can fetch its vector
+        if self.nodes.contains_key(&entity_id) {
+            get_vector(entity_id).map(|embedding| self.distance(query, &embedding))
+        } else {
+            None
+        }
     }
 
     /// Insert a node into the graph.
@@ -276,14 +290,21 @@ impl Ord for MaxCandidate {
 ///
 /// Performs a greedy search starting from the entry point, returning
 /// the ef closest candidates to the query.
-pub fn search_layer(
+///
+/// The `get_vector` function is used to fetch embeddings for nodes. This allows
+/// vectors to be stored externally (e.g., in CollectionVectorStore).
+pub fn search_layer<F>(
     graph: &HnswGraph,
     query: &Embedding,
     entry_points: &[EntityId],
     ef: usize,
     layer: usize,
-) -> Vec<Candidate> {
-    search_layer_filtered(graph, query, entry_points, ef, layer, |_| true)
+    get_vector: &F,
+) -> Vec<Candidate>
+where
+    F: Fn(EntityId) -> Option<Embedding>,
+{
+    search_layer_filtered(graph, query, entry_points, ef, layer, get_vector, |_| true)
 }
 
 /// Search layer with a filter predicate applied during traversal.
@@ -299,21 +320,24 @@ pub fn search_layer(
 /// * `entry_points` - Initial entry points to start search from
 /// * `ef` - The beam width (number of candidates to track)
 /// * `layer` - The layer to search
+/// * `get_vector` - A function to fetch embeddings by entity ID
 /// * `predicate` - A predicate function that returns true for nodes to include in results
 ///
 /// # Returns
 ///
 /// A vector of candidates that pass the predicate, sorted by distance.
-pub fn search_layer_filtered<F>(
+pub fn search_layer_filtered<F, P>(
     graph: &HnswGraph,
     query: &Embedding,
     entry_points: &[EntityId],
     ef: usize,
     layer: usize,
-    predicate: F,
+    get_vector: &F,
+    predicate: P,
 ) -> Vec<Candidate>
 where
-    F: Fn(EntityId) -> bool,
+    F: Fn(EntityId) -> Option<Embedding>,
+    P: Fn(EntityId) -> bool,
 {
     if entry_points.is_empty() {
         return Vec::new();
@@ -325,7 +349,7 @@ where
     let mut visited: HashSet<EntityId> = HashSet::new();
 
     for &ep in entry_points {
-        if let Some(dist) = graph.distance_to_node(query, ep) {
+        if let Some(dist) = graph.distance_to_node(query, ep, get_vector) {
             visited.insert(ep);
             let candidate = Candidate::new(ep, dist);
             candidates.push(candidate);
@@ -355,7 +379,7 @@ where
                 }
                 visited.insert(neighbor_id);
 
-                if let Some(neighbor_dist) = graph.distance_to_node(query, neighbor_id) {
+                if let Some(neighbor_dist) = graph.distance_to_node(query, neighbor_id, get_vector) {
                     let furthest_result = results.peek().map_or(f32::INFINITY, |c| c.0.distance);
 
                     // Always explore for graph traversal (add to candidates)
@@ -398,13 +422,19 @@ pub fn select_neighbors_simple(candidates: &[Candidate], m: usize) -> Vec<Entity
 ///
 /// This algorithm tries to ensure diversity in the neighborhood by preferring
 /// neighbors that are not too close to each other.
-pub fn select_neighbors_heuristic(
+///
+/// The `get_vector` function is used to fetch embeddings for nodes.
+pub fn select_neighbors_heuristic<F>(
     graph: &HnswGraph,
     _query: &Embedding,
     candidates: &[Candidate],
     m: usize,
     _extend_candidates: bool,
-) -> Vec<EntityId> {
+    get_vector: &F,
+) -> Vec<EntityId>
+where
+    F: Fn(EntityId) -> Option<Embedding>,
+{
     if candidates.len() <= m {
         return candidates.iter().map(|c| c.entity_id).collect();
     }
@@ -422,15 +452,14 @@ pub fn select_neighbors_heuristic(
 
         // Check if this candidate is good (diverse enough from already selected)
         let mut is_good = true;
-        let candidate_embedding = match graph.get_node(candidate.entity_id) {
-            Some(node) => &node.embedding,
+        let candidate_embedding = match get_vector(candidate.entity_id) {
+            Some(emb) => emb,
             None => continue,
         };
 
         for &selected_id in &selected {
-            if let Some(selected_node) = graph.get_node(selected_id) {
-                let dist_to_selected =
-                    graph.distance(candidate_embedding, &selected_node.embedding);
+            if let Some(selected_embedding) = get_vector(selected_id) {
+                let dist_to_selected = graph.distance(&candidate_embedding, &selected_embedding);
                 // If candidate is closer to an already selected node than to the query,
                 // it might not provide diverse coverage
                 if dist_to_selected < candidate.distance {
@@ -469,10 +498,17 @@ mod tests {
         Embedding::new(vec![value; dim]).unwrap()
     }
 
+    /// Helper to create a simple vector fetcher for tests.
+    /// Maps entity ID to an embedding with the same value as the ID.
+    fn test_vector_fetcher(dim: usize) -> impl Fn(EntityId) -> Option<Embedding> {
+        move |id: EntityId| {
+            Some(create_test_embedding(dim, id.as_u64() as f32))
+        }
+    }
+
     #[test]
     fn test_hnsw_node_creation() {
-        let embedding = create_test_embedding(4, 1.0);
-        let node = HnswNode::new(EntityId::new(1), embedding.clone(), 2);
+        let node = HnswNode::new(EntityId::new(1), 2);
 
         assert_eq!(node.entity_id, EntityId::new(1));
         assert_eq!(node.max_layer, 2);
@@ -481,8 +517,7 @@ mod tests {
 
     #[test]
     fn test_node_connections() {
-        let embedding = create_test_embedding(4, 1.0);
-        let mut node = HnswNode::new(EntityId::new(1), embedding, 1);
+        let mut node = HnswNode::new(EntityId::new(1), 1);
 
         node.add_connection(0, EntityId::new(2));
         node.add_connection(0, EntityId::new(3));
@@ -499,8 +534,8 @@ mod tests {
     fn test_graph_insert_and_remove() {
         let mut graph = HnswGraph::new(4, DistanceMetric::Euclidean);
 
-        let node1 = HnswNode::new(EntityId::new(1), create_test_embedding(4, 1.0), 2);
-        let node2 = HnswNode::new(EntityId::new(2), create_test_embedding(4, 2.0), 1);
+        let node1 = HnswNode::new(EntityId::new(1), 2);
+        let node2 = HnswNode::new(EntityId::new(2), 1);
 
         graph.insert_node(node1);
         assert_eq!(graph.entry_point, Some(EntityId::new(1)));
@@ -536,19 +571,29 @@ mod tests {
     fn test_search_layer_empty() {
         let graph = HnswGraph::new(4, DistanceMetric::Euclidean);
         let query = create_test_embedding(4, 1.0);
+        let get_vector = test_vector_fetcher(4);
 
-        let results = search_layer(&graph, &query, &[], 10, 0);
+        let results = search_layer(&graph, &query, &[], 10, 0, &get_vector);
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_search_layer_single_node() {
         let mut graph = HnswGraph::new(4, DistanceMetric::Euclidean);
-        let node = HnswNode::new(EntityId::new(1), create_test_embedding(4, 1.0), 0);
+        let node = HnswNode::new(EntityId::new(1), 0);
         graph.insert_node(node);
 
+        // Use a fetcher that returns embedding with value 1.0 for entity 1
+        let get_vector = |id: EntityId| -> Option<Embedding> {
+            if id == EntityId::new(1) {
+                Some(create_test_embedding(4, 1.0))
+            } else {
+                None
+            }
+        };
+
         let query = create_test_embedding(4, 2.0);
-        let results = search_layer(&graph, &query, &[EntityId::new(1)], 10, 0);
+        let results = search_layer(&graph, &query, &[EntityId::new(1)], 10, 0, &get_vector);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, EntityId::new(1));

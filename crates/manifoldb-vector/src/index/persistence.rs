@@ -17,7 +17,6 @@ use manifoldb_storage::{Cursor, StorageEngine, Transaction};
 
 use crate::distance::DistanceMetric;
 use crate::error::VectorError;
-use crate::types::Embedding;
 
 use super::config::HnswConfig;
 use super::graph::{HnswGraph, HnswNode};
@@ -229,10 +228,12 @@ impl IndexMetadata {
 }
 
 /// Node data stored in the database (without connections).
+///
+/// Note: NodeData does NOT store the embedding vector. Vectors are stored
+/// separately in the CollectionVectorStore. HNSW only stores the graph structure
+/// (node metadata and connections).
 #[derive(Debug, Clone)]
 pub struct NodeData {
-    /// The embedding vector.
-    pub embedding: Embedding,
     /// The maximum layer this node appears in.
     pub max_layer: usize,
 }
@@ -240,17 +241,13 @@ pub struct NodeData {
 impl NodeData {
     /// Serialize node data to bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let embedding_bytes = self.embedding.to_bytes();
-        let mut bytes = Vec::with_capacity(5 + embedding_bytes.len());
+        let mut bytes = Vec::with_capacity(5);
 
-        // Version byte
-        bytes.push(1);
+        // Version byte (2 = no embedding, just max_layer)
+        bytes.push(2);
 
         // Max layer (4 bytes)
         bytes.extend_from_slice(&(self.max_layer as u32).to_be_bytes());
-
-        // Embedding bytes
-        bytes.extend_from_slice(&embedding_bytes);
 
         bytes
     }
@@ -262,14 +259,22 @@ impl NodeData {
         }
 
         let version = bytes[0];
-        if version != 1 {
-            return Err(VectorError::Encoding(format!("unsupported node data version: {version}")));
+
+        // Support both version 1 (with embedding) and version 2 (no embedding)
+        match version {
+            1 => {
+                // Legacy format: skip the embedding bytes, just read max_layer
+                let max_layer = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
+                // Skip the embedding bytes (we no longer need them)
+                Ok(Self { max_layer })
+            }
+            2 => {
+                // New format: just max_layer
+                let max_layer = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
+                Ok(Self { max_layer })
+            }
+            _ => Err(VectorError::Encoding(format!("unsupported node data version: {version}"))),
         }
-
-        let max_layer = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
-        let embedding = Embedding::from_bytes(&bytes[5..])?;
-
-        Ok(Self { embedding, max_layer })
     }
 }
 
@@ -336,6 +341,9 @@ pub fn load_metadata<E: StorageEngine>(
 }
 
 /// Save a single node to storage.
+///
+/// Note: This only saves the node's metadata (max_layer) and connections.
+/// Vectors are stored separately in the CollectionVectorStore.
 pub fn save_node<E: StorageEngine>(
     engine: &E,
     table: &str,
@@ -343,8 +351,8 @@ pub fn save_node<E: StorageEngine>(
 ) -> Result<(), VectorError> {
     let mut tx = engine.begin_write()?;
 
-    // Save node data
-    let node_data = NodeData { embedding: node.embedding.clone(), max_layer: node.max_layer };
+    // Save node data (no embedding - vectors stored separately)
+    let node_data = NodeData { max_layer: node.max_layer };
     tx.put(table, &encode_node_key(node.entity_id), &node_data.to_bytes())?;
 
     // Save connections for each layer
@@ -358,6 +366,9 @@ pub fn save_node<E: StorageEngine>(
 }
 
 /// Load a single node from storage.
+///
+/// Note: This loads only the node's metadata and connections. Vectors must be
+/// fetched separately from the CollectionVectorStore.
 pub fn load_node<E: StorageEngine>(
     engine: &E,
     table: &str,
@@ -384,7 +395,6 @@ pub fn load_node<E: StorageEngine>(
 
     Ok(Some(HnswNode {
         entity_id,
-        embedding: node_data.embedding,
         max_layer: node_data.max_layer,
         connections,
     }))
@@ -527,13 +537,16 @@ pub fn load_metadata_tx<T: Transaction>(
 }
 
 /// Save a single node within an existing transaction.
+///
+/// Note: This only saves the node's metadata (max_layer) and connections.
+/// Vectors are stored separately in the CollectionVectorStore.
 pub fn save_node_tx<T: Transaction>(
     tx: &mut T,
     table: &str,
     node: &HnswNode,
 ) -> Result<(), VectorError> {
-    // Save node data
-    let node_data = NodeData { embedding: node.embedding.clone(), max_layer: node.max_layer };
+    // Save node data (no embedding - vectors stored separately)
+    let node_data = NodeData { max_layer: node.max_layer };
     tx.put(table, &encode_node_key(node.entity_id), &node_data.to_bytes())?;
 
     // Save connections for each layer
@@ -546,6 +559,9 @@ pub fn save_node_tx<T: Transaction>(
 }
 
 /// Load a single node within an existing transaction.
+///
+/// Note: This loads only the node's metadata and connections. Vectors must be
+/// fetched separately from the CollectionVectorStore.
 pub fn load_node_tx<T: Transaction>(
     tx: &T,
     table: &str,
@@ -570,7 +586,6 @@ pub fn load_node_tx<T: Transaction>(
 
     Ok(Some(HnswNode {
         entity_id,
-        embedding: node_data.embedding,
         max_layer: node_data.max_layer,
         connections,
     }))
@@ -732,10 +747,6 @@ mod tests {
     use super::*;
     use manifoldb_storage::backends::RedbEngine;
 
-    fn create_test_embedding(dim: usize, value: f32) -> Embedding {
-        Embedding::new(vec![value; dim]).unwrap()
-    }
-
     #[test]
     fn test_metadata_roundtrip() {
         let metadata = IndexMetadata {
@@ -792,14 +803,13 @@ mod tests {
 
     #[test]
     fn test_node_data_roundtrip() {
-        let embedding = create_test_embedding(4, 1.5);
-        let node_data = NodeData { embedding: embedding.clone(), max_layer: 2 };
+        // NodeData no longer stores embedding - just max_layer
+        let node_data = NodeData { max_layer: 2 };
 
         let bytes = node_data.to_bytes();
         let decoded = NodeData::from_bytes(&bytes).unwrap();
 
         assert_eq!(decoded.max_layer, 2);
-        assert_eq!(decoded.embedding.as_slice(), embedding.as_slice());
     }
 
     #[test]
@@ -825,7 +835,8 @@ mod tests {
         let engine = RedbEngine::in_memory().unwrap();
         let table = "test_hnsw";
 
-        let mut node = HnswNode::new(EntityId::new(42), create_test_embedding(4, 1.0), 2);
+        // HnswNode no longer stores embedding
+        let mut node = HnswNode::new(EntityId::new(42), 2);
         node.connections[0] = vec![EntityId::new(1), EntityId::new(2)];
         node.connections[1] = vec![EntityId::new(3)];
 

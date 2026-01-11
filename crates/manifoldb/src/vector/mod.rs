@@ -260,9 +260,12 @@ impl HnswIndexBuilder {
         // Build the HNSW graph in memory
         let mut graph = HnswGraph::new(dimension, self.distance_metric);
 
+        // Embeddings cache for the insert algorithm
+        let mut embeddings_cache = std::collections::HashMap::new();
+
         // Insert all vectors using the HNSW algorithm
         for (entity_id, embedding) in vectors {
-            insert_into_graph(&mut graph, entity_id, embedding, &self.config)?;
+            insert_into_graph(&mut graph, entity_id, embedding, &self.config, &mut embeddings_cache)?;
         }
 
         // Save to storage
@@ -336,6 +339,111 @@ pub fn load_index<T: Transaction>(
     Ok((graph, entry.config()))
 }
 
+/// Load an HNSW index graph from storage along with the embeddings cache.
+///
+/// This is used by search functions which need both the graph structure and
+/// the embeddings. Since HnswNode no longer stores embeddings, we need to
+/// separately load them from the CollectionVectorStore.
+fn load_index_with_embeddings<T: Transaction>(
+    tx: &DatabaseTransaction<T>,
+    name: &str,
+) -> Result<(HnswGraph, HnswConfig, std::collections::HashMap<EntityId, Embedding>), VectorIndexError> {
+    use manifoldb_vector::encoding::{encode_collection_vector_prefix, decode_collection_vector_key};
+    use manifoldb_vector::store::decode_vector_value;
+    use manifoldb_vector::TABLE_COLLECTION_VECTORS;
+    use std::ops::Bound;
+
+    let storage = tx.storage_ref()?;
+
+    // Get the registry entry
+    let entry = HnswRegistry::get(storage, name)?
+        .ok_or_else(|| VectorIndexError::IndexNotFound(name.to_string()))?;
+
+    let table_name = hnsw_table_name(name);
+
+    // Load metadata
+    let metadata = load_metadata_tx(storage, &table_name)?
+        .ok_or_else(|| VectorIndexError::IndexNotFound(name.to_string()))?;
+
+    // Load the graph
+    let graph = load_graph_tx(storage, &table_name, &metadata)?;
+
+    // Build embeddings cache from the graph nodes
+    // For now, we need to get the embeddings from the CollectionVectorStore
+    // Since this is called from search functions using the legacy entity-property approach,
+    // we'll load embeddings from collection vectors if available.
+    //
+    // Note: This is a migration path. The legacy path stores vectors as entity properties,
+    // so we need to load from CollectionVectorStore for collections that use the new storage.
+    let mut embeddings = std::collections::HashMap::new();
+
+    // Get collection name and vector name from the index entry
+    // For indexes created with HnswIndexEntry::for_named_vector(), both will be set
+    // For indexes created with HnswIndexEntry::new() (legacy), use table and column
+    let (collection_name, vector_name) = match (entry.collection(), entry.vector()) {
+        (Some(c), Some(v)) => (c.to_string(), v.to_string()),
+        _ => (entry.table.clone(), entry.column.clone()),
+    };
+
+    use manifoldb_storage::Cursor;
+    use crate::collection::{CollectionManager, CollectionName};
+
+    // Try to load embeddings from CollectionVectorStore
+    if let Ok(coll_name) = CollectionName::new(&collection_name) {
+        if let Ok(Some(coll)) = CollectionManager::get(tx, &coll_name) {
+            let collection_id = coll.id();
+            let prefix = encode_collection_vector_prefix(collection_id);
+            let prefix_end = {
+                let mut end = prefix.clone();
+                for byte in end.iter_mut().rev() {
+                    if *byte < 0xFF {
+                        *byte += 1;
+                        break;
+                    }
+                }
+                end
+            };
+
+            // Use Cursor trait method
+            let mut cursor = storage.range(
+                TABLE_COLLECTION_VECTORS,
+                Bound::Included(prefix.as_slice()),
+                Bound::Excluded(prefix_end.as_slice()),
+            )?;
+
+            while let Some((key, value)) = cursor.next()? {
+                if let Some(decoded_key) = decode_collection_vector_key(&key) {
+                    // Check if this vector matches our vector_name
+                    let hash = manifoldb_vector::encoding::hash_name(&vector_name);
+                    if decoded_key.vector_name_hash == hash {
+                        if let Ok((vector_data, _name)) = decode_vector_value(&value) {
+                            if let Some(dense) = vector_data.as_dense() {
+                                if let Ok(emb) = Embedding::new(dense.to_vec()) {
+                                    embeddings.insert(decoded_key.entity_id, emb);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If we didn't find embeddings in CollectionVectorStore (legacy path),
+    // try to load them from entity properties for nodes in the graph
+    if embeddings.is_empty() && !graph.nodes.is_empty() {
+        for entity_id in graph.nodes.keys() {
+            if let Ok(Some(entity)) = tx.get_entity(*entity_id) {
+                if let Some(embedding) = extract_embedding(&entity, &vector_name)? {
+                    embeddings.insert(*entity_id, embedding);
+                }
+            }
+        }
+    }
+
+    Ok((graph, entry.config(), embeddings))
+}
+
 /// Find an HNSW index for a given table and column.
 pub fn find_index_for_column<T: Transaction>(
     tx: &DatabaseTransaction<T>,
@@ -365,7 +473,7 @@ pub fn search_index<T: Transaction>(
     k: usize,
     ef_search: Option<usize>,
 ) -> Result<Vec<SearchResult>, VectorIndexError> {
-    let (graph, config) = load_index(tx, index_name)?;
+    let (graph, config, embeddings) = load_index_with_embeddings(tx, index_name)?;
 
     if graph.dimension != query.len() {
         return Err(VectorIndexError::DimensionMismatch {
@@ -381,6 +489,11 @@ pub fn search_index<T: Transaction>(
     let entry_point =
         graph.entry_point.ok_or_else(|| VectorIndexError::Storage("no entry point".to_string()))?;
 
+    // Create vector fetcher from the embeddings map
+    let get_vector = |id: EntityId| -> Option<Embedding> {
+        embeddings.get(&id).cloned()
+    };
+
     // ef_search defaults to configured value, but is always at least k
     let ef = ef_search.unwrap_or(config.ef_search).max(k);
 
@@ -389,7 +502,7 @@ pub fn search_index<T: Transaction>(
 
     for layer in (1..=graph.max_layer).rev() {
         let candidates =
-            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer);
+            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer, &get_vector);
         current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
         if current_ep.is_empty() {
             current_ep = vec![entry_point];
@@ -397,7 +510,7 @@ pub fn search_index<T: Transaction>(
     }
 
     // Search layer 0 with full ef
-    let candidates = manifoldb_vector::index::search_layer(&graph, query, &current_ep, ef, 0);
+    let candidates = manifoldb_vector::index::search_layer(&graph, query, &current_ep, ef, 0, &get_vector);
 
     // Return top k results
     let results: Vec<SearchResult> = candidates
@@ -426,7 +539,7 @@ where
     T: Transaction,
     F: Fn(EntityId) -> bool,
 {
-    let (graph, config) = load_index(tx, index_name)?;
+    let (graph, config, embeddings) = load_index_with_embeddings(tx, index_name)?;
 
     if graph.dimension != query.len() {
         return Err(VectorIndexError::DimensionMismatch {
@@ -442,6 +555,11 @@ where
     let entry_point =
         graph.entry_point.ok_or_else(|| VectorIndexError::Storage("no entry point".to_string()))?;
 
+    // Create vector fetcher from the embeddings map
+    let get_vector = |id: EntityId| -> Option<Embedding> {
+        embeddings.get(&id).cloned()
+    };
+
     // Get filtered search config
     let fc = filter_config.unwrap_or_default();
 
@@ -455,7 +573,7 @@ where
 
     for layer in (1..=graph.max_layer).rev() {
         let candidates =
-            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer);
+            manifoldb_vector::index::search_layer(&graph, query, &current_ep, 1, layer, &get_vector);
         current_ep = candidates.into_iter().map(|c| c.entity_id).collect();
         if current_ep.is_empty() {
             current_ep = vec![entry_point];
@@ -463,7 +581,7 @@ where
     }
 
     // Search layer 0 with filter applied during traversal
-    let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &predicate);
+    let candidates = search_layer_filtered(&graph, query, &current_ep, ef, 0, &get_vector, predicate);
 
     // Return top k results
     let results: Vec<SearchResult> = candidates
@@ -566,7 +684,8 @@ fn add_to_index<T: Transaction>(
     entity_id: EntityId,
     embedding: Embedding,
 ) -> Result<(), VectorIndexError> {
-    let (mut graph, config) = load_index(tx, index_name)?;
+    // Load graph with embeddings cache for distance calculations during insertion
+    let (mut graph, config, mut embeddings_cache) = load_index_with_embeddings(tx, index_name)?;
 
     // Check dimension
     if graph.dimension != embedding.len() && !graph.nodes.is_empty() {
@@ -582,7 +701,7 @@ fn add_to_index<T: Transaction>(
     }
 
     // Insert into graph
-    insert_into_graph(&mut graph, entity_id, embedding, &config)?;
+    insert_into_graph(&mut graph, entity_id, embedding, &config, &mut embeddings_cache)?;
 
     // Save updated graph
     let table_name = hnsw_table_name(index_name);
@@ -635,17 +754,27 @@ fn extract_embedding(entity: &Entity, column: &str) -> Result<Option<Embedding>,
 }
 
 /// Insert a vector into an HNSW graph.
+///
+/// Note: The embedding is NOT stored in the HnswNode. It's only used during
+/// the insertion process to compute distances and is expected to be stored
+/// separately (e.g., in CollectionVectorStore).
+///
+/// The `embeddings_cache` should contain all existing embeddings for nodes in the graph.
 fn insert_into_graph(
     graph: &mut HnswGraph,
     entity_id: EntityId,
     embedding: Embedding,
     config: &HnswConfig,
+    embeddings_cache: &mut std::collections::HashMap<EntityId, Embedding>,
 ) -> Result<(), VectorIndexError> {
     // Generate random level for this node
     let level = generate_level(config.ml, config.m);
 
-    // Create the new node
-    let node = HnswNode::new(entity_id, embedding.clone(), level);
+    // Create the new node (no embedding stored in node)
+    let node = HnswNode::new(entity_id, level);
+
+    // Add the new embedding to the cache
+    embeddings_cache.insert(entity_id, embedding.clone());
 
     if graph.nodes.is_empty() {
         // First node becomes entry point
@@ -662,14 +791,14 @@ fn insert_into_graph(
     // Search for insertion point from top to level+1
     let mut current = entry_point;
     for layer in (level + 1..=graph.max_layer).rev() {
-        current = search_layer_greedy(graph, &embedding, current, layer)?;
+        current = search_layer_greedy(graph, &embedding, current, layer, embeddings_cache)?;
     }
 
     // For each layer from level down to 0
     for layer in (0..=level.min(graph.max_layer)).rev() {
         // Find neighbors at this layer
         let neighbors =
-            search_layer_candidates(graph, &embedding, current, layer, config.ef_construction)?;
+            search_layer_candidates(graph, &embedding, current, layer, config.ef_construction, embeddings_cache)?;
 
         // Select best neighbors
         let m = if layer == 0 { config.m_max0 } else { config.m };
@@ -688,7 +817,7 @@ fn insert_into_graph(
                         neighbor.connections[layer].push(entity_id);
                         // Prune if necessary
                         if neighbor.connections[layer].len() > neighbor_m {
-                            prune_connections(graph, neighbor_id, layer, neighbor_m)?;
+                            prune_connections(graph, neighbor_id, layer, neighbor_m, embeddings_cache)?;
                         }
                     }
                 }
@@ -768,9 +897,10 @@ fn search_layer_greedy(
     query: &Embedding,
     entry: EntityId,
     layer: usize,
+    embeddings_cache: &std::collections::HashMap<EntityId, Embedding>,
 ) -> Result<EntityId, VectorIndexError> {
     let mut current = entry;
-    let mut current_dist = compute_distance(graph, query, current)?;
+    let mut current_dist = compute_distance(graph, query, current, embeddings_cache)?;
 
     loop {
         let mut changed = false;
@@ -778,7 +908,7 @@ fn search_layer_greedy(
         if let Some(node) = graph.nodes.get(&current) {
             if layer < node.connections.len() {
                 for &neighbor_id in &node.connections[layer] {
-                    let dist = compute_distance(graph, query, neighbor_id)?;
+                    let dist = compute_distance(graph, query, neighbor_id, embeddings_cache)?;
                     if dist < current_dist {
                         current = neighbor_id;
                         current_dist = dist;
@@ -803,6 +933,7 @@ fn search_layer_candidates(
     entry: EntityId,
     layer: usize,
     ef: usize,
+    embeddings_cache: &std::collections::HashMap<EntityId, Embedding>,
 ) -> Result<Vec<EntityId>, VectorIndexError> {
     use std::cmp::Reverse;
     use std::collections::{BinaryHeap, HashSet};
@@ -827,7 +958,7 @@ fn search_layer_candidates(
         }
     }
 
-    let entry_dist = compute_distance(graph, query, entry)?;
+    let entry_dist = compute_distance(graph, query, entry, embeddings_cache)?;
 
     let mut visited = HashSet::new();
     visited.insert(entry);
@@ -852,7 +983,7 @@ fn search_layer_candidates(
             if layer < node.connections.len() {
                 for &neighbor_id in &node.connections[layer] {
                     if visited.insert(neighbor_id) {
-                        let dist = compute_distance(graph, query, neighbor_id)?;
+                        let dist = compute_distance(graph, query, neighbor_id, embeddings_cache)?;
 
                         if results.len() < ef || dist < worst_dist {
                             candidates.push(Reverse(Candidate { distance: dist, id: neighbor_id }));
@@ -881,6 +1012,7 @@ fn prune_connections(
     node_id: EntityId,
     layer: usize,
     max_connections: usize,
+    embeddings_cache: &std::collections::HashMap<EntityId, Embedding>,
 ) -> Result<(), VectorIndexError> {
     let node = match graph.nodes.get(&node_id) {
         Some(n) => n,
@@ -891,15 +1023,18 @@ fn prune_connections(
         return Ok(());
     }
 
-    let embedding = node.embedding.clone();
+    let embedding = match embeddings_cache.get(&node_id) {
+        Some(e) => e.clone(),
+        None => return Ok(()), // Can't prune without the embedding
+    };
     let connections = node.connections[layer].clone();
 
     // Sort by distance and keep closest
     let mut distances: Vec<(f32, EntityId)> = Vec::new();
     for &neighbor_id in &connections {
-        if let Some(neighbor) = graph.nodes.get(&neighbor_id) {
+        if let Some(neighbor_emb) = embeddings_cache.get(&neighbor_id) {
             let dist =
-                compute_distance_embeddings(&embedding, &neighbor.embedding, graph.distance_metric);
+                compute_distance_embeddings(&embedding, neighbor_emb, graph.distance_metric);
             distances.push((dist, neighbor_id));
         }
     }
@@ -923,13 +1058,19 @@ fn compute_distance(
     graph: &HnswGraph,
     query: &Embedding,
     node_id: EntityId,
+    embeddings_cache: &std::collections::HashMap<EntityId, Embedding>,
 ) -> Result<f32, VectorIndexError> {
-    let node = graph
-        .nodes
-        .get(&node_id)
-        .ok_or_else(|| VectorIndexError::Storage(format!("node not found: {:?}", node_id)))?;
+    // First check the node exists in the graph
+    if !graph.nodes.contains_key(&node_id) {
+        return Err(VectorIndexError::Storage(format!("node not found: {:?}", node_id)));
+    }
 
-    Ok(compute_distance_embeddings(query, &node.embedding, graph.distance_metric))
+    // Get the embedding from the cache
+    let node_embedding = embeddings_cache
+        .get(&node_id)
+        .ok_or_else(|| VectorIndexError::Storage(format!("embedding not found for node: {:?}", node_id)))?;
+
+    Ok(compute_distance_embeddings(query, node_embedding, graph.distance_metric))
 }
 
 /// Compute distance between two embeddings.
@@ -1547,9 +1688,19 @@ mod tests {
             // Remove the old vector
             remove_from_index(&mut tx, "single_entity_idx", entity_id).unwrap();
 
-            // Add the new vector
+            // Add the new vector to the index
             let new_embedding = Embedding::new(vec![0.0f32, 0.0, 0.0, 1.0]).unwrap();
             add_to_index(&mut tx, "single_entity_idx", entity_id, new_embedding).unwrap();
+
+            // Also update the vector in CollectionVectorStore (this is what the real
+            // system would do when updating an entity's vector property)
+            store_vector_for_test(
+                &mut tx,
+                "docs",
+                entity_id,
+                "embedding",
+                &[0.0f32, 0.0, 0.0, 1.0],
+            );
 
             tx.commit().unwrap();
         }
@@ -1565,9 +1716,9 @@ mod tests {
             // Entry point should be set
             assert_eq!(graph.entry_point, Some(entity_id));
 
-            // The vector should be the new value
+            // Verify the node exists (embeddings are no longer stored in nodes)
             let node = graph.nodes.get(&entity_id).unwrap();
-            assert_eq!(node.embedding.as_slice(), &[0.0f32, 0.0, 0.0, 1.0]);
+            assert_eq!(node.entity_id, entity_id);
         }
 
         // Step 5: Verify search works with the updated vector

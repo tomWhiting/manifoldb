@@ -73,6 +73,21 @@ pub struct VectorSearchResult {
     pub payload: Option<Json<serde_json::Value>>,
 }
 
+/// A node's vector data.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct NodeVector {
+    /// The node ID.
+    pub node_id: ID,
+    /// The collection name (if vectors are stored in a collection).
+    pub collection: Option<String>,
+    /// The vector name within the collection.
+    pub vector_name: Option<String>,
+    /// The vector values as an array of floats.
+    pub values: Vec<f64>,
+    /// The dimension of the vector.
+    pub dimension: i32,
+}
+
 /// Input for creating a new vector collection.
 #[derive(InputObject, Debug)]
 pub struct CreateCollectionInput {
