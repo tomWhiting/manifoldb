@@ -19,11 +19,12 @@ import {
   readFileAsText,
   detectCsvColumns,
   previewCsvData,
-  isBackupFormat,
-  restoreBackup,
+  analyzeJsonl,
+  importJsonl,
   type ImportProgress,
   type ImportResult,
   type CsvMapping,
+  type JsonlAnalysis,
 } from '../../lib/import-utils'
 import {
   exportQueryResultToJson,
@@ -439,12 +440,8 @@ function ImportSection() {
     rows: [],
   })
 
-  // Backup-specific state
-  const [backupInfo, setBackupInfo] = useState<{
-    entityCount: number
-    edgeCount: number
-    format: string
-  } | null>(null)
+  // JSONL import state
+  const [jsonlAnalysis, setJsonlAnalysis] = useState<JsonlAnalysis | null>(null)
 
   const runJsonImport = useCallback(async (content: string) => {
     setStep('progress')
@@ -464,43 +461,24 @@ function ImportSection() {
     }
   }, [])
 
-  const runBackupRestore = useCallback(async (content: string) => {
+  const runJsonlImport = useCallback(async (content: string) => {
     setStep('progress')
-    setProgress({ phase: 'validating', current: 0, total: 1, message: 'Restoring backup...' })
+    setProgress({ phase: 'parsing', current: 0, total: 1, message: 'Starting import...' })
 
     try {
-      const backupResult = await restoreBackup(content)
-
-      if (backupResult.success) {
-        setResult({
-          nodes: [],
-          edges: [],
-          errors: [],
-          stats: {
-            totalRows: backupResult.totalRecords,
-            successfulNodes: backupResult.entityCount,
-            successfulEdges: backupResult.edgeCount,
-            failedRows: 0,
-          },
-        })
-        toast.success(`Restored ${backupResult.entityCount} entities and ${backupResult.edgeCount} edges`)
-      } else {
-        setResult({
-          nodes: [],
-          edges: [],
-          errors: [{ line: 1, message: backupResult.error ?? 'Unknown error' }],
-          stats: {
-            totalRows: 0,
-            successfulNodes: 0,
-            successfulEdges: 0,
-            failedRows: 1,
-          },
-        })
-        toast.error(`Backup restore failed: ${backupResult.error}`)
-      }
+      const importResult = await importJsonl(content, setProgress)
+      setResult(importResult)
       setStep('result')
+
+      if (importResult.errors.length === 0) {
+        toast.success(`Imported ${importResult.stats.successfulNodes} nodes and ${importResult.stats.successfulEdges} edges`)
+      } else if (importResult.stats.successfulNodes > 0 || importResult.stats.successfulEdges > 0) {
+        toast.warning(`Import completed with ${importResult.errors.length} warnings`)
+      } else {
+        toast.error(`Import failed: ${importResult.errors[0]?.message ?? 'Unknown error'}`)
+      }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Backup restore failed')
+      toast.error(err instanceof Error ? err.message : 'Import failed')
       setStep('select')
     }
   }, [])
@@ -537,30 +515,19 @@ function ImportSection() {
         const preview = previewCsvData(content, csvDelimiter, 5)
         setCsvPreview(preview)
         setStep('configure')
-      } else if (isJsonl && isBackupFormat(content)) {
-        // JSONL backup format - analyze and show confirmation step
-        const lines = content.split('\n').filter(l => l.trim())
-        let entityCount = 0
-        let edgeCount = 0
-        for (const line of lines) {
-          try {
-            const record = JSON.parse(line)
-            if (record.type === 'entity') entityCount++
-            if (record.type === 'edge') edgeCount++
-          } catch {
-            // Skip malformed lines for preview
-          }
-        }
-        setBackupInfo({ entityCount, edgeCount, format: 'ManifoldDB Backup' })
+      } else if (isJsonl) {
+        // JSONL format - analyze and show confirmation step
+        const analysis = analyzeJsonl(content)
+        setJsonlAnalysis(analysis)
         setStep('confirm-backup')
-      } else if (isJsonl || isJson) {
+      } else if (isJson) {
         // For JSON, go straight to import
         await runJsonImport(content)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to read file')
     }
-  }, [csvDelimiter, runJsonImport, runBackupRestore])
+  }, [csvDelimiter, runJsonImport])
 
   const handleDelimiterChange = useCallback((delimiter: string) => {
     setCsvDelimiter(delimiter)
@@ -610,7 +577,7 @@ function ImportSection() {
     setResult(null)
     setCsvColumns([])
     setCsvPreview({ headers: [], rows: [] })
-    setBackupInfo(null)
+    setJsonlAnalysis(null)
   }
 
   return (
@@ -663,7 +630,7 @@ function ImportSection() {
         </div>
       )}
 
-      {step === 'confirm-backup' && selectedFile && backupInfo && (
+      {step === 'confirm-backup' && selectedFile && jsonlAnalysis && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -686,18 +653,26 @@ function ImportSection() {
           <div className="bg-bg-tertiary rounded-lg p-3 space-y-2">
             <div className="flex items-center gap-2">
               <CheckCircle size={16} className="text-green-400" />
-              <span className="text-sm text-text-primary">Valid {backupInfo.format}</span>
+              <span className="text-sm text-text-primary">
+                {jsonlAnalysis.format === 'rubicon' ? 'Claude Session Transcript' :
+                 jsonlAnalysis.format === 'generic' ? 'Entity/Edge Format' : 'JSONL File'}
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="bg-bg-secondary rounded p-2">
                 <p className="text-text-muted text-xs">Entities</p>
-                <p className="text-text-primary font-medium">{backupInfo.entityCount.toLocaleString()}</p>
+                <p className="text-text-primary font-medium">{jsonlAnalysis.entityCount.toLocaleString()}</p>
               </div>
               <div className="bg-bg-secondary rounded p-2">
                 <p className="text-text-muted text-xs">Edges</p>
-                <p className="text-text-primary font-medium">{backupInfo.edgeCount.toLocaleString()}</p>
+                <p className="text-text-primary font-medium">{jsonlAnalysis.edgeCount.toLocaleString()}</p>
               </div>
             </div>
+            {jsonlAnalysis.sampleLabels.length > 0 && (
+              <div className="text-xs text-text-muted">
+                Labels: {jsonlAnalysis.sampleLabels.join(', ')}
+              </div>
+            )}
           </div>
 
           <div className="flex gap-2">
@@ -708,10 +683,10 @@ function ImportSection() {
               Cancel
             </button>
             <button
-              onClick={() => runBackupRestore(fileContent)}
+              onClick={() => runJsonlImport(fileContent)}
               className="flex-1 py-2 px-4 bg-accent hover:bg-accent-hover text-white text-sm rounded transition-colors"
             >
-              Import Backup
+              Import Data
             </button>
           </div>
         </div>

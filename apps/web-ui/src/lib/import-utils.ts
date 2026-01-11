@@ -532,3 +532,304 @@ export async function verifyBackup(content: string): Promise<BackupRestoreResult
 
   return result.data?.verifyBackup as BackupRestoreResult
 }
+
+// =============================================================================
+// Direct JSONL Import (using Cypher mutations)
+// =============================================================================
+
+const EXECUTE_MUTATION = `
+  mutation Execute($query: String!) {
+    execute(query: $query) {
+      table { columns rows }
+    }
+  }
+`
+
+export type JsonlFormat = 'rubicon' | 'generic' | 'unknown'
+
+export interface JsonlAnalysis {
+  format: JsonlFormat
+  totalLines: number
+  entityCount: number
+  edgeCount: number
+  sampleLabels: string[]
+  sampleTypes: string[]
+}
+
+/**
+ * Analyze JSONL content to determine format and stats
+ */
+export function analyzeJsonl(content: string): JsonlAnalysis {
+  const lines = content.split('\n').filter(l => l.trim())
+  let format: JsonlFormat = 'unknown'
+  let entityCount = 0
+  let edgeCount = 0
+  const labels = new Set<string>()
+  const types = new Set<string>()
+
+  for (const line of lines) {
+    try {
+      const record = JSON.parse(line)
+
+      // Detect Rubicon format (Claude session transcripts)
+      if (record.sessionId && record.uuid && (record.type === 'user' || record.type === 'assistant')) {
+        format = 'rubicon'
+        entityCount++
+        labels.add(record.type === 'user' ? 'UserMessage' : 'AssistantMessage')
+        if (record.parentUuid) {
+          edgeCount++ // Will create REPLIES_TO edge
+        }
+      }
+      // Detect backup format entities
+      else if (record.type === 'entity' && record.data) {
+        format = 'generic'
+        entityCount++
+        record.data.labels?.forEach((l: string) => labels.add(l))
+      }
+      // Detect backup format edges
+      else if (record.type === 'edge' && record.data) {
+        format = 'generic'
+        edgeCount++
+        if (record.data.type) types.add(record.data.type)
+      }
+      // Skip metadata records
+      else if (record.type === 'metadata') {
+        continue
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  return {
+    format,
+    totalLines: lines.length,
+    entityCount,
+    edgeCount,
+    sampleLabels: Array.from(labels).slice(0, 5),
+    sampleTypes: Array.from(types).slice(0, 5),
+  }
+}
+
+/**
+ * Escape a string for use in Cypher
+ */
+function escapeForCypher(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'number') return String(value)
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'string') {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
+  }
+  if (Array.isArray(value) || typeof value === 'object') {
+    return `"${JSON.stringify(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  }
+  return `"${String(value)}"`
+}
+
+/**
+ * Convert properties object to Cypher map syntax
+ */
+function propsToSypher(props: Record<string, unknown>): string {
+  const pairs = Object.entries(props)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}: ${escapeForCypher(v)}`)
+  return pairs.length > 0 ? `{${pairs.join(', ')}}` : ''
+}
+
+/**
+ * Import JSONL content using direct Cypher mutations.
+ * Supports Rubicon (Claude session) and generic entity/edge formats.
+ */
+export async function importJsonl(
+  content: string,
+  onProgress?: ImportProgressCallback
+): Promise<ImportResult> {
+  const lines = content.split('\n').filter(l => l.trim())
+  const analysis = analyzeJsonl(content)
+  const errors: ImportError[] = []
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+
+  let successfulNodes = 0
+  let successfulEdges = 0
+  const nodeIdMap = new Map<string, number>() // Maps original IDs to new IDs
+
+  onProgress?.({
+    phase: 'parsing',
+    current: 0,
+    total: lines.length,
+    message: `Detected ${analysis.format} format with ${analysis.entityCount} entities`,
+  })
+
+  // First pass: Create all nodes
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    try {
+      const record = JSON.parse(line)
+
+      let labels: string[] = []
+      let props: Record<string, unknown> = {}
+      let originalId: string | null = null
+
+      // Handle Rubicon format
+      if (analysis.format === 'rubicon' && record.uuid) {
+        if (record.type === 'user' || record.type === 'assistant') {
+          labels = [record.type === 'user' ? 'UserMessage' : 'AssistantMessage', 'Message']
+          originalId = record.uuid
+          props = {
+            uuid: record.uuid,
+            sessionId: record.sessionId,
+            timestamp: record.timestamp,
+            role: record.message?.role,
+            content: typeof record.message?.content === 'string'
+              ? record.message.content
+              : JSON.stringify(record.message?.content),
+            parentUuid: record.parentUuid,
+          }
+        } else {
+          continue // Skip non-message records
+        }
+      }
+      // Handle generic entity format
+      else if (record.type === 'entity' && record.data) {
+        labels = record.data.labels || ['Node']
+        originalId = String(record.data.id)
+        props = record.data.properties || {}
+      }
+      // Skip other record types
+      else {
+        continue
+      }
+
+      // Create the node
+      const labelStr = labels.map(l => `:${l}`).join('')
+      const propsStr = propsToSypher(props)
+      const query = `CREATE (n${labelStr} ${propsStr}) RETURN id(n) as id`
+
+      const result = await graphqlClient
+        .mutation(EXECUTE_MUTATION, { query })
+        .toPromise()
+
+      if (result.error) {
+        errors.push({ line: i + 1, message: result.error.message })
+      } else {
+        const newId = result.data?.execute?.table?.rows?.[0]?.[0]
+        if (newId !== undefined && originalId) {
+          nodeIdMap.set(originalId, newId)
+        }
+        successfulNodes++
+        nodes.push({
+          id: String(newId),
+          labels,
+          properties: props as Record<string, unknown>,
+        })
+      }
+
+      if (i % 10 === 0) {
+        onProgress?.({
+          phase: 'validating',
+          current: i,
+          total: lines.length,
+          message: `Created ${successfulNodes} nodes...`,
+        })
+      }
+    } catch (err) {
+      errors.push({
+        line: i + 1,
+        message: err instanceof Error ? err.message : 'Parse error',
+      })
+    }
+  }
+
+  // Second pass: Create edges (for Rubicon, link parent messages)
+  if (analysis.format === 'rubicon') {
+    onProgress?.({
+      phase: 'validating',
+      current: lines.length,
+      total: lines.length,
+      message: 'Creating message relationships...',
+    })
+
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const record = JSON.parse(lines[i])
+        if (record.parentUuid && record.uuid) {
+          const sourceId = nodeIdMap.get(record.uuid)
+          const targetId = nodeIdMap.get(record.parentUuid)
+
+          if (sourceId !== undefined && targetId !== undefined) {
+            const query = `MATCH (a), (b) WHERE id(a) = ${sourceId} AND id(b) = ${targetId} CREATE (a)-[r:REPLIES_TO]->(b) RETURN r`
+
+            const result = await graphqlClient
+              .mutation(EXECUTE_MUTATION, { query })
+              .toPromise()
+
+            if (result.error) {
+              errors.push({ line: i + 1, message: `Edge error: ${result.error.message}` })
+            } else {
+              successfulEdges++
+              edges.push({
+                id: `edge_${i}`,
+                type: 'REPLIES_TO',
+                sourceId: String(sourceId),
+                targetId: String(targetId),
+                properties: {},
+              })
+            }
+          }
+        }
+      } catch {
+        // Skip edge creation errors silently
+      }
+    }
+  }
+  // Handle generic edge format
+  else if (analysis.format === 'generic') {
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const record = JSON.parse(lines[i])
+        if (record.type === 'edge' && record.data) {
+          const sourceId = nodeIdMap.get(String(record.data.source))
+          const targetId = nodeIdMap.get(String(record.data.target))
+          const edgeType = record.data.type || 'RELATED_TO'
+          const props = record.data.properties || {}
+
+          if (sourceId !== undefined && targetId !== undefined) {
+            const propsStr = propsToSypher(props)
+            const query = `MATCH (a), (b) WHERE id(a) = ${sourceId} AND id(b) = ${targetId} CREATE (a)-[r:${edgeType} ${propsStr}]->(b) RETURN r`
+
+            const result = await graphqlClient
+              .mutation(EXECUTE_MUTATION, { query })
+              .toPromise()
+
+            if (!result.error) {
+              successfulEdges++
+            }
+          }
+        }
+      } catch {
+        // Skip edge errors
+      }
+    }
+  }
+
+  onProgress?.({
+    phase: 'complete',
+    current: lines.length,
+    total: lines.length,
+    message: `Import complete: ${successfulNodes} nodes, ${successfulEdges} edges`,
+  })
+
+  return {
+    nodes,
+    edges,
+    errors,
+    stats: {
+      totalRows: lines.length,
+      successfulNodes,
+      successfulEdges,
+      failedRows: errors.length,
+    },
+  }
+}
