@@ -1,4 +1,5 @@
 import type { GraphNode, GraphEdge } from '../types'
+import { graphqlClient } from './graphql-client'
 
 export interface ImportResult {
   nodes: GraphNode[]
@@ -422,4 +423,112 @@ export async function readFileInChunks(
   }
 
   return chunks.join('')
+}
+
+// =============================================================================
+// Backup Import Functions
+// =============================================================================
+
+export interface BackupRestoreResult {
+  entityCount: number
+  edgeCount: number
+  metadataCount: number
+  totalRecords: number
+  success: boolean
+  error: string | null
+}
+
+const RESTORE_BACKUP_MUTATION = `
+  mutation RestoreBackup($content: String!, $verifyReferences: Boolean!, $skipDuplicates: Boolean!) {
+    restoreBackup(content: $content, verifyReferences: $verifyReferences, skipDuplicates: $skipDuplicates) {
+      entityCount
+      edgeCount
+      metadataCount
+      totalRecords
+      success
+      error
+    }
+  }
+`
+
+const VERIFY_BACKUP_MUTATION = `
+  mutation VerifyBackup($content: String!) {
+    verifyBackup(content: $content) {
+      entityCount
+      edgeCount
+      metadataCount
+      totalRecords
+      success
+      error
+    }
+  }
+`
+
+/**
+ * Check if content is in ManifoldDB backup format.
+ * Backup format starts with a metadata record: {"type":"metadata",...}
+ */
+export function isBackupFormat(content: string): boolean {
+  const firstLine = content.split('\n')[0]?.trim()
+  if (!firstLine) return false
+
+  try {
+    const parsed = JSON.parse(firstLine)
+    return parsed.type === 'metadata' && parsed.data?.format === 'json_lines'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Restore a backup to the database.
+ */
+export async function restoreBackup(
+  content: string,
+  options: { verifyReferences?: boolean; skipDuplicates?: boolean } = {}
+): Promise<BackupRestoreResult> {
+  const { verifyReferences = true, skipDuplicates = false } = options
+
+  const result = await graphqlClient
+    .mutation(RESTORE_BACKUP_MUTATION, {
+      content,
+      verifyReferences,
+      skipDuplicates,
+    })
+    .toPromise()
+
+  if (result.error) {
+    return {
+      entityCount: 0,
+      edgeCount: 0,
+      metadataCount: 0,
+      totalRecords: 0,
+      success: false,
+      error: result.error.message,
+    }
+  }
+
+  return result.data?.restoreBackup as BackupRestoreResult
+}
+
+/**
+ * Verify a backup without importing (dry run).
+ */
+export async function verifyBackup(content: string): Promise<BackupRestoreResult> {
+  const result = await graphqlClient
+    .mutation(VERIFY_BACKUP_MUTATION, { content })
+    .toPromise()
+
+  if (result.error) {
+    return {
+      entityCount: 0,
+      edgeCount: 0,
+      metadataCount: 0,
+      totalRecords: 0,
+      success: false,
+      error: result.error.message,
+    }
+  }
+
+  return result.data?.verifyBackup as BackupRestoreResult
 }

@@ -6,6 +6,7 @@ import { OverviewPanel } from '../sidebar/OverviewPanel'
 import { HistoryPanel } from '../sidebar/HistoryPanel'
 import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { QueryPanel } from '../sidebar/QueryPanel'
+import { VectorSearchPanel } from '../sidebar/VectorSearchPanel'
 import { ImportExportPanel } from '../sidebar/ImportExportPanel'
 import { LogsPanel } from '../sidebar/LogsPanel'
 import { SQLBuilder } from '../sql-builder'
@@ -92,6 +93,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'logs') {
     return <LogsPanel />
+  }
+
+  if (activeSidebarSection === 'vector-search') {
+    return <VectorSearchPanel />
   }
 
   if (activeSidebarSection === 'sql-builder') {

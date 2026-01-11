@@ -6,6 +6,7 @@ export type WorkspaceMode = 'query' | 'sql-builder' | 'schema' | 'collections'
 
 export type SidebarSection =
   | 'query'
+  | 'vector-search'
   | 'history'
   | 'overview'
   | 'modules'
@@ -139,6 +140,7 @@ export interface VectorConfigInfo {
   vectorType: VectorType
   dimension: number | null
   distanceMetric: DistanceMetric
+  embeddingModel: string | null
 }
 
 export interface CollectionInfo {

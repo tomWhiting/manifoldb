@@ -1,5 +1,6 @@
 import {
   Play,
+  Search,
   History,
   LayoutDashboard,
   Package,
@@ -26,6 +27,7 @@ interface NavItem {
 
 const topNavItems: NavItem[] = [
   { id: 'query', icon: Play, label: 'Query' },
+  { id: 'vector-search', icon: Search, label: 'Vector Search' },
   { id: 'sql-builder', icon: TableProperties, label: 'SQL Builder' },
   { id: 'history', icon: History, label: 'History' },
   { id: 'overview', icon: LayoutDashboard, label: 'Overview' },

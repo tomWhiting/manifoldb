@@ -4518,10 +4518,11 @@ fn execute_create_collection<T: Transaction>(
             }
         };
 
-        // Parse distance metric from WITH options
+        // Parse distance metric and embedding model from WITH options
         let mut distance_metric = DistanceMetric::Cosine;
         let mut m: Option<usize> = None;
         let mut ef_construction: Option<usize> = None;
+        let mut embedding_model: Option<String> = None;
 
         for (key, value) in &vec_def.with_options {
             match key.as_str() {
@@ -4538,6 +4539,9 @@ fn execute_create_collection<T: Transaction>(
                 }
                 "ef_construction" => {
                     ef_construction = value.parse().ok();
+                }
+                "model" | "embedding_model" => {
+                    embedding_model = Some(value.clone());
                 }
                 _ => {}
             }
@@ -4568,6 +4572,7 @@ fn execute_create_collection<T: Transaction>(
             vector_type,
             distance: DistanceType::Dense(distance_metric),
             index: index_config,
+            embedding_model,
         };
 
         vector_configs.push((vec_def.name.name.clone(), config));

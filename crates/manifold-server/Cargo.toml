@@ -12,6 +12,9 @@ manifoldb-core.workspace = true
 manifoldb-vector.workspace = true
 manifoldb-storage.workspace = true
 
+# Embeddings
+tessera-embeddings = { path = "../../../tessera", features = ["metal"] }
+
 # GraphQL
 async-graphql = { version = "7", features = ["playground"] }
 async-graphql-axum = "7"

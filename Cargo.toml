@@ -156,3 +156,10 @@ bool_assert_comparison = "allow"  # Explicit boolean assertions
 no_effect_underscore_binding = "allow"  # Used for side effects
 manual_while_let_some = "allow"  # Explicit loop patterns
 collection_is_never_read = "allow"  # Setup code in tests
+
+# Patch candle to use fork with T5 hidden states, JinaBERT Code, Qwen2/3 embeddings
+# Required for tessera-embeddings integration
+[patch.crates-io]
+candle-core = { git = "https://github.com/tomWhiting/candle.git", rev = "b014c086" }
+candle-nn = { git = "https://github.com/tomWhiting/candle.git", rev = "b014c086" }
+candle-transformers = { git = "https://github.com/tomWhiting/candle.git", rev = "b014c086" }

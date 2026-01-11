@@ -13,7 +13,7 @@ export function QueryTabs() {
   const handleNewTab = () => {
     addTab({
       title: `Query ${tabs.length + 1}`,
-      content: '// New query\n',
+      content: '',
       language: 'cypher',
     })
   }

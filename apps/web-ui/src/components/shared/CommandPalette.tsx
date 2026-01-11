@@ -87,7 +87,7 @@ export function CommandPalette() {
                 runCommand(() =>
                   addTab(layout.activePaneId, {
                     title: `Query ${(activePane?.tabs.length ?? 0) + 1}`,
-                    content: '// New query\n',
+                    content: '',
                     language: 'cypher',
                   })
                 )

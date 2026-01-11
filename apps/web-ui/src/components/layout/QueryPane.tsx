@@ -191,7 +191,7 @@ export function QueryPane({ pane, isActive }: QueryPaneProps) {
   const handleNewTab = () => {
     addTab(pane.id, {
       title: `Query ${pane.tabs.length + 1}`,
-      content: '// New query\n',
+      content: '',
       language: 'cypher',
     })
   }

@@ -11,7 +11,7 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
-use crate::{create_schema, AppSchema, PubSub};
+use crate::{create_schema, AppSchema, EmbeddingService, PubSub};
 
 async fn graphql_handler(
     Extension(schema): Extension<AppSchema>,
@@ -56,8 +56,12 @@ pub async fn run(database_path: &str, host: &str, port: u16) -> Result<()> {
     // Create pub-sub hub for subscriptions
     let pubsub = PubSub::new();
 
+    // Create embedding service (models are lazy-loaded on first use)
+    let embedding = EmbeddingService::new();
+    info!("Embedding service initialized (models load on first use)");
+
     // Create GraphQL schema
-    let schema = create_schema(db, pubsub);
+    let schema = create_schema(db, pubsub, embedding);
 
     // Build router
     let app = Router::new()

@@ -37,6 +37,7 @@ const COLLECTIONS_QUERY = `
         vectorType
         dimension
         distanceMetric
+        embeddingModel
       }
       pointCount
     }
@@ -52,6 +53,7 @@ const COLLECTION_QUERY = `
         vectorType
         dimension
         distanceMetric
+        embeddingModel
       }
       pointCount
     }
@@ -81,6 +83,7 @@ interface CollectionResponse {
     vectorType: string
     dimension: number | null
     distanceMetric: string
+    embeddingModel: string | null
   }[]
   pointCount: number
 }
@@ -93,6 +96,7 @@ function mapCollection(raw: CollectionResponse): CollectionInfo {
       vectorType: v.vectorType as CollectionInfo['vectors'][number]['vectorType'],
       dimension: v.dimension,
       distanceMetric: v.distanceMetric as CollectionInfo['vectors'][number]['distanceMetric'],
+      embeddingModel: v.embeddingModel,
     })),
     pointCount: raw.pointCount,
   }

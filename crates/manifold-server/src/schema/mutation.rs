@@ -9,8 +9,8 @@ use manifoldb::collection::{CollectionManager, CollectionName};
 use manifoldb::Database;
 
 use super::types::{
-    CollectionInfo, CreateCollectionInput, CreateEdgeInput, CreateNodeInput, DistanceMetricEnum,
-    Edge, Node, QueryResult, UpsertVectorInput, VectorConfigInfo,
+    BackupRestoreResult, CollectionInfo, CreateCollectionInput, CreateEdgeInput, CreateNodeInput,
+    DistanceMetricEnum, Edge, Node, QueryResult, UpsertVectorInput, VectorConfigInfo,
 };
 use crate::convert;
 use crate::pubsub::{EdgeChangeEvent, NodeChangeEvent, PubSub};
@@ -296,9 +296,15 @@ impl MutationRoot {
                 .map(graphql_distance_to_ddl_string)
                 .unwrap_or_else(|| "cosine".to_string());
 
+            // Build WITH options
+            let mut with_options = vec![format!("distance = '{}'", distance)];
+            if let Some(ref model) = vec_config.embedding_model {
+                with_options.push(format!("model = '{}'", model));
+            }
+
             vector_defs.push(format!(
-                "{} VECTOR({}) USING hnsw WITH (distance = '{}')",
-                vec_config.name, vec_config.dimension, distance
+                "{} VECTOR({}) USING hnsw WITH ({})",
+                vec_config.name, vec_config.dimension, with_options.join(", ")
             ));
         }
 
@@ -325,6 +331,7 @@ impl MutationRoot {
                     vector_type,
                     dimension: config.dimension().map(|d| d as i32),
                     distance_metric: convert::distance_to_graphql(&config.distance),
+                    embedding_model: config.embedding_model.clone(),
                 }
             })
             .collect();
@@ -419,6 +426,93 @@ impl MutationRoot {
         tx.commit()?;
 
         Ok(ID(point_id.to_string()))
+    }
+
+    // =========================================================================
+    // Backup/Restore Mutations
+    // =========================================================================
+
+    /// Restore data from a backup JSONL file content.
+    ///
+    /// The content should be in ManifoldDB backup format (JSONL with metadata,
+    /// entity, and edge records).
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The backup file content as a string (JSONL format)
+    /// * `verify_references` - Whether to verify that edges reference existing entities (default: true)
+    /// * `skip_duplicates` - Whether to skip duplicate records instead of failing (default: false)
+    async fn restore_backup(
+        &self,
+        ctx: &Context<'_>,
+        content: String,
+        #[graphql(default = true)] verify_references: bool,
+        #[graphql(default = false)] skip_duplicates: bool,
+    ) -> Result<BackupRestoreResult> {
+        use manifoldb::backup::{ImportOptions, Importer};
+        use std::io::Cursor;
+
+        let db = ctx.data::<Arc<Database>>()?;
+
+        let options = ImportOptions {
+            verify_references,
+            skip_duplicates,
+            rebuild_indexes: true,
+            batch_size: Some(10_000),
+            dry_run: false,
+        };
+
+        let reader = Cursor::new(content.into_bytes());
+        let importer = Importer::with_options(reader, options);
+
+        match importer.import_all(db) {
+            Ok(stats) => Ok(BackupRestoreResult {
+                entity_count: stats.entity_count as i64,
+                edge_count: stats.edge_count as i64,
+                metadata_count: stats.metadata_count as i64,
+                total_records: stats.total_records as i64,
+                success: true,
+                error: None,
+            }),
+            Err(e) => Ok(BackupRestoreResult {
+                entity_count: 0,
+                edge_count: 0,
+                metadata_count: 0,
+                total_records: 0,
+                success: false,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
+    /// Verify a backup without importing (dry run).
+    ///
+    /// This validates the backup format and checks referential integrity
+    /// without modifying the database.
+    async fn verify_backup(&self, content: String) -> Result<BackupRestoreResult> {
+        use manifoldb::backup;
+        use std::io::Cursor;
+
+        let reader = Cursor::new(content.into_bytes());
+
+        match backup::verify(reader) {
+            Ok(stats) => Ok(BackupRestoreResult {
+                entity_count: stats.entity_count as i64,
+                edge_count: stats.edge_count as i64,
+                metadata_count: stats.metadata_count as i64,
+                total_records: stats.total_records as i64,
+                success: true,
+                error: None,
+            }),
+            Err(e) => Ok(BackupRestoreResult {
+                entity_count: 0,
+                edge_count: 0,
+                metadata_count: 0,
+                total_records: 0,
+                success: false,
+                error: Some(e.to_string()),
+            }),
+        }
     }
 }
 

@@ -30,6 +30,9 @@ pub struct VectorConfigInfo {
     pub dimension: Option<i32>,
     /// The distance metric used for similarity search.
     pub distance_metric: DistanceMetricEnum,
+    /// The embedding model used to generate vectors (e.g., "jina-embeddings-v2-small-en").
+    /// Used by searchByText to automatically embed queries with the correct model.
+    pub embedding_model: Option<String>,
 }
 
 /// Type of vector stored in a collection.
@@ -106,6 +109,9 @@ pub struct VectorConfigInput {
     pub dimension: i32,
     /// The distance metric to use (defaults to Cosine).
     pub distance_metric: Option<DistanceMetricEnum>,
+    /// The embedding model used to generate vectors (e.g., "jina-embeddings-v2-small-en").
+    /// Must match a model ID from the embeddingModels query.
+    pub embedding_model: Option<String>,
 }
 
 /// Input for similarity search.
@@ -231,6 +237,23 @@ pub struct GraphStats {
     pub edge_types: Vec<EdgeTypeInfo>,
 }
 
+/// Result of a backup restore operation.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct BackupRestoreResult {
+    /// Number of entities restored.
+    pub entity_count: i64,
+    /// Number of edges restored.
+    pub edge_count: i64,
+    /// Number of metadata records restored.
+    pub metadata_count: i64,
+    /// Total records processed.
+    pub total_records: i64,
+    /// Whether the operation was successful.
+    pub success: bool,
+    /// Error message if the operation failed.
+    pub error: Option<String>,
+}
+
 /// Direction for graph traversal.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Direction {
@@ -351,4 +374,53 @@ pub enum GraphEvent {
     EdgeUpdated(EdgeUpdatedEvent),
     /// An edge was deleted.
     EdgeDeleted(EdgeDeletedEvent),
+}
+
+// =============================================================================
+// Embedding Types
+// =============================================================================
+
+/// Information about an available embedding model.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EmbeddingModelInfo {
+    /// The model identifier (used when calling embed).
+    pub id: String,
+    /// Human-readable model name.
+    pub name: String,
+    /// The dimension of embeddings produced by this model.
+    pub dimension: i32,
+    /// The type of model (dense, sparse, colbert, etc.).
+    pub model_type: String,
+}
+
+/// Result of embedding text.
+#[derive(SimpleObject, Clone, Debug)]
+pub struct EmbeddingResult {
+    /// The input text that was embedded.
+    pub text: String,
+    /// The embedding vector.
+    pub embedding: Vec<f64>,
+    /// The dimension of the embedding.
+    pub dimension: i32,
+    /// The model used to generate this embedding.
+    pub model: String,
+}
+
+/// Input for text-based similarity search.
+#[derive(InputObject, Debug)]
+pub struct TextSearchInput {
+    /// The name of the vector field to search.
+    pub vector_name: String,
+    /// The query text (will be embedded automatically).
+    pub query_text: String,
+    /// The embedding model to use (defaults to server default).
+    pub model: Option<String>,
+    /// Maximum number of results to return.
+    pub limit: Option<i32>,
+    /// Number of results to skip (for pagination).
+    pub offset: Option<i32>,
+    /// Include payload in results.
+    pub with_payload: Option<bool>,
+    /// Minimum score threshold for results.
+    pub score_threshold: Option<f64>,
 }

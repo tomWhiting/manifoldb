@@ -209,7 +209,13 @@ pub fn vector_configs_to_graphql(vectors: &HashMap<String, VectorConfig>) -> Vec
                 DistanceType::Binary(_) => DistanceMetricEnum::Hamming,
             };
 
-            VectorConfigInfo { name: vec_name.clone(), vector_type, dimension, distance_metric }
+            VectorConfigInfo {
+                name: vec_name.clone(),
+                vector_type,
+                dimension,
+                distance_metric,
+                embedding_model: config.embedding_model.clone(),
+            }
         })
         .collect()
 }

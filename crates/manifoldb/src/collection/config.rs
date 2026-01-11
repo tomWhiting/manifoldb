@@ -35,6 +35,9 @@ pub struct VectorConfig {
     pub distance: DistanceType,
     /// The index configuration.
     pub index: IndexConfig,
+    /// The embedding model used to generate vectors (e.g., "jina-embeddings-v2-small-en").
+    /// Used by searchByText to automatically embed queries with the correct model.
+    pub embedding_model: Option<String>,
 }
 
 impl VectorConfig {
@@ -53,6 +56,7 @@ impl VectorConfig {
             vector_type: VectorType::Dense { dimension },
             distance: DistanceType::Dense(distance),
             index: IndexConfig::hnsw_default(),
+            embedding_model: None,
         }
     }
 
@@ -70,6 +74,7 @@ impl VectorConfig {
             vector_type: VectorType::Sparse { max_dimension },
             distance: DistanceType::Sparse(SparseDistanceMetric::DotProduct),
             index: IndexConfig::inverted_default(),
+            embedding_model: None,
         }
     }
 
@@ -87,6 +92,7 @@ impl VectorConfig {
             vector_type: VectorType::Multi { token_dim },
             distance: DistanceType::Dense(DistanceMetric::DotProduct),
             index: IndexConfig::hnsw_with_aggregation(AggregationMethod::MaxSim),
+            embedding_model: None,
         }
     }
 
@@ -104,7 +110,17 @@ impl VectorConfig {
             vector_type: VectorType::Binary { bits },
             distance: DistanceType::Binary(BinaryDistanceType::Hamming),
             index: IndexConfig::hnsw_default(),
+            embedding_model: None,
         }
+    }
+
+    /// Set the embedding model for this vector configuration.
+    ///
+    /// The model ID should match a tessera model (e.g., "jina-embeddings-v2-small-en").
+    #[must_use]
+    pub fn with_embedding_model(mut self, model: impl Into<String>) -> Self {
+        self.embedding_model = Some(model.into());
+        self
     }
 
     /// Set a custom distance metric.

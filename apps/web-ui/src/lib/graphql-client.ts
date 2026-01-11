@@ -8,7 +8,7 @@ import type { Client } from 'urql'
 import { createClient as createWSClient } from 'graphql-ws'
 import type { Client as WSClient } from 'graphql-ws'
 import { print } from 'graphql'
-import type { ConnectionStatus, ConnectionError, QueryError, QueryResult, GraphNode, GraphEdge } from '../types'
+import type { ConnectionStatus, ConnectionError, QueryError, QueryResult, GraphNode } from '../types'
 
 const DEFAULT_HTTP_URL = 'http://localhost:6010/graphql'
 const DEFAULT_WS_URL = 'ws://localhost:6010/graphql/ws'

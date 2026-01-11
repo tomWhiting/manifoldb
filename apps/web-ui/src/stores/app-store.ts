@@ -85,7 +85,7 @@ export const useAppStore = create<AppState>((set) => ({
     {
       id: 'tab-1',
       title: 'Query 1',
-      content: '// Write your Cypher query here\nMATCH (n) RETURN n LIMIT 10',
+      content: '',
       language: 'cypher',
     },
   ],

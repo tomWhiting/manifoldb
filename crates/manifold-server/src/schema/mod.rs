@@ -15,6 +15,7 @@ use async_graphql::Schema;
 use manifoldb::Database;
 use std::sync::Arc;
 
+use crate::embedding::EmbeddingService;
 use crate::pubsub::PubSub;
 
 pub use mutation::MutationRoot;
@@ -25,10 +26,11 @@ pub use types::*;
 /// The GraphQL schema type for the ManifoldDB server.
 pub type AppSchema = Schema<QueryRoot, MutationRoot, SubscriptionRoot>;
 
-/// Create a new GraphQL schema with the given database and pub-sub hub.
-pub fn create_schema(db: Database, pubsub: PubSub) -> AppSchema {
+/// Create a new GraphQL schema with the given database, pub-sub hub, and embedding service.
+pub fn create_schema(db: Database, pubsub: PubSub, embedding: EmbeddingService) -> AppSchema {
     Schema::build(QueryRoot, MutationRoot, SubscriptionRoot)
         .data(Arc::new(db))
         .data(pubsub)
+        .data(Arc::new(embedding))
         .finish()
 }

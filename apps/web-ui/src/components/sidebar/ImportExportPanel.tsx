@@ -19,6 +19,8 @@ import {
   readFileAsText,
   detectCsvColumns,
   previewCsvData,
+  isBackupFormat,
+  restoreBackup,
   type ImportProgress,
   type ImportResult,
   type CsvMapping,
@@ -451,18 +453,60 @@ function ImportSection() {
     }
   }, [])
 
+  const runBackupRestore = useCallback(async (content: string) => {
+    setStep('progress')
+    setProgress({ phase: 'validating', current: 0, total: 1, message: 'Restoring backup...' })
+
+    try {
+      const backupResult = await restoreBackup(content)
+
+      if (backupResult.success) {
+        setResult({
+          nodes: [],
+          edges: [],
+          errors: [],
+          stats: {
+            totalRows: backupResult.totalRecords,
+            successfulNodes: backupResult.entityCount,
+            successfulEdges: backupResult.edgeCount,
+            failedRows: 0,
+          },
+        })
+        toast.success(`Restored ${backupResult.entityCount} entities and ${backupResult.edgeCount} edges`)
+      } else {
+        setResult({
+          nodes: [],
+          edges: [],
+          errors: [{ line: 1, message: backupResult.error ?? 'Unknown error' }],
+          stats: {
+            totalRows: 0,
+            successfulNodes: 0,
+            successfulEdges: 0,
+            failedRows: 1,
+          },
+        })
+        toast.error(`Backup restore failed: ${backupResult.error}`)
+      }
+      setStep('result')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Backup restore failed')
+      setStep('select')
+    }
+  }, [])
+
   const handleFileSelect = useCallback(async (file: File) => {
     setSelectedFile(file)
 
     const isJson = file.name.toLowerCase().endsWith('.json')
+    const isJsonl = file.name.toLowerCase().endsWith('.jsonl')
     const isCsv = file.name.toLowerCase().endsWith('.csv')
 
-    if (!isJson && !isCsv) {
-      toast.error('Please select a JSON or CSV file')
+    if (!isJson && !isJsonl && !isCsv) {
+      toast.error('Please select a JSON, JSONL, or CSV file')
       return
     }
 
-    setImportFormat(isJson ? 'json' : 'csv')
+    setImportFormat(isJson || isJsonl ? 'json' : 'csv')
 
     try {
       const content = await readFileAsText(file)
@@ -482,6 +526,9 @@ function ImportSection() {
         const preview = previewCsvData(content, csvDelimiter, 5)
         setCsvPreview(preview)
         setStep('configure')
+      } else if (isJsonl && isBackupFormat(content)) {
+        // JSONL backup format - restore directly
+        await runBackupRestore(content)
       } else {
         // For JSON, go straight to import
         await runJsonImport(content)
@@ -489,7 +536,7 @@ function ImportSection() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to read file')
     }
-  }, [csvDelimiter, runJsonImport])
+  }, [csvDelimiter, runJsonImport, runBackupRestore])
 
   const handleDelimiterChange = useCallback((delimiter: string) => {
     setCsvDelimiter(delimiter)
@@ -546,7 +593,7 @@ function ImportSection() {
       {step === 'select' && (
         <FileDropZone
           onFileSelect={handleFileSelect}
-          accept=".json,.csv"
+          accept=".json,.jsonl,.csv"
         />
       )}
 

@@ -10,10 +10,12 @@ use manifoldb::Database;
 use manifoldb_vector::types::Embedding;
 
 use super::types::{
-    CollectionInfo, Direction, EdgeTypeInfo, GraphResult, GraphStats, LabelInfo, Node, NodeVector,
-    TableResult, VectorConfigInfo, VectorSearchInput, VectorSearchResult,
+    CollectionInfo, Direction, EdgeTypeInfo, EmbeddingModelInfo, EmbeddingResult, GraphResult,
+    GraphStats, LabelInfo, Node, NodeVector, TableResult, TextSearchInput, VectorConfigInfo,
+    VectorSearchInput, VectorSearchResult,
 };
 use crate::convert;
+use crate::embedding::EmbeddingService;
 
 /// Root query type for the GraphQL schema.
 pub struct QueryRoot;
@@ -407,6 +409,142 @@ impl QueryRoot {
 
         Ok(results)
     }
+
+    // =========================================================================
+    // Embedding Queries
+    // =========================================================================
+
+    /// List available embedding models.
+    ///
+    /// Returns information about all models that can be used for text embedding.
+    async fn embedding_models(&self, ctx: &Context<'_>) -> Result<Vec<EmbeddingModelInfo>> {
+        let service = ctx.data::<Arc<EmbeddingService>>()?;
+        let models = service.list_models();
+
+        Ok(models
+            .into_iter()
+            .map(|m| EmbeddingModelInfo {
+                id: m.id.to_string(),
+                name: m.name.to_string(),
+                dimension: m.dimension,
+                model_type: m.model_type.to_string(),
+            })
+            .collect())
+    }
+
+    /// Embed text into a vector using the specified model.
+    ///
+    /// The model is lazy-loaded on first use. If no model is specified,
+    /// uses the server's default model (jina-embeddings-v2-small-en).
+    async fn embed(
+        &self,
+        ctx: &Context<'_>,
+        text: String,
+        model: Option<String>,
+    ) -> Result<EmbeddingResult> {
+        let service = ctx.data::<Arc<EmbeddingService>>()?;
+        let model_id = model.as_deref().unwrap_or_else(|| service.default_model());
+
+        let embedding = service
+            .encode(&text, model_id)
+            .map_err(|e| async_graphql::Error::new(format!("Embedding failed: {}", e)))?;
+
+        let dimension = embedding.len() as i32;
+
+        Ok(EmbeddingResult {
+            text,
+            embedding: embedding.into_iter().map(|v| v as f64).collect(),
+            dimension,
+            model: model_id.to_string(),
+        })
+    }
+
+    /// Search for similar vectors using text (embeds the query automatically).
+    ///
+    /// This is a convenience method that combines embedding and search.
+    /// The query text is embedded using the model from the vector config,
+    /// or the input override, or the server default.
+    ///
+    /// Model selection priority:
+    /// 1. `input.model` - explicit user override
+    /// 2. Vector config's `embedding_model` - model used when creating the collection
+    /// 3. Server default model
+    async fn search_by_text(
+        &self,
+        ctx: &Context<'_>,
+        collection: String,
+        input: TextSearchInput,
+    ) -> Result<Vec<VectorSearchResult>> {
+        use manifoldb::vector::search_named_vector_index;
+
+        let db = ctx.data::<Arc<Database>>()?;
+        let service = ctx.data::<Arc<EmbeddingService>>()?;
+
+        let tx = db.begin_read()?;
+
+        // Get collection to look up the vector config's embedding model
+        let coll_name = CollectionName::new(&collection)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
+        let coll = CollectionManager::get(&tx, &coll_name)
+            .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
+            .ok_or_else(|| {
+                async_graphql::Error::new(format!("Collection '{}' not found", collection))
+            })?;
+
+        // Get the vector config's embedding model
+        let vector_config = coll.vectors().get(&input.vector_name);
+        let config_model = vector_config.and_then(|c| c.embedding_model.as_deref());
+
+        // Determine which model to use: input override > config model > server default
+        let model_id = input
+            .model
+            .as_deref()
+            .or(config_model)
+            .unwrap_or_else(|| service.default_model());
+
+        // Embed the query text
+        let query_vector = service
+            .encode(&input.query_text, model_id)
+            .map_err(|e| async_graphql::Error::new(format!("Embedding failed: {}", e)))?;
+
+        // Create embedding for search
+        let query_embedding = Embedding::new(query_vector)
+            .map_err(|e| async_graphql::Error::new(format!("Invalid query vector: {}", e)))?;
+
+        let limit = input.limit.unwrap_or(10) as usize;
+        let offset = input.offset.unwrap_or(0) as usize;
+
+        // Search using the HNSW index
+        let results = search_named_vector_index(
+            &tx,
+            &collection,
+            &input.vector_name,
+            &query_embedding,
+            limit + offset,
+            None,
+        )
+        .map_err(|e| async_graphql::Error::new(format!("Search failed: {}", e)))?;
+
+        // Apply offset and convert to GraphQL results
+        let threshold = input.score_threshold.map(|t| t as f32);
+
+        let search_results: Vec<VectorSearchResult> = results
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .filter(|r| threshold.is_none_or(|t| r.distance <= t))
+            .map(|result| {
+                let score = 1.0 / (1.0 + result.distance as f64);
+                VectorSearchResult {
+                    id: ID(result.entity_id.as_u64().to_string()),
+                    score,
+                    payload: None,
+                }
+            })
+            .collect();
+
+        Ok(search_results)
+    }
 }
 
 /// Helper function to get collection info.
@@ -431,6 +569,7 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
                 vector_type,
                 dimension: config.dimension().map(|d| d as i32),
                 distance_metric: convert::distance_to_graphql(&config.distance),
+                embedding_model: config.embedding_model.clone(),
             }
         })
         .collect();
