@@ -259,6 +259,12 @@ export function clusterPoints(
   const labels = new Map<string, number>()
   const centroids = new Map<number, { x: number; y: number }>()
 
+  // Build point lookup map for O(1) access during centroid calculation
+  const pointById = new Map<string, ProjectedPoint>()
+  for (const point of points) {
+    pointById.set(point.id, point)
+  }
+
   // Assign points to clusters
   for (let i = 0; i < points.length; i++) {
     const clusterId = clusterLabels[i]
@@ -272,11 +278,11 @@ export function clusterPoints(
     clusters.get(clusterId)!.push(pointId)
   }
 
-  // Calculate cluster centroids
+  // Calculate cluster centroids using O(1) lookups
   for (const [clusterId, memberIds] of clusters) {
     let sumX = 0, sumY = 0
     for (const memberId of memberIds) {
-      const point = points.find(p => p.id === memberId)
+      const point = pointById.get(memberId)
       if (point) {
         sumX += point.x
         sumY += point.y
