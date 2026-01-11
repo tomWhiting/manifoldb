@@ -6,6 +6,7 @@ import { OverviewPanel } from '../sidebar/OverviewPanel'
 import { HistoryPanel } from '../sidebar/HistoryPanel'
 import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { QueryPanel } from '../sidebar/QueryPanel'
+import { ImportExportPanel } from '../sidebar/ImportExportPanel'
 import { QueryPane } from './QueryPane'
 import { SplitPaneLayout } from './SplitPaneLayout'
 import { useAppStore } from '../../stores/app-store'
@@ -80,6 +81,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'collections') {
     return <CollectionsPanel />
+  }
+
+  if (activeSidebarSection === 'import-export') {
+    return <ImportExportPanel />
   }
 
   if (activeSidebarSection === 'query') {
