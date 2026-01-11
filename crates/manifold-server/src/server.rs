@@ -9,6 +9,7 @@ use axum::{
     Extension, Router,
 };
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::info;
 
 use crate::{create_schema, AppSchema, EmbeddingService, PubSub};
@@ -63,11 +64,12 @@ pub async fn run(database_path: &str, host: &str, port: u16) -> Result<()> {
     // Create GraphQL schema
     let schema = create_schema(db, pubsub, embedding);
 
-    // Build router
+    // Build router with 100MB body limit for large backup imports
     let app = Router::new()
         .route("/graphql", get(graphql_playground).post(graphql_handler))
         .route_service("/graphql/ws", GraphQLSubscription::new(schema.clone()))
         .layer(Extension(schema))
+        .layer(RequestBodyLimitLayer::new(100 * 1024 * 1024)) // 100 MB
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     // Start server

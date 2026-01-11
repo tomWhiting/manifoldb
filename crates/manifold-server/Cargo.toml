@@ -22,7 +22,7 @@ async-graphql-axum = "7"
 # HTTP Server
 axum = { version = "0.8", features = ["ws"] }
 tokio.workspace = true
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "limit"] }
 
 # Serialization
 serde.workspace = true

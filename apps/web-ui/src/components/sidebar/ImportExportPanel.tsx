@@ -34,7 +34,7 @@ import {
   type ExportOptions,
 } from '../../lib/export-utils'
 
-type ImportStep = 'select' | 'configure' | 'progress' | 'result'
+type ImportStep = 'select' | 'configure' | 'confirm-backup' | 'progress' | 'result'
 
 interface FileDropZoneProps {
   onFileSelect: (file: File) => void
@@ -134,22 +134,26 @@ interface ImportResultDisplayProps {
 
 function ImportResultDisplay({ result, onReset }: ImportResultDisplayProps) {
   const hasErrors = result.errors.length > 0
+  const hasData = result.stats.successfulNodes > 0 || result.stats.successfulEdges > 0
+  const isFailed = hasErrors && !hasData
   const [showErrors, setShowErrors] = useState(false)
 
   return (
     <div className="space-y-4">
       <div className={`
         flex items-center gap-2 p-3 rounded-lg
-        ${hasErrors ? 'bg-yellow-500/10 border border-yellow-500/20' : 'bg-green-500/10 border border-green-500/20'}
+        ${isFailed ? 'bg-red-500/10 border border-red-500/20' : hasErrors ? 'bg-yellow-500/10 border border-yellow-500/20' : 'bg-green-500/10 border border-green-500/20'}
       `}>
-        {hasErrors ? (
+        {isFailed ? (
+          <AlertCircle size={20} className="text-red-400 flex-shrink-0" />
+        ) : hasErrors ? (
           <AlertCircle size={20} className="text-yellow-400 flex-shrink-0" />
         ) : (
           <CheckCircle size={20} className="text-green-400 flex-shrink-0" />
         )}
         <div className="flex-1">
-          <p className={`text-sm font-medium ${hasErrors ? 'text-yellow-300' : 'text-green-300'}`}>
-            {hasErrors ? 'Import completed with warnings' : 'Import successful'}
+          <p className={`text-sm font-medium ${isFailed ? 'text-red-300' : hasErrors ? 'text-yellow-300' : 'text-green-300'}`}>
+            {isFailed ? 'Import failed' : hasErrors ? 'Import completed with warnings' : 'Import successful'}
           </p>
         </div>
       </div>
@@ -435,6 +439,13 @@ function ImportSection() {
     rows: [],
   })
 
+  // Backup-specific state
+  const [backupInfo, setBackupInfo] = useState<{
+    entityCount: number
+    edgeCount: number
+    format: string
+  } | null>(null)
+
   const runJsonImport = useCallback(async (content: string) => {
     setStep('progress')
     try {
@@ -527,9 +538,22 @@ function ImportSection() {
         setCsvPreview(preview)
         setStep('configure')
       } else if (isJsonl && isBackupFormat(content)) {
-        // JSONL backup format - restore directly
-        await runBackupRestore(content)
-      } else {
+        // JSONL backup format - analyze and show confirmation step
+        const lines = content.split('\n').filter(l => l.trim())
+        let entityCount = 0
+        let edgeCount = 0
+        for (const line of lines) {
+          try {
+            const record = JSON.parse(line)
+            if (record.type === 'entity') entityCount++
+            if (record.type === 'edge') edgeCount++
+          } catch {
+            // Skip malformed lines for preview
+          }
+        }
+        setBackupInfo({ entityCount, edgeCount, format: 'ManifoldDB Backup' })
+        setStep('confirm-backup')
+      } else if (isJsonl || isJson) {
         // For JSON, go straight to import
         await runJsonImport(content)
       }
@@ -586,6 +610,7 @@ function ImportSection() {
     setResult(null)
     setCsvColumns([])
     setCsvPreview({ headers: [], rows: [] })
+    setBackupInfo(null)
   }
 
   return (
@@ -635,6 +660,60 @@ function ImportSection() {
           >
             Import {csvDataType}
           </button>
+        </div>
+      )}
+
+      {step === 'confirm-backup' && selectedFile && backupInfo && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileJson size={16} className="text-text-muted" />
+              <span className="text-sm text-text-primary truncate max-w-[150px]">
+                {selectedFile.name}
+              </span>
+              <span className="text-xs text-text-muted">
+                ({formatBytes(selectedFile.size)})
+              </span>
+            </div>
+            <button
+              onClick={handleReset}
+              className="p-1 hover:bg-bg-tertiary rounded text-text-muted hover:text-text-primary"
+            >
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="bg-bg-tertiary rounded-lg p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle size={16} className="text-green-400" />
+              <span className="text-sm text-text-primary">Valid {backupInfo.format}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="bg-bg-secondary rounded p-2">
+                <p className="text-text-muted text-xs">Entities</p>
+                <p className="text-text-primary font-medium">{backupInfo.entityCount.toLocaleString()}</p>
+              </div>
+              <div className="bg-bg-secondary rounded p-2">
+                <p className="text-text-muted text-xs">Edges</p>
+                <p className="text-text-primary font-medium">{backupInfo.edgeCount.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleReset}
+              className="flex-1 py-2 px-4 bg-bg-tertiary hover:bg-border text-text-secondary text-sm rounded transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => runBackupRestore(fileContent)}
+              className="flex-1 py-2 px-4 bg-accent hover:bg-accent-hover text-white text-sm rounded transition-colors"
+            >
+              Import Backup
+            </button>
+          </div>
         </div>
       )}
 
