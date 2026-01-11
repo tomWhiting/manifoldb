@@ -1,6 +1,7 @@
 import { useCallback, useRef, useEffect } from 'react'
 import { toast } from 'sonner'
 import { useAppStore } from '../stores/app-store'
+import { useHistoryStore } from '../stores/history-store'
 import { executeCypherQuery, executeSqlQuery } from '../lib/graphql-client'
 import type { QueryError } from '../types'
 
@@ -127,6 +128,7 @@ export function useQueryExecution(): UseQueryExecutionReturn {
   const activeTabId = useAppStore((s) => s.activeTabId)
   const setTabResult = useAppStore((s) => s.setTabResult)
   const setTabExecuting = useAppStore((s) => s.setTabExecuting)
+  const addHistoryEntry = useHistoryStore((s) => s.addEntry)
 
   const abortControllerRef = useRef<AbortController | null>(null)
   const activeTab = tabs.find((t) => t.id === activeTabId)
@@ -163,12 +165,15 @@ export function useQueryExecution(): UseQueryExecutionReturn {
     // Determine which executor to use based on language
     const language = activeTab.language
     const executeQuery = language === 'sql' ? executeSqlQuery : executeCypherQuery
+    const startTime = Date.now()
 
     executeQuery(query, { signal: controller.signal })
       .then((result) => {
         if (controller.signal.aborted) {
           return
         }
+
+        const executionTime = Date.now() - startTime
 
         if (result.error) {
           const formattedMessage = formatError(result.error)
@@ -177,7 +182,27 @@ export function useQueryExecution(): UseQueryExecutionReturn {
             toast.error('Query failed', {
               description: formattedMessage,
             })
+
+            // Record failed query in history
+            addHistoryEntry({
+              query,
+              language,
+              timestamp: Date.now(),
+              executionTime,
+              status: 'error',
+              errorMessage: formattedMessage,
+            })
           }
+        } else {
+          // Record successful query in history
+          addHistoryEntry({
+            query,
+            language,
+            timestamp: Date.now(),
+            executionTime: result.executionTime ?? executionTime,
+            status: 'success',
+            rowCount: result.rowCount,
+          })
         }
 
         setTabResult(activeTabId, result)
@@ -190,7 +215,7 @@ export function useQueryExecution(): UseQueryExecutionReturn {
           abortControllerRef.current = null
         }
       })
-  }, [activeTab, activeTabId, setTabResult, setTabExecuting])
+  }, [activeTab, activeTabId, setTabResult, setTabExecuting, addHistoryEntry])
 
   const cancel = useCallback(() => {
     if (abortControllerRef.current) {
