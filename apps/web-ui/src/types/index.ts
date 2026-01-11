@@ -116,3 +116,27 @@ export interface HistoryEntry {
   errorMessage?: string
   rowCount?: number
 }
+
+// Vector Collection Types
+export type VectorType = 'Dense' | 'Sparse' | 'Multi' | 'Binary'
+
+export type DistanceMetric = 'Cosine' | 'DotProduct' | 'Euclidean' | 'Manhattan' | 'Chebyshev' | 'Hamming'
+
+export interface VectorConfigInfo {
+  name: string
+  vectorType: VectorType
+  dimension: number | null
+  distanceMetric: DistanceMetric
+}
+
+export interface CollectionInfo {
+  name: string
+  vectors: VectorConfigInfo[]
+  pointCount: number
+}
+
+export interface VectorSearchResult {
+  id: string
+  score: number
+  payload: Record<string, unknown> | null
+}

@@ -8,6 +8,7 @@ import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
 import { OverviewPanel } from '../sidebar/OverviewPanel'
 import { HistoryPanel } from '../sidebar/HistoryPanel'
+import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { useQueryExecution } from '../../hooks/useQueryExecution'
@@ -102,6 +103,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'history') {
     return <HistoryPanel />
+  }
+
+  if (activeSidebarSection === 'collections') {
+    return <CollectionsPanel />
   }
 
   return <QueryWorkspace />
