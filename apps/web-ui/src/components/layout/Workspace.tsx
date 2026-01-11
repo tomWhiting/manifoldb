@@ -1,5 +1,6 @@
+import { useEffect } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
-import { Play } from 'lucide-react'
+import { Play, Square } from 'lucide-react'
 import { QueryTabs } from '../editor/QueryTabs'
 import { QueryEditor } from '../editor/QueryEditor'
 import { UnifiedResultView } from '../result-views/UnifiedResultView'
@@ -7,71 +8,64 @@ import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
-import { graphqlClient, CYPHER_QUERY } from '../../lib/graphql-client'
+import { useQueryExecution } from '../../hooks/useQueryExecution'
 
 function QueryWorkspace() {
   const tabs = useAppStore((s) => s.tabs)
   const activeTabId = useAppStore((s) => s.activeTabId)
-  const setTabResult = useAppStore((s) => s.setTabResult)
-  const setTabExecuting = useAppStore((s) => s.setTabExecuting)
-
   const activeTab = tabs.find((t) => t.id === activeTabId)
 
-  const handleRunQuery = async () => {
-    if (!activeTab || !activeTabId) return
+  const { execute, cancel, isExecuting } = useQueryExecution()
 
-    setTabExecuting(activeTabId, true)
-    const startTime = performance.now()
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0
+      const modKey = isMac ? e.metaKey : e.ctrlKey
 
-    try {
-      const result = await graphqlClient
-        .query(CYPHER_QUERY, { query: activeTab.content })
-        .toPromise()
-
-      const executionTime = performance.now() - startTime
-
-      if (result.error) {
-        console.error('Query error:', result.error)
-        setTabResult(activeTabId, {
-          raw: { error: result.error.message },
-          executionTime,
-        })
-      } else {
-        const data = result.data?.cypher
-        setTabResult(activeTabId, {
-          nodes: data?.nodes ?? [],
-          edges: data?.edges ?? [],
-          raw: data,
-          executionTime,
-          rowCount: (data?.nodes?.length ?? 0) + (data?.edges?.length ?? 0),
-        })
+      if (modKey && e.key === 'Enter') {
+        e.preventDefault()
+        if (!isExecuting) {
+          execute()
+        }
       }
-    } catch (err) {
-      console.error('Query failed:', err)
-      setTabResult(activeTabId, {
-        raw: { error: String(err) },
-        executionTime: performance.now() - startTime,
-      })
-    } finally {
-      setTabExecuting(activeTabId, false)
+
+      if (modKey && e.key === '.') {
+        e.preventDefault()
+        if (isExecuting) {
+          cancel()
+        }
+      }
     }
-  }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [execute, cancel, isExecuting])
 
   return (
     <div className="flex flex-col h-full">
-      {/* Query tabs with run button */}
+      {/* Query tabs with run/cancel button */}
       <div className="flex items-center border-b border-border">
         <QueryTabs />
         <div className="flex-1" />
         <div className="px-2">
-          <IconButton
-            icon={<Play size={16} className="fill-current" />}
-            onClick={handleRunQuery}
-            tooltip="Run query (Cmd+Enter)"
-            variant="default"
-            disabled={activeTab?.isExecuting}
-            className="bg-accent hover:bg-accent-hover text-white"
-          />
+          {isExecuting ? (
+            <IconButton
+              icon={<Square size={14} className="fill-current" />}
+              onClick={cancel}
+              tooltip="Cancel query (Cmd+.)"
+              variant="default"
+              className="bg-red-600 hover:bg-red-700 text-white"
+            />
+          ) : (
+            <IconButton
+              icon={<Play size={16} className="fill-current" />}
+              onClick={execute}
+              tooltip="Run query (Cmd+Enter)"
+              variant="default"
+              disabled={!activeTab}
+              className="bg-accent hover:bg-accent-hover text-white"
+            />
+          )}
         </div>
       </div>
 
