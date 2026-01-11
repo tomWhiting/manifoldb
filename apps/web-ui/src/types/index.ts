@@ -11,6 +11,7 @@ export type SidebarSection =
   | 'modules'
   | 'collections'
   | 'schema'
+  | 'sql-builder'
   | 'import-export'
   | 'logs'
   | 'settings'

@@ -11,6 +11,7 @@ import {
   Bot,
   PanelLeftClose,
   PanelLeft,
+  TableProperties,
 } from 'lucide-react'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
@@ -24,6 +25,7 @@ interface NavItem {
 
 const topNavItems: NavItem[] = [
   { id: 'query', icon: Play, label: 'Query' },
+  { id: 'sql-builder', icon: TableProperties, label: 'SQL Builder' },
   { id: 'history', icon: History, label: 'History' },
   { id: 'overview', icon: LayoutDashboard, label: 'Overview' },
   { id: 'modules', icon: Package, label: 'Query Modules' },

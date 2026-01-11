@@ -8,6 +8,7 @@ import { CollectionsPanel } from '../sidebar/CollectionsPanel'
 import { QueryPanel } from '../sidebar/QueryPanel'
 import { ImportExportPanel } from '../sidebar/ImportExportPanel'
 import { LogsPanel } from '../sidebar/LogsPanel'
+import { SQLBuilder } from '../sql-builder'
 import { QueryPane } from './QueryPane'
 import { SplitPaneLayout } from './SplitPaneLayout'
 import { useAppStore } from '../../stores/app-store'
@@ -90,6 +91,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'logs') {
     return <LogsPanel />
+  }
+
+  if (activeSidebarSection === 'sql-builder') {
+    return <SQLBuilder />
   }
 
   if (activeSidebarSection === 'query') {
