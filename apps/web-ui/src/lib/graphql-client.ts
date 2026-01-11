@@ -8,7 +8,7 @@ import type { Client } from 'urql'
 import { createClient as createWSClient } from 'graphql-ws'
 import type { Client as WSClient } from 'graphql-ws'
 import { print } from 'graphql'
-import type { ConnectionStatus, ConnectionError } from '../types'
+import type { ConnectionStatus, ConnectionError, QueryError, QueryResult, GraphNode, GraphEdge } from '../types'
 
 const DEFAULT_HTTP_URL = 'http://localhost:6010/graphql'
 const DEFAULT_WS_URL = 'ws://localhost:6010/graphql/ws'
@@ -292,3 +292,140 @@ export const GRAPH_CHANGES_SUBSCRIPTION = `
     }
   }
 `
+
+interface CypherResponse {
+  cypher: {
+    nodes: GraphNode[]
+    edges: GraphEdge[]
+  }
+}
+
+function parseGraphQLError(error: unknown): QueryError {
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase()
+
+    if (error.name === 'AbortError' || message.includes('abort')) {
+      return { type: 'cancelled', message: 'Query cancelled' }
+    }
+
+    if (message.includes('timeout')) {
+      return { type: 'timeout', message: 'Query timed out' }
+    }
+
+    if (message.includes('network') || message.includes('fetch') || message.includes('failed to fetch')) {
+      return { type: 'network', message: 'Network error: Unable to reach server' }
+    }
+
+    if (message.includes('syntax') || message.includes('parse')) {
+      const lineMatch = error.message.match(/line\s*(\d+)/i)
+      const colMatch = error.message.match(/column\s*(\d+)/i)
+      return {
+        type: 'syntax',
+        message: error.message,
+        line: lineMatch ? parseInt(lineMatch[1], 10) : undefined,
+        column: colMatch ? parseInt(colMatch[1], 10) : undefined,
+      }
+    }
+
+    return { type: 'execution', message: error.message }
+  }
+
+  if (typeof error === 'string') {
+    return { type: 'unknown', message: error }
+  }
+
+  return { type: 'unknown', message: 'An unknown error occurred' }
+}
+
+function parseUrqlError(error: { message: string; graphQLErrors?: Array<{ message: string; extensions?: Record<string, unknown> }> }): QueryError {
+  if (error.graphQLErrors && error.graphQLErrors.length > 0) {
+    const gqlError = error.graphQLErrors[0]
+    const message = gqlError.message.toLowerCase()
+
+    if (message.includes('syntax') || message.includes('parse')) {
+      const lineMatch = gqlError.message.match(/line\s*(\d+)/i)
+      const colMatch = gqlError.message.match(/column\s*(\d+)/i)
+      return {
+        type: 'syntax',
+        message: gqlError.message,
+        line: lineMatch ? parseInt(lineMatch[1], 10) : undefined,
+        column: colMatch ? parseInt(colMatch[1], 10) : undefined,
+        details: error.graphQLErrors.slice(1).map(e => e.message).join('\n') || undefined,
+      }
+    }
+
+    return {
+      type: 'execution',
+      message: gqlError.message,
+      details: error.graphQLErrors.slice(1).map(e => e.message).join('\n') || undefined,
+    }
+  }
+
+  return parseGraphQLError(new Error(error.message))
+}
+
+export interface ExecuteQueryOptions {
+  signal?: AbortSignal
+}
+
+export async function executeCypherQuery(
+  query: string,
+  options?: ExecuteQueryOptions
+): Promise<QueryResult> {
+  const startTime = performance.now()
+  const client = getClient()
+
+  try {
+    if (options?.signal?.aborted) {
+      return {
+        executionTime: 0,
+        error: { type: 'cancelled', message: 'Query cancelled' },
+      }
+    }
+
+    const resultPromise = client
+      .query<CypherResponse>(CYPHER_QUERY, { query })
+      .toPromise()
+
+    const abortPromise = options?.signal
+      ? new Promise<never>((_, reject) => {
+          options.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Query cancelled', 'AbortError'))
+          })
+        })
+      : null
+
+    const result = abortPromise
+      ? await Promise.race([resultPromise, abortPromise])
+      : await resultPromise
+
+    const executionTime = performance.now() - startTime
+
+    if (result.error) {
+      return {
+        executionTime,
+        error: parseUrqlError(result.error),
+        raw: { error: result.error },
+      }
+    }
+
+    const data = result.data?.cypher
+    const nodes = data?.nodes ?? []
+    const edges = data?.edges ?? []
+
+    return {
+      nodes,
+      edges,
+      raw: data,
+      executionTime,
+      rowCount: nodes.length + edges.length,
+    }
+  } catch (err) {
+    const executionTime = performance.now() - startTime
+    return {
+      executionTime,
+      error: parseGraphQLError(err),
+      raw: { error: String(err) },
+    }
+  }
+}

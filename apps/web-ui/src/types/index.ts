@@ -25,6 +25,7 @@ export interface QueryResult {
   raw?: unknown
   executionTime?: number
   rowCount?: number
+  error?: QueryError
 }
 
 export interface GraphNode {
@@ -61,4 +62,12 @@ export interface ConnectionError {
   code: string
   message: string
   timestamp: number
+}
+
+export interface QueryError {
+  type: 'syntax' | 'execution' | 'timeout' | 'cancelled' | 'network' | 'unknown'
+  message: string
+  line?: number
+  column?: number
+  details?: string
 }
