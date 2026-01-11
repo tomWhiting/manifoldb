@@ -445,6 +445,7 @@ export function SchemaEditor() {
                 onCreateLabel={handleCreateLabel}
                 onDeleteLabel={handleDeleteLabel}
                 isCreating={isCreatingLabel}
+                onStartCreate={() => setIsCreatingLabel(true)}
                 onCancelCreate={() => setIsCreatingLabel(false)}
                 isExecuting={isExecuting}
               />
@@ -485,6 +486,7 @@ export function SchemaEditor() {
                 onCreateRelationship={handleCreateRelationship}
                 onDeleteRelationship={handleDeleteRelationship}
                 isCreating={isCreatingRelationship}
+                onStartCreate={() => setIsCreatingRelationship(true)}
                 onCancelCreate={() => setIsCreatingRelationship(false)}
                 isExecuting={isExecuting}
               />

@@ -9,6 +9,7 @@ interface LabelEditorProps {
   onCreateLabel: (name: string) => void
   onDeleteLabel: (name: string) => void
   isCreating: boolean
+  onStartCreate: () => void
   onCancelCreate: () => void
   isExecuting: boolean
 }
@@ -20,6 +21,7 @@ export function LabelEditor({
   onCreateLabel,
   onDeleteLabel,
   isCreating,
+  onStartCreate,
   onCancelCreate,
   isExecuting,
 }: LabelEditorProps) {
@@ -159,8 +161,8 @@ export function LabelEditor({
         <div className="px-4 py-3 border-t border-border">
           <button
             onClick={() => {
-              onCancelCreate()
               setNewLabelName('')
+              onStartCreate()
             }}
             className="flex items-center gap-2 text-sm text-accent hover:underline"
           >

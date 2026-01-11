@@ -10,6 +10,7 @@ interface RelationshipEditorProps {
   onCreateRelationship: (name: string, sourceLabel: string, targetLabel: string) => void
   onDeleteRelationship: (name: string) => void
   isCreating: boolean
+  onStartCreate: () => void
   onCancelCreate: () => void
   isExecuting: boolean
 }
@@ -22,6 +23,7 @@ export function RelationshipEditor({
   onCreateRelationship,
   onDeleteRelationship,
   isCreating,
+  onStartCreate,
   onCancelCreate,
   isExecuting,
 }: RelationshipEditorProps) {
@@ -204,10 +206,10 @@ export function RelationshipEditor({
         <div className="px-4 py-3 border-t border-border">
           <button
             onClick={() => {
-              onCancelCreate()
               setNewRelName('')
               setNewRelSource(labels[0]?.name ?? '')
               setNewRelTarget(labels[0]?.name ?? '')
+              onStartCreate()
             }}
             disabled={labels.length === 0}
             className="flex items-center gap-2 text-sm text-accent hover:underline disabled:opacity-50 disabled:no-underline"
