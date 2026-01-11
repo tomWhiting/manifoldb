@@ -7,6 +7,7 @@ import { UnifiedResultView } from '../result-views/UnifiedResultView'
 import { SettingsPanel } from '../settings/SettingsPanel'
 import { SchemaPanel } from '../sidebar/SchemaPanel'
 import { OverviewPanel } from '../sidebar/OverviewPanel'
+import { HistoryPanel } from '../sidebar/HistoryPanel'
 import { IconButton } from '../shared/IconButton'
 import { useAppStore } from '../../stores/app-store'
 import { useQueryExecution } from '../../hooks/useQueryExecution'
@@ -97,6 +98,10 @@ export function Workspace() {
 
   if (activeSidebarSection === 'overview') {
     return <OverviewPanel />
+  }
+
+  if (activeSidebarSection === 'history') {
+    return <HistoryPanel />
   }
 
   return <QueryWorkspace />

@@ -104,3 +104,15 @@ export interface AppSettings {
   query: QuerySettings
   // Note: Theme is managed separately via app-store for backward compatibility
 }
+
+// History types
+export interface HistoryEntry {
+  id: string
+  query: string
+  language: 'cypher' | 'sql'
+  timestamp: number
+  executionTime?: number
+  status: 'success' | 'error'
+  errorMessage?: string
+  rowCount?: number
+}
