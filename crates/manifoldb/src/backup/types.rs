@@ -8,17 +8,12 @@ use serde::{Deserialize, Serialize};
 pub const BACKUP_FORMAT_VERSION: u32 = 1;
 
 /// Backup format identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackupFormat {
     /// JSON-lines format (one JSON object per line).
+    #[default]
     JsonLines,
-}
-
-impl Default for BackupFormat {
-    fn default() -> Self {
-        Self::JsonLines
-    }
 }
 
 /// Metadata about a backup file.

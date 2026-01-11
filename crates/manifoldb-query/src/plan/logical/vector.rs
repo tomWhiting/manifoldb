@@ -259,21 +259,16 @@ impl VectorDistanceNode {
 }
 
 /// Score combination method for hybrid search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScoreCombinationMethod {
     /// Weighted linear combination: `w1*s1 + w2*s2`
+    #[default]
     WeightedSum,
     /// Reciprocal Rank Fusion with configurable k parameter.
     ReciprocalRankFusion {
         /// RRF k parameter (typically 60).
         k_param: u32,
     },
-}
-
-impl Default for ScoreCombinationMethod {
-    fn default() -> Self {
-        Self::WeightedSum
-    }
 }
 
 impl ScoreCombinationMethod {

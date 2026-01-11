@@ -272,9 +272,10 @@ impl Default for InvertedIndexMeta {
 }
 
 /// Scoring function for sparse vector similarity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ScoringFunction {
     /// Dot product: sum of query_weight * doc_weight for matching tokens.
+    #[default]
     DotProduct,
     /// BM25-style scoring with length normalization.
     Bm25 {
@@ -283,12 +284,6 @@ pub enum ScoringFunction {
         /// BM25 b parameter (default: 0.75).
         b_times_100: u8,
     },
-}
-
-impl Default for ScoringFunction {
-    fn default() -> Self {
-        Self::DotProduct
-    }
 }
 
 impl ScoringFunction {

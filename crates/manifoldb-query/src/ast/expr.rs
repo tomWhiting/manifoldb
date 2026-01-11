@@ -894,21 +894,16 @@ impl HybridSearchComponent {
 }
 
 /// Combination method for hybrid vector search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HybridCombinationMethod {
     /// Weighted sum of distances: `w1*d1 + w2*d2`.
+    #[default]
     WeightedSum,
     /// Reciprocal Rank Fusion with k parameter.
     RRF {
         /// The k parameter (typically 60).
         k: u32,
     },
-}
-
-impl Default for HybridCombinationMethod {
-    fn default() -> Self {
-        Self::WeightedSum
-    }
 }
 
 /// A parameter reference in a query.

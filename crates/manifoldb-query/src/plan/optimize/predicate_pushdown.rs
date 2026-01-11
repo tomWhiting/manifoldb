@@ -579,60 +579,60 @@ impl PredicatePushdown {
     /// Collects column names referenced by an expression.
     fn collect_columns(&self, expr: &LogicalExpr) -> Vec<String> {
         let mut columns = Vec::new();
-        self.collect_columns_recursive(expr, &mut columns);
+        Self::collect_columns_recursive(expr, &mut columns);
         columns
     }
 
-    fn collect_columns_recursive(&self, expr: &LogicalExpr, columns: &mut Vec<String>) {
+    fn collect_columns_recursive(expr: &LogicalExpr, columns: &mut Vec<String>) {
         match expr {
             LogicalExpr::Column { name, .. } => {
                 columns.push(name.clone());
             }
             LogicalExpr::BinaryOp { left, right, .. } => {
-                self.collect_columns_recursive(left, columns);
-                self.collect_columns_recursive(right, columns);
+                Self::collect_columns_recursive(left, columns);
+                Self::collect_columns_recursive(right, columns);
             }
             LogicalExpr::UnaryOp { operand, .. } => {
-                self.collect_columns_recursive(operand, columns);
+                Self::collect_columns_recursive(operand, columns);
             }
             LogicalExpr::ScalarFunction { args, .. } => {
                 for arg in args {
-                    self.collect_columns_recursive(arg, columns);
+                    Self::collect_columns_recursive(arg, columns);
                 }
             }
             LogicalExpr::AggregateFunction { args, .. } => {
                 for arg in args {
-                    self.collect_columns_recursive(arg, columns);
+                    Self::collect_columns_recursive(arg, columns);
                 }
             }
             LogicalExpr::Case { operand, when_clauses, else_result } => {
                 if let Some(op) = operand {
-                    self.collect_columns_recursive(op, columns);
+                    Self::collect_columns_recursive(op, columns);
                 }
                 for (when_expr, then_expr) in when_clauses {
-                    self.collect_columns_recursive(when_expr, columns);
-                    self.collect_columns_recursive(then_expr, columns);
+                    Self::collect_columns_recursive(when_expr, columns);
+                    Self::collect_columns_recursive(then_expr, columns);
                 }
                 if let Some(else_expr) = else_result {
-                    self.collect_columns_recursive(else_expr, columns);
+                    Self::collect_columns_recursive(else_expr, columns);
                 }
             }
             LogicalExpr::Cast { expr, .. } => {
-                self.collect_columns_recursive(expr, columns);
+                Self::collect_columns_recursive(expr, columns);
             }
             LogicalExpr::Alias { expr, .. } => {
-                self.collect_columns_recursive(expr, columns);
+                Self::collect_columns_recursive(expr, columns);
             }
             LogicalExpr::InList { expr, list, .. } => {
-                self.collect_columns_recursive(expr, columns);
+                Self::collect_columns_recursive(expr, columns);
                 for item in list {
-                    self.collect_columns_recursive(item, columns);
+                    Self::collect_columns_recursive(item, columns);
                 }
             }
             LogicalExpr::Between { expr, low, high, .. } => {
-                self.collect_columns_recursive(expr, columns);
-                self.collect_columns_recursive(low, columns);
-                self.collect_columns_recursive(high, columns);
+                Self::collect_columns_recursive(expr, columns);
+                Self::collect_columns_recursive(low, columns);
+                Self::collect_columns_recursive(high, columns);
             }
             _ => {}
         }
@@ -641,22 +641,22 @@ impl PredicatePushdown {
     /// Collects table names from a plan.
     fn collect_tables(&self, plan: &LogicalPlan) -> Vec<String> {
         let mut tables = Vec::new();
-        self.collect_tables_recursive(plan, &mut tables);
+        Self::collect_tables_recursive(plan, &mut tables);
         tables
     }
 
-    fn collect_tables_recursive(&self, plan: &LogicalPlan, tables: &mut Vec<String>) {
+    fn collect_tables_recursive(plan: &LogicalPlan, tables: &mut Vec<String>) {
         match plan {
             LogicalPlan::Scan(node) => {
                 tables.push(node.alias.clone().unwrap_or_else(|| node.table_name.clone()));
             }
             LogicalPlan::Alias { alias, input } => {
                 tables.push(alias.clone());
-                self.collect_tables_recursive(input, tables);
+                Self::collect_tables_recursive(input, tables);
             }
             _ => {
                 for child in plan.children() {
-                    self.collect_tables_recursive(child, tables);
+                    Self::collect_tables_recursive(child, tables);
                 }
             }
         }
@@ -665,11 +665,11 @@ impl PredicatePushdown {
     /// Collects table references from an expression.
     fn collect_referenced_tables(&self, expr: &LogicalExpr) -> Vec<String> {
         let mut tables = Vec::new();
-        self.collect_expr_tables(expr, &mut tables);
+        Self::collect_expr_tables(expr, &mut tables);
         tables
     }
 
-    fn collect_expr_tables(&self, expr: &LogicalExpr, tables: &mut Vec<String>) {
+    fn collect_expr_tables(expr: &LogicalExpr, tables: &mut Vec<String>) {
         match expr {
             LogicalExpr::Column { qualifier, .. } => {
                 if let Some(t) = qualifier {
@@ -679,11 +679,11 @@ impl PredicatePushdown {
                 }
             }
             LogicalExpr::BinaryOp { left, right, .. } => {
-                self.collect_expr_tables(left, tables);
-                self.collect_expr_tables(right, tables);
+                Self::collect_expr_tables(left, tables);
+                Self::collect_expr_tables(right, tables);
             }
             LogicalExpr::UnaryOp { operand, .. } => {
-                self.collect_expr_tables(operand, tables);
+                Self::collect_expr_tables(operand, tables);
             }
             _ => {}
         }

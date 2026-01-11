@@ -23,9 +23,10 @@ use std::fmt;
 ///
 /// # Precedence
 /// NOT has highest precedence, then AND, then OR (like boolean logic).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum LabelExpression {
     /// No label constraint.
+    #[default]
     None,
     /// Single label: `:Person`.
     Single(Identifier),
@@ -128,12 +129,6 @@ impl LabelExpression {
                 .collect(),
             Self::Or(_) | Self::Not(_) => vec![],
         }
-    }
-}
-
-impl Default for LabelExpression {
-    fn default() -> Self {
-        Self::None
     }
 }
 

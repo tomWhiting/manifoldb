@@ -5,20 +5,15 @@
 //! - `/*+ NO_CACHE */` - Skip caching for this query
 
 /// Cache hint extracted from a SQL query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CacheHint {
     /// Use default caching behavior.
+    #[default]
     Default,
     /// Force caching of the query result.
     Cache,
     /// Skip caching for this query.
     NoCache,
-}
-
-impl Default for CacheHint {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 /// Extract a cache hint from a SQL query string.

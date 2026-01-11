@@ -230,19 +230,19 @@ impl NodeSimilarity {
         tx: &T,
         label_filter: Option<&str>,
     ) -> GraphResult<Vec<EntityId>> {
-        let mut nodes = Vec::new();
-
-        if let Some(label) = label_filter {
+        let nodes = if let Some(label) = label_filter {
             // Use label index for filtering
             let label = manifoldb_core::Label::new(label);
-            nodes = NodeStore::find_by_label(tx, &label)?;
+            NodeStore::find_by_label(tx, &label)?
         } else {
             // Collect all nodes
+            let mut collected = Vec::new();
             NodeStore::for_each(tx, |entity| {
-                nodes.push(entity.id);
+                collected.push(entity.id);
                 true
             })?;
-        }
+            collected
+        };
 
         Ok(nodes)
     }

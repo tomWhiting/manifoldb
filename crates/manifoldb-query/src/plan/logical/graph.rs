@@ -726,9 +726,10 @@ impl GraphForeachNode {
 /// Weight specification for weighted shortest path algorithms.
 ///
 /// Specifies how edge weights should be calculated for Dijkstra's algorithm.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ShortestPathWeight {
     /// Unweighted (use BFS, all edges have weight 1).
+    #[default]
     Unweighted,
     /// Use a single edge property as the weight.
     Property {
@@ -741,12 +742,6 @@ pub enum ShortestPathWeight {
     Constant(f64),
     /// Use an expression to calculate the weight.
     Expression(LogicalExpr),
-}
-
-impl Default for ShortestPathWeight {
-    fn default() -> Self {
-        Self::Unweighted
-    }
 }
 
 /// A shortest path node for Cypher shortestPath()/allShortestPaths() pattern functions.

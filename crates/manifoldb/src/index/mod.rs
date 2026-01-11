@@ -43,10 +43,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Type of index, determining which filter operations it supports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IndexType {
     /// Equality index: supports `eq`, `ne`, `in` operators.
     /// Best for enum-like fields with a small number of distinct values.
+    #[default]
     Equality,
 
     /// Range index: supports `gt`, `gte`, `lt`, `lte`, `range` operators.
@@ -56,12 +57,6 @@ pub enum IndexType {
     /// Prefix index: supports `starts_with` operator.
     /// Best for file paths and names.
     Prefix,
-}
-
-impl Default for IndexType {
-    fn default() -> Self {
-        Self::Equality
-    }
 }
 
 /// Metadata about an index stored in the catalog.

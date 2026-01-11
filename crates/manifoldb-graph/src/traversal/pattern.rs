@@ -17,9 +17,10 @@ use crate::index::AdjacencyIndex;
 use crate::store::{EdgeStore, GraphResult};
 
 /// A filter for edges in a path step.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum StepFilter {
     /// Match any edge.
+    #[default]
     Any,
     /// Match edges of a specific type.
     EdgeType(EdgeType),
@@ -28,12 +29,6 @@ pub enum StepFilter {
     /// Custom filter with a predicate function.
     /// Note: This variant stores a descriptive string for debugging.
     Custom(String),
-}
-
-impl Default for StepFilter {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl StepFilter {

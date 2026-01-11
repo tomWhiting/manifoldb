@@ -393,11 +393,7 @@ pub fn load_node<E: StorageEngine>(
         connections.push(neighbors);
     }
 
-    Ok(Some(HnswNode {
-        entity_id,
-        max_layer: node_data.max_layer,
-        connections,
-    }))
+    Ok(Some(HnswNode { entity_id, max_layer: node_data.max_layer, connections }))
 }
 
 /// Delete a node from storage.
@@ -584,11 +580,7 @@ pub fn load_node_tx<T: Transaction>(
         connections.push(neighbors);
     }
 
-    Ok(Some(HnswNode {
-        entity_id,
-        max_layer: node_data.max_layer,
-        connections,
-    }))
+    Ok(Some(HnswNode { entity_id, max_layer: node_data.max_layer, connections }))
 }
 
 /// Delete a node within an existing transaction.

@@ -302,11 +302,7 @@ impl MutationRoot {
             ));
         }
 
-        let ddl = format!(
-            "CREATE COLLECTION {} ({})",
-            input.name,
-            vector_defs.join(", ")
-        );
+        let ddl = format!("CREATE COLLECTION {} ({})", input.name, vector_defs.join(", "));
 
         // Execute the DDL
         db.query(&ddl)?;
@@ -356,7 +352,9 @@ impl MutationRoot {
     ) -> Result<ID> {
         use manifoldb::vector::update_point_vector_in_index;
         use manifoldb_vector::types::VectorData;
-        use manifoldb_vector::{encode_vector_value, encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS};
+        use manifoldb_vector::{
+            encode_vector_value, encoding::encode_collection_vector_key, TABLE_COLLECTION_VECTORS,
+        };
 
         let db = ctx.data::<Arc<Database>>()?;
 
@@ -381,7 +379,9 @@ impl MutationRoot {
 
         let coll = CollectionManager::get(&tx, &coll_name)
             .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
-            .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", collection)))?;
+            .ok_or_else(|| {
+                async_graphql::Error::new(format!("Collection '{}' not found", collection))
+            })?;
 
         let collection_id = coll.id();
         let entity_id = manifoldb::EntityId::new(point_id);
@@ -400,12 +400,20 @@ impl MutationRoot {
                 tx.storage_mut()
                     .map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?
                     .put(TABLE_COLLECTION_VECTORS, &key, &value)
-                    .map_err(|e| async_graphql::Error::new(format!("Failed to store vector: {}", e)))?;
+                    .map_err(|e| {
+                        async_graphql::Error::new(format!("Failed to store vector: {}", e))
+                    })?;
             }
 
             // Update HNSW index if it exists
-            update_point_vector_in_index(&mut tx, &collection, &vec_input.name, point_id_core, &vector)
-                .map_err(|e| async_graphql::Error::new(format!("Failed to update index: {}", e)))?;
+            update_point_vector_in_index(
+                &mut tx,
+                &collection,
+                &vec_input.name,
+                point_id_core,
+                &vector,
+            )
+            .map_err(|e| async_graphql::Error::new(format!("Failed to update index: {}", e)))?;
         }
 
         tx.commit()?;

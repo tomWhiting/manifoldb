@@ -4546,13 +4546,16 @@ fn execute_create_collection<T: Transaction>(
         // Parse index method
         let index_config = match vec_def.using.as_ref().map(|u| u.to_lowercase()).as_deref() {
             Some("hnsw") => {
-                let mut hnsw_params = HnswParams::default();
-                if let Some(m_val) = m {
-                    hnsw_params = HnswParams::new(m_val);
-                }
-                if let Some(ef) = ef_construction {
-                    hnsw_params = hnsw_params.with_ef_construction(ef);
-                }
+                let hnsw_params = if let Some(m_val) = m {
+                    HnswParams::new(m_val)
+                } else {
+                    HnswParams::default()
+                };
+                let hnsw_params = if let Some(ef) = ef_construction {
+                    hnsw_params.with_ef_construction(ef)
+                } else {
+                    hnsw_params
+                };
                 IndexConfig::hnsw(hnsw_params)
             }
             Some("inverted") => IndexConfig::inverted(InvertedIndexParams::default()),

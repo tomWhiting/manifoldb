@@ -206,7 +206,9 @@ impl QueryRoot {
         // Verify collection exists
         CollectionManager::get(&tx, &coll_name)
             .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
-            .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", collection)))?;
+            .ok_or_else(|| {
+                async_graphql::Error::new(format!("Collection '{}' not found", collection))
+            })?;
 
         // Apply offset and convert to GraphQL results
         let threshold = input.score_threshold.map(|t| t as f32);
@@ -215,7 +217,7 @@ impl QueryRoot {
             .into_iter()
             .skip(offset)
             .take(limit)
-            .filter(|r| threshold.map_or(true, |t| r.distance <= t))
+            .filter(|r| threshold.is_none_or(|t| r.distance <= t))
             .map(|result| {
                 // Convert distance to score (lower distance = higher score)
                 let score = 1.0 / (1.0 + result.distance as f64);
@@ -262,26 +264,29 @@ impl QueryRoot {
 
         // If collection is specified, get the collection ID
         let collection_info = if let Some(ref coll_name) = collection {
-            let name = CollectionName::new(coll_name)
-                .map_err(|e| async_graphql::Error::new(format!("Invalid collection name: {}", e)))?;
+            let name = CollectionName::new(coll_name).map_err(|e| {
+                async_graphql::Error::new(format!("Invalid collection name: {}", e))
+            })?;
             let coll = CollectionManager::get(&tx, &name)
                 .map_err(|e| async_graphql::Error::new(format!("Failed to get collection: {}", e)))?
-                .ok_or_else(|| async_graphql::Error::new(format!("Collection '{}' not found", coll_name)))?;
+                .ok_or_else(|| {
+                    async_graphql::Error::new(format!("Collection '{}' not found", coll_name))
+                })?;
             Some((coll.id(), coll_name.clone()))
         } else {
             None
         };
 
         // Get storage reference for range scans
-        let storage = tx.storage_ref()
+        let storage = tx
+            .storage_ref()
             .map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?;
 
         // Process each node ID
         for node_id in node_ids {
-            let entity_id = EntityId::new(
-                node_id.as_str().parse::<u64>()
-                    .map_err(|_| async_graphql::Error::new(format!("Invalid node ID: {}", node_id.as_str())))?
-            );
+            let entity_id = EntityId::new(node_id.as_str().parse::<u64>().map_err(|_| {
+                async_graphql::Error::new(format!("Invalid node ID: {}", node_id.as_str()))
+            })?);
 
             if let Some((collection_id, ref coll_name)) = collection_info {
                 // Get vectors for specific collection
@@ -297,14 +302,18 @@ impl QueryRoot {
                     end
                 };
 
-                let mut cursor = storage.range(
-                    TABLE_COLLECTION_VECTORS,
-                    Bound::Included(prefix.as_slice()),
-                    Bound::Excluded(prefix_end.as_slice()),
-                ).map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?;
+                let mut cursor = storage
+                    .range(
+                        TABLE_COLLECTION_VECTORS,
+                        Bound::Included(prefix.as_slice()),
+                        Bound::Excluded(prefix_end.as_slice()),
+                    )
+                    .map_err(|e| async_graphql::Error::new(format!("Storage error: {}", e)))?;
 
-                while let Some((key, value)) = cursor.next()
-                    .map_err(|e| async_graphql::Error::new(format!("Cursor error: {}", e)))? {
+                while let Some((key, value)) = cursor
+                    .next()
+                    .map_err(|e| async_graphql::Error::new(format!("Cursor error: {}", e)))?
+                {
                     if let Some(decoded_key) = decode_collection_vector_key(&key) {
                         // If vector_name is specified, filter by it
                         if let Some(ref vn) = vector_name {
@@ -337,8 +346,9 @@ impl QueryRoot {
             } else {
                 // No collection specified - scan all collections for this entity
                 // This is more expensive but provides a complete picture
-                let collection_names = db.list_collections()
-                    .map_err(|e| async_graphql::Error::new(format!("Failed to list collections: {}", e)))?;
+                let collection_names = db.list_collections().map_err(|e| {
+                    async_graphql::Error::new(format!("Failed to list collections: {}", e))
+                })?;
 
                 for coll_name in collection_names {
                     if let Ok(name) = CollectionName::new(&coll_name) {
@@ -363,7 +373,9 @@ impl QueryRoot {
                             ) {
                                 while let Ok(Some((key, value))) = cursor.next() {
                                     if let Some(_decoded_key) = decode_collection_vector_key(&key) {
-                                        if let Ok((vector_data, vec_name)) = decode_vector_value(&value) {
+                                        if let Ok((vector_data, vec_name)) =
+                                            decode_vector_value(&value)
+                                        {
                                             // Filter by vector_name if specified
                                             if let Some(ref vn) = vector_name {
                                                 if vec_name != *vn {
@@ -376,7 +388,10 @@ impl QueryRoot {
                                                     node_id: node_id.clone(),
                                                     collection: Some(coll_name.clone()),
                                                     vector_name: Some(vec_name),
-                                                    values: dense.iter().map(|v| *v as f64).collect(),
+                                                    values: dense
+                                                        .iter()
+                                                        .map(|v| *v as f64)
+                                                        .collect(),
                                                     dimension: dense.len() as i32,
                                                 });
                                             }
@@ -400,8 +415,8 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
     use std::ops::Bound;
 
     let tx = db.begin_read()?;
-    let coll_name = CollectionName::new(name)
-        .map_err(|e| manifoldb::Error::Collection(e.to_string()))?;
+    let coll_name =
+        CollectionName::new(name).map_err(|e| manifoldb::Error::Collection(e.to_string()))?;
     let collection = CollectionManager::get(&tx, &coll_name)
         .map_err(|e| manifoldb::Error::Collection(e.to_string()))?
         .ok_or_else(|| manifoldb::Error::Collection(format!("Collection '{}' not found", name)))?;
@@ -434,7 +449,7 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
         end
     };
 
-    let storage = tx.storage_ref().map_err(|e| manifoldb::Error::Transaction(e))?;
+    let storage = tx.storage_ref().map_err(manifoldb::Error::Transaction)?;
     let mut cursor = {
         use manifoldb_storage::Transaction;
         storage
@@ -443,20 +458,18 @@ fn get_collection_info(db: &Database, name: &str) -> manifoldb::Result<Collectio
                 Bound::Included(prefix.as_slice()),
                 Bound::Excluded(prefix_end.as_slice()),
             )
-            .map_err(|e| manifoldb::Error::Storage(e))?
+            .map_err(manifoldb::Error::Storage)?
     };
 
     let mut point_count = 0;
     while {
         use manifoldb_storage::Cursor;
-        cursor.next().map_err(|e| manifoldb::Error::Storage(e))?
-    }.is_some() {
+        cursor.next().map_err(manifoldb::Error::Storage)?
+    }
+    .is_some()
+    {
         point_count += 1;
     }
 
-    Ok(CollectionInfo {
-        name: name.to_string(),
-        vectors,
-        point_count,
-    })
+    Ok(CollectionInfo { name: name.to_string(), vectors, point_count })
 }

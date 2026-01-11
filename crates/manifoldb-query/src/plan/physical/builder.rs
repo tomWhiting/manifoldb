@@ -1475,7 +1475,7 @@ impl PhysicalPlanner {
         let table_rows = input_plan.cost().cardinality();
 
         // Get the source table/collection name
-        let source_name = self.get_table_name(input);
+        let source_name = Self::get_table_name(input);
 
         // Check for HNSW index - try named vector first, then fall back to table/column
         let hnsw_index_info = source_name.and_then(|table| {
@@ -1588,7 +1588,7 @@ impl PhysicalPlanner {
         let table_rows = input_plan.cost().cardinality();
 
         // Get the source table/collection name
-        let source_name = self.get_table_name(input);
+        let source_name = Self::get_table_name(input);
 
         // Build physical components for each search
         let mut components = Vec::with_capacity(node.components.len());
@@ -1808,10 +1808,10 @@ impl PhysicalPlanner {
     }
 
     /// Gets the table name from a logical plan if it's a scan.
-    fn get_table_name<'a>(&self, plan: &'a LogicalPlan) -> Option<&'a str> {
+    fn get_table_name(plan: &LogicalPlan) -> Option<&str> {
         match plan {
             LogicalPlan::Scan(node) => Some(&node.table_name),
-            LogicalPlan::Alias { input, .. } => self.get_table_name(input),
+            LogicalPlan::Alias { input, .. } => Self::get_table_name(input),
             _ => None,
         }
     }

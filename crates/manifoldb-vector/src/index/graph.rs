@@ -144,7 +144,12 @@ impl HnswGraph {
     /// than duplicated in the HNSW graph nodes.
     #[inline]
     #[must_use]
-    pub fn distance_to_node<F>(&self, query: &Embedding, entity_id: EntityId, get_vector: &F) -> Option<f32>
+    pub fn distance_to_node<F>(
+        &self,
+        query: &Embedding,
+        entity_id: EntityId,
+        get_vector: &F,
+    ) -> Option<f32>
     where
         F: Fn(EntityId) -> Option<Embedding>,
     {
@@ -379,7 +384,8 @@ where
                 }
                 visited.insert(neighbor_id);
 
-                if let Some(neighbor_dist) = graph.distance_to_node(query, neighbor_id, get_vector) {
+                if let Some(neighbor_dist) = graph.distance_to_node(query, neighbor_id, get_vector)
+                {
                     let furthest_result = results.peek().map_or(f32::INFINITY, |c| c.0.distance);
 
                     // Always explore for graph traversal (add to candidates)
@@ -501,9 +507,7 @@ mod tests {
     /// Helper to create a simple vector fetcher for tests.
     /// Maps entity ID to an embedding with the same value as the ID.
     fn test_vector_fetcher(dim: usize) -> impl Fn(EntityId) -> Option<Embedding> {
-        move |id: EntityId| {
-            Some(create_test_embedding(dim, id.as_u64() as f32))
-        }
+        move |id: EntityId| Some(create_test_embedding(dim, id.as_u64() as f32))
     }
 
     #[test]

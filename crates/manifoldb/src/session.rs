@@ -66,9 +66,10 @@ use crate::execution::execute_statement;
 use crate::transaction::DatabaseTransaction;
 
 /// The current state of a session's transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TransactionState {
     /// No active transaction - statements auto-commit.
+    #[default]
     AutoCommit,
     /// Inside an explicit transaction started with BEGIN.
     InTransaction {
@@ -79,12 +80,6 @@ pub enum TransactionState {
     },
     /// Transaction has been aborted due to an error and must be rolled back.
     Aborted,
-}
-
-impl Default for TransactionState {
-    fn default() -> Self {
-        Self::AutoCommit
-    }
 }
 
 /// A savepoint represents a point within a transaction that can be rolled back to.
